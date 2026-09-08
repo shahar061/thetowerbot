@@ -45,6 +45,7 @@ class Navigator:
         tuning: Strategy | None = None,
         go_home: bool = False,
         menu_page: str | None = None,
+        dismiss: bool = False,
     ) -> str | None:
         """Tap this screen's nav button, if there is one and it is due.
 
@@ -81,6 +82,15 @@ class Navigator:
             candidates = () if exit_button is None else (exit_button,)
         if go_home and state is ScreenState.GAME_OVER:
             candidates = (config.GAME_OVER_HOME,)
+        # Last resort, and only when the caller says the bot is genuinely
+        # stuck: a full-screen ceremony is not a menu page, so it has no
+        # exit in MENU_NAV_BUTTONS and nothing above matches it. NAV_DISMISS
+        # is the set shopping.py already walks for the popups that sit
+        # between a tab and its page, and its ORDER is the safety property -
+        # claim before skip, so a reward modal is collected rather than
+        # thrown away by a blind dismissal.
+        if not candidates and dismiss:
+            candidates = tuple(("dismiss", path) for path in config.NAV_DISMISS)
         if not candidates:
             return None
 

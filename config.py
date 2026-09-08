@@ -217,6 +217,17 @@ FLOATING_GEM_MAX_TAPS: int = 3
 # the same treatment.
 FLOATING_GEM_COOLDOWN_SECONDS: float = 30.0
 
+# How many consecutive scans a menu page may hold every action while
+# nothing is walking, before the loop stops treating it as a transaction's
+# frame and lets navigation try to recover.
+#
+# Ten rather than two or three: a claim walk arms on the main menu and takes
+# several scans to reach its ladder, and the gap between "the page reader
+# sees the page" and "the walk is armed" is a legitimate hold that must
+# never be raced. At a ~2s interval this is roughly twenty seconds of
+# genuinely stuck before anything changes course.
+HELD_PAGE_SCAN_LIMIT: int = 10
+
 # --- Unknown-screen snapshots ---------------------------------------------
 UNKNOWN_DIR: Path = Path(__file__).parent / "unknown"
 UNKNOWN_MIN_INTERVAL: float = 30.0

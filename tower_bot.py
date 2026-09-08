@@ -184,6 +184,9 @@ class TowerBot:
         # than "take it". It still only ever acts inside a confirmed,
         # unpaused battle - that is the branch it lives in, not a setting.
         self.gem = gem_claim.FloatingGemClaim(bus=bus, reader=self.reader)
+        # Consecutive scans a menu page has held every action with nothing
+        # walking. See the deadlock note in run_once.
+        self._held_scans = 0
         self.runs = RunTracker(first_run_id)
         # When each claim last landed, and the best wave the ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
@@ -647,7 +650,36 @@ class TowerBot:
         # while one walks. Their steps refuse to act on any frame this same
         # scan did not identify - see account_collection and missions_visit.
         # At most one is ever armed; the runner refuses to arm the second.
-        if (panel or missions_page or milestones_page or self.collection.active
+        # A page holding actions with NOTHING walking is the one shape of
+        # hold that can never end on its own, and it is a real deadlock
+        # rather than a slow recovery: the frame only changes when something
+        # taps, and the hold is what forbids tapping. Observed live after a
+        # milestone paid `Unlock Lab` - the full-screen ceremony carries a
+        # SKIP, milestones_screen.scan reads that as "a milestones screen is
+        # up", and the claim walk had already given up (modal_unreadable,
+        # correctly refusing to tap what it could not read). ~180 consecutive
+        # held scans, freed only by hand.
+        #
+        # Counted here rather than inside the readers because no single
+        # reader can see the condition: "a page is up" is one module's
+        # answer and "nothing is walking" is another's.
+        walking_now = (self.collection.active or self.visit.active
+                       or self.claim.active or self.milestones_claim.active)
+        if (panel or missions_page or milestones_page) and not walking_now:
+            self._held_scans += 1
+        else:
+            self._held_scans = 0
+
+        # Past the limit the guard stops OWNING the frame - it does not stop
+        # holding taps. The action loop below is still gated on IN_RUN, which
+        # a menu page is not, so nothing starts buying; what it buys back is
+        # the rest of the pass, and with it navigation, whose NAV_DISMISS set
+        # already carries the skip and claim-reward buttons these ceremonies
+        # are built from.
+        deadlocked = self._held_scans > config.HELD_PAGE_SCAN_LIMIT
+
+        if not deadlocked and (
+                panel or missions_page or milestones_page or self.collection.active
                 or self.visit.active or self.claim.active
                 or self.milestones_claim.active):
             self.controls.drain()
@@ -984,6 +1016,11 @@ class TowerBot:
                 # minutes on the UTILITY tab. UNKNOWN with nothing named
                 # still taps nothing - see config.MENU_NAV_BUTTONS.
                 menu_page=None if menu_page == pages.UNKNOWN else menu_page,
+                # Only once the hold above has proved itself permanent. A
+                # ceremony has no exit button of its own, so without this
+                # the released guard buys nothing: navigation looks for a
+                # menu page's exit, finds none, and taps nothing forever.
+                dismiss=deadlocked,
             )
 
         # Checked after navigation, and begin() checked after advance() below:
