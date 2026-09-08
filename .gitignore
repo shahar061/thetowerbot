@@ -12,6 +12,7 @@ unknown/
 /.superpowers/
 /.worktrees/
 /worktrees/
+/research/
 
 # Local caches, editor metadata, and unpublished UI staging directories.
 .DS_Store

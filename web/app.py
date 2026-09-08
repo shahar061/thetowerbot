@@ -17,7 +17,7 @@ advisor imports are written through their validating stores.
 
 from __future__ import annotations
 
-from account_state import AccountState
+from account_state import AccountRevision, AccountState
 
 import asyncio
 import json
@@ -33,7 +33,10 @@ from pydantic import BaseModel
 
 import config
 import db
+import director
 import events
+import knowledge
+import objectives
 import upgrades
 from concepts import REGISTRY
 from runtime_identity import API_VERSION, PROCESS_IDENTITY, read_frontend_identity
@@ -41,7 +44,7 @@ from advisor import AdvisorStore
 from web.advisor import advisor_router
 from autopilot import AutopilotState
 from policy import PRESETS, preset_rules
-from progression import compare_tiers
+from progression import compare_tiers, rates as progression_rates
 from control import ControlError, Controls
 from events import EventBus
 from frames import FrameBuffer
@@ -1034,6 +1037,41 @@ def create_app(
                 # that returns nothing.
                 "next": lines[-1]["id"] if len(lines) == capped else None,
             }
+
+    def _director_plan() -> director.Plan:
+        # AccountState exposes no `latest_revision()` - the typed accessor
+        # `director.plan` needs lives on `AccountRepository.latest()`, which
+        # `accounts.repository` reaches directly; `accounts.snapshot()`
+        # returns a plain dict, which is not the same thing and is not
+        # substituted for one here. No repository (--no-store, or a fresh
+        # AccountState with nothing restored yet) reads as "no revision has
+        # ever been observed" - the empty AccountRevision() below - not an
+        # error: a dashboard with no bot attached must still show what the
+        # bot would do.
+        revision = accounts.repository.latest() if accounts.repository is not None else None
+        runs: list[dict[str, Any]] = []
+        if db_path is not None:
+            with db.reader(db_path) as conn:
+                runs = db.list_runs(conn, limit=100)
+        return director.plan(
+            revision or AccountRevision(),
+            knowledge=knowledge.KNOWLEDGE,
+            graph=objectives.GRAPH,
+            rates=progression_rates(runs),
+            strategy=controls.snapshot().strategy if controls is not None else Strategy.from_config(),
+        )
+
+    @app.get("/api/director")
+    async def director_plan() -> dict[str, Any]:
+        """The next five objectives, why, and what is holding the rest.
+
+        Read-only and armed-nothing: this phase computes the plan and shows
+        it. Acting on it is the risk ladder's job. Blocking DB and revision
+        reads run off the event loop via asyncio.to_thread, matching
+        _comparison()'s use above for /api/autopilot.
+        """
+        result = await asyncio.to_thread(_director_plan)
+        return director.as_payload(result, knowledge=knowledge.KNOWLEDGE, top_n=5)
 
     # A write verb against an /api path nothing above registered (e.g.
     # /api/bot/start with no runner wired) must read as "this route does

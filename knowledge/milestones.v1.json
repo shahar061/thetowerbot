@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "pack_version": "2026-09-05.1",
+  "sources": [
+    {"id": "wiki-milestones", "file": "wiki__guide__milestones.txt", "sha256": "7a03c1df2587ed056aee5573571d570bee0fc4a39485ffaf492d42255323412a", "captured_at": "2026-09-05", "revision": null, "content_scope": "milestone_reward_tables_by_tier_and_wave"}
+  ],
+  "conflicts": [],
+  "facts": [
+    {"id": "milestone.t1.w30", "value": {"unlocks": "labs"}, "unit": null, "source_refs": ["wiki-milestones"], "source_url": "https://www.tower-hub.com/wiki/guide/milestones", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "milestone.t1.w100", "value": {"unlocks": "tier.2"}, "unit": null, "source_refs": ["wiki-milestones"], "source_url": "https://www.tower-hub.com/wiki/guide/milestones", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "milestone.t2.w150", "value": {"unlocks": "perks"}, "unit": null, "source_refs": ["wiki-milestones"], "source_url": "https://www.tower-hub.com/wiki/guide/milestones", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "milestone.t3.w150", "value": {"unlocks": "labs.second-wind-blast"}, "unit": null, "source_refs": ["wiki-milestones"], "source_url": "https://www.tower-hub.com/wiki/guide/milestones", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "milestone.t4.w70", "value": {"unlocks": "labs.daily-mission-shards", "also_unlocks": ["labs.common-drop-chance", "labs.reroll-shards"]}, "unit": null, "source_refs": ["wiki-milestones"], "source_url": "https://www.tower-hub.com/wiki/guide/milestones", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "milestone.t1.total_rewards", "value": {"coins": 1660, "gems": 235, "stones": 5}, "unit": null, "source_refs": ["wiki-milestones"], "source_url": "https://www.tower-hub.com/wiki/guide/milestones", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}}
+  ]
+}

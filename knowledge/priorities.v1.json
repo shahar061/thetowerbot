@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "pack_version": "2026-09-05.1",
+  "sources": [
+    {"id": "wiki-tier-specific-guide", "file": "wiki__guide__tier-specific-guide.txt", "sha256": "f8441a0753857c0f4c3bb6a51f86f8a5a86295c679dc4caffbd5bc0e6a702bbc", "captured_at": "2026-09-05", "revision": null, "content_scope": "per_tier_build_and_lab_priority_notes"},
+    {"id": "wiki-uw-tier-list", "file": "wiki__guide__uw-tier-list.txt", "sha256": "d566df40c3d954de10c7d7bb72c0df2c3d713e28fc0f5489421047e165aa8dbb", "captured_at": "2026-09-05", "revision": null, "content_scope": "ultimate_weapon_unlock_order_and_slot_costs"},
+    {"id": "wiki-icetae-priority-list", "file": "wiki__system__icet-s-gem-and-card-priority-list.txt", "sha256": "2f0b169801e9ed5eeef89043de00386648cd799b624bfb8cf4dd39b7980a361a", "captured_at": "2026-09-05", "revision": null, "content_scope": "community_gem_and_card_spend_order"},
+    {"id": "wiki-ultimate-weapons", "file": "wiki__uw__ultimate-weapons.txt", "sha256": "a4a00c206cfbe6cb61ac5ec256a36d631c7ec87d53f0d756254bc9f0235e5b63", "captured_at": "2026-09-05", "revision": null, "content_scope": "ultimate_weapon_overview_and_plus_ability_pricing"},
+    {"id": "wiki-glossary", "file": "glossary.txt", "sha256": "e7554c236942a06e5138716deaba0b324b8fc4477faaa3cd3cf8d65afc146008", "captured_at": "2026-09-05", "revision": null, "content_scope": "glossary_alias_definitions"},
+    {"id": "wiki-enemy-balance-card", "file": "wiki__card__cards-enemy-balance.txt", "sha256": "dc322b7ade7f4d37c6db4c3968777245229bb56e8a685eda28990b52d3090d72", "captured_at": "2026-09-05", "revision": null, "content_scope": "enemy_balance_card_effect"}
+  ],
+  "conflicts": [
+    {
+      "id": "glossary-enemy-balance",
+      "statement": "The glossary describes the Enemy Balance card as shifting the spawn mix toward fewer enemies, while its dedicated card page says equipping it increases the number of enemies spawned per wave - opposite directions for the same card the gem/card priority list ranks second to unlock.",
+      "tainted": ["priority.cards.unlock_order"],
+      "sources": ["wiki-glossary", "wiki-enemy-balance-card"],
+      "quote": "Glossary: 'Shifts the spawn mix away from the swarm and toward fewer, meatier enemies.' Card page: 'While it is equipped, more enemies appear in each wave, and every kill pays out more cash than usual.'"
+    },
+    {
+      "id": "icetae-list-version-dated",
+      "statement": "IceTae's gem-and-card priority list self-dates to game version 0.16-0.17 and is not corroborated against the current game state; treating its spend order as current risks an autonomous director spending gems and stones on stale advice.",
+      "tainted": ["priority.gems.spend_order", "priority.cards.unlock_order"],
+      "sources": ["wiki-icetae-priority-list"],
+      "quote": "This priority list comes from Discord user IceTæ#6224... It was put together around game version 0.16 and was still considered current as of 0.17."
+    },
+    {
+      "id": "uw-plus-ability-cost",
+      "statement": "The Ultimate Weapons overview describes Ultimate Weapon Plus ability costs as escalating with each purchase, while the newer UW tier list states a flat 975 stones per ability; do not hardcode either figure without current in-game confirmation.",
+      "tainted": ["priority.uw.plus_ability_cost"],
+      "sources": ["wiki-ultimate-weapons", "wiki-uw-tier-list"],
+      "quote": "Ultimate Weapons: 'Each purchase increases the cost of the next ability.' UW tier list: 'Each UW+ ability (Smite, Golden Combo, Kill Wall …) additionally costs a flat 975 stones to unlock in-game.'"
+    }
+  ],
+  "facts": [
+    {"id": "priority.labs.t1", "value": ["labs.game-speed", "labs.coins-wave", "labs.defense-absolute"], "unit": null, "source_refs": ["wiki-tier-specific-guide"], "source_url": "https://www.tower-hub.com/wiki/guide/tier-specific-guide", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "priority.uw.unlock_order", "value": ["golden_tower", "black_hole", "death_wave", "spotlight", "chrono_field", "chain_lightning", "inner_land_mines", "poison_swamp", "smart_missiles"], "unit": null, "source_refs": ["wiki-uw-tier-list"], "source_url": "https://www.tower-hub.com/wiki/guide/uw-tier-list", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "priority.uw.slot_stone_costs", "value": [5, 50, 150, 300, 800, 1250, 1750, 2400, 3000], "unit": "stones", "source_refs": ["wiki-uw-tier-list"], "source_url": "https://www.tower-hub.com/wiki/guide/uw-tier-list", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "priority.uw.plus_ability_cost", "value": 975, "unit": "stones", "source_refs": ["wiki-uw-tier-list"], "source_url": "https://www.tower-hub.com/wiki/guide/uw-tier-list", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "priority.gems.spend_order", "value": [
+      {"step": 1, "buy": "lab_slot_2"},
+      {"step": 2, "buy": "card_slots_3", "unlock_cards": "attack_speed, enemy_balance, coins"},
+      {"step": 3, "buy": "lab_slot_3"},
+      {"step": 4, "buy": "card_slots_5", "unlock_cards": "health, cash"},
+      {"step": 5, "buy": "lab_slot_4"},
+      {"step": 6, "buy": "card_slots_7", "unlock_cards": "extra_orb or death_ray"},
+      {"step": 7, "buy": "lab_slot_5"},
+      {"step": 8, "buy": "card_slots_10"},
+      {"step": 9, "buy": "labs.labs-speed", "target_level": 50}
+    ], "unit": null, "source_refs": ["wiki-icetae-priority-list"], "source_url": "https://www.tower-hub.com/wiki/system/icet-s-gem-and-card-priority-list", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "priority.cards.unlock_order", "value": ["attack_speed", "enemy_balance", "coins", "health", "cash"], "unit": null, "source_refs": ["wiki-icetae-priority-list"], "source_url": "https://www.tower-hub.com/wiki/system/icet-s-gem-and-card-priority-list", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}}
+  ]
+}

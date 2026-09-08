@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "pack_version": "2026-09-05.1",
+  "sources": [
+    {"id": "wiki-tiers", "file": "wiki__system__tiers.txt", "sha256": "6df2b41c2c43f1941ea6c1858eb77b43d2b846089da83f1a07dfdaca7315d85b", "captured_at": "2026-09-05", "revision": null, "content_scope": "tier_unlock_rules_and_multipliers"}
+  ],
+  "conflicts": [],
+  "facts": [
+    {"id": "tier.2.unlock_wave", "value": 100, "unit": "wave", "source_refs": ["wiki-tiers"], "source_url": "https://www.tower-hub.com/wiki/system/tiers", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "tier.2.coin_multiplier", "value": 1.8, "unit": "multiplier", "source_refs": ["wiki-tiers"], "source_url": "https://www.tower-hub.com/wiki/system/tiers", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "tier.3.unlock_wave", "value": 100, "unit": "wave", "source_refs": ["wiki-tiers"], "source_url": "https://www.tower-hub.com/wiki/system/tiers", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "tier.3.coin_multiplier", "value": 2.6, "unit": "multiplier", "source_refs": ["wiki-tiers"], "source_url": "https://www.tower-hub.com/wiki/system/tiers", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "tier.4.unlock_wave", "value": 100, "unit": "wave", "source_refs": ["wiki-tiers"], "source_url": "https://www.tower-hub.com/wiki/system/tiers", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}},
+    {"id": "tier.4.coin_multiplier", "value": 3.4, "unit": "multiplier", "source_refs": ["wiki-tiers"], "source_url": "https://www.tower-hub.com/wiki/system/tiers", "definition_verified": true, "rule_verified": false, "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}}
+  ]
+}

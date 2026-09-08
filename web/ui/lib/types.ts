@@ -387,3 +387,57 @@ export interface LedgerPayload {
   rehearsals: number;
   next: number | null;
 }
+
+/** `objectives.classify`'s three-way answer, carried through unchanged. */
+export type ObjectiveStatus = "done" | "ready" | "blocked";
+
+/** director.py's own JSON boundary correction, spelled out as a discriminated
+ *  union rather than a raw number: `math.inf` is not valid JSON (Python's
+ *  `json.dumps` emits the bare, non-standard token `Infinity` for it, which
+ *  `JSON.parse` rejects outright), and even where it round-trips, a plain
+ *  number can never tell "we have not measured this" (`kind: "unknown"`)
+ *  apart from "measured: not at this rate, ever" (`kind: "infinite"`) apart
+ *  from a real wait (`kind: "hours"`). A reader must switch on `kind` before
+ *  ever touching `.hours` - see director.py's `_horizon_payload`. */
+export type HorizonPayload =
+  | { kind: "unknown" }
+  | { kind: "infinite" }
+  | { kind: "hours"; hours: number };
+
+/** One knowledge-pack citation, with the source link a human needs to check
+ *  it - `source_url` is null only for a ref the committed pack does not
+ *  (yet) contain, which director.py's own tests keep unreachable today. */
+export interface KnowledgeRefPayload {
+  id: string;
+  source_url: string | null;
+}
+
+/** One ranked, explained objective - director.Candidate's JSON shape.
+ *  `blocked_by`, `held_by` and `knowledge_refs` are kept as separate lists
+ *  rather than folded into `why`: "blocked" (a prerequisite), "held" (a
+ *  deliberate gate) and "cited" (why the objective exists at all) must stay
+ *  visibly distinct on the page, exactly as they do in director.py. */
+export interface DirectorCandidate {
+  objective_id: string;
+  status: ObjectiveStatus;
+  score: number | null;
+  hours_to_afford: HorizonPayload;
+  price: number | null;
+  currency: string | null;
+  blocked_by: string[];
+  held_by: string[];
+  why: string;
+  knowledge_refs: KnowledgeRefPayload[];
+}
+
+/** director.Plan's JSON shape - the whole /api/director response.
+ *  `candidates` is the ranked list's top five plus every held candidate
+ *  beyond that, in rank order: a hold is a decision waiting on a human and
+ *  is never truncated away, however far down the ranking it sits. */
+export interface DirectorPlanPayload {
+  observed_at: number | null;
+  revision_id: number | null;
+  reason: string;
+  top: DirectorCandidate | null;
+  candidates: DirectorCandidate[];
+}

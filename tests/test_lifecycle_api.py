@@ -174,3 +174,15 @@ def test_the_ledger_route_is_not_shadowed_by_the_api_catch_all(wired) -> None:
     client = wired[0]
 
     assert client.get("/api/ledger").status_code == 200
+
+
+def test_the_director_route_is_not_shadowed_by_the_api_catch_all(wired) -> None:
+    """The catch-all above only matches POST/PUT/PATCH/DELETE, so a GET was
+    never actually at risk from it - the real shadowing hazard for a GET is
+    the SPA mount ("/", StaticFiles(..., html=True)) registered after every
+    /api route. This exercises the real risk (GET, not a write verb) rather
+    than the one the catch-all's own comment names, so a regression that
+    moved /api/director below the StaticFiles mount would fail here."""
+    client = wired[0]
+
+    assert client.get("/api/director").status_code == 200

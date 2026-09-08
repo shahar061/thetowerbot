@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "pack_version": "2026-09-05.1",
+  "sources": [
+    {"id": "wiki-footguns", "file": "wiki__guide__footguns.txt", "sha256": "aa4106c315096a4faa82b5d2cfff44ed0181f72999658da659257881e413df3f", "captured_at": "2026-09-05", "revision": null, "content_scope": "irreversible_upgrade_footgun_catalog"}
+  ],
+  "conflicts": [],
+  "facts": [
+    {
+      "id": "hazard.lab.black_hole_damage",
+      "value": {
+        "interdiction": "never_research_if_perma_stall_intended",
+        "reason": "Black Hole Damage kills enemies held inside a Black Hole, which undermines the game's strongest perma-stall strategy - with Black Hole cooldown and duration both at 50s and enough size to cover the tower's range, every enemy is pulled in and held forever, never attacking and never ramping its per-attack damage. The lab cannot be unresearched once taken; it costs months to route around if taken by mistake.",
+        "requires_observable": ["ultimate-weapons.black_hole.cooldown_seconds", "ultimate-weapons.black_hole.duration_seconds"],
+        "permanent": true
+      },
+      "unit": null,
+      "source_refs": ["wiki-tier-specific-guide"],
+      "source_url": "https://www.tower-hub.com/wiki/guide/tier-specific-guide",
+      "definition_verified": true,
+      "rule_verified": false,
+      "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}
+    },
+    {
+      "id": "hazard.lab.bot_cooldown",
+      "value": {
+        "interdiction": "confirm_before_spend",
+        "reason": "Bot medal upgrades can be respecced, but bot lab cooldown upgrades cannot; taking one without first checking the intended Golden Tower/Black Hole/Death Wave sync target can desync a bot for good, which matters most once bot effects grow strong enough to depend on syncing with ultimate weapons or with each other.",
+        "requires_observable": ["ultimate-weapons.golden_tower.cooldown_seconds", "labs.golden-bot-cooldown.researched_level"],
+        "permanent": true
+      },
+      "unit": null,
+      "source_refs": ["wiki-footguns"],
+      "source_url": "https://www.tower-hub.com/wiki/guide/footguns",
+      "definition_verified": true,
+      "rule_verified": false,
+      "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}
+    },
+    {
+      "id": "hazard.uw.black_hole_cooldown_before_gt_sync",
+      "value": {
+        "interdiction": "never_spend",
+        "reason": "Lowering Black Hole's cooldown before Golden Tower is synced to it makes it more expensive to bring Golden Tower back to a 1:1 sync ratio, and that sync is central to coin income. This footgun eventually self-corrects (Golden Tower catches back up, or Black Hole's cooldown maxes out and settles into a 2:1 sync), but changing either cooldown before the sync state is readable is not safe to automate.",
+        "requires_observable": ["ultimate-weapons.golden_tower.cooldown_seconds", "ultimate-weapons.black_hole.cooldown_seconds"],
+        "permanent": true
+      },
+      "unit": null,
+      "source_refs": ["wiki-footguns"],
+      "source_url": "https://www.tower-hub.com/wiki/guide/footguns",
+      "definition_verified": true,
+      "rule_verified": false,
+      "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}
+    },
+    {
+      "id": "hazard.stones.cooldown_spend",
+      "value": {
+        "interdiction": "confirm_before_spend",
+        "reason": "Many strategies depend on ultimate weapons being synced, including pairs that do not obviously belong together. Changing the cooldown of any ultimate weapon without first checking which strategies and syncs are currently in play can silently lock the account out of an entire strategy.",
+        "requires_observable": ["ultimate-weapons.golden_tower.cooldown_seconds", "ultimate-weapons.black_hole.cooldown_seconds", "ultimate-weapons.death_wave.cooldown_seconds"],
+        "permanent": false
+      },
+      "unit": null,
+      "source_refs": ["wiki-footguns"],
+      "source_url": "https://www.tower-hub.com/wiki/guide/footguns",
+      "definition_verified": true,
+      "rule_verified": false,
+      "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}
+    },
+    {
+      "id": "hazard.uw.first_pick",
+      "value": {
+        "interdiction": "confirm_before_spend",
+        "reason": "Ultimate Weapon slot picks are permanent and each new slot costs more stones than the last; grabbing a weaker option early when a stronger one exists leaves the account behind for the price of unlocking further slots to catch up. Consult the recommended unlock order (priority.uw.unlock_order) before spending stones on a new Ultimate Weapon slot.",
+        "requires_observable": ["account.ultimate_weapons_owned", "account.ultimate_weapons_next_slot_cost"],
+        "permanent": true
+      },
+      "unit": null,
+      "source_refs": ["wiki-footguns", "wiki-uw-tier-list"],
+      "source_url": "https://www.tower-hub.com/wiki/guide/footguns",
+      "definition_verified": true,
+      "rule_verified": false,
+      "validity": {"status": "unknown", "game_version_min": null, "game_version_max": null}
+    }
+  ]
+}

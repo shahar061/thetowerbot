@@ -8,6 +8,7 @@ import type {
   Upgrade,
   BotStatus,
   ControlPayload,
+  DirectorPlanPayload,
   LedgerPayload,
   RunPurchasePayload,
   RunRow,
@@ -86,6 +87,7 @@ export const fetchLedger = (
 };
 
 export const fetchControl = () => getJson<ControlPayload>("/api/control");
+export const fetchDirector = () => getJson<DirectorPlanPayload>("/api/director");
 export const fetchAdvisor = (profile: string) =>
   getJson<AdvisorSnapshot>(`/api/advisor?profile=${encodeURIComponent(profile)}`);
 export const importAdvisor = (body: { profile: string; filename: string; content: string }) =>

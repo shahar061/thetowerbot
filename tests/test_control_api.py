@@ -9,6 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
+import director
+import knowledge
+import objectives
+from account_state import AccountRevision
 from control import Controls
 from events import EventBus
 from sinks.sse import SseSink
@@ -513,3 +517,104 @@ def test_a_backend_without_a_runner_reports_no_ladder_rather_than_an_empty_one()
     with _account_client(None) as client:
         assert client.get("/api/milestones").json() == {}
         assert client.post("/api/milestones/claim").status_code == 412
+
+
+# -- /api/director ---------------------------------------------------------
+# Read-only and armed-nothing: this phase computes the plan and shows it. A
+# human reads /api/director daily; nothing downstream of it in this phase
+# acts on it. See director.py's own module docstring for the ranking and
+# hold rules these tests are pinning at the HTTP boundary.
+
+def test_the_director_route_ranks_objectives_with_citations() -> None:
+    with _account_client(None) as client:
+        payload = client.get("/api/director").json()
+        assert payload["reason"]
+        assert payload["candidates"]
+        for candidate in payload["candidates"]:
+            assert candidate["objective_id"]
+            assert candidate["knowledge_refs"]
+            assert candidate["why"]
+
+
+def test_the_director_route_needs_no_runner() -> None:
+    """It reads and recommends. A dashboard with no bot attached must still
+    be able to show what the bot would do."""
+    with _account_client(None) as client:
+        assert client.get("/api/director").status_code == 200
+
+
+def test_the_director_route_reports_held_objectives_even_below_the_top_five() -> None:
+    """A hold is the most actionable thing on the page - it is a decision
+    waiting for a human - so it is never truncated away."""
+    with _account_client(None) as client:
+        payload = client.get("/api/director").json()
+        assert any(c["held_by"] for c in payload["candidates"])
+
+
+def test_the_director_route_needs_no_db_either() -> None:
+    """--no-store (db_path=None, exactly what _account_client(None) wires) is
+    a supported mode, not an error - the same contract /api/stats, /api/runs
+    and /api/errors already keep. An empty run history reads as "no rate has
+    ever been measured", not a 500."""
+    with _account_client(None) as client:
+        response = client.get("/api/director")
+        assert response.status_code == 200
+        assert response.json()["revision_id"] is None
+
+
+def test_an_infinite_horizon_never_reaches_the_wire_as_the_bare_json_token() -> None:
+    """math.inf is not valid JSON - json.dumps happily emits the bare,
+    non-standard token `Infinity` for it, which a strict parser (a browser's
+    own JSON.parse, notably) rejects outright. Reading the route through
+    TestClient's `.json()` (Python's own permissive json.loads) would not
+    catch a regression here, so this asserts on the raw response TEXT: the
+    literal substring "Infinity" must never appear on the wire, and every
+    hours_to_afford must instead be an explicit, distinguishable object."""
+    with _account_client(None) as client:
+        response = client.get("/api/director")
+        assert "Infinity" not in response.text
+        assert "NaN" not in response.text
+        payload = response.json()
+        kinds = {c["hours_to_afford"]["kind"] for c in payload["candidates"]}
+        assert kinds <= {"unknown", "infinite", "hours"}
+
+
+def test_an_unknown_horizon_is_never_confused_with_an_infinite_one_on_the_wire() -> None:
+    """`None` ("we cannot say - go gather data") and `math.inf` ("measured:
+    not at this rate, ever") must stay two distinct `kind`s across the JSON
+    boundary - collapsing them is exactly the mistake this phase exists to
+    prevent. With no db and no account revision wired, every priced
+    objective's rate is unmeasured, so "unknown" must actually appear; the
+    committed graph has no coin-priced objective at all (only uw.slot.* is
+    priced, in stones, which progression.rates never measures - see
+    director.py's own _priced_objective test fixture note), so "infinite"
+    is not expected to appear here and this only pins that it COULD without
+    ever being mistaken for "unknown"."""
+    with _account_client(None) as client:
+        payload = client.get("/api/director").json()
+        kinds = {c["hours_to_afford"]["kind"] for c in payload["candidates"]}
+        assert "unknown" in kinds
+        assert "infinite" not in kinds  # not reachable from this fixture; see docstring
+
+
+def test_the_route_reason_matches_an_equivalent_direct_call_to_director_plan() -> None:
+    """CurrencyRates.reason is the only thing that tells a human WHY a
+    horizon is unknown, and it reaches the screen through `Plan.reason`
+    (quoted when nothing is `top`) and through a priced candidate's `why` -
+    director.py's own test suite (test_director.py) pins that quoting
+    directly and exhaustively. What THIS route can uniquely get wrong is
+    discarding it on the way out: `director.as_payload` only reshapes
+    `candidates` (the horizon and knowledge citations), so the route's
+    `reason` must be byte-identical to what a direct `director.plan()` call
+    on the same (empty account, no runs, default strategy) inputs produces
+    - not a re-derived or generic string."""
+    from progression import rates as progression_rates_
+
+    with _account_client(None) as client:
+        payload = client.get("/api/director").json()
+
+    expected = director.plan(
+        AccountRevision(), knowledge=knowledge.KNOWLEDGE, graph=objectives.GRAPH,
+        rates=progression_rates_([]), strategy=Strategy.from_config(),
+    )
+    assert payload["reason"] == expected.reason
