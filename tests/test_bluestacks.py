@@ -108,6 +108,36 @@ def test_connector_does_not_adopt_another_instance_at_same_endpoint(tmp_path: Pa
                          lambda: SimpleNamespace(serial=attempt.endpoint), timeout=0)()
 
 
+def test_host_popup_check_runs_after_exact_binding_and_before_adb_connect(tmp_path: Path) -> None:
+    adapter = BlueStacksAdapter(FakeHost(), staging_root=tmp_path)
+    attempt = Attempt.new("worker-a", "127.0.0.1:5555", "lease-a", "run-a")
+    events: list[str] = []
+    connector = HostBoundConnect(
+        adapter, "alpha", attempt,
+        lambda: (events.append("connect"), SimpleNamespace(serial=attempt.endpoint))[1],
+        before_connect=lambda: events.append("popup"), timeout=0,
+    )
+    assert connector().serial == attempt.endpoint
+    assert events == ["popup", "connect"]
+
+    wrong = Attempt.new("worker-a", "127.0.0.1:5555", "wrong", "run-a")
+    with pytest.raises(HostIdentityError):
+        HostBoundConnect(adapter, "alpha", wrong,
+                         lambda: pytest.fail("connected before identity check"),
+                         before_connect=lambda: pytest.fail("popup before identity check"))()
+
+
+def test_unavailable_host_popup_check_does_not_block_adb_connection(tmp_path: Path) -> None:
+    adapter = BlueStacksAdapter(FakeHost(), staging_root=tmp_path)
+    attempt = Attempt.new("worker-a", "127.0.0.1:5555", "lease-a", "run-a")
+    def unavailable() -> None:
+        raise RuntimeError("Screen Recording permission missing")
+    connector = HostBoundConnect(adapter, "alpha", attempt,
+                                 lambda: SimpleNamespace(serial=attempt.endpoint),
+                                 before_connect=unavailable, timeout=0)
+    assert connector().serial == attempt.endpoint
+
+
 def test_host_mutations_require_designated_endpoint_and_lease(tmp_path: Path) -> None:
     host = FakeHost()
     adapter = BlueStacksAdapter(host, staging_root=tmp_path)

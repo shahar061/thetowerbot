@@ -328,16 +328,20 @@ def test_runner_binds_named_host_before_connect_and_quarantines_its_failure(tmp_
     runner._supervisor_path = tmp_path / "supervisor.json"
     runner._host_adapter = BlueStacksAdapter(Host(), staging_root=tmp_path)
     runner._host_instance = "alpha"
+    popup_checks: list[str] = []
+    runner._host_popup_checker = lambda instance: popup_checks.append(instance) or "closed"
     runner._device_factory = lambda: type("Device", (), {"serial": "127.0.0.1:5555"})()
     runner.start()
     try:
         assert made[0].kwargs["device"].serial == "127.0.0.1:5555"
+        assert popup_checks == ["alpha"]
     finally:
         runner.stop()
 
     runner._host_instance = "beta"
     with pytest.raises(RunnerError):
         runner.start()
+    assert popup_checks == ["alpha"]
     assert runner.status()["recovery"]["state"] is RecoveryState.QUARANTINED
 
 

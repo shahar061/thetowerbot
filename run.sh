@@ -147,8 +147,8 @@ else
 fi
 
 # --- 5. run ---------------------------------------------------------------
-step 5 "uv run tower_bot.py --web ${*:-}"
+step 5 "uv run tower_bot.py --web --dismiss-bluestacks-upgrade ${*:-}"
 printf '\n  dashboard -> http://127.0.0.1:%s\n\n' "$port"
 # exec, so Ctrl+C reaches the bot itself rather than this wrapper and the
 # bot's own shutdown path runs.
-exec uv run tower_bot.py --web "$@"
+exec uv run tower_bot.py --web --dismiss-bluestacks-upgrade "$@"

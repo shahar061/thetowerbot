@@ -1,7 +1,8 @@
 """Background automation bot for the Android game "The Tower".
 
-Everything runs through ADB, so the emulator window never needs focus and the
-mouse is never hijacked:
+Game actions run through ADB, so the emulator window never needs focus and the
+mouse is never hijacked. The optional BlueStacks Air host update notice check
+uses a guarded macOS Accessibility press outside the Android game:
 
     screen capture  ->  device.screenshot()     (PIL image, converted in memory)
     template match  ->  cv2.matchTemplate
@@ -1228,6 +1229,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default=config.DEVICE_HOST, help="emulator ADB host")
     parser.add_argument("--port", type=int, default=config.DEVICE_PORT, help="emulator ADB port")
     parser.add_argument(
+        "--dismiss-bluestacks-upgrade", action="store_true",
+        help="close only the measured BlueStacks Air host update notice for the exact instance",
+    )
+    parser.add_argument(
         "--game-package", default=None,
         help="verified Android package to resume after reconnect; omitted means no relaunch",
     )
@@ -1787,6 +1792,28 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
         BlueStacksAdapter(ManualPool(args.bluestacks_pool), staging_root=runtime.checkpoint_root)
         if args.bluestacks_pool is not None and runtime is not None else None
     )
+    host_popup_checker = None
+    if (args.dismiss_bluestacks_upgrade and host_adapter is not None
+            and sys.platform == "darwin"):
+        from fleet.bluestacks_upgrade import close_upgrade_for_instance
+
+        host_popup_checker = close_upgrade_for_instance
+
+    def connect_standalone() -> Any:
+        # A host update notice sits above Android and is invisible to ADB.
+        # Resolve only one exact local BlueStacks instance for the endpoint;
+        # diagnostics remain read-only and named fleet workers use their lease.
+        if (args.dismiss_bluestacks_upgrade and host_adapter is None
+                and not args.debug_scores and sys.platform == "darwin"):
+            from fleet.bluestacks_upgrade import close_upgrade_for_endpoint
+
+            try:
+                outcome = close_upgrade_for_endpoint(args.host, args.port)
+                if outcome == "unconfirmed":
+                    logger.warning("BlueStacks upgrade dialog close could not be verified")
+            except Exception:
+                logger.warning("BlueStacks upgrade dialog check unavailable", exc_info=True)
+        return connect_device(host=args.host, port=args.port)
 
     # A dashboard (--web without --once, since --once always wins) connects
     # lazily instead: the device becomes the runner's device_factory below,
@@ -1802,7 +1829,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     device = None
     if not serving:
         try:
-            device = connect_device(host=args.host, port=args.port)
+            device = connect_standalone()
         except EmulatorError as exc:
             logger.error("%s", exc)
             return 1
@@ -1939,7 +1966,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 controls=controls,
                 state=state,
                 templates=vision.TemplateCache(config.TEMPLATE_DIR),
-                device_factory=lambda: connect_device(host=args.host, port=args.port),
+                device_factory=connect_standalone,
                 checks=checks,
                 shopping=shopping_session,
                 frames=frames,
@@ -1955,6 +1982,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 game_package=args.game_package,
                 host_adapter=host_adapter,
                 host_instance=args.bluestacks_instance,
+                host_popup_checker=host_popup_checker,
             )
 
             app = create_app(

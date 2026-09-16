@@ -124,6 +124,28 @@ either response. Automatic replenishment is unavailable until a host control
 API is independently qualified. Clone staging is reserved for later
 qualification and has no dashboard command.
 
+M05 clone-source qualification is an explicit staging transaction in
+`fleet/clone_qualification.py`. It records a source Account popup observation,
+stages two clones through the exclusive M03 staging lease, invokes R00 for each
+clone, and probes both workers concurrently through a named host restart and
+fresh post-restart account observation. The persisted record binds host,
+BlueStacks version, source lineage and version, game version, instance
+configuration, three distinct Tower Account IDs, endpoints, leases, and
+evidence times. The read gate closes on missing, simulated, stale, or changed
+scope. The installed manual pool cannot stage or restart clones, so it records
+`unqualified` with `unsupported_host_capability`; no dashboard clone command
+is enabled. A future host driver must independently attest its live capability
+and measured scope before M05 can record `passed`.
+
+On macOS, `./run.sh` checks the exact local BlueStacks Air window for the
+measured **Upgrade available** host notice when connecting. It presses only
+that notice's X, after matching its text and visible X, then checks that the
+notice disappeared. It does not click Update, cloud/session, account, or
+credential dialogs. For a host-only one-shot check on the original instance,
+run `uv run python -m fleet.bluestacks_upgrade --instance Tiramisu64`. Screen
+Recording and Accessibility access are needed for the process running the bot;
+without them, the action fails closed and ADB operation continues.
+
 ## Run
 
 ```bash

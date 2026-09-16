@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -18,6 +19,9 @@ from typing import Any, Callable, Iterator, Protocol
 
 from device import EmulatorError, IdentityError
 from fleet.identity import Attempt
+
+
+logger = logging.getLogger(__name__)
 
 
 class HostCapabilityError(EmulatorError):
@@ -174,6 +178,7 @@ class HostBoundConnect:
         poll_interval: float = 0.5, restart_after: int = 2,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        before_connect: Callable[[], None] | None = None,
     ) -> None:
         if timeout < 0 or poll_interval <= 0 or restart_after < 1:
             raise ValueError("bounded host recovery settings required")
@@ -182,6 +187,7 @@ class HostBoundConnect:
         self.restart_after, self.clock, self.sleep = restart_after, clock, sleep
         self._failed_connects = 0
         self._host_restart_used = False
+        self.before_connect = before_connect
 
     def __call__(self) -> Any:
         instance = self.adapter.designated(self.name, self.attempt)
@@ -195,6 +201,12 @@ class HostBoundConnect:
             self.adapter.stop(self.name, self.attempt)
             self.adapter.start(self.name, self.attempt)
             self._host_restart_used = True
+        if self.before_connect is not None:
+            try:
+                self.before_connect()
+            except Exception:
+                logger.warning("BlueStacks host popup check unavailable for %s", self.name,
+                               exc_info=True)
         deadline = self.clock() + self.timeout
         while True:
             instance = self.adapter.designated(self.name, self.attempt)
