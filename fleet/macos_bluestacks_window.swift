@@ -19,6 +19,15 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+func isBlueStacksAirParentTitle(_ title: String) -> Bool {
+    guard title.hasPrefix("BlueStacks Air") else { return false }
+    let suffix = title.dropFirst("BlueStacks Air".count)
+    if suffix.isEmpty { return true }
+    guard suffix.first == " " else { return false }
+    let number = suffix.dropFirst()
+    return !number.isEmpty && number.allSatisfy(\.isNumber)
+}
+
 func windowsForPID(_ pid: Int32) -> [WindowInfo] {
     guard let rows = CGWindowListCopyWindowInfo(
         [.optionAll, .excludeDesktopElements], kCGNullWindowID
@@ -28,10 +37,10 @@ func windowsForPID(_ pid: Int32) -> [WindowInfo] {
               owner.int32Value == pid,
               let layer = row[kCGWindowLayer as String] as? NSNumber,
               let title = row[kCGWindowName as String] as? String,
-              title == "BlueStacks Air" || title == "Upgrade available",
+              isBlueStacksAirParentTitle(title) || title == "Upgrade available",
               (title == "Upgrade available" || layer.intValue == 0),
               let alpha = row[kCGWindowAlpha as String] as? NSNumber,
-              (title == "BlueStacks Air" || alpha.doubleValue > 0.01),
+              (isBlueStacksAirParentTitle(title) || alpha.doubleValue > 0.01),
               let number = row[kCGWindowNumber as String] as? NSNumber,
               let bounds = row[kCGWindowBounds as String] as? [String: Any],
               let x = bounds["X"] as? NSNumber,
@@ -44,7 +53,7 @@ func windowsForPID(_ pid: Int32) -> [WindowInfo] {
                           x: x.doubleValue, y: y.doubleValue,
                           width: width.doubleValue, height: height.doubleValue)
     }
-    guard matches.filter({ $0.title == "BlueStacks Air" }).count == 1 else {
+    guard matches.filter({ isBlueStacksAirParentTitle($0.title) }).count == 1 else {
         fail("expected one exact BlueStacks Air parent window")
     }
     return matches.filter { $0.title == "Upgrade available" }

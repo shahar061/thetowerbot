@@ -183,6 +183,22 @@ def create_staging_account(
                         or clock() - shot.observed_at > 5):
                     raise ValueError("unreadable or stale screen evidence")
                 last_time = shot.observed_at
+                if shot.screen == "google_play_profile":
+                    if (expected != "home" or previous is not None or loading_transition
+                            or audit["evidence"]
+                            or set(shot.controls) != {"dismiss_google_play_profile"}):
+                        raise ValueError("unexpected Google Play profile prompt")
+                    audit["evidence"].append({
+                        "screen": shot.screen, "digest": shot.digest,
+                        "observed_at": shot.observed_at, "evidence_ref": shot.evidence_ref,
+                        "account_id": None, "app_version": shot.app_version,
+                        "popup_title": shot.popup_title,
+                    })
+                    seen_digests.add(shot.digest)
+                    _save(journal, audit)
+                    tap(shot, "dismiss_google_play_profile")
+                    sleep(.5)
+                    continue
                 if loading_transition and shot.screen == "game_over" and not game_home_tapped:
                     if set(shot.controls) != {"home_from_game_over"}:
                         raise ValueError("game stats Home control unavailable")

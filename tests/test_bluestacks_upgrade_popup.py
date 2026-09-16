@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import json
@@ -148,3 +149,11 @@ def test_macos_bridge_targets_exact_process_window_and_retina_scaled_x(
     assert pressed[3:5] == ["123", "42"]
     assert float(pressed[5]) == pytest.approx(912.)
     assert float(pressed[6]) == pytest.approx(405.)
+
+
+def test_live_numbered_bluestacks_instance_popup_is_discoverable() -> None:
+    """The macOS bridge accepts BlueStacks Air's numbered instance title."""
+    instance = os.environ.get("M05_LIVE_INSTANCE")
+    if instance is None:
+        pytest.skip("set M05_LIVE_INSTANCE while an update dialog is present")
+    assert MacOSUpgradeWindow(instance).present() is True

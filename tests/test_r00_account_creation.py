@@ -73,6 +73,20 @@ def sequence(new_id: str | None = "new-1") -> list[AccountFrame]:
             frame("account", new_id, stamp=101.7)]
 
 
+def google_play_profile(*, stamp: float = 100.5) -> AccountFrame:
+    return AccountFrame(
+        "google_play_profile", None, "v29.0.2", f"digest-google-{stamp}", stamp,
+        f"capture://google/{stamp}", {"dismiss_google_play_profile": (176, 2289)},
+    )
+
+
+def test_first_run_google_play_profile_is_cancelled_before_tower_navigation(tmp_path: Path) -> None:
+    result, taps = run(tmp_path, [google_play_profile(), *sequence()])
+    assert result["account_id"] == "new-1"
+    assert taps[0] == (176, 2289)
+    assert len(taps) == 7
+
+
 def test_creates_distinct_id_and_audits_source_lineage(tmp_path: Path) -> None:
     result, taps = run(tmp_path, sequence())
     assert result["source_account_id"] == "source-1"
