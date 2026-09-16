@@ -43,6 +43,14 @@ _WARNING_LINES = (
 _GAME_STATS_TITLE = Rect(300, 580, 480, 130)
 _GAME_STATS_RETRY = Rect(180, 1650, 250, 120)
 _GAME_STATS_HOME = Rect(660, 1650, 260, 120)
+_GOOGLE_PLAY_PROFILE = (
+    ("Create a Play Games profile", Rect(80, 1240, 920, 180)),
+    ("No profile", Rect(180, 1510, 400, 180)),
+    ("Cancel", Rect(50, 2200, 260, 120)),
+    ("Next", Rect(800, 2200, 220, 120)),
+)
+_TOWER_PACKAGE = "com.TechTreeGames.TheTower"
+_GOOGLE_PLAY_SERVICES_PACKAGE = "com.google.android.gms"
 
 
 def _inside(box: TextBox, bounds: Rect) -> bool:
@@ -115,6 +123,33 @@ def parse_new_account_warning(
         observed_at=observed_at, evidence_ref=evidence_ref,
         controls={"confirm_new_account": (yes.x + yes.w // 2, yes.y + yes.h // 2)},
         popup_title="Warning", id_label="ID:",
+    )
+
+
+def parse_google_play_profile(
+    frame: Image, boxes: tuple[TextBox, ...], *, observed_at: float,
+    app_version: str, evidence_ref: str,
+) -> AccountFrame | None:
+    """Expose Cancel only for the measured optional Play Games profile prompt."""
+    if (frame.shape[:2] != (2400, 1080) or not app_version.strip()
+            or not evidence_ref.strip() or not math.isfinite(observed_at)):
+        return None
+    found: dict[str, TextBox] = {}
+    for label, bounds in _GOOGLE_PLAY_PROFILE:
+        matches = tuple(box for box in boxes if box.text.strip() == label
+                        and _inside(box, bounds) and _trusted(box))
+        if len(matches) != 1:
+            return None
+        found[label] = matches[0]
+    cancel = found["Cancel"].rect
+    return AccountFrame(
+        screen="google_play_profile", account_id=None, app_version=app_version,
+        digest=hashlib.sha256(frame.tobytes()).hexdigest(),
+        observed_at=observed_at, evidence_ref=evidence_ref,
+        controls={"dismiss_google_play_profile": (
+            cancel.x + cancel.w // 2, cancel.y + cancel.h // 2,
+        )},
+        popup_title="Create a Play Games profile",
     )
 
 
@@ -212,9 +247,10 @@ class StagingAccountObserver:
         if getattr(device, "serial", None) != self.endpoint:
             raise ValueError("observer endpoint mismatch")
         current = device.app_current()
-        if getattr(current, "package", None) != "com.TechTreeGames.TheTower":
+        package = getattr(current, "package", None)
+        if package not in {_TOWER_PACKAGE, _GOOGLE_PLAY_SERVICES_PACKAGE}:
             raise ValueError("unexpected game package")
-        info = device.app_info(current.package)
+        info = device.app_info(_TOWER_PACKAGE)
         version = getattr(info, "version_name", None)
         if version not in self.allowed_versions:
             raise ValueError("unapproved game version")
@@ -242,6 +278,12 @@ class StagingAccountObserver:
             return AccountFrame("unknown", None, version,
                                 hashlib.sha256(frame.tobytes()).hexdigest(),
                                 observed_at, evidence_ref, {}, conflict)
+        if package == _GOOGLE_PLAY_SERVICES_PACKAGE:
+            prompt = parse_google_play_profile(frame, boxes, observed_at=observed_at,
+                                               app_version=version, evidence_ref=evidence_ref)
+            if prompt is None:
+                raise ValueError("unrecognized Android overlay")
+            return prompt
         warning = parse_new_account_warning(frame, boxes, observed_at=observed_at,
                                             app_version=version, evidence_ref=evidence_ref)
         if warning is not None:

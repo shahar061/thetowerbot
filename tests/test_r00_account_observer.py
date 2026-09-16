@@ -14,7 +14,8 @@ from types import SimpleNamespace
 
 from config import Rect
 from ocr import TextBox
-from fleet.account_observer import (parse_account_popup, parse_new_account_warning,
+from fleet.account_observer import (parse_account_popup, parse_google_play_profile,
+                                    parse_new_account_warning,
                                     parse_game_stats_home,
                                     parse_settings, parse_home,
                                     StagingAccountObserver)
@@ -36,6 +37,36 @@ def boxes() -> tuple[TextBox, ...]:
 def warning_boxes() -> tuple[TextBox, ...]:
     rows = json.loads(WARNING_FIXTURE.read_text())["boxes"]
     return tuple(TextBox(row["text"], row["confidence"], Rect(*row["rect"])) for row in rows)
+
+
+def google_play_profile_boxes() -> tuple[TextBox, ...]:
+    return (
+        TextBox("Create a Play Games profile", .99, Rect(139, 1335, 780, 63)),
+        TextBox("No profile", .99, Rect(283, 1619, 203, 52)),
+        TextBox("Cancel", .99, Rect(108, 2268, 136, 42)),
+        TextBox("Next", .99, Rect(866, 2266, 100, 46)),
+    )
+
+
+def test_google_play_profile_exposes_only_cancel() -> None:
+    frame = np.zeros((2400, 1080, 3), dtype=np.uint8)
+    reading = parse_google_play_profile(
+        frame, google_play_profile_boxes(), observed_at=101.,
+        app_version="29.0.2", evidence_ref="capture://google-play-profile",
+    )
+    assert reading is not None
+    assert reading.screen == "google_play_profile"
+    assert reading.controls == {"dismiss_google_play_profile": (176, 2289)}
+
+
+@pytest.mark.parametrize("removed", ["Create a Play Games profile", "No profile", "Cancel", "Next"])
+def test_incomplete_google_play_profile_never_exposes_cancel(removed: str) -> None:
+    frame = np.zeros((2400, 1080, 3), dtype=np.uint8)
+    observed = tuple(box for box in google_play_profile_boxes() if box.text != removed)
+    assert parse_google_play_profile(
+        frame, observed, observed_at=101., app_version="29.0.2",
+        evidence_ref="capture://google-play-profile",
+    ) is None
 
 
 def test_measured_warning_exposes_only_confirm_new_account() -> None:
@@ -165,6 +196,22 @@ def test_live_observer_saves_private_frame_and_returns_popup(tmp_path: Path,
     assert reading.account_id == "AAAAAAAAAAAAAAAA"
     saved = Path(reading.evidence_ref)
     assert saved.exists() and saved.stat().st_mode & 0o777 == 0o600
+
+
+def test_live_observer_recognizes_only_the_measured_google_play_profile(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ocr
+    monkeypatch.setattr(ocr, "read", lambda *_, **__: google_play_profile_boxes())
+    device = SimpleNamespace(
+        serial="127.0.0.1:5575",
+        app_current=lambda: SimpleNamespace(package="com.google.android.gms"),
+        app_info=lambda _: SimpleNamespace(version_name="29.0.2"),
+        screenshot=lambda **_: PILImage.fromarray(np.zeros((2400, 1080, 3), dtype=np.uint8)),
+    )
+    reading = StagingAccountObserver(tmp_path, endpoint=device.serial,
+                                     allowed_versions=frozenset({"29.0.2"}))(device)
+    assert reading.screen == "google_play_profile"
+    assert reading.controls == {"dismiss_google_play_profile": (176, 2289)}
 
 
 def test_live_observer_rejects_wrong_package_before_screenshot(tmp_path: Path) -> None:
