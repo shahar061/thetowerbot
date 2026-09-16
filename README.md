@@ -137,6 +137,15 @@ scope. The installed manual pool cannot stage or restart clones, so it records
 is enabled. A future host driver must independently attest its live capability
 and measured scope before M05 can record `passed`.
 
+On macOS, `./run.sh` checks the exact local BlueStacks Air window for the
+measured **Upgrade available** host notice when connecting. It presses only
+that notice's X, after matching its text and visible X, then checks that the
+notice disappeared. It does not click Update, cloud/session, account, or
+credential dialogs. For a host-only one-shot check on the original instance,
+run `uv run python -m fleet.bluestacks_upgrade --instance Tiramisu64`. Screen
+Recording and Accessibility access are needed for the process running the bot;
+without them, the action fails closed and ADB operation continues.
+
 ## Run
 
 ```bash

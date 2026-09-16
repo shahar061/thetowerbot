@@ -98,6 +98,7 @@ class BotRunner:
         game_package: str | None = None,
         host_adapter: BlueStacksAdapter | None = None,
         host_instance: str | None = None,
+        host_popup_checker: Callable[[str], str] | None = None,
     ) -> None:
         self._bus = bus
         self._controls = controls
@@ -115,6 +116,7 @@ class BotRunner:
             raise ValueError("named host requires a supervised worker attempt")
         self._host_adapter = host_adapter
         self._host_instance = host_instance
+        self._host_popup_checker = host_popup_checker
         self._supervisor: DeviceSupervisor | None = None
         self._attempt_started = False
         self._checks = checks
@@ -436,9 +438,19 @@ class BotRunner:
                 if self._supervisor_path is not None and self._attempt is not None:
                     connect = self._device_factory
                     if self._host_adapter is not None and self._host_instance is not None:
+                        def close_host_upgrade() -> None:
+                            if self._host_popup_checker is None:
+                                return
+                            result = self._host_popup_checker(self._host_instance)
+                            if result not in {"absent", "closed"}:
+                                logger.warning("BlueStacks upgrade dialog close %s for %s",
+                                               result, self._host_instance)
+
                         connect = HostBoundConnect(
                             self._host_adapter, self._host_instance, self._attempt,
                             self._device_factory,
+                            before_connect=(close_host_upgrade if self._host_popup_checker
+                                            is not None else None),
                         )
                     self._supervisor = DeviceSupervisor(
                         path=self._supervisor_path, endpoint=self._attempt.endpoint,
