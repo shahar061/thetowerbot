@@ -295,8 +295,13 @@ def qualify_clone_source(
             bound = adapter.designated(item.instance, item.attempt)
             if bound.source_lineage != scope.source_lineage or bound.state != "running":
                 raise ValueError("source or clone drift during verification")
-        if live and adapter.driver.qualification_scope() != scope:
-            raise ValueError("live source or host version drift")
+        if live and (
+                getattr(adapter.driver, "supports_clone_staging", False) is not True
+                or not adapter.supports_lifecycle
+                or getattr(adapter.driver, "supports_m05_live_qualification", False) is not True
+                or not callable(getattr(adapter.driver, "qualification_scope", None))
+                or adapter.driver.qualification_scope() != scope):
+            raise ValueError("live host capability drift")
         if (not _fresh(source_frame.observed_at, clock())
                 or any(not _fresh(audit.get("completed_at"), clock())
                        for audit in record["account_audits"])

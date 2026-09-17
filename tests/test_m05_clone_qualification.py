@@ -12,7 +12,9 @@ from types import SimpleNamespace
 import pytest
 
 from bluestacks import BlueStacksAdapter, HostInstance, ManualPool
+import fleet.clone_qualification as clone_qualification_module
 from fleet.account_creation import AccountFrame
+from fleet.account_observer import StagingAccountObserver
 from fleet.clone_qualification import (CloneCandidate, QualificationScope,
                                        probe_clone_worker, qualify_clone_source,
                                        qualification_is_current)
@@ -46,6 +48,40 @@ class Host:
     def stop(self, name: str) -> None:
         self.calls.append(("stop", name))
         self.instances = [replace(x, state="stopped") if x.name == name else x for x in self.instances]
+
+
+class AttestedDriver(Host):
+    def __init__(self, scope: QualificationScope) -> None:
+        super().__init__()
+        self.scope = scope
+        self.drifted = False
+        self.live_attested = True
+
+    def qualification_scope(self) -> QualificationScope | None:
+        return None if self.drifted else self.scope
+
+    @property
+    def supports_lifecycle(self) -> bool:
+        return self.live_attested and self.qualification_scope() == self.scope
+
+    @property
+    def supports_clone_staging(self) -> bool:
+        return self.live_attested and self.qualification_scope() == self.scope
+
+    @property
+    def supports_m05_live_qualification(self) -> bool:
+        return self.live_attested and self.qualification_scope() == self.scope
+
+
+class FakeLiveObserver(StagingAccountObserver):
+    def __init__(self, endpoint: str, account_id: str) -> None:
+        self.endpoint = endpoint
+        self.account_id = account_id
+        self.allowed_versions = frozenset({"29.0.2"})
+
+    def __call__(self, _: object) -> AccountFrame:
+        return AccountFrame("account", self.account_id, "29.0.2", "source-digest", 101.,
+                            "capture://source", {}, popup_title="ACCOUNT", id_label="ID:")
 
 
 def candidate(tmp_path: Path, name: str, worker: str, endpoint: str, lease: str) -> CloneCandidate:
@@ -143,6 +179,56 @@ def test_manual_host_persists_bounded_unqualified_result_without_cloning(tmp_pat
     assert record["state"] == "unqualified"
     assert record["reason"] == "unsupported_host_capability"
     assert json.loads(path.read_text())["state"] == "unqualified"
+
+
+def test_live_qualification_rechecks_attested_scope_before_simulated_components(
+        tmp_path: Path) -> None:
+    _, _, source, clones, scope = setup(tmp_path)
+    driver = AttestedDriver(scope)
+    adapter = BlueStacksAdapter(driver, staging_root=tmp_path / "staging")
+    path = tmp_path / "qualification.json"
+
+    record = qualify_clone_source(adapter=adapter, scope=scope, source=source, clones=clones,
+                                  record_path=path, registry=tmp_path / "registry.json",
+                                  live=True, r00_enabled=True, clock=lambda: 105.)
+    assert record["reason"] == "simulated_components_cannot_prove_live_host"
+
+    driver.drifted = True
+    record = qualify_clone_source(adapter=adapter, scope=scope, source=source, clones=clones,
+                                  record_path=path, registry=tmp_path / "registry.json",
+                                  live=True, r00_enabled=True, clock=lambda: 105.)
+    assert record["state"] == "unqualified"
+    assert record["reason"] == "unsupported_host_capability"
+    assert driver.calls == []
+
+
+def test_live_qualification_quarantines_late_full_capability_drift(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, _, source, clones, scope = setup(tmp_path)
+    driver = AttestedDriver(scope)
+    adapter = BlueStacksAdapter(driver, staging_root=tmp_path / "staging")
+    source = replace(source, observe=FakeLiveObserver(source.attempt.endpoint, "SOURCE"))
+    clones = tuple(replace(item, observe=FakeLiveObserver(item.attempt.endpoint, "SOURCE"))
+                   for item in clones)
+
+    def create(*, attempt: Attempt, **kwargs: object) -> dict:
+        return account_creator(attempt=attempt, **kwargs)
+
+    def probe(*, candidate: CloneCandidate, account_id: str, **_: object) -> dict:
+        driver.live_attested = False
+        return {"account_id": account_id, "started_at": 103., "recovered_at": 104.,
+                "evidence_ref": f"capture://recovered/{candidate.instance}"}
+
+    monkeypatch.setattr(clone_qualification_module, "create_staging_account", create)
+    monkeypatch.setattr(clone_qualification_module, "probe_clone_worker", probe)
+    record = qualify_clone_source(adapter=adapter, scope=scope, source=source, clones=clones,
+                                  record_path=tmp_path / "qualification.json",
+                                  registry=tmp_path / "registry.json", account_creator=create,
+                                  worker_probe=probe, live=True, r00_enabled=True,
+                                  clock=lambda: 105.)
+
+    assert record["state"] == "quarantined"
+    assert record["reason"] == "live host capability drift"
 
 
 def test_worker_probe_restarts_exact_instance_and_reads_fresh_account(tmp_path: Path) -> None:

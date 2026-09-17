@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.thetowerbot.input-agent</string><key>ProgramArguments</key><array><string>/usr/local/bin/tower-input-agent</string><string>serve</string><string>--socket</string><string>__SOCKET_PATH__</string></array><key>RunAtLoad</key><true/></dict></plist>
