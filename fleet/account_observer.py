@@ -15,11 +15,13 @@ import account_collection
 import cv2
 import config
 import ocr
+import pages
 import screens
 import vision
 from config import Rect
 from device import Image, capture_screen
 from fleet.account_creation import AccountFrame
+from fleet.tutorial import workshop_coin_claim
 from ocr import TextBox
 
 
@@ -337,6 +339,11 @@ class StagingAccountObserver:
                                       app_version=version, evidence_ref=evidence_ref)
         if consent is not None:
             return consent
+        tutorial_claim = workshop_coin_claim(frame, boxes)
+        if tutorial_claim is not None:
+            return AccountFrame("workshop_tutorial_claim", None, version,
+                                hashlib.sha256(frame.tobytes()).hexdigest(),
+                                observed_at, evidence_ref, {"claim": tutorial_claim})
         warning = parse_new_account_warning(frame, boxes, observed_at=observed_at,
                                             app_version=version, evidence_ref=evidence_ref)
         if warning is not None:
@@ -363,6 +370,19 @@ class StagingAccountObserver:
                                           app_version=version, evidence_ref=evidence_ref)
         if game_over is not None:
             return game_over
+        workshop = pages.classify_page(frame, self.cache)
+        if workshop.page == "WORKSHOP" and workshop.confidence >= .95:
+            titles = tuple(box for box in boxes if box.text.strip() == "WORKSHOP"
+                           and _trusted(box) and _inside(box, Rect(0, 65, 400, 130)))
+            battle = self.cache.get(config.NAV_TARGETS["BATTLE_TAB"])
+            score, position = vision.best_score(frame, battle)
+            if (len(titles) == 1 and score >= .95 and position is not None
+                    and 0 <= position[0] <= 180 and 2200 <= position[1] <= 2320):
+                return AccountFrame("workshop", None, version,
+                                    hashlib.sha256(frame.tobytes()).hexdigest(),
+                                    observed_at, evidence_ref,
+                                    {"battle_tab": (position[0] + battle.shape[1] // 2,
+                                                    position[1] + battle.shape[0] // 2)})
         return AccountFrame("unknown", None, version,
                             hashlib.sha256(frame.tobytes()).hexdigest(),
                             observed_at, evidence_ref, {})
