@@ -67,5 +67,5 @@ exit 0
     assert completed.returncode == 0, completed.stderr
     commands_run = log.read_text(encoding="utf-8").splitlines()
     assert commands_run.index("npm ci") < commands_run.index("npm run build")
-    assert "lsof -ti tcp:8765" in commands_run
+    assert "lsof -tiTCP:8765 -sTCP:LISTEN" in commands_run
     assert "dashboard -> http://127.0.0.1:8765" in completed.stdout

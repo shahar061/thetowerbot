@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import signal
 import threading
@@ -16,6 +17,39 @@ from affordability import BrightnessAffordability, DigitAffordability
 from strategy import Strategy
 from tests.test_digits import build_synthetic_atlas
 from tower_bot import parse_args
+
+
+def test_reroll_registration_port_is_checked_before_worker_host_start(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fleet.identity import Attempt, IdentityEvidence
+    from fleet.runtime import WorkerRuntime
+
+    runtime = WorkerRuntime.for_worker(tmp_path / "workers", "Tiramisu64_20", 10020)
+    runtime.ensure_directories()
+    attempt = Attempt.new("Tiramisu64_20", "127.0.0.1:5755", "lease", "job")
+    binding = runtime.checkpoint_root / f"{attempt.generation}.json"
+    attempt.persist(binding, IdentityEvidence("DD76C448F3FCFB82", time.time(), "capture"))
+    (runtime.root / "fleet-registration.json").write_text(json.dumps({
+        "state": "registered", "instance": "Tiramisu64_20", "endpoint": attempt.endpoint,
+        "lease_id": "lease", "account_id": "DD76C448F3FCFB82",
+        "web_port": 10020, "binding": str(binding), "job_id": "job",
+    }))
+    pool = tmp_path / "reroll-pool.json"
+    pool.write_text(json.dumps([{
+        "name": "Tiramisu64_20", "endpoint": attempt.endpoint, "lease_id": "lease"}]))
+    args = parse_args(["--worker-id", "Tiramisu64_20", "--runtime-root",
+                       str(runtime.root.parent), "--bluestacks-instance", "Tiramisu64_20",
+                       "--reroll-pool", str(pool), "--host", "127.0.0.1", "--port", "5755",
+                       "--lease-id", "lease", "--attempt-id", "job", "--web-port", "10020",
+                       "--web", "--game-package", "com.TechTreeGames.TheTower"])
+    import fleet.bluestacks_air as air
+
+    class ReachedHost(Exception):
+        pass
+
+    monkeypatch.setattr(air, "BlueStacksAirInventory", lambda *a, **k: (_ for _ in ()).throw(ReachedHost))
+    with pytest.raises(ReachedHost):
+        tower_bot._main(args, runtime)
 
 
 def test_auto_navigate_defaults_off() -> None:

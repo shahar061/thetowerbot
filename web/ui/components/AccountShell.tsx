@@ -42,8 +42,11 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
         </main>
       : remote ? <main className="m-4 flex max-w-2xl flex-col gap-3 rounded-lg border p-6">
           <h1 className="text-lg font-semibold">{selected.account_id} is running on {selected.instance}</h1>
-          <p className="text-sm text-muted-foreground">Open this worker’s dashboard to see its Live data and controls. This dashboard serves a different bot process.</p>
-          <a href={selected.dashboard_url!} className="w-fit rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">Open worker dashboard</a>
+          <p className="text-sm text-muted-foreground">This worker has its own Live data and Strategy controls. Open its dashboard to edit the strategy used for this account.</p>
+          <div className="flex flex-wrap gap-3">
+            <a href={selected.dashboard_url!} className="w-fit rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">Open worker dashboard</a>
+            <a href={new URL("strategy/", selected.dashboard_url!).href} className="w-fit rounded-md border px-4 py-2 text-sm">Open worker Strategy</a>
+          </div>
         </main>
       : !selected.running && !history ? <main className="m-4 flex max-w-2xl flex-col gap-3 rounded-lg border p-6">
           <h1 className="text-lg font-semibold">No live bot for this account</h1>

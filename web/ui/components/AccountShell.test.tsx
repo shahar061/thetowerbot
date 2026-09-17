@@ -51,4 +51,6 @@ test("a running account on another worker opens its own dashboard", () => {
   expect(screen.queryByText("main process live data")).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Open worker dashboard" })).toHaveAttribute(
     "href", "http://127.0.0.1:10018/");
+  expect(screen.getByRole("link", { name: "Open worker Strategy" })).toHaveAttribute(
+    "href", "http://127.0.0.1:10018/strategy/");
 });

@@ -1823,7 +1823,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                     or attempt.endpoint != f"{args.host}:{args.port}"
                     or attempt.lease_id != args.lease_id
                     or attempt.attempt_id != args.attempt_id
-                    or registered.web_port != runtime.web_port):
+                    or registered.get("web_port") != runtime.web_port):
                 logger.error("identity incident: reroll attempt changed")
                 return 1
         else:
