@@ -39,7 +39,7 @@ def test_reroll_unlock_rule_is_armed_even_if_saved_strategy_disabled_unlocks(tmp
                                "VALUES(1,'WORKSHOP_BUY',?,'ATTACK','coins',0,?)",
                                (item, json.dumps({"verdict": "bought"})))
     policy = progress.shopping_policy(Strategy.from_config().shopping)
-    assert policy.workshop[0].name == "Unlock Cash Bonuses"
+    assert policy.workshop[0].name == "Unlock Defense Upgrades"
     assert policy.allow_unlocks is True
     assert policy.coin_budget_pct is None
 
@@ -67,7 +67,8 @@ def test_visible_granted_rows_advance_unlock_after_unproven_debit(tmp_path: Path
                            "VALUES(2,'BUY_SKIPPED','Unlock Cash Bonuses','UTILITY',"
                            "'already_unlocked',?)",
                            (json.dumps({"detail": "the rows it grants are on the tab"}),))
-    assert progress.decision().upgrade_id == "unlock_coin_bonuses"
+    assert progress._history()[1]["unlock_cash_bonuses"] == 1
+    assert progress.decision().upgrade_id == "unlock_defense_upgrades"
     assert "cash_per_wave" in [r.upgrade_id for r in progress.battle_policy(
         AutopilotPolicy(enabled=True, preset="turtle")).rules]
 
@@ -137,7 +138,7 @@ def test_battle_policy_follows_verified_account_stage(tmp_path: Path) -> None:
     progress.decision()
     later = progress.battle_policy(base)
     assert later.preset == "manual"
-    assert [rule.upgrade_id for rule in later.rules] == ["health", "health_regen"]
+    assert [rule.upgrade_id for rule in later.rules] == ["health", "damage", "attack_speed"]
 
 
 def test_battle_policy_only_uses_confirmed_workshop_unlocks(tmp_path: Path) -> None:
@@ -157,3 +158,22 @@ def test_battle_policy_only_uses_confirmed_workshop_unlocks(tmp_path: Path) -> N
     assert "cash_per_wave" in [rule.upgrade_id for rule in opening.rules]
     assert "coins_per_wave" not in [rule.upgrade_id for rule in opening.rules]
     assert "damage" in [rule.upgrade_id for rule in opening.rules]
+
+
+def test_opening_battle_prioritizes_verified_turtle_defense(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        for item in ("Unlock Defense Upgrades", "Unlock Thorns"):
+            connection.execute("INSERT INTO ledger(ts,kind,item,category,dry_run,detail) "
+                               "VALUES(1,'WORKSHOP_BUY',?,'DEFENSE',0,?)",
+                               (item, json.dumps({"verdict": "bought"})))
+    rules = progress.battle_policy(AutopilotPolicy(enabled=True, preset="turtle")).rules
+    assert [rule.upgrade_id for rule in rules[:2]] == ["defense_absolute", "thorns"]
+
+
+def test_published_worker_plan_contains_ten_account_bound_buys(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.shopping_policy(Strategy.from_config().shopping)
+    payload = json.loads((progress.root / "reroll-plan.json").read_text())
+    assert len(payload["next_purchases"]) == 10
+    assert payload["next_purchases"][0]["account_id"] == "ACCOUNT-A"

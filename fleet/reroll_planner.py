@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import ceil
 from typing import Mapping
 
@@ -36,29 +36,81 @@ class RerollDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class PlannedPurchase:
+    account_id: str
+    position: int
+    upgrade_id: str
+    item: str
+    category: str
+    unlock: bool
+    focus: str
+
+
 # Weights choose a repeatable, diminishing-return rotation. They are
 # progression preferences, not purchase permission; the existing buyer still
 # validates the account, screen, row, balance, price, and transaction.
 _OPENING = (
-    ("damage", 6), ("attack_speed", 6),
-    ("unlock_cash_bonuses", 5),
+    ("damage", 12), ("attack_speed", 11),
+    ("unlock_defense_upgrades", 10.5), ("defense_absolute", 16),
+    ("unlock_thorns", 9), ("thorns", 12),
+    ("unlock_cash_bonuses", 6), ("cash_bonus", 5),
     ("unlock_coin_bonuses", 5), ("coins_per_kill_bonus", 5),
-    ("coins_per_wave", 3),
+    ("coins_per_wave", 3), ("health", 3),
 )
 _TURTLE = (
-    ("unlock_defense_upgrades", 10), ("unlock_thorns", 9),
-    ("defense_absolute", 10), ("thorns", 9),
-    ("defense_percent", 5), ("coins_per_kill_bonus", 2),
+    ("unlock_defense_upgrades", 10), ("defense_absolute", 16),
+    ("unlock_thorns", 9), ("thorns", 12),
+    ("cash_bonus", 5), ("coins_per_kill_bonus", 5), ("health", 3),
 )
 _PREREQUISITES = {
+    "defense_absolute": "unlock_defense_upgrades",
+    "unlock_thorns": "unlock_defense_upgrades",
+    "thorns": "unlock_thorns",
+    "cash_bonus": "unlock_cash_bonuses",
     "unlock_coin_bonuses": "unlock_cash_bonuses",
     "coins_per_kill_bonus": "unlock_coin_bonuses",
     "coins_per_wave": "unlock_coin_bonuses",
-    "defense_absolute": "unlock_defense_upgrades",
     "defense_percent": "unlock_defense_upgrades",
-    "thorns": "unlock_thorns",
 }
 _TARGETS = {"thorns": 51., "defense_percent": 50.}
+
+_FOCUS = {
+    "damage": "Basic attack while defense unlocks are still locked",
+    "attack_speed": "Basic attack while defense unlocks are still locked",
+    "unlock_defense_upgrades": "Unlock Defense Absolute for early survival",
+    "defense_absolute": "Absorb more hits in the turtle build",
+    "unlock_thorns": "Unlock the turtle build's damage source",
+    "thorns": "Kill enemies that reach the tower",
+    "health": "Add a small survival buffer",
+    "unlock_cash_bonuses": "Unlock income for in-battle defense buys",
+    "cash_bonus": "Earn more cash for in-battle defense buys",
+    "unlock_coin_bonuses": "Unlock coin income for permanent upgrades",
+    "coins_per_kill_bonus": "Earn more coins for permanent defense",
+    "coins_per_wave": "Earn more coins for permanent defense",
+}
+
+
+def project_next(facts: RerollFacts, *, limit: int = 10) -> tuple[PlannedPurchase, ...]:
+    """Show an ordered projection; only choose_next may authorize the first buy.
+
+    Future prices and balances are unknown, so this changes only simulated
+    purchase counts. The executable shopping path still reads live evidence.
+    """
+    counts = dict(facts.purchases)
+    planned: list[PlannedPurchase] = []
+    for position in range(1, max(0, limit) + 1):
+        decision = choose_next(replace(facts, purchases=counts, wallet_coins=None, prices={}))
+        if decision.upgrade_id is None:
+            break
+        upgrade = upgrades.by_id(decision.upgrade_id)
+        if upgrade is None:
+            break
+        planned.append(PlannedPurchase(facts.account_id, position, upgrade.id,
+                                       upgrade.name, upgrade.category, upgrade.unlock,
+                                       _FOCUS.get(upgrade.id, "Advance the reroll account")))
+        counts[upgrade.id] = counts.get(upgrade.id, 0) + 1
+    return tuple(planned)
 
 
 def choose_next(facts: RerollFacts) -> RerollDecision:

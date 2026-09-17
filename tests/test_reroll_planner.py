@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fleet.reroll_planner import RerollFacts, choose_next
+from fleet.reroll_planner import RerollFacts, choose_next, project_next
 
 
 def facts(**changes: object) -> RerollFacts:
@@ -39,9 +39,12 @@ def test_verified_purchase_moves_the_plan_and_unverified_does_not() -> None:
 
 
 def test_utility_unlocks_follow_the_visible_workshop_order() -> None:
-    purchases = {"damage": 1, "attack_speed": 1}
+    purchases = {"damage": 3, "attack_speed": 3,
+                 "unlock_defense_upgrades": 1, "defense_absolute": 5,
+                 "unlock_thorns": 1, "thorns": 4}
     assert choose_next(facts(purchases=purchases)).upgrade_id == "unlock_cash_bonuses"
-    assert choose_next(facts(purchases={**purchases, "unlock_cash_bonuses": 1})).upgrade_id == "unlock_coin_bonuses"
+    assert choose_next(facts(purchases={**purchases, "unlock_cash_bonuses": 1,
+                                             "cash_bonus": 1})).upgrade_id == "unlock_coin_bonuses"
 
 
 def test_price_and_balance_decide_buy_or_save() -> None:
@@ -78,3 +81,20 @@ def test_decisions_remain_bound_to_the_input_account() -> None:
     b = choose_next(facts(account_id="ACCOUNT-B"))
     assert a.account_id == "ACCOUNT-A" and b.account_id == "ACCOUNT-B"
     assert a.upgrade_id != b.upgrade_id
+
+
+def test_ten_buy_preview_brings_turtle_unlocks_before_more_economy() -> None:
+    preview = project_next(facts(), limit=10)
+    ids = [step.upgrade_id for step in preview]
+    assert len(ids) == 10
+    assert ids[:2] == ["damage", "attack_speed"]
+    assert ids.index("unlock_defense_upgrades") < ids.index("defense_absolute")
+    assert ids.index("unlock_thorns") < ids.index("thorns")
+    assert ids.index("unlock_defense_upgrades") < ids.index("unlock_cash_bonuses")
+    assert [step.position for step in preview] == list(range(1, 11))
+    assert all(step.account_id == "ACCOUNT-A" for step in preview)
+
+
+def test_current_early_plan_prioritizes_defense_after_basic_attack() -> None:
+    decision = choose_next(facts(purchases={"damage": 1, "attack_speed": 1}))
+    assert decision.upgrade_id == "unlock_defense_upgrades"

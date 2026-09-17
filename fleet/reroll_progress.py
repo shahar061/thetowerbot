@@ -15,8 +15,8 @@ import upgrades
 from account_state import AccountState
 from fleet.reroll_journal import RerollJournal
 from fleet.reroll_lifetime import read_lifetime
-from fleet.reroll_planner import RerollDecision, RerollFacts, choose_next
-from policy import AutopilotPolicy, UpgradeRule, preset_rules
+from fleet.reroll_planner import RerollDecision, RerollFacts, choose_next, project_next
+from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
 
@@ -160,15 +160,16 @@ class RerollProgress:
             best, _ = self._history()
             self._battle_stage = "stones" if best is not None and best >= 60 else (
                 "turtle" if best is not None and best >= 20 else "opening")
-        if self._battle_stage == "opening":
-            candidates = (
-                UpgradeRule("cash_per_wave", target=10),
-                UpgradeRule("coins_per_wave", target=10),
-                UpgradeRule("damage"), UpgradeRule("attack_speed"),
-                UpgradeRule("coins_per_kill_bonus"),
-            )
-        else:
-            candidates = preset_rules("turtle")
+        candidates = (
+            UpgradeRule("defense_absolute"), UpgradeRule("thorns", target=51),
+            UpgradeRule("cash_per_wave", target=10),
+            UpgradeRule("damage"), UpgradeRule("attack_speed"),
+            UpgradeRule("coins_per_kill_bonus"),
+        ) if self._battle_stage == "opening" else (
+            UpgradeRule("defense_absolute"), UpgradeRule("thorns", target=51),
+            UpgradeRule("health"), UpgradeRule("cash_per_wave", target=10),
+            UpgradeRule("damage"), UpgradeRule("attack_speed"),
+        )
         _, purchases = self._history()
         confirmed_unlocks = {entry.id for entry in upgrades.CATALOG
                              if entry.unlock and purchases.get(entry.id, 0) > 0}
@@ -198,7 +199,11 @@ class RerollProgress:
         self._last_published_at = now
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / "reroll-plan.json"
-        payload = {**asdict(decision), "observed_at": now}
+        best, purchases = self._history()
+        values, _ = self._account_readings()
+        preview = project_next(RerollFacts(self.account_id, best, purchases, values))
+        payload = {**asdict(decision), "observed_at": now,
+                   "next_purchases": [asdict(step) for step in preview]}
         temporary = path.with_name(f".reroll-plan.{uuid4().hex}.tmp")
         try:
             descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

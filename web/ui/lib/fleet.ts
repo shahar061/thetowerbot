@@ -46,7 +46,9 @@ export type FleetSetup = {
 export type RerollCandidate = { name: string; endpoint: string; state: string };
 export type RerollPlan = { account_id: string; stage: string; goal: string; state: string;
   item: string | null; price: number | null; wallet_coins: number | null;
-  lifetime_coins: number | null; reason: string; observed_at: number };
+  lifetime_coins: number | null; reason: string; observed_at: number;
+  next_purchases?: { account_id: string; position: number; upgrade_id: string;
+    item: string; category: string; unlock: boolean; focus: string }[] };
 export type RerollMember = { name: string; endpoint: string; lease_id: string; state: string;
   account_id?: string | null; account_key?: string | null; milestone?: string | null;
   tier?: number | null; wave?: number | null; run_duration_seconds?: number | null;
