@@ -34,6 +34,10 @@ class RecoveryBlocked(EmulatorError):
     """No fresh evidence authorizes a device action."""
 
 
+class RecoveryPreflightBlocked(RecoveryBlocked):
+    """The action was refused before any device input was sent."""
+
+
 class DeviceSupervisor:
     """Own a reconnectable transport and a write-ahead action checkpoint.
 
@@ -280,7 +284,7 @@ class DeviceSupervisor:
                 or self._pending_digest is not None or self._last_digest is None
                 or self._last_observed_at is None
                 or self.clock() - self._last_observed_at > 5):
-            raise RecoveryBlocked(self._reason)
+            raise RecoveryPreflightBlocked(self._reason)
         self._pending_digest = self._last_digest
         self._state, self._reason = RecoveryState.BLOCKED, "action_unconfirmed"
         self._save()

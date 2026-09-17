@@ -25,6 +25,7 @@ import events
 import shopping as shopping_mod
 import transactions
 import vision
+from supervisor import RecoveryPreflightBlocked, RecoveryBlocked
 from perception import Observation, ObservedUpgrade
 from strategy import CardPolicy, Shopping, ShoppingRule
 
@@ -514,6 +515,20 @@ def test_tabs_are_visited_in_the_order_the_rows_imply(session) -> None:
     assert session.remaining_categories() == ["UTILITY", "DEFENSE", "ATTACK"]
 
 
+def test_tutorial_arrow_does_not_route_defense_tap_to_uw_tab(session) -> None:
+    policy = a_policy(armed=True, workshop=(
+        ShoppingRule(name="Health", category="DEFENSE", target=2),
+    ))
+    session.begin(policy, run_count=1)
+    session._step = shopping_mod.Step.OPEN_TAB
+    device = FakeDevice()
+    screen = frame("menu_workshop_utility_tutorial_arrow")
+
+    session._open_tab(SimpleNamespace(page="WORKSHOP"), screen, device, policy)
+
+    assert device.taps == [(405, 2146)]
+
+
 # -- bailing out -----------------------------------------------------------
 def test_the_tap_budget_ends_the_visit(session) -> None:
     """Exactly 2 (the tab-switch attempts that spend the budget) plus 1 (the
@@ -874,6 +889,29 @@ def test_a_card_tap_is_journalled_before_it_is_sent(tmp_path, fake_header) -> No
     assert still_open[0].price == 20
 
 
+def test_card_preflight_denial_closes_unsent_intent(tmp_path, monkeypatch,
+                                                   fake_header) -> None:
+    journal = transactions.TransactionJournal(tmp_path / "bot.db")
+    session = shopping_mod.ShoppingSession(
+        templates=vision.TemplateCache(config.TEMPLATE_DIR),
+        bus=Recorder(), reader=digits.NumberReader(), journal=journal,
+    )
+    policy = a_policy(armed=True, cards=CardPolicy(
+        enabled=True, gem_floor=0, max_per_visit=1,
+    ))
+    session.begin(policy, run_count=1)
+    session._step = shopping_mod.Step.BUY_CARDS
+    fake_header["gems"] = 400
+    monkeypatch.setattr(shopping_mod, "tap", lambda *_: (_ for _ in ()).throw(
+        RecoveryPreflightBlocked("fresh_evidence")))
+
+    session._buy_cards(SimpleNamespace(page="CARDS", top_left=None),
+                       frame("menu_cards"), FakeDevice(), policy)
+
+    assert journal.open_transactions() == ()
+    assert session._pending_card is None
+
+
 def test_a_tap_a_dead_process_left_open_is_not_sent_again(tmp_path, fake_header) -> None:
     """The acceptance gate, end to end.
 
@@ -988,6 +1026,40 @@ def test_a_workshop_tap_is_journalled_before_it_is_sent(tmp_path, monkeypatch,
     assert [(t.item, t.stage, t.price) for t in still_open] == [
         ("Damage", transactions.Stage.ACTED, 5)
     ]
+
+
+def test_workshop_preflight_denial_closes_unsent_intent(tmp_path, monkeypatch,
+                                                       fake_header) -> None:
+    path = tmp_path / "bot.db"
+    session = _journalled_workshop_session(path, monkeypatch)
+    policy = _workshop_policy()
+    session.begin(policy, run_count=1)
+    monkeypatch.setattr(shopping_mod, "tap", lambda *_: (_ for _ in ()).throw(
+        RecoveryPreflightBlocked("fresh_evidence")))
+
+    session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                      frame("menu_workshop_attack"), FakeDevice(), policy)
+
+    assert session.journal.open_transactions() == ()
+    assert session._pending is None
+
+
+def test_workshop_unknown_tap_outcome_keeps_intent(tmp_path, monkeypatch,
+                                                    fake_header) -> None:
+    path = tmp_path / "bot.db"
+    session = _journalled_workshop_session(path, monkeypatch)
+    policy = _workshop_policy()
+    session.begin(policy, run_count=1)
+
+    def unknown_outcome(*_):
+        raise RecoveryBlocked("action outcome unknown")
+
+    monkeypatch.setattr(shopping_mod, "tap", unknown_outcome)
+    with pytest.raises(RecoveryBlocked):
+        session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                          frame("menu_workshop_attack"), FakeDevice(), policy)
+
+    assert session.journal.open_transactions()[0].stage is transactions.Stage.INTENDED
 
 
 def test_a_workshop_tap_a_dead_process_left_open_is_not_sent_again(
