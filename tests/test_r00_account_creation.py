@@ -325,6 +325,44 @@ def test_staging_clone_cannot_enter_normal_runner_before_r00(tmp_path: Path) -> 
         runner._verified_account()
 
 
+def test_manual_first_launch_worker_uses_its_verified_audit(tmp_path: Path) -> None:
+    runtime, attempt, adapter, host = setup(tmp_path)
+    runtime.ensure_directories()
+    host.instance = replace(host.instance, source_lineage=f"manual:{attempt.lease_id}")
+    binding = runtime.checkpoint_root / f"{attempt.generation}.json"
+    from fleet.identity import IdentityEvidence
+    attempt.persist(binding, IdentityEvidence("fresh-1", attempt.created_at + 1,
+                                              "capture://account"))
+    runner = BotRunner.__new__(BotRunner)
+    runner._binding_path = binding
+    runner._attempt = attempt
+    runner._host_adapter = adapter
+    runner._host_instance = "clone-a"
+    with pytest.raises(RunnerError, match="first-launch account unverified"):
+        runner._verified_account()
+
+    from dataclasses import asdict
+    audit = {**asdict(attempt), "instance": "clone-a", "state": "verified",
+             "source_lineage": f"manual:{attempt.lease_id}", "account_id": "fresh-1",
+             "app_version": "29.0", "evidence": [
+                 {"screen": "tower_consent", "action": "i_agree"},
+                 {"screen": "account", "account_id": "fresh-1", "app_version": "29.0",
+                  "observed_at": attempt.created_at + 1,
+                  "evidence_ref": "capture://account"}]}
+    journal = runtime.checkpoint_root / ".first-launch-account.json"
+    journal.write_text(json.dumps(audit))
+    assert runner._verified_account() == "fresh-1"
+    audit["source_lineage"] = "manual:other-lease"
+    journal.write_text(json.dumps(audit))
+    with pytest.raises(RunnerError, match="first-launch account unverified"):
+        runner._verified_account()
+    audit["source_lineage"] = f"manual:{attempt.lease_id}"
+    audit["evidence"][-1]["evidence_ref"] = "capture://different-account"
+    journal.write_text(json.dumps(audit))
+    with pytest.raises(RunnerError, match="first-launch account unverified"):
+        runner._verified_account()
+
+
 def test_verified_worker_identity_survives_new_attempt_generation(tmp_path: Path) -> None:
     result, _ = run(tmp_path, sequence())
     runtime, attempt, _, _ = setup(tmp_path)
