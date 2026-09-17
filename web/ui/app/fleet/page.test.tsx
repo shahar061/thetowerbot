@@ -35,6 +35,35 @@ test("Fleet polling waits for the previous host check to finish", async () => {
   }
 });
 
+test("unchanged Fleet polls do not cancel a slow clone preview", async () => {
+  vi.useFakeTimers();
+  try {
+    const snapshot = { capacity, sources: [{ instance: "seed", state: "parallel_session_qualified" as const,
+      reason: "qualified" }], jobs: [] };
+    vi.mocked(fetchFleet).mockImplementation(async () => ({ ...snapshot, sources: [...snapshot.sources] }));
+    vi.mocked(fetchFleetSetup).mockResolvedValue({ configured: true,
+      settings: { capacity: 5, name_prefix: "seed_", qualification_id: "m05" },
+      qualifications: [{ id: "m05", source_instance: "seed" }],
+      host: { installed_prefix: "seed_", instance_count: 1 } });
+    const previewResolvers: Array<(value: { mode: "clone"; source: string; count: number;
+      targets: string[]; state: "eligible" }) => void> = [];
+    vi.mocked(fetchFleetPreview).mockImplementation(() => new Promise(resolve => { previewResolvers.push(resolve); }));
+    render(<FleetPage />);
+    await act(async () => {});
+    expect(fetchFleetPreview).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("checkbox", { name: /confirm cloning/i })).toBeDisabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    expect(fetchFleet).toHaveBeenCalledTimes(2);
+    expect(fetchFleetPreview).toHaveBeenCalledTimes(1);
+    await act(async () => { previewResolvers[0]({ mode: "clone", source: "seed", count: 1,
+      targets: ["seed_1"], state: "eligible" }); });
+    expect(screen.getByText("seed_1")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /confirm cloning/i })).not.toBeDisabled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("setup saves the selected live source and starts its emulator", async () => {
   const initial = { configured: false, settings: null, qualifications: [{ id: "m05-air6", source_instance: "Tiramisu64_6" }], host: { installed_prefix: "Tiramisu64_", instance_count: 5 } };
   vi.mocked(fetchFleetSetup).mockResolvedValue(initial);
