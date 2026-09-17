@@ -45,7 +45,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             well as the page, because the rail reports whether the bot is
             reachable from every page, not just the Live one. */}
         <AccountSelectionProvider><EventStreamProvider>
-          <div className="flex min-h-dvh flex-col md:flex-row">
+          <div className="flex h-dvh flex-col overflow-hidden md:flex-row">
             <Sidebar />
             <AccountShell>{children}</AccountShell>
           </div>
