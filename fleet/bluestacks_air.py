@@ -6,12 +6,16 @@ import base64
 import hashlib
 import json
 import math
+import os
+import plistlib
 import re
+import socket
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
@@ -30,6 +34,8 @@ _ADB_PORT = re.compile(r'^bst\.instance\.([A-Za-z0-9_]+)\.adb_port="(\d+)"$')
 _ADB_PORT_KEY = re.compile(r"^bst\.instance\.[^.]+\.adb_port=")
 _DISPLAY_NAME = re.compile(r'^bst\.instance\.([A-Za-z0-9_]+)\.display_name="([^"]+)"$')
 _DISPLAY_NAME_KEY = re.compile(r"^bst\.instance\.[^.]+\.display_name=")
+_ANDROID_ID = re.compile(r'^bst\.instance\.([A-Za-z0-9_]+)\.android_id="([A-Za-z0-9]+)"$')
+_ANDROID_ID_KEY = re.compile(r"^bst\.instance\.[^.]+\.android_id=")
 _EXECUTABLE = Path("/Applications/BlueStacks.app/Contents/MacOS/BlueStacks")
 _MANAGER_EXECUTABLE = Path(
     "/Applications/BlueStacks Air multi-instance manager.app/Contents/MacOS/"
@@ -115,7 +121,9 @@ class ManagerRowObservation:
             raise
         except Exception as exc:
             raise HostCapabilityError("BlueStacks Air manager layout is unavailable") from exc
-        names = [box for box in boxes if box.text == name]
+        # Manager's red status dot can be joined to the row label by OCR.
+        names = [box for box in boxes if re.fullmatch(
+            rf"{re.escape(name)}\s*[●○•]?", box.text)]
         actions = [box for box in boxes if box.text == action]
         if len(names) != 1 or not actions:
             raise HostCapabilityError("BlueStacks Air manager row is missing or ambiguous")
@@ -212,6 +220,23 @@ def _adb_endpoint_present(endpoint: str) -> bool:
         return False
 
 
+def _attach_local_adb_endpoint(endpoint: str) -> bool:
+    """Attach only a listening loopback port already bound to the named instance."""
+    host, separator, port_text = endpoint.rpartition(":")
+    if separator != ":" or host != "127.0.0.1" or not port_text.isdigit():
+        return False
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=.2):
+            pass
+        AdbClient(host=config.ADB_HOST, port=config.ADB_PORT).connect(endpoint, timeout=2.)
+        return _adb_endpoint_present(endpoint)
+    except Exception:
+        return False
+
+
 class _ManagerBridge(Protocol):
     def inspect(self) -> Mapping[str, int | float | str]: ...
     def capture(self, metadata: Mapping[str, int | float | str]) -> Image: ...
@@ -227,6 +252,9 @@ class _ManagerBridge(Protocol):
                           modal: Mapping[str, int | float | str],
                           point: tuple[float, float]) -> None: ...
     def press_modal_create(self, parent: Mapping[str, int | float | str],
+                           modal: Mapping[str, int | float | str],
+                           point: tuple[float, float]) -> None: ...
+    def press_modal_source(self, parent: Mapping[str, int | float | str],
                            modal: Mapping[str, int | float | str],
                            point: tuple[float, float]) -> None: ...
     def modal_count(self, parent: Mapping[str, int | float | str],
@@ -334,6 +362,12 @@ class _SwiftManagerBridge:
                            modal: Mapping[str, int | float | str],
                            point: tuple[float, float]) -> None:
         self._run("modal-press-create", *self._modal_capture_arguments(parent, modal),
+                  str(point[0]), str(point[1]))
+
+    def press_modal_source(self, parent: Mapping[str, int | float | str],
+                           modal: Mapping[str, int | float | str],
+                           point: tuple[float, float]) -> None:
+        self._run("modal-press-source", *self._modal_capture_arguments(parent, modal),
                   str(point[0]), str(point[1]))
 
     def modal_count(self, parent: Mapping[str, int | float | str],
@@ -567,6 +601,24 @@ class MacOSMultiInstanceManager:
         except Exception as exc:
             raise HostCapabilityError("manager fresh form changed") from exc
 
+    def press_clone_source(self, window_id: int, point: tuple[int, int]) -> None:
+        """Press a source selector or option inside the same focused clone form."""
+        frame, parent, modal = self._capture_modal_evidence()
+        if (frame.window_id != window_id or not frame.x <= point[0] <= frame.x + frame.width
+                or not frame.y <= point[1] <= frame.y + frame.height):
+            raise HostCapabilityError("manager clone source form changed")
+        self._bridge.press_modal_source(parent, modal, point)
+
+    def press_clone_create(self, window_id: int, point: tuple[int, int]) -> None:
+        """Press Create inside the exact focused clone form with count one."""
+        frame, parent, modal = self._capture_modal_evidence()
+        if (frame.window_id != window_id or not frame.x <= point[0] <= frame.x + frame.width
+                or not frame.y <= point[1] <= frame.y + frame.height):
+            raise HostCapabilityError("manager clone create form changed")
+        if self._bridge.modal_count(parent, modal) != "1":
+            raise HostCapabilityError("manager clone instance count is unavailable")
+        self._bridge.press_modal_create(parent, modal, point)
+
     def fresh_instance_count(self, window_id: int) -> str:
         frame, parent, modal = self._capture_modal_evidence()
         if frame.window_id != window_id:
@@ -614,16 +666,25 @@ class BlueStacksAirInventory:
         return matches[0].decode("ascii") + "_"
 
     def lease(self, name: str) -> str:
-        """Bind a named instance lease to the complete current configuration."""
+        """Bind a named instance lease to its own host identity fields."""
         if not re.fullmatch(r"[A-Za-z0-9_]+", name):
             raise HostCapabilityError("BlueStacks Air inventory instance name is invalid")
-        return hashlib.sha256(self._config_bytes() + b"\0" + name.encode("utf-8")).hexdigest()
+        configured = self._configured_instances(self._config_bytes())
+        if name not in configured:
+            raise HostCapabilityError("BlueStacks Air inventory instance is missing")
+        return self._instance_lease(name, configured[name])
 
     @staticmethod
-    def _configured_instances(config: bytes) -> dict[str, tuple[int, str]]:
+    def _instance_lease(name: str, identity: tuple[int, str, str]) -> str:
+        return hashlib.sha256(json.dumps([name, *identity], separators=(",", ":"))
+                              .encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _configured_instances(config: bytes) -> dict[str, tuple[int, str, str]]:
         """Bind each internal name to its Manager label and configured ADB port."""
         ports: dict[str, int] = {}
         labels: dict[str, str] = {}
+        android_ids: dict[str, str] = {}
         for raw_line in config.decode("utf-8", errors="replace").splitlines():
             line = raw_line.strip()
             if (match := _ADB_PORT.fullmatch(line)) is not None:
@@ -641,11 +702,20 @@ class BlueStacksAirInventory:
                 labels[name] = label
             elif _DISPLAY_NAME_KEY.match(line):
                 raise HostCapabilityError("BlueStacks Air inventory contains malformed Manager label")
+            elif (match := _ANDROID_ID.fullmatch(line)) is not None:
+                name, android_id = match.groups()
+                if name in android_ids:
+                    raise HostCapabilityError("BlueStacks Air inventory contains ambiguous Android identity")
+                android_ids[name] = android_id
+            elif _ANDROID_ID_KEY.match(line):
+                raise HostCapabilityError("BlueStacks Air inventory contains malformed Android identity")
         if len(set(ports.values())) != len(ports):
             raise HostCapabilityError("BlueStacks Air inventory contains duplicate ADB endpoint")
         if set(ports) != set(labels) or len(set(labels.values())) != len(labels):
             raise HostCapabilityError("BlueStacks Air inventory lacks an unambiguous Manager label")
-        return {name: (port, labels[name]) for name, port in ports.items()}
+        if set(ports) != set(android_ids) or len(set(android_ids.values())) != len(android_ids):
+            raise HostCapabilityError("BlueStacks Air inventory lacks an unambiguous Android identity")
+        return {name: (port, labels[name], android_ids[name]) for name, port in ports.items()}
 
     def display_name(self, name: str, *, digest: str | None = None) -> str:
         config = self._config_bytes()
@@ -670,13 +740,59 @@ class BlueStacksAirInventory:
         digest = hashlib.sha256(config).hexdigest()
         instances = [HostInstance(
             name, f"127.0.0.1:{port}",
-            hashlib.sha256(config + b"\0" + name.encode("utf-8")).hexdigest(),
+            self._instance_lease(name, (port, label, android_id)),
             "running" if running.get(name, False) else "stopped",
-        ) for name, (port, _) in sorted(configured.items())]
+        ) for name, (port, label, android_id) in sorted(configured.items())]
         return digest, instances
 
     def instances(self) -> list[HostInstance]:
         return self.snapshot()[1]
+
+
+class LiveAirVersionObserver:
+    """Read live source versions, retaining them only while Manager stops that source."""
+
+    def __init__(self, inventory: BlueStacksAirInventory, source: str,
+                 *, bundle_info: Path = Path("/Applications/BlueStacks.app/Contents/Info.plist"),
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.inventory = inventory
+        self.source = source
+        self.bundle_info = bundle_info
+        self.clock = clock
+        self._last: tuple[str, str, str] | None = None
+        self._lease: str | None = None
+        self._observed_at = 0.
+
+    def __call__(self) -> tuple[str, str, str]:
+        try:
+            info = plistlib.loads(self.bundle_info.read_bytes())
+            profile = info["CFBundleShortVersionString"]
+            if not isinstance(profile, str) or not profile:
+                raise ValueError("missing BlueStacks bundle version")
+            _, rows = self.inventory.snapshot()
+            source = [row for row in rows if row.name == self.source]
+            if len(source) != 1:
+                raise ValueError("source inventory ambiguous")
+            row = source[0]
+            if row.state == "stopped":
+                if (self._last is not None and self._lease == row.lease_id
+                        and self._last[0] == profile
+                        and self.clock() - self._observed_at <= 120.):
+                    return self._last
+                raise ValueError("stopped source version evidence expired")
+            if row.state != "running" or not _adb_endpoint_present(row.endpoint):
+                raise ValueError("source ADB endpoint unavailable")
+            device = AdbClient(host=config.ADB_HOST, port=config.ADB_PORT).device(
+                serial=row.endpoint)
+            fingerprint = device.shell("getprop ro.build.fingerprint").strip()
+            game = device.app_info("com.TechTreeGames.TheTower").version_name
+            if not fingerprint or not isinstance(game, str) or not game:
+                raise ValueError("source image or game version unavailable")
+            versions = (profile, hashlib.sha256(fingerprint.encode("utf-8")).hexdigest(), game)
+            self._last, self._lease, self._observed_at = versions, row.lease_id, self.clock()
+            return versions
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise HostCapabilityError("BlueStacks Air source version evidence unavailable") from exc
 
 
 def live_process_rows() -> Mapping[str, bool]:
@@ -707,19 +823,23 @@ class BlueStacksAirDriver:
     scope: QualificationScope | None
     inventory_source: BlueStacksAirInventory
     manager: MultiInstanceManager
+    lineage_path: Path | None = None
+    version_observer: Callable[[], tuple[str, str, str]] | None = None
     fresh_prefix: str | None = None
     ocr_reader: Callable[[Image], tuple[ocr.TextBox, ...]] = ocr.read
     endpoint_present: Callable[[str], bool] = _adb_endpoint_present
-    timeout: float = 10.
+    timeout: float = 120.
     poll_interval: float = .2
+    settle_seconds: float = 3.
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
 
     def _capability_scope(self) -> QualificationScope | None:
         """Attest each advertised write capability from fresh host evidence."""
         scope = self.qualification_scope()
-        if (scope is None or scope != self.scope
-                or getattr(self.manager, "profile_version", None) != scope.bluestacks_version):
+        if scope is None or scope != self.scope:
+            return None
+        if self._observed_versions()[0] != scope.bluestacks_version:
             return None
         endpoint = scope.instance_config.get("source_endpoint")
         if not isinstance(endpoint, str) or not endpoint:
@@ -734,6 +854,25 @@ class BlueStacksAirDriver:
             return None
         return scope if self.qualification_scope() == scope else None
 
+    def _observed_versions(self) -> tuple[str | None, str | None, str | None]:
+        if self.version_observer is not None:
+            try:
+                observed = self.version_observer()
+                if (len(observed) == 3 and all(isinstance(value, str) and value
+                                                for value in observed)):
+                    return observed
+            except Exception:
+                pass
+            return None, None, None
+        values = []
+        for key in ("profile_version", "source_version", "game_version"):
+            value = getattr(self.manager, key, None)
+            try:
+                values.append(value() if callable(value) else value)
+            except Exception:
+                return None, None, None
+        return tuple(values)
+
     @property
     def supports_lifecycle(self) -> bool:
         return self._capability_scope() is not None
@@ -744,7 +883,9 @@ class BlueStacksAirDriver:
 
     @property
     def supports_m05_live_qualification(self) -> bool:
-        return self._capability_scope() is not None
+        return (self._capability_scope() is not None and self.lineage_path is not None
+                and self.scope is not None
+                and bool(self.scope.instance_config.get("source_lease")))
 
     @property
     def required_fresh_prefix(self) -> str | None:
@@ -781,7 +922,77 @@ class BlueStacksAirDriver:
             return False
 
     def inventory(self) -> list[HostInstance]:
-        return self.inventory_source.instances()
+        rows = self.inventory_source.instances()
+        if self.scope is None or self.lineage_path is None:
+            return rows
+        details = self.scope.instance_config
+        source_name = details.get("source_instance")
+        source_lease = details.get("source_lease")
+        source = [row for row in rows if row.name == source_name]
+        if (not source_lease or len(source) != 1 or source[0].lease_id != source_lease):
+            return rows
+        ledger = self._read_lineage()
+        attested = {(entry["name"], entry["endpoint"], entry["lease_id"])
+                    for entry in ledger}
+        return [replace(row, source_lineage=self.scope.source_lineage)
+                if (row.name == source_name and row.lease_id == source_lease)
+                or (row.name, row.endpoint, row.lease_id) in attested else row
+                for row in rows]
+
+    def _read_lineage(self) -> list[dict[str, str]]:
+        """Read only Manager-created clone identities bound to this source lease."""
+        if self.lineage_path is None or not self.lineage_path.exists():
+            return []
+        try:
+            payload = json.loads(self.lineage_path.read_text(encoding="utf-8"))
+            if (payload["source_lease"] != self.scope.instance_config["source_lease"]
+                    or payload["source_lineage"] != self.scope.source_lineage
+                    or not isinstance(payload["clones"], list)
+                    or any(set(entry) != {"name", "endpoint", "lease_id"}
+                           or not all(isinstance(value, str) and value for value in entry.values())
+                           for entry in payload["clones"])):
+                raise ValueError("lineage ledger does not match source")
+            identities = [(entry["name"], entry["endpoint"], entry["lease_id"])
+                          for entry in payload["clones"]]
+            if (len(set(identities)) != len(identities)
+                    or len({entry["name"] for entry in payload["clones"]}) != len(identities)):
+                raise ValueError("duplicate clone lineage")
+            return payload["clones"]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise HostCapabilityError("BlueStacks Air clone lineage is unavailable") from exc
+
+    def _record_clone_lineage(self, created: HostInstance) -> HostInstance:
+        if self.lineage_path is None or self.scope is None:
+            return created
+        source_lease = self.scope.instance_config.get("source_lease")
+        if not source_lease:
+            raise HostCapabilityError("BlueStacks Air clone source lease is unavailable")
+        ledger = self._read_lineage()
+        if any(entry["name"] == created.name for entry in ledger):
+            raise HostCapabilityError("BlueStacks Air clone lineage already exists")
+        ledger.append({"name": created.name, "endpoint": created.endpoint,
+                       "lease_id": created.lease_id})
+        path = self.lineage_path
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        payload = {"source_lease": source_lease,
+                   "source_lineage": self.scope.source_lineage, "clones": ledger}
+        try:
+            with temporary.open("x", encoding="utf-8") as file:
+                os.chmod(temporary, 0o600)
+                json.dump(payload, file, sort_keys=True)
+                file.write("\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return replace(created, source_lineage=self.scope.source_lineage)
 
     def _exact_instance(self, name: str, *, required_state: str | None = None
                         ) -> tuple[str, HostInstance]:
@@ -818,13 +1029,17 @@ class BlueStacksAirDriver:
             return False
         return isinstance(observed, bool) and observed == present
 
-    def _wait_for(self, name: str, *, digest: str, endpoint: str, state: str) -> None:
+    def _wait_for(self, name: str, *, digest: str, endpoint: str, lease: str,
+                  state: str) -> None:
         """Require new manager, inventory, process, and endpoint evidence by deadline."""
         deadline = self.clock() + self.timeout
         inverse_action = "Stop" if state == "running" else "Start"
         while True:
             current_digest, current = self._exact_instance(name)
-            if current_digest != digest or current.endpoint != endpoint:
+            stable_scope = (self.scope is not None
+                            and "source_lease" in self.scope.instance_config)
+            if (current.endpoint != endpoint or current.lease_id != lease
+                    or (not stable_scope and current_digest != digest)):
                 raise HostCapabilityError("BlueStacks Air lifecycle configuration changed")
             try:
                 layout_matches = self._row_control(name, action=inverse_action) is not None
@@ -833,6 +1048,16 @@ class BlueStacksAirDriver:
             endpoint_matches = self._endpoint_has_state(endpoint, present=state == "running")
             if current.state == state and layout_matches and endpoint_matches:
                 return
+            if state == "running" and current.state == "running" and not endpoint_matches:
+                if layout_matches and _attach_local_adb_endpoint(endpoint):
+                    continue
+                # A host upgrade notice can pause VM startup before ADB binds.
+                # The dedicated guard accepts only the measured notice and X.
+                from fleet.bluestacks_upgrade import close_upgrade_for_instance
+                try:
+                    close_upgrade_for_instance(name)
+                except Exception:
+                    pass
             if self.clock() >= deadline:
                 raise HostCapabilityError("BlueStacks Air lifecycle postcondition was not proven")
             self.sleep(min(self.poll_interval, max(0., deadline - self.clock())))
@@ -844,7 +1069,8 @@ class BlueStacksAirDriver:
         if scope is None:
             raise HostCapabilityError("BlueStacks Air lifecycle qualification scope is unavailable")
         digest, before = self._exact_instance(name, required_state=before_state)
-        if scope.instance_config.get("configuration_digest") != digest:
+        if ("configuration_digest" in scope.instance_config
+                and scope.instance_config["configuration_digest"] != digest):
             raise HostCapabilityError("BlueStacks Air lifecycle configuration changed")
         control = self._row_control(name, action=action)
         if not self._endpoint_has_state(before.endpoint, present=before_state == "running"):
@@ -853,7 +1079,8 @@ class BlueStacksAirDriver:
         if final_scope is None:
             raise HostCapabilityError("BlueStacks Air lifecycle qualification scope changed")
         final_digest, final = self._exact_instance(name, required_state=before_state)
-        if (final_scope.instance_config.get("configuration_digest") != digest
+        if (("configuration_digest" in final_scope.instance_config
+             and final_scope.instance_config["configuration_digest"] != digest)
                 or final_digest != digest or final.endpoint != before.endpoint):
             raise HostCapabilityError("BlueStacks Air lifecycle configuration changed")
         final_control = self._row_control(name, action=action)
@@ -869,7 +1096,8 @@ class BlueStacksAirDriver:
         digest, before, control = self._prepress_evidence(name, action=action,
                                                            before_state=before_state)
         self.manager.press(control.window_id, control.point, action)
-        self._wait_for(name, digest=digest, endpoint=before.endpoint, state=after_state)
+        self._wait_for(name, digest=digest, endpoint=before.endpoint,
+                       lease=before.lease_id, state=after_state)
 
     def start(self, name: str) -> None:
         self._lifecycle(name, action="Start", before_state="stopped", after_state="running")
@@ -959,11 +1187,16 @@ class BlueStacksAirDriver:
         if scope is None or scope.instance_config.get("source_instance") != source:
             raise HostCapabilityError("BlueStacks Air clone source is unavailable")
         digest, instances = self._clone_snapshot()
-        if scope.instance_config.get("configuration_digest") != digest:
-            raise HostCapabilityError("BlueStacks Air clone configuration changed")
         source_rows = [item for item in instances if item.name == source]
         if len(source_rows) != 1:
             raise HostCapabilityError("BlueStacks Air clone source is missing or ambiguous")
+        details = scope.instance_config
+        if "source_lease" in details:
+            scope_matches = details["source_lease"] == source_rows[0].lease_id
+        else:
+            scope_matches = details.get("configuration_digest") == digest
+        if not scope_matches:
+            raise HostCapabilityError("BlueStacks Air clone configuration changed")
         match = re.fullmatch(r"(.+_)([1-9][0-9]*)", source)
         prefix = match.group(1) if match is not None else f"{source}_"
         suffixes = [int(candidate.group(1)) for item in instances
@@ -1038,7 +1271,34 @@ class BlueStacksAirDriver:
         if not self._endpoint_has_state(final.endpoint, present=False):
             raise HostCapabilityError("BlueStacks Air clone source endpoint is not proven")
         self.manager.press(control.window_id, control.point, "Start")
-        self._wait_for(source, digest=digest, endpoint=before.endpoint, state="running")
+        self._wait_for(source, digest=digest, endpoint=before.endpoint,
+                       lease=before.lease_id, state="running")
+
+    def _wait_for_source_config_to_settle(self, source: str) -> None:
+        """Observe a quiet host generation after restarting a live clone source."""
+        if self.version_observer is None:
+            return
+        if self.settle_seconds < 0:
+            raise ValueError("bounded settlement interval required")
+        deadline = self.clock() + self.timeout
+        stable_digest: str | None = None
+        stable_since = self.clock()
+        while True:
+            digest, rows = self._clone_snapshot()
+            source_rows = [row for row in rows if row.name == source]
+            current = (len(source_rows) == 1 and source_rows[0].state == "running"
+                       and self._endpoint_has_state(source_rows[0].endpoint, present=True)
+                       and self.qualification_scope() == self.scope)
+            if current:
+                if stable_digest != digest:
+                    stable_digest, stable_since = digest, self.clock()
+                elif self.clock() - stable_since >= self.settle_seconds:
+                    return
+            else:
+                stable_digest = None
+            if self.clock() >= deadline:
+                raise HostCapabilityError("BlueStacks Air clone source did not settle")
+            self.sleep(min(self.poll_interval, max(0., deadline - self.clock())))
 
     def _select_exact_source(self, name: str, source: str, *, before_digest: str) -> None:
         """Rebind host and menu evidence immediately before opening the clone form."""
@@ -1052,6 +1312,65 @@ class BlueStacksAirDriver:
         if final_control != initial_control:
             raise HostCapabilityError("BlueStacks Air clone dialog changed")
         self.manager.press(final_control.window_id, final_control.point, "Clone instance")
+
+    def _clone_modal_boxes(self) -> tuple[ModalFrame, tuple[ocr.TextBox, ...]]:
+        try:
+            frame = self.manager.capture_modal()
+            boxes = self.ocr_reader(frame.image)
+        except Exception as exc:
+            raise HostCapabilityError("BlueStacks Air clone form is unavailable") from exc
+        if (len([box for box in boxes if box.text == "Clone instance"]) != 1
+                or len([box for box in boxes if box.text == "Clone from"]) != 1):
+            raise HostCapabilityError("BlueStacks Air clone form profile is unavailable")
+        return frame, boxes
+
+    @staticmethod
+    def _modal_box_point(frame: ModalFrame, box: ocr.TextBox) -> tuple[int, int]:
+        if frame.width <= 0 or frame.height <= 0:
+            raise HostCapabilityError("BlueStacks Air clone modal geometry is unavailable")
+        return ManagerRowObservation._global_point(
+            ManagerFrame(frame.window_id, frame.image, frame.x, frame.y,
+                         frame.width, frame.height),
+            (box.rect.x + box.rect.w // 2, box.rect.y + box.rect.h // 2))
+
+    def _select_exact_source_modal(self, name: str, source: str, *, before_digest: str) -> None:
+        """Select the exact configured source in the focused native clone form."""
+        selected_label = self.inventory_source.display_name(source, digest=before_digest)
+        frame, boxes = self._clone_modal_boxes()
+        label = next(box for box in boxes if box.text == "Clone from")
+        selected = [box for box in boxes
+                    if (abs(box.rect.y - label.rect.y) <= max(box.rect.h, label.rect.h)
+                        and box.rect.x > label.rect.x + label.rect.w)]
+        if len(selected) != 1:
+            raise HostCapabilityError("BlueStacks Air clone source selector is ambiguous")
+        if selected[0].text != selected_label:
+            self.manager.press_clone_source(frame.window_id,
+                                            self._modal_box_point(frame, selected[0]))
+            expanded, options = self._clone_modal_boxes()
+            choices = [box for box in options if box.text == selected_label
+                       and box.rect.y > label.rect.y + label.rect.h]
+            if len(choices) != 1:
+                raise HostCapabilityError("BlueStacks Air exact clone source choice is unavailable")
+            self.manager.press_clone_source(expanded.window_id,
+                                            self._modal_box_point(expanded, choices[0]))
+        confirmed, final_boxes = self._clone_modal_boxes()
+        source_rows = [box for box in final_boxes if box.text == selected_label
+                       and abs(box.rect.y - label.rect.y) <= max(box.rect.h, label.rect.h)]
+        creates = [box for box in final_boxes if box.text == "Create"]
+        if len(source_rows) != 1 or len(creates) != 1:
+            raise HostCapabilityError("BlueStacks Air clone source selection is unconfirmed")
+        final_digest, _ = self._require_next_clone_name(name, source)
+        if final_digest != before_digest:
+            raise HostCapabilityError("BlueStacks Air clone configuration changed")
+        rechecked, rechecked_boxes = self._clone_modal_boxes()
+        if (rechecked.window_id != confirmed.window_id
+                or len([box for box in rechecked_boxes if box.text == selected_label
+                        and abs(box.rect.y - label.rect.y) <= max(box.rect.h, label.rect.h)]) != 1
+                or len([box for box in rechecked_boxes if box.text == "Create"]) != 1):
+            raise HostCapabilityError("BlueStacks Air clone form changed")
+        create = next(box for box in rechecked_boxes if box.text == "Create")
+        self.manager.press_clone_create(rechecked.window_id,
+                                        self._modal_box_point(rechecked, create))
 
     def _exact_create_form_control(self, source: str) -> _ManagerControl:
         """Prove the form's one selected source and one clone before Create."""
@@ -1120,12 +1439,20 @@ class BlueStacksAirDriver:
         restore_source = self._stop_clone_source_if_running(source)
         before_digest, before = self._require_next_clone_name(name, source)
         self._open_clone_dialog(source)
-        self._select_exact_source(name, source, before_digest=before_digest)
-        self._confirm_exact_create(name, source, before_digest=before_digest)
+        if (callable(getattr(self.manager, "press_clone_instance", None))
+                and callable(getattr(self.manager, "capture_modal", None))):
+            self.manager.press_clone_instance()
+            self._select_exact_source_modal(name, source, before_digest=before_digest)
+        else:
+            self._select_exact_source(name, source, before_digest=before_digest)
+            self._confirm_exact_create(name, source, before_digest=before_digest)
         created = self._require_exact_new_instance(name, before_digest=before_digest, before=before)
         if restore_source:
             self._restore_clone_source(source)
-        return created
+        recorded = self._record_clone_lineage(created)
+        if restore_source:
+            self._wait_for_source_config_to_settle(source)
+        return recorded
 
     def qualification_scope(self) -> QualificationScope | None:
         """Return the captured scope only while fresh host evidence still agrees."""
@@ -1133,31 +1460,25 @@ class BlueStacksAirDriver:
             return None
         details = self.scope.instance_config
         digest = details.get("configuration_digest")
+        source_lease = details.get("source_lease")
         source_name = details.get("source_instance")
         source_endpoint = details.get("source_endpoint")
         if not all(isinstance(value, str) and value for value in
-                   (digest, source_name, source_endpoint)):
+                   (source_name, source_endpoint)) or not any(
+                       isinstance(value, str) and value for value in (digest, source_lease)):
             return None
         try:
             current_digest, instances = self.inventory_source.snapshot()
         except HostCapabilityError:
             return None
-        if digest != current_digest:
+        if source_lease is None and digest != current_digest:
             return None
         source = [item for item in instances if item.name == source_name]
-        if len(source) != 1 or source[0].endpoint != source_endpoint:
+        if (len(source) != 1 or source[0].endpoint != source_endpoint
+                or (source_lease is not None and source[0].lease_id != source_lease)):
             return None
-        version = getattr(self.manager, "game_version", None)
-        if callable(version):
-            try:
-                version = version()
-            except Exception:
-                return None
-        source_version = getattr(self.manager, "source_version", None)
-        if callable(source_version):
-            try:
-                source_version = source_version()
-            except Exception:
-                return None
-        return (self.scope if (version == self.scope.game_version
-                               and source_version == self.scope.source_version) else None)
+        profile_version, source_version, game_version = self._observed_versions()
+        return (self.scope if ((self.version_observer is None
+                                or profile_version == self.scope.bluestacks_version)
+                               and source_version == self.scope.source_version
+                               and game_version == self.scope.game_version) else None)

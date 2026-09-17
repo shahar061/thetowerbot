@@ -65,9 +65,12 @@ def test_live_manager_observes_named_clone_controls() -> None:
 
 def test_capabilities_require_current_scope_profile_manager_and_adb_evidence(tmp_path: Path) -> None:
     inventory = configured_inventory(tmp_path)
-    scope = scope_for(inventory)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
     manager = AttestedManager()
-    driver = BlueStacksAirDriver(scope, inventory, manager,
+    driver = BlueStacksAirDriver(scope, inventory, manager, lineage_path=tmp_path / "lineage.json",
                                  endpoint_present=lambda endpoint: endpoint == "127.0.0.1:5595")
 
     assert driver.qualification_scope() == scope
@@ -103,9 +106,12 @@ def test_capabilities_fail_closed_when_fresh_host_evidence_is_missing(
 
 def test_capabilities_require_current_source_app_version(tmp_path: Path) -> None:
     inventory = configured_inventory(tmp_path)
-    scope = scope_for(inventory)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
     manager = AttestedManager()
-    driver = BlueStacksAirDriver(scope, inventory, manager,
+    driver = BlueStacksAirDriver(scope, inventory, manager, lineage_path=tmp_path / "lineage.json",
                                  endpoint_present=lambda endpoint: endpoint == "127.0.0.1:5595")
 
     assert driver.supports_m05_live_qualification is True
@@ -114,6 +120,24 @@ def test_capabilities_require_current_source_app_version(tmp_path: Path) -> None
     assert driver.supports_lifecycle is False
     assert driver.supports_clone_staging is False
     assert driver.supports_m05_live_qualification is False
+
+
+def test_live_capability_requires_stable_source_scope_and_lineage_record(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    manager = AttestedManager()
+    endpoint = lambda value: value == "127.0.0.1:5595"
+    legacy = BlueStacksAirDriver(scope_for(inventory), inventory, manager,
+                                 endpoint_present=endpoint)
+    assert legacy.supports_clone_staging is True
+    assert legacy.supports_m05_live_qualification is False
+
+    stable_scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
+    no_lineage = BlueStacksAirDriver(stable_scope, inventory, manager,
+                                     endpoint_present=endpoint)
+    assert no_lineage.supports_m05_live_qualification is False
 
 
 class FakeManagerBridge:
@@ -465,8 +489,10 @@ def configured_inventory(tmp_path: Path) -> BlueStacksAirInventory:
     config = tmp_path / "bluestacks.conf"
     config.write_text('bst.installed_images="Air"\n'
                       'bst.instance.Air_2.adb_port="5595"\n'
+                      'bst.instance.Air_2.android_id="aabbcc22"\n'
                       'bst.instance.Air_2.display_name="BlueStacks Air 2"\n'
                       'bst.instance.Air_3.adb_port="5605"\n'
+                      'bst.instance.Air_3.android_id="aabbcc33"\n'
                       'bst.instance.Air_3.display_name="BlueStacks Air 3"\n')
     return BlueStacksAirInventory(config, executable=EXECUTABLE,
                                   process_rows=lambda: {
@@ -483,6 +509,21 @@ def test_inventory_binds_each_configured_instance_to_one_unique_endpoint(tmp_pat
     ]
     assert inventory.display_name("Air_2", digest=inventory.digest()) == "BlueStacks Air 2"
     assert inventory.installed_image_prefix() == "Air_"
+
+
+def test_lease_is_stable_across_other_instance_creation_but_changes_with_own_identity(
+        tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    source_lease = inventory.lease("Air_2")
+    config = tmp_path / "bluestacks.conf"
+    config.write_text(config.read_text() +
+                      'bst.instance.Air_4.adb_port="5615"\n'
+                      'bst.instance.Air_4.android_id="aabbcc44"\n'
+                      'bst.instance.Air_4.display_name="BlueStacks Air 4"\n')
+    assert inventory.lease("Air_2") == source_lease
+    config.write_text(config.read_text().replace('Air_2.android_id="aabbcc22"',
+                                                  'Air_2.android_id="aabbcc99"'))
+    assert inventory.lease("Air_2") != source_lease
 
 
 @pytest.mark.parametrize("contents", [
@@ -527,6 +568,49 @@ def test_qualification_scope_requires_current_source_digest_and_game_version(tmp
                       'bst.instance.Air_3.display_name="BlueStacks Air 3"\n')
     manager.game_version = "29.0.3"
     assert driver.qualification_scope() is None
+
+
+def test_qualification_scope_with_source_lease_survives_a_new_instance(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
+    driver = BlueStacksAirDriver(scope, inventory, Manager())
+    assert driver.qualification_scope() == scope
+
+    config = tmp_path / "bluestacks.conf"
+    config.write_text(config.read_text() +
+                      'bst.instance.Air_4.adb_port="5615"\n'
+                      'bst.instance.Air_4.android_id="aabbcc44"\n'
+                      'bst.instance.Air_4.display_name="BlueStacks Air 4"\n')
+    assert driver.qualification_scope() == scope
+
+    config.write_text(config.read_text().replace('Air_2.android_id="aabbcc22"',
+                                                  'Air_2.android_id="aabbcc99"'))
+    assert driver.qualification_scope() is None
+
+
+def test_clone_lineage_requires_recorded_exact_identity(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
+    path = tmp_path / "lineage.json"
+    driver = BlueStacksAirDriver(scope, inventory, Manager(), lineage_path=path)
+    rows = {row.name: row for row in driver.inventory()}
+    assert rows["Air_2"].source_lineage == scope.source_lineage
+    assert rows["Air_3"].source_lineage is None
+
+    recorded = driver._record_clone_lineage(rows["Air_3"])
+    assert recorded.source_lineage == scope.source_lineage
+    assert {row.name: row for row in driver.inventory()}["Air_3"].source_lineage == scope.source_lineage
+
+    config = tmp_path / "bluestacks.conf"
+    config.write_text(config.read_text().replace('Air_3.android_id="aabbcc33"',
+                                                  'Air_3.android_id="aabbcc99"'))
+    assert {row.name: row for row in driver.inventory()}["Air_3"].source_lineage is None
 
 
 def test_qualification_scope_rejects_a_missing_or_remapped_source(tmp_path: Path) -> None:
@@ -752,6 +836,25 @@ def test_manager_row_observation_converts_retina_pixels_to_manager_points() -> N
     assert control.point == (420, 265)
 
 
+def test_manager_row_observation_accepts_joined_status_dot_only() -> None:
+    class ManagerFrameSource:
+        def capture(self) -> ManagerFrame:
+            return ManagerFrame(41, np.zeros((100, 800, 3), dtype=np.uint8))
+
+    def boxes(label: str) -> tuple[TextBox, ...]:
+        return (TextBox(label, .99, Rect(100, 20, 180, 20)),
+                TextBox("Stop", .99, Rect(600, 20, 80, 20)))
+
+    observed = ManagerRowObservation(ManagerFrameSource(),
+                                     ocr_reader=lambda _image: boxes("BlueStacks Air 16○"))
+    assert observed.row_control("BlueStacks Air 16", action="Stop").point == (640, 30)
+
+    observed = ManagerRowObservation(ManagerFrameSource(),
+                                     ocr_reader=lambda _image: boxes("BlueStacks Air 160"))
+    with pytest.raises(HostCapabilityError, match="missing or ambiguous"):
+        observed.row_control("BlueStacks Air 16", action="Stop")
+
+
 class LifecycleInventory:
     def __init__(self, name: str, endpoint: str, *, running: bool) -> None:
         self.name = name
@@ -766,6 +869,35 @@ class LifecycleInventory:
         self.snapshots += 1
         state = "running" if self.running else "stopped"
         return ("configuration-v1", [HostInstance(self.name, self.endpoint, "lease", state)])
+
+
+def test_stable_scope_lifecycle_accepts_host_config_write_after_start() -> None:
+    class MutableLifecycleInventory(LifecycleInventory):
+        digest = "configuration-v1"
+
+        def snapshot(self) -> tuple[str, list[HostInstance]]:
+            _, rows = super().snapshot()
+            return self.digest, rows
+
+    inventory = MutableLifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
+    manager = FakeManager([("Tiramisu64_4", (100, 300)), ("Start", (800, 300))])
+
+    def press(action: str) -> None:
+        if action == "Start":
+            inventory.running = True
+            inventory.digest = "configuration-v2"
+            manager.labels = [("Tiramisu64_4", (100, 300)), ("Stop", (800, 300))]
+
+    manager.on_press = press
+    scope = QualificationScope("mac", "BlueStacks-Air", "source", "image", "29.0.2",
+                               {"source_lease": "lease", "source_instance": inventory.name,
+                                "source_endpoint": inventory.endpoint})
+    driver = BlueStacksAirDriver(scope, inventory, manager,
+                                 ocr_reader=lambda _image: lifecycle_boxes(manager),
+                                 endpoint_present=lambda _endpoint: inventory.running,
+                                 timeout=0., poll_interval=.01)
+    driver.start(inventory.name)
+    assert inventory.running is True
 
 
 def lifecycle_boxes(manager: FakeManager) -> tuple[TextBox, ...]:

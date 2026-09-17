@@ -123,7 +123,7 @@ either response. Automatic replenishment remains unavailable for the manual
 pool.
 
 M05 clone-source qualification is an explicit staging transaction in
-`fleet/clone_qualification.py`. It records a source Account popup observation,
+`fleet/clone_qualification.py`. The legacy R00 path records a source Account popup observation,
 stages two clones through the exclusive M03 staging lease, invokes R00 for each
 clone, and probes both workers concurrently through a named host restart and
 fresh post-restart account observation. The persisted record binds host,
@@ -136,11 +136,25 @@ safe status snapshot and exposes a clone request only when a live driver and
 current qualification record are explicitly supplied to `create_app`. Requests
 use the driver's exclusive staging lease and show queued, staging, verifying,
 blocked, quarantined, and ready states. The default command-line worker does
-not configure this controller. A staged clone cannot become ready without an
-explicit identity reset and fresh recovery verifier; no account is linked
-automatically. A host configuration change closes the qualification gate,
+not configure this controller. In the legacy R00 path, a staged clone cannot
+become ready without an explicit identity reset and fresh recovery verifier;
+no account is linked automatically. A host configuration change closes the qualification gate,
 including after a clone is created, so remaining requested clones block until
 the source is qualified again.
+
+For an installed but never opened Tower template, use
+`qualify_unopened_clone_source`. It checks the source package version and
+Android `stopped=true notLaunched=true` state without opening Tower on the source.
+It clones that source twice, then launches Tower for the first time on each clone
+from the BlueStacks launcher. The clone flow dismisses the optional Play Games
+profile prompt, recognizes the Tower EULA/privacy notice, taps its measured
+**I Agree** control, waits through the initial short battle, and presses the
+measured Game Stats **Home** control. It then reads each clone's Account ID via
+Settings. It never presses **New Account**. A live qualification needs two
+distinct clone IDs, first-launch action audits, exact clone lineage, and fresh
+startup and named host restart evidence from both workers. Manager restarts run
+one at a time while both worker accounts remain distinct. The source must still show
+`notLaunched=true` at the end.
 
 On macOS, `./run.sh` checks the exact local BlueStacks Air window for the
 measured **Upgrade available** host notice when connecting. It presses only

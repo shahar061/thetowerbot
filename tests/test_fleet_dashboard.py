@@ -51,6 +51,10 @@ class Driver:
         self.rows.append(row)
         return row
 
+    def start(self, name: str) -> None:
+        self.rows = [replace(row, state="running") if row.name == name else row
+                     for row in self.rows]
+
 
 def controller(tmp_path: Path, *, qualified: bool = True, verify=None,
                drift: bool = True, capacity: int = 5,
@@ -65,6 +69,40 @@ def controller(tmp_path: Path, *, qualified: bool = True, verify=None,
                             qualification_gate=lambda path, scope: qualified,
                             verify_clone=verify, register_worker=register)
     return fleet, driver
+
+
+def test_unopened_clone_requires_first_launch_verifier(tmp_path: Path) -> None:
+    fleet, driver = controller(tmp_path, drift=False)
+    (tmp_path / "m05.json").write_text(
+        '{"schema":2,"source_instance":"seed",'
+        '"source_evidence":{"tower_unopened":true},"account_ids":["A","B"]}'
+    )
+    job = fleet.request("seed", 1)
+    fleet.run_pending(job["id"])
+    row = fleet.snapshot()["jobs"][0]["clones"][0]
+    assert driver.staged == ["seed_1"]
+    assert row["state"] == "blocked"
+    assert row["reason"] == "first_launch_clone_verifier_required"
+
+
+def test_unopened_clone_starts_after_manager_creates_it_stopped(tmp_path: Path) -> None:
+    fleet, driver = controller(tmp_path, drift=False)
+    (tmp_path / "m05.json").write_text(
+        '{"schema":2,"source_instance":"seed",'
+        '"source_evidence":{"tower_unopened":true},"account_ids":["A","B"]}'
+    )
+    original = driver.stage_clone
+
+    def stage_stopped(name: str, source: str) -> HostInstance:
+        original(name, source)
+        driver.rows[-1] = replace(driver.rows[-1], state="stopped")
+        return driver.rows[-1]
+
+    driver.stage_clone = stage_stopped  # type: ignore[method-assign]
+    job = fleet.request("seed", 1)
+    fleet.run_pending(job["id"])
+    assert driver.rows[-1].state == "running"
+    assert fleet.snapshot()["jobs"][0]["clones"][0]["reason"] == "first_launch_clone_verifier_required"
 
 
 def test_unqualified_source_cannot_stage(tmp_path: Path) -> None:

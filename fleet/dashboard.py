@@ -37,14 +37,15 @@ class FleetPolicy:
 class FleetController:
     """Stage through the host driver; publish only evidence-backed state.
 
-    ``verify_clone`` is an explicit R00 plus fresh recovery integration. A
-    missing integration leaves a staged instance blocked, never usable.
+    Clone verification is an explicit first-launch or legacy R00 integration.
+    A missing integration leaves a staged instance blocked, never usable.
     """
 
     def __init__(self, adapter: BlueStacksAdapter, *, qualification_path: Path,
                  state_path: Path, policy: FleetPolicy,
                  qualification_gate: Callable[[Path, QualificationScope], bool] = qualification_is_current,
                  verify_clone: Callable[[HostInstance, str], dict[str, Any]] | None = None,
+                 verify_first_launch_clone: Callable[[HostInstance], dict[str, Any]] | None = None,
                  verify_fresh: Callable[[HostInstance], dict[str, Any]] | None = None,
                  register_worker: Callable[[HostInstance, dict[str, Any], str], dict[str, Any]] | None = None) -> None:
         self.adapter = adapter
@@ -53,6 +54,7 @@ class FleetController:
         self.state_path = Path(state_path)
         self.qualification_gate = qualification_gate
         self.verify_clone = verify_clone
+        self.verify_first_launch_clone = verify_first_launch_clone
         self.verify_fresh = verify_fresh
         self.register_worker = register_worker
         self._lock = threading.RLock()
@@ -266,11 +268,20 @@ class FleetController:
         if job is None:
             return
         source_id: str | None = None
+        first_launch_clone = False
         if job["mode"] == "clone":
             try:
                 record = json.loads(self.qualification_path.read_text(encoding="utf-8"))
-                source_id = record["account_ids"][0]
-                if record["source_instance"] != job["source"] or not isinstance(source_id, str) or not source_id:
+                first_launch_clone = record.get("schema") == 2
+                if first_launch_clone:
+                    if (record.get("source_instance") != job["source"]
+                            or record.get("source_evidence", {}).get("tower_unopened") is not True):
+                        raise ValueError("source_template_evidence_missing")
+                else:
+                    source_id = record["account_ids"][0]
+                if (record["source_instance"] != job["source"]
+                        or not first_launch_clone and
+                        (not isinstance(source_id, str) or not source_id)):
                     raise ValueError("source_identity_evidence_missing")
             except (OSError, ValueError, TypeError, KeyError, IndexError):
                 for index, clone in enumerate(job["clones"]):
@@ -306,11 +317,17 @@ class FleetController:
                     raise ValueError("clone_host_identity_unbound")
                 designated = self.adapter.designated(name, Attempt.new(
                     name, staged.endpoint, staged.lease_id, job["id"]))
+                if job["mode"] == "clone" and designated.state == "stopped":
+                    self.adapter.start(name, Attempt.new(
+                        name, staged.endpoint, staged.lease_id, job["id"]))
+                    designated = self.adapter.designated(name, Attempt.new(
+                        name, staged.endpoint, staged.lease_id, job["id"]))
                 if designated.state != "running" and not (job["mode"] == "fresh"
                                                            and designated.state == "stopped"):
                     raise ValueError("created_endpoint_state_unproven")
-                self._update(job, index, state="verifying", reason=("identity_reset_and_evidence_pending"
-                            if job["mode"] == "clone" else "first_launch_identity_pending"),
+                self._update(job, index, state="verifying", reason=(
+                            "first_launch_identity_pending" if first_launch_clone or job["mode"] == "fresh"
+                            else "identity_reset_and_evidence_pending"),
                              endpoint=staged.endpoint, lease_id=staged.lease_id)
                 if job["mode"] == "fresh":
                     if self.verify_fresh is None:
@@ -326,6 +343,41 @@ class FleetController:
                             or proof.get("lease_id") != staged.lease_id
                             or not proof.get("account_id") or not proof.get("evidence_ref")):
                         raise ValueError("first_launch_identity_evidence_incomplete")
+                    self._register(job, index, staged, proof, "first_launch_identity_verified")
+                    continue
+                if first_launch_clone:
+                    if self.verify_first_launch_clone is None:
+                        self._update(job, index, state="blocked", reason="first_launch_clone_verifier_required")
+                        continue
+                    try:
+                        proof = self.verify_first_launch_clone(staged)
+                    except Exception:
+                        self._update(job, index, state="quarantined",
+                                     reason="first_launch_clone_requires_review")
+                        continue
+                    valid_first_launch = (
+                        proof.get("state") == "verified"
+                        and proof.get("first_launch_verified") is True
+                        and proof.get("consent_accepted") is True
+                        and proof.get("recovery_verified") is True
+                        and proof.get("account_id")
+                        and proof.get("endpoint") == staged.endpoint
+                        and proof.get("lease_id") == staged.lease_id
+                        and proof.get("evidence_ref")
+                        and proof.get("recovery_evidence_ref")
+                        and proof.get("recovery_evidence_ref") != proof.get("evidence_ref")
+                        and isinstance(proof.get("identity_observed_at"), (int, float))
+                        and isinstance(proof.get("recovered_at"), (int, float))
+                        and job["requested_at"] < proof["identity_observed_at"]
+                        < proof["recovered_at"] <= time.time()
+                        and time.time() - proof["identity_observed_at"] <= EVIDENCE_TTL
+                    )
+                    if not valid_first_launch:
+                        raise ValueError("first_launch_clone_evidence_incomplete")
+                    if self._source()[0] != source:
+                        self._update(job, index, state="blocked",
+                                     reason="qualification_scope_changed_after_verification")
+                        continue
                     self._register(job, index, staged, proof, "first_launch_identity_verified")
                     continue
                 if self.verify_clone is None:

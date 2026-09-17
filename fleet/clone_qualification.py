@@ -7,19 +7,25 @@ source; a live driver must explicitly attest its host capabilities and scope.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from bluestacks import BlueStacksAdapter, HostBoundConnect, ProvisionMode
+import cv2
+import ocr
+
+from bluestacks import BlueStacksAdapter, HostBoundConnect, HostInstance, ProvisionMode
 from fleet.account_creation import AccountFrame, StagingClone, create_staging_account
 from fleet.account_observer import StagingAccountObserver
+from fleet.clone_launch import launch_tower_from_game_center, wait_for_tower_ready
 from fleet.identity import Attempt
+from fleet.first_launch_account import create_first_launch_account, tower_is_unopened
 from fleet.runtime import WorkerRuntime, reserve_endpoint, validate_isolation
 from supervisor import DeviceSupervisor, RecoveryState
 
@@ -95,12 +101,32 @@ def _account_reading(frame: AccountFrame, account_id: str, version: str,
 
 def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
                        account_id: str, scope: QualificationScope,
-                       clock: Callable[[], float] = time.time) -> dict[str, Any]:
+                       clock: Callable[[], float] = time.time,
+                       navigate: bool = False) -> dict[str, Any]:
     """Prove start, exact account, named host restart, and fresh recovery.
 
-    This transaction performs no screen taps. Any cloud/session prompt aborts.
+    With navigation enabled, only measured Home -> Settings -> Account taps
+    are allowed after a worker restart. Any cloud/session prompt aborts.
     """
     attempt = candidate.attempt
+
+    def read_account(device: Any) -> AccountFrame:
+        for _ in range(120 if navigate else 1):
+            shot = candidate.observe(device)
+            if shot.conflict_dialog:
+                raise ValueError("session_conflict")
+            if shot.screen == "account":
+                return shot
+            if navigate and shot.screen in {"home", "settings"}:
+                control = "settings" if shot.screen == "home" else "account"
+                if set(shot.controls) != {control} or clock() - shot.observed_at > 5:
+                    raise ValueError("worker account navigation unavailable")
+                device.click(*shot.controls[control])
+            elif not navigate or shot.screen != "unknown":
+                raise ValueError("worker account screen unavailable")
+            time.sleep(1.)
+        raise ValueError("worker account screen timed out")
+
     with candidate.runtime.reserve(attempt.endpoint):
         connector = HostBoundConnect(adapter, candidate.instance, attempt,
                                      candidate.connect, timeout=10., restart_after=2)
@@ -115,7 +141,7 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
         device = supervisor._device
         if device is None:
             raise ValueError("worker startup unavailable")
-        before = candidate.observe(device)
+        before = read_account(device)
         _account_reading(before, account_id, scope.game_version, clock(),
                          after=attempt.created_at)
         supervisor.verify_account(account_id, observed_at=before.observed_at)
@@ -132,7 +158,9 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
         device = supervisor._device
         if device is None:
             raise ValueError("worker recovery exhausted")
-        after = candidate.observe(device)
+        if navigate:
+            launch_tower_from_game_center(device)
+        after = read_account(device)
         _account_reading(after, account_id, scope.game_version, clock(),
                          after=before.observed_at)
         if after.digest == before.digest or after.evidence_ref == before.evidence_ref:
@@ -155,6 +183,9 @@ def qualify_clone_source(
     record_path: Path, registry: Path,
     account_creator: Callable[..., dict[str, Any]] = create_staging_account,
     worker_probe: Callable[..., dict[str, Any]] = probe_clone_worker,
+    bind_created: Callable[[CloneCandidate, HostInstance], CloneCandidate] | None = None,
+    protected_ids: frozenset[str] = frozenset(),
+    reuse_attested_clones: bool = False,
     live: bool = False, r00_enabled: bool = False,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
@@ -187,10 +218,9 @@ def qualify_clone_source(
         return finish("unqualified", "unsupported_host_capability")
     if live and (account_creator is not create_staging_account
                  or worker_probe is not probe_clone_worker
-                 or any(not isinstance(item.observe, StagingAccountObserver)
-                        or item.observe.endpoint != item.attempt.endpoint
-                        or scope.game_version not in item.observe.allowed_versions
-                        for item in (source, *clones))):
+                 or not isinstance(source.observe, StagingAccountObserver)
+                 or source.observe.endpoint != source.attempt.endpoint
+                 or scope.game_version not in source.observe.allowed_versions):
         return finish("unqualified", "simulated_components_cannot_prove_live_host")
     if live and (getattr(adapter.driver, "supports_m05_live_qualification", False) is not True
                  or not callable(getattr(adapter.driver, "qualification_scope", None))
@@ -225,13 +255,74 @@ def qualify_clone_source(
             "endpoint": source.attempt.endpoint, "lease_id": source.attempt.lease_id,
         }
         with adapter.staging_lease():
+            bound_clones: list[CloneCandidate] = []
             for item in clones:
-                created = adapter.provision(item.instance, mode=ProvisionMode.CLONE,
-                                            source=source.instance)
-                if (created.name != item.instance or created.endpoint != item.attempt.endpoint
-                        or created.lease_id != item.attempt.lease_id
+                if reuse_attested_clones:
+                    created = adapter.designated(item.instance, item.attempt)
+                    if created.source_lineage != scope.source_lineage:
+                        raise ValueError("existing clone lineage unverified")
+                    if (item.runtime.checkpoint_root / ".r00-account-creation.json").exists():
+                        raise ValueError("existing clone has an R00 attempt")
+                    for journal in item.runtime.root.parent.glob(
+                            "*/checkpoints/.r00-account-creation.json"):
+                        prior = json.loads(journal.read_text(encoding="utf-8"))
+                        if (prior.get("instance") == item.instance
+                                or prior.get("endpoint") == item.attempt.endpoint
+                                or prior.get("lease_id") == item.attempt.lease_id):
+                            pre_action = (
+                                prior.get("instance") == item.instance
+                                and prior.get("endpoint") == item.attempt.endpoint
+                                and prior.get("lease_id") == item.attempt.lease_id
+                                and prior.get("source_lineage") == scope.source_lineage
+                                and prior.get("allowed_source_id") == source_frame.account_id
+                                and prior.get("state") == "quarantined"
+                                and prior.get("reason") in {
+                                    "unexpected game package",
+                                    "unexpected screen during account creation",
+                                }
+                                and prior.get("evidence") == []
+                                and prior.get("started_from_account") is False
+                                and all(prior.get(key) for key in (
+                                    "worker_id", "attempt_id", "generation", "created_at",
+                                    "started_at"))
+                                and set(prior) <= {
+                                    "worker_id", "endpoint", "lease_id", "attempt_id",
+                                    "generation", "created_at", "instance", "source_lineage",
+                                    "allowed_source_id", "state", "reason", "evidence",
+                                    "started_at", "started_from_account",
+                                }
+                            )
+                            if not pre_action:
+                                raise ValueError("existing clone has an R00 attempt")
+                    if Path(registry).exists():
+                        bindings = json.loads(Path(registry).read_text(encoding="utf-8"))
+                        if not isinstance(bindings, dict) or any(
+                            not isinstance(row, dict)
+                            or worker == item.attempt.worker_id
+                            or row.get("instance") == item.instance
+                            or row.get("endpoint") == item.attempt.endpoint
+                            for worker, row in bindings.items()
+                        ):
+                            raise ValueError("existing clone has an active account binding")
+                else:
+                    created = adapter.provision(item.instance, mode=ProvisionMode.CLONE,
+                                                source=source.instance)
+                bound_item = bind_created(item, created) if bind_created is not None else item
+                if (bound_item.instance != item.instance
+                        or bound_item.runtime != item.runtime
+                        or bound_item.attempt.worker_id != item.attempt.worker_id
+                        or created.name != bound_item.instance
+                        or created.endpoint != bound_item.attempt.endpoint
+                        or created.lease_id != bound_item.attempt.lease_id
                         or created.source_lineage != scope.source_lineage):
                     raise ValueError("staged clone identity or lineage unbound")
+                if live and (not isinstance(bound_item.observe, StagingAccountObserver)
+                             or bound_item.observe.endpoint != bound_item.attempt.endpoint
+                             or scope.game_version not in bound_item.observe.allowed_versions):
+                    raise ValueError("staged clone observer is not live bound")
+                bound_clones.append(bound_item)
+        clones = (bound_clones[0], bound_clones[1])
+        candidates = (source, *clones)
         inventory = adapter.inventory()
         for item in candidates:
             if (sum(row.endpoint == item.attempt.endpoint for row in inventory) != 1
@@ -240,12 +331,23 @@ def qualify_clone_source(
         account_ids = [source_frame.account_id]
         for item in clones:
             bound = adapter.designated(item.instance, item.attempt)
+            if bound.state == "stopped":
+                adapter.start(item.instance, item.attempt)
+                bound = adapter.designated(item.instance, item.attempt)
             if bound.state != "running" or bound.source_lineage != scope.source_lineage:
                 raise ValueError("clone state or lineage changed")
+            if live:
+                with item.runtime.reserve(item.attempt.endpoint):
+                    device = item.connect()
+                    if getattr(device, "serial", None) != item.attempt.endpoint:
+                        raise ValueError("clone launch endpoint unbound")
+                    launch_tower_from_game_center(device)
+                    wait_for_tower_ready(device, item.observe)
             audit = account_creator(
                 runtime=item.runtime, attempt=item.attempt, adapter=adapter,
                 policy=StagingClone(item.instance, scope.source_lineage,
-                                    source_frame.account_id, frozenset(account_ids), r00_enabled),
+                                    source_frame.account_id,
+                                    frozenset(account_ids) | protected_ids, r00_enabled),
                 connect=item.connect, observe=item.observe, registry=registry,
             )
             if (audit.get("state") != "verified" or audit.get("worker_id") != item.attempt.worker_id
@@ -313,6 +415,168 @@ def qualify_clone_source(
         return finish("quarantined", str(exc) or "verification_failed")
 
 
+def qualify_unopened_clone_source(
+    *, adapter: BlueStacksAdapter, scope: QualificationScope,
+    source: CloneCandidate, clones: tuple[CloneCandidate, CloneCandidate],
+    record_path: Path, registry: Path,
+    bind_created: Callable[[CloneCandidate, HostInstance], CloneCandidate],
+    manual_lineage_evidence: Path | None = None,
+    protected_ids: frozenset[str] = frozenset(),
+    clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Qualify two unique first-launch clone IDs; never launch Tower on source."""
+    record: dict[str, Any] = {
+        "schema": 2, "state": "unqualified", "reason": "proof_not_started",
+        "scope": asdict(scope), "source_instance": source.instance,
+        "clone_instances": [item.instance for item in clones],
+        "account_ids": [], "source_evidence": None,
+        "account_audits": [], "worker_proofs": [],
+        "evaluated_at": clock(), "live": True,
+    }
+    _save(Path(record_path), record)
+
+    def finish(state: str, reason: str) -> dict[str, Any]:
+        record.update(state=state, reason=reason, evaluated_at=clock())
+        _save(Path(record_path), record)
+        return record
+
+    if not scope.valid():
+        return finish("quarantined", "invalid_qualification_scope")
+    driver = adapter.driver
+    if (getattr(driver, "supports_clone_staging", False) is not True
+            or getattr(driver, "supports_m05_live_qualification", False) is not True
+            or not adapter.supports_lifecycle
+            or not callable(getattr(driver, "qualification_scope", None))
+            or driver.qualification_scope() != scope):
+        return finish("unqualified", "unsupported_or_changed_live_scope")
+    try:
+        candidates = (source, *clones)
+        validate_isolation(item.runtime for item in candidates)
+        if (len({item.instance for item in candidates}) != 3
+                or len({item.attempt.worker_id for item in candidates}) != 3
+                or any(item.runtime.worker_id != item.attempt.worker_id
+                       for item in candidates)):
+            raise ValueError("worker or instance identity is shared")
+        if (not isinstance(source.observe, StagingAccountObserver)
+                or source.observe.endpoint != source.attempt.endpoint):
+            raise ValueError("source observer endpoint unbound")
+        source_host = adapter.designated(source.instance, source.attempt)
+        if source_host.state == "stopped":
+            adapter.start(source.instance, source.attempt)
+            source_host = adapter.designated(source.instance, source.attempt)
+        if source_host.state != "running" or source_host.source_lineage != scope.source_lineage:
+            raise ValueError("source state or lineage changed")
+        with reserve_endpoint(source.attempt.endpoint):
+            device = source.connect()
+            if getattr(device, "serial", None) != source.attempt.endpoint:
+                raise ValueError("source endpoint unbound")
+            info = device.app_info(GAME_PACKAGE)
+            if getattr(info, "version_name", None) != scope.game_version:
+                raise ValueError("source Tower version changed")
+            if not tower_is_unopened(device):
+                raise ValueError("source Tower has been launched")
+            observed_at = clock()
+        record["source_evidence"] = {
+            "tower_unopened": True, "game_version": scope.game_version,
+            "observed_at": observed_at, "endpoint": source.attempt.endpoint,
+            "lease_id": source.attempt.lease_id,
+        }
+        _save(Path(record_path), record)
+        with adapter.staging_lease():
+            bound_clones: list[CloneCandidate] = []
+            manual_rows: dict[str, Any] = {}
+            if manual_lineage_evidence is not None:
+                manifest = json.loads(Path(manual_lineage_evidence).read_text(encoding="utf-8"))
+                if (manifest.get("source_instance") != source.instance
+                        or manifest.get("source_lease") != source.attempt.lease_id
+                        or not isinstance(manifest.get("clones"), list)
+                        or {row.get("name") for row in manifest["clones"]}
+                        != {item.instance for item in clones}):
+                    raise ValueError("manual clone source attestation incomplete")
+                manual_rows = {row["name"]: row for row in manifest["clones"]}
+            for item in clones:
+                if manual_rows:
+                    created = adapter.designated(item.instance, replace(
+                        item.attempt, endpoint=manual_rows[item.instance]["endpoint"],
+                        lease_id=manual_rows[item.instance]["lease_id"]))
+                    row = manual_rows[item.instance]
+                    capture = Path(row["source_selection_capture"])
+                    image = cv2.imread(str(capture))
+                    if (image is None or created.state not in {"stopped", "running"}
+                            or created.source_lineage != scope.source_lineage
+                            or hashlib.sha256(capture.read_bytes()).hexdigest()
+                            != row.get("capture_sha256")):
+                        raise ValueError("manual clone lineage evidence changed")
+                    labels = [box.text.replace(" ", "").lower()
+                              for box in ocr.read(image, strict=True, min_confidence=.9)]
+                    display_source = driver.inventory_source.display_name(source.instance)
+                    if ("clonefrom" not in labels
+                            or display_source.replace(" ", "").lower() not in labels
+                            or "create" not in labels):
+                        raise ValueError("manual clone source selection unrecognized")
+                else:
+                    created = adapter.provision(item.instance, mode=ProvisionMode.CLONE,
+                                                source=source.instance)
+                bound = bind_created(item, created)
+                if (bound.instance != item.instance or bound.runtime != item.runtime
+                        or bound.attempt.worker_id != item.attempt.worker_id
+                        or created.endpoint != bound.attempt.endpoint
+                        or created.lease_id != bound.attempt.lease_id
+                        or created.source_lineage != scope.source_lineage
+                        or not isinstance(bound.observe, StagingAccountObserver)
+                        or bound.observe.endpoint != bound.attempt.endpoint
+                        or scope.game_version not in bound.observe.allowed_versions):
+                    raise ValueError("staged clone identity or observer unbound")
+                bound_clones.append(bound)
+        clones = (bound_clones[0], bound_clones[1])
+        inventory = adapter.inventory()
+        for item in (source, *clones):
+            if (sum(row.endpoint == item.attempt.endpoint for row in inventory) != 1
+                    or sum(row.lease_id == item.attempt.lease_id for row in inventory) != 1):
+                raise ValueError("shared clone endpoint or lease")
+        for item in clones:
+            host = adapter.designated(item.instance, item.attempt)
+            if host.state == "stopped":
+                adapter.start(item.instance, item.attempt)
+                host = adapter.designated(item.instance, item.attempt)
+            if host.state != "running" or host.source_lineage != scope.source_lineage:
+                raise ValueError("clone state or lineage changed")
+            audit = create_first_launch_account(
+                runtime=item.runtime, attempt=item.attempt, adapter=adapter,
+                instance=item.instance, source_lineage=scope.source_lineage,
+                protected_ids=frozenset(record["account_ids"]) | protected_ids,
+                connect=item.connect, observe=item.observe, registry=registry, clock=clock,
+            )
+            if (audit.get("state") != "verified"
+                    or audit.get("app_version") != scope.game_version
+                    or not audit.get("account_id")
+                    or not any(row.get("action") == "i_agree"
+                               for row in audit.get("evidence", []))):
+                raise ValueError("first-launch account audit incomplete")
+            record["account_ids"].append(audit["account_id"])
+            record["account_audits"].append(audit)
+            _save(Path(record_path), record)
+        if len(set(record["account_ids"])) != 2:
+            raise ValueError("duplicate Tower Account IDs")
+        for index, item in enumerate(clones):
+            record["worker_proofs"].append(probe_clone_worker(
+                adapter=adapter, candidate=item, account_id=record["account_ids"][index],
+                scope=scope, clock=clock, navigate=True))
+            _save(Path(record_path), record)
+        if not all(_fresh(proof.get("recovered_at"), clock())
+                   for proof in record["worker_proofs"]):
+            raise ValueError("worker recovery evidence expired")
+        if adapter.designated(source.instance, source.attempt).state == "stopped":
+            adapter.start(source.instance, source.attempt)
+        if not tower_is_unopened(source.connect()):
+            raise ValueError("source Tower changed during qualification")
+        if driver.qualification_scope() != scope:
+            raise ValueError("live host scope drift")
+        return finish("passed", "two_first_launch_accounts_and_worker_recovery_verified")
+    except Exception as exc:
+        return finish("quarantined", str(exc) or "verification_failed")
+
+
 def qualification_is_current(path: Path, scope: QualificationScope, *, now: float | None = None) -> bool:
     """O07's future read-only gate; missing, simulated, or stale means closed."""
     try:
@@ -322,6 +586,34 @@ def qualification_is_current(path: Path, scope: QualificationScope, *, now: floa
         source = record["source_evidence"]
         audits = record["account_audits"]
         proofs = record["worker_proofs"]
+        if record.get("schema") == 2:
+            return (record.get("state") == "passed" and record.get("live") is True
+                    and record.get("scope") == asdict(scope)
+                    and len(ids) == 2 and len(set(ids)) == 2 and all(ids)
+                    and _fresh(record.get("evaluated_at"), timestamp)
+                    and source.get("tower_unopened") is True
+                    and source.get("endpoint") and source.get("lease_id")
+                    and _fresh(source.get("observed_at"), timestamp)
+                    and len(audits) == 2 and len(proofs) == 2
+                    and all(
+                        audit.get("state") == "verified"
+                        and audit.get("account_id") == ids[index]
+                        and audit.get("app_version") == scope.game_version
+                        and any(row.get("action") == "i_agree"
+                                for row in audit.get("evidence", []))
+                        and proof.get("account_id") == ids[index]
+                        and proof.get("endpoint") == audit.get("endpoint")
+                        and proof.get("lease_id") == audit.get("lease_id")
+                        and proof.get("worker_id") == audit.get("worker_id")
+                        and proof.get("instance") == record["clone_instances"][index]
+                        and isinstance(audit.get("completed_at"), (int, float))
+                        and math.isfinite(audit["completed_at"])
+                        and 0 < audit["completed_at"] < proof.get("started_at", 0.)
+                        and _fresh(proof.get("started_at"), timestamp)
+                        and _fresh(proof.get("recovered_at"), timestamp,
+                                   after=proof.get("started_at", 0.))
+                        for index, (audit, proof) in enumerate(zip(audits, proofs))
+                    ))
         return (record.get("schema") == 1 and record.get("state") == "passed"
                 and record.get("live") is True and record.get("scope") == asdict(scope)
                 and len(ids) == 3 and len(set(ids)) == 3 and all(ids)

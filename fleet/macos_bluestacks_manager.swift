@@ -401,11 +401,28 @@ func dismissUpgrade(forPlayerNamed playerTitle: String) {
               let frame = elementFrame($0) else { return false }
         return frame == dialogs[0]
     }
-    guard matches.count == 1 else { fail("player upgrade accessibility dialog is unavailable") }
-    let closeButtons = closeButtonAtTopRight(matches[0], dialogs[0])
-    guard closeButtons.count == 1 else { fail("player upgrade close button is unavailable") }
-    guard AXUIElementPerformAction(closeButtons[0], kAXPressAction as CFString) == .success else {
-        fail("player upgrade close button press failed")
+    if matches.count == 1 {
+        let closeButtons = closeButtonAtTopRight(matches[0], dialogs[0])
+        guard closeButtons.count == 1 else { fail("player upgrade close button is unavailable") }
+        guard AXUIElementPerformAction(closeButtons[0], kAXPressAction as CFString) == .success else {
+            fail("player upgrade close button press failed")
+        }
+    } else {
+        let dialog = dialogs[0]
+        guard matches.isEmpty,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == player.pid,
+              dialog.width >= 390, dialog.width <= 405,
+              dialog.height >= 220, dialog.height <= 238 else {
+            fail("player upgrade accessibility dialog is unavailable")
+        }
+        systemEventsClick(CGPoint(x: dialog.maxX - 42, y: dialog.minY + 43))
+        Thread.sleep(forTimeInterval: 0.2)
+        guard let after = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[String: Any]], !after.contains(where: {
+            $0[kCGWindowName as String] as? String == "Upgrade available"
+                && ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == player.pid
+        }) else { fail("player upgrade close was not confirmed") }
     }
 }
 
@@ -478,7 +495,8 @@ if args[1] == "inspect" && args.count == 2 {
     guard values.count == 1 else { fail("fresh instance count is ambiguous") }
     print(values[0])
 } else if (args[1] == "modal-press-clone" || args[1] == "modal-press-fresh"
-           || args[1] == "modal-press-create") && args.count == 16 {
+           || args[1] == "modal-press-create" || args[1] == "modal-press-source")
+           && args.count == 16 {
     verifyParentForModalCapture(current, args[2...7])
     let modal = exactModal(current)
     verifyModal(modal, args[8...13])

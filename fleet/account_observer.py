@@ -1,4 +1,4 @@
-"""Measured R00 Account popup OCR; no controls beyond New Account are exposed."""
+"""Measured Tower account and first-launch screen OCR."""
 
 from __future__ import annotations
 
@@ -48,6 +48,16 @@ _GOOGLE_PLAY_PROFILE = (
     ("No profile", Rect(180, 1510, 400, 180)),
     ("Cancel", Rect(50, 2200, 260, 120)),
     ("Next", Rect(800, 2200, 220, 120)),
+)
+_TOWER_CONSENT = (
+    ("THETOWER", Rect(300, 525, 470, 135)),
+    ("This game uses 3rd party analytics", Rect(135, 680, 810, 130)),
+    ("and advertising services", Rect(225, 745, 620, 100)),
+    ("Please refer to all privacy policies", Rect(150, 815, 770, 105)),
+    ("EULA", Rect(425, 1050, 205, 105)),
+    ("Privacy Policy", Rect(325, 1190, 380, 130)),
+    ('By tapping "I Agree," you confirm you\'ve', Rect(95, 1410, 890, 115)),
+    ("I Agree", Rect(390, 1690, 300, 155)),
 )
 _TOWER_PACKAGE = "com.TechTreeGames.TheTower"
 _GOOGLE_PLAY_SERVICES_PACKAGE = "com.google.android.gms"
@@ -150,6 +160,31 @@ def parse_google_play_profile(
             cancel.x + cancel.w // 2, cancel.y + cancel.h // 2,
         )},
         popup_title="Create a Play Games profile",
+    )
+
+
+def parse_tower_consent(
+    frame: Image, boxes: tuple[TextBox, ...], *, observed_at: float,
+    app_version: str, evidence_ref: str,
+) -> AccountFrame | None:
+    """Expose I Agree only on the measured first-launch Tower consent popup."""
+    if (frame.shape[:2] != (2400, 1080) or not app_version.strip()
+            or not evidence_ref.strip() or not math.isfinite(observed_at)):
+        return None
+    found: dict[str, TextBox] = {}
+    for label, bounds in _TOWER_CONSENT:
+        matches = tuple(box for box in boxes if box.text.strip() == label
+                        and _inside(box, bounds) and _trusted(box))
+        if len(matches) != 1:
+            return None
+        found[label] = matches[0]
+    agree = found["I Agree"].rect
+    return AccountFrame(
+        screen="tower_consent", account_id=None, app_version=app_version,
+        digest=hashlib.sha256(frame.tobytes()).hexdigest(),
+        observed_at=observed_at, evidence_ref=evidence_ref,
+        controls={"i_agree": (agree.x + agree.w // 2, agree.y + agree.h // 2)},
+        popup_title="THETOWER",
     )
 
 
@@ -281,9 +316,15 @@ class StagingAccountObserver:
         if package == _GOOGLE_PLAY_SERVICES_PACKAGE:
             prompt = parse_google_play_profile(frame, boxes, observed_at=observed_at,
                                                app_version=version, evidence_ref=evidence_ref)
-            if prompt is None:
-                raise ValueError("unrecognized Android overlay")
-            return prompt
+            if prompt is not None:
+                return prompt
+            return AccountFrame("unknown", None, version,
+                                hashlib.sha256(frame.tobytes()).hexdigest(),
+                                observed_at, evidence_ref, {})
+        consent = parse_tower_consent(frame, boxes, observed_at=observed_at,
+                                      app_version=version, evidence_ref=evidence_ref)
+        if consent is not None:
+            return consent
         warning = parse_new_account_warning(frame, boxes, observed_at=observed_at,
                                             app_version=version, evidence_ref=evidence_ref)
         if warning is not None:
