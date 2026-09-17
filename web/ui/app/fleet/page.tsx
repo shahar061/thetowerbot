@@ -21,6 +21,11 @@ export default function FleetPage() {
   const [busy, setBusy] = useState(false);
   const [rerollOpen, setRerollOpen] = useState(false);
   const [rerollJobId, setRerollJobId] = useState<string | null>(null);
+  const previewKey = fleet ? JSON.stringify({
+    capacity: fleet.capacity,
+    sources: fleet.sources,
+    targets: fleet.jobs.flatMap(job => job.clones.map(clone => [job.id, clone.instance, clone.state])),
+  }) : "";
 
   useEffect(() => {
     let active = true;
@@ -53,7 +58,8 @@ export default function FleetPage() {
     let active = true;
     const selectedSource = mode === "clone" ? source : null;
     setPreview(null);
-    if (!fleet || (mode === "clone" && !source)) return;
+    setConfirmed(false);
+    if (!previewKey || (mode === "clone" && !source)) return;
     fetchFleetPreview(mode, selectedSource, count).then(value => {
       if (active && value.mode === mode && value.source === selectedSource && value.count === count)
         setPreview(value);
@@ -62,7 +68,7 @@ export default function FleetPage() {
                                state: "blocked", reason: failure.message });
     });
     return () => { active = false; };
-  }, [mode, source, count, fleet]);
+  }, [mode, source, count, previewKey]);
 
   const qualified = fleet?.sources.filter(item => item.state === "parallel_session_qualified") ?? [];
   const saveSetup = async () => {
@@ -159,6 +165,7 @@ export default function FleetPage() {
         <p className="font-medium">Create one new account</p>
         {!setup?.configured && <p>Set up Fleet below to select the unopened source and capacity.</p>}
         {setup?.configured && !qualified.length && <p>Start and verify the template below before creating a clone.</p>}
+        {preview === null && qualified.some(item => item.instance === source) && <p role="status">Checking the next clone name…</p>}
         {preview?.state === "blocked" && <p role="status" className="text-danger">Creation blocked: {preview.reason?.replaceAll("_", " ")}. {preview.reason === "fleet_capacity_exceeded" && <a href="#fleet-setup" className="underline">Increase Fleet capacity</a>}</p>}
         {preview?.state === "eligible" && <p>Source <strong>{source}</strong> · new emulator <strong>{preview.targets[0]}</strong>. The clone will first launch Tower, accept I Agree, complete the tutorial, and prove its new account ID after restart.</p>}
         <div className="flex flex-wrap gap-2">
@@ -212,9 +219,10 @@ export default function FleetPage() {
       <label className="mt-3 flex flex-col gap-1 text-sm">Instances (1–5)
         <input type="number" min={1} max={5} value={count} onChange={event => { setCount(Math.max(1, Math.min(5, Number(event.target.value) || 1))); setConfirmed(false); }} className="w-28 rounded-md border bg-background px-3 py-2" />
       </label>
+      {preview === null && (mode === "fresh" || qualified.some(item => item.instance === source)) && <p role="status" className="mt-3 text-sm">Checking available target names…</p>}
       {preview?.state === "blocked" && <p role="status" className="mt-3 text-sm text-danger">Blocked: {preview.reason?.replaceAll("_", " ")}</p>}
       {preview?.state === "eligible" && <p className="mt-3 text-sm">Target names: <span className="font-mono">{preview.targets.map((name, index) => <span key={name}>{index > 0 ? ", " : ""}{name}</span>)}</span></p>}
-      <label className="mt-4 flex max-w-2xl items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /> Confirm {mode === "clone" ? `cloning from ${source || "the selected source"}` : "fresh instance creation"} for the exact target names shown. Manager operations may require operator review.</label>
+      <label className="mt-4 flex max-w-2xl items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} disabled={preview?.state !== "eligible"} onChange={event => setConfirmed(event.target.checked)} /> Confirm {mode === "clone" ? `cloning from ${source || "the selected source"}` : "fresh instance creation"} for the exact target names shown. Manager operations may require operator review.</label>
       <button onClick={submit} disabled={!canRequest} className="mt-3 rounded-md border px-3 py-2 text-sm disabled:opacity-50">{busy ? "Requesting…" : mode === "clone" ? "Request clones" : "Request fresh instances"}</button>
     </SectionCard>
     <SectionCard title="Provisioning">
