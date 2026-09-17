@@ -333,11 +333,12 @@ def collecting(bot_on_main_menu: Any) -> Any:
 def test_collect_stats_walks_home_settings_stats_and_home_read_only(
     collecting: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Success: three located taps, one per step, and a recorded reading."""
+    """Success: four located taps, one per panel transition, and a reading."""
     drive(collecting, monkeypatch, [
         home(),                                   # tap the settings control
         ('stats_summary', settings_boxes()),      # Settings seen: tap Stats
-        ('stats_summary', recorded('stats_summary')),  # Stats read: tap close
+        ('stats_summary', recorded('stats_summary')),  # Stats read: close Stats
+        ('settings_redacted', settings_boxes()),       # close Settings
         # Two home frames: the tracker debounces, so the first frame after
         # the panel closes has not confirmed the main menu again yet.
         home(), home(),
@@ -346,13 +347,30 @@ def test_collect_stats_walks_home_settings_stats_and_home_read_only(
     assert result['status'] == 'completed'
     assert result['result']['reason'] == 'collected'
     assert result['result']['screen_id'] == 'account.stats.summary'
-    assert result['trail'] == ['open_settings', 'open_stats', 'collect', 'confirm_home']
+    assert result['trail'] == ['open_settings', 'open_stats', 'collect',
+                               'close_settings', 'confirm_home']
     # The Stats control is tapped where THIS frame's OCR put it (664+114//2,
-    # 826+42//2); the other two are template matches on the recorded frames.
-    assert collecting.device.taps == [(1029, 373), (721, 847), (904, 508)]
+    # 826+42//2); the other three are template matches on recorded frames.
+    assert collecting.device.taps == [(1029, 373), (721, 847), (904, 508), (904, 508)]
     readings = collecting.account_state.snapshot()['screen_readings']['readings']
     assert [r['screen_id'] for r in readings] == ['account.settings', 'account.stats.summary']
     assert not collecting.collection.active
+
+
+def test_collect_stats_closes_settings_after_stats_before_confirming_home(
+    collecting: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    drive(collecting, monkeypatch, [
+        home(),
+        ('settings_redacted', settings_boxes()),
+        ('stats_summary', recorded('stats_summary')),
+        ('settings_redacted', settings_boxes()),
+        home(), home(),
+    ])
+    assert collecting.device.taps == [
+        (1029, 373), (721, 847), (904, 508), (904, 508),
+    ]
+    assert collecting.collection.snapshot()['status'] == 'completed'
 
 
 def test_collect_stats_stops_after_one_tap_when_settings_never_opens(

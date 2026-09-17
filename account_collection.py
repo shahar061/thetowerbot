@@ -1,8 +1,8 @@
-"""One explicit, read-only Collect stats transaction: Home -> Settings -> Stats -> Home.
+"""One explicit, read-only Collect stats transaction: Home -> Settings -> Stats -> Settings -> Home.
 
-Nothing here spends, purchases or mutates game state. The only three taps it
+Nothing here spends, purchases or mutates game state. The only four taps it
 can ever issue are the main menu's settings control, the Settings panel's
-Stats row, and that panel's own close button - each located on the very
+Stats row, then each panel's own close button - each located on the very
 frame it is tapped from, never from a coordinate remembered across scans.
 
 Every step verifies the screen it expects on THIS frame before it acts and
@@ -73,6 +73,7 @@ class Step(Enum):
     OPEN_SETTINGS = auto()
     OPEN_STATS = auto()
     COLLECT = auto()
+    CLOSE_SETTINGS = auto()
     CONFIRM_HOME = auto()
 
 
@@ -343,6 +344,16 @@ class StatsCollection(ControlTaps):
                     return self._wait('stats_not_reached', 'The Stats panel was not observed after '
                                       'the Stats control was tapped.', moment)
                 self._collected = screen_id
+                return self._tap(screen, device, templates, CLOSE_TEMPLATE, 'close_control',
+                                 Step.CLOSE_SETTINGS, moment)
+
+            if self._step is Step.CLOSE_SETTINGS:
+                if error is not None:
+                    return self._finish('failed', 'settings_unreadable', 'The account screen '
+                                        'reader reported an error while returning from Stats.', moment)
+                if screen_id != SETTINGS_SCREEN:
+                    return self._wait('settings_not_restored', 'The Settings panel was not observed '
+                                      'after closing Stats.', moment)
                 return self._tap(screen, device, templates, CLOSE_TEMPLATE, 'close_control',
                                  Step.CONFIRM_HOME, moment)
 
