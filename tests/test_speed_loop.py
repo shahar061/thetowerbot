@@ -119,6 +119,22 @@ def test_a_target_above_the_reading_climbs(in_run: TowerBot) -> None:
     assert tapped_in(PLUS_BOX, in_run.device.taps)
 
 
+def test_reroll_raises_speed_before_any_other_battle_action(
+    in_run: TowerBot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    in_run.reroll_progress = object()
+    in_run.controls.apply({"target_speed": 1.0})
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        raise AssertionError("battle action ran before speed was raised")
+
+    monkeypatch.setattr(in_run.gem, "observe", unexpected)
+    monkeypatch.setattr(in_run, "find_and_click_image", unexpected)
+    assert in_run.run_once()
+    assert len(tapped_in(PLUS_BOX, in_run.device.taps)) == 1
+    assert len(in_run.device.taps) == 1
+
+
 def test_a_target_below_the_reading_descends(bot_in_run_fast: TowerBot) -> None:
     """The other direction, end to end: in_run_fast really reads x1.5, the
     target is really x1.0, and the tap has to land in the measured - button."""

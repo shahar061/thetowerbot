@@ -516,7 +516,8 @@ class TowerBot:
             self.screen,
             self.device,
             self.templates,
-            target=settings.strategy.target_speed,
+            target=(max(config.TARGET_SPEEDS) if self.reroll_progress is not None
+                    else settings.strategy.target_speed),
             anchor=anchor,
             tuning=settings.strategy,
         ) is not None
@@ -907,6 +908,16 @@ class TowerBot:
         # who pressed the button stopped watching for it.
         commands = self.controls.drain()
         speed_changed = self._manage_speed(settings, in_run_anchor, commands)
+        if speed_changed and self.reroll_progress is not None:
+            # The readout changes after the tap. Give it a fresh frame before
+            # any gem claim, in-battle purchase, or navigation can act.
+            if self.frames is not None:
+                self.frames.set_boxes([])
+            self.bus.publish(events.ScanCompleted(
+                screen=state.value, duration_ms=(time.monotonic() - started) * 1000,
+                wallet=self.wallet,
+            ))
+            return True
 
         # A visit owns the frame while it runs. Three things below key off
         # this rather than off the screen state, because the pages a visit
