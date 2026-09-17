@@ -209,14 +209,18 @@ export default function LedgerPage() {
                       {clock(line.ts)}
                     </td>
                     <td className="py-1.5 pr-3">
-                      <span
+                      <button
+                        type="button"
+                        aria-label={`Filter ${line.kind}`}
+                        aria-pressed={kind === line.kind}
+                        onClick={() => setKind((on) => (on === line.kind ? null : line.kind))}
                         className={cn(
-                          "rounded px-1.5 py-0.5 font-mono text-[10px]",
+                          "rounded px-1.5 py-0.5 font-mono text-[10px] hover:underline focus-visible:outline-2 focus-visible:outline-primary",
                           KIND_TONE[line.kind] ?? "bg-muted text-muted-foreground",
                         )}
                       >
                         {line.kind}
-                      </span>
+                      </button>
                     </td>
                     <td className="py-1.5 pr-3">
                       {line.item ?? "—"}
