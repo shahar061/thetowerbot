@@ -494,10 +494,11 @@ class BotRunner:
                             before_connect=(close_host_upgrade if self._host_popup_checker
                                             is not None else None),
                         )
+                    expected_account = self._verified_account()
                     self._supervisor = DeviceSupervisor(
                         path=self._supervisor_path, endpoint=self._attempt.endpoint,
                         connect=connect,
-                        expected_account=self._verified_account(),
+                        expected_account=expected_account,
                         game_package=self._game_package,
                         quarantine_on_exhaustion=self._host_adapter is not None,
                     )
@@ -507,6 +508,23 @@ class BotRunner:
                         if failure.state is RecoveryState.QUARANTINED:
                             raise IdentityError(f"identity incident: {failure.reason}")
                         raise EmulatorError(failure.reason)
+                    if self._reroll_progress is not None:
+                        from fleet.account_observer import StagingAccountObserver
+                        from fleet.restart_account import verify_restart_account
+
+                        if self._unknown_dir is None or expected_account is None:
+                            raise RecoveryBlocked("reroll account evidence unavailable")
+                        raw_device = self._supervisor.device
+                        info = raw_device.app_info(self._game_package)
+                        version = getattr(info, "version_name", None)
+                        if not isinstance(version, str) or not version.strip():
+                            raise RecoveryBlocked("reroll game version unavailable")
+                        observer = StagingAccountObserver(
+                            self._unknown_dir, endpoint=self._attempt.endpoint,
+                            allowed_versions=frozenset({version}))
+                        verify_restart_account(
+                            device=raw_device, observe=observer,
+                            supervisor=self._supervisor, expected_account=expected_account)
                     device = GuardedDevice(self._supervisor)
                 else:
                     device = self._device_factory()
