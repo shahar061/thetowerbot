@@ -5,6 +5,7 @@ import {
   fetchStrategy, fetchUnknown, patchControl, saveStrategy, shutdown,
   startBot, stopBot,
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
+  fetchFleet, requestFleetClones,
 } from "./api";
 import type { Strategy } from "./types";
 
@@ -81,6 +82,19 @@ beforeEach(() => {
   respond(200, {});
   vi.stubEnv("NEXT_PUBLIC_BACKEND_HASH", "backend-hash");
   vi.stubEnv("NEXT_PUBLIC_UI_HASH", "ui-hash");
+});
+
+describe("fleet routes", () => {
+  it("reads the fleet snapshot", async () => {
+    await fetchFleet();
+    expect(callArgs()[0]).toBe("/api/fleet");
+  });
+  it("requires the fleet capability before sending a clone request", async () => {
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(validStatus) });
+    await expect(requestFleetClones("seed", 2)).rejects.toMatchObject({ status: 412 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("advisor routes", () => {

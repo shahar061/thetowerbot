@@ -104,8 +104,7 @@ emulator; anything under `ANCHOR_THRESHOLD` means they are not.
 
 #### Named BlueStacks fleet workers
 
-BlueStacks Air has no proven scriptable create, clone, reset, or stop interface
-on this host. Use a bounded, manually provisioned pool. Create the instance in
+The default worker still uses a bounded, manually provisioned pool. Create the instance in
 the BlueStacks UI, verify its ADB port, and write a JSON inventory such as:
 
 ```json
@@ -120,9 +119,8 @@ read-only to the bot. Supply `--game-package` with the verified Tower package
 for relaunch. A stopped manual instance requires an operator start;
 recovery then retries the exact leased endpoint and quarantines that worker
 on exhaustion. A session-conflict modal also quarantines without choosing
-either response. Automatic replenishment is unavailable until a host control
-API is independently qualified. Clone staging is reserved for later
-qualification and has no dashboard command.
+either response. Automatic replenishment remains unavailable for the manual
+pool.
 
 M05 clone-source qualification is an explicit staging transaction in
 `fleet/clone_qualification.py`. It records a source Account popup observation,
@@ -133,9 +131,16 @@ BlueStacks version, source lineage and version, game version, instance
 configuration, three distinct Tower Account IDs, endpoints, leases, and
 evidence times. The read gate closes on missing, simulated, stale, or changed
 scope. The installed manual pool cannot stage or restart clones, so it records
-`unqualified` with `unsupported_host_capability`; no dashboard clone command
-is enabled. A future host driver must independently attest its live capability
-and measured scope before M05 can record `passed`.
+`unqualified` with `unsupported_host_capability`. The Fleet dashboard reads a
+safe status snapshot and exposes a clone request only when a live driver and
+current qualification record are explicitly supplied to `create_app`. Requests
+use the driver's exclusive staging lease and show queued, staging, verifying,
+blocked, quarantined, and ready states. The default command-line worker does
+not configure this controller. A staged clone cannot become ready without an
+explicit identity reset and fresh recovery verifier; no account is linked
+automatically. A host configuration change closes the qualification gate,
+including after a clone is created, so remaining requested clones block until
+the source is qualified again.
 
 On macOS, `./run.sh` checks the exact local BlueStacks Air window for the
 measured **Upgrade available** host notice when connecting. It presses only
