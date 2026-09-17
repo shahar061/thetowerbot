@@ -64,6 +64,29 @@ def test_the_overlay_shows_what_the_autopilot_read(
     assert bot.frames.boxes(), "the device view went blank while the autopilot was deciding"
 
 
+def test_reroll_collects_stats_once_from_a_clear_main_menu(
+    bot_on_main_menu: Callable[..., TowerBot],
+) -> None:
+    class Progress:
+        requested = False
+
+        def shopping_policy(self, policy):
+            return policy
+
+        def stats_due(self):
+            return not self.requested
+
+        def note_stats_requested(self):
+            self.requested = True
+
+    bot = bot_on_main_menu(Shopping())
+    progress = Progress()
+    bot.reroll_progress = progress
+    bot.run_once()
+    assert progress.requested
+    assert bot.collection.active
+
+
 # -- Claim cadence in the loop ---------------------------------------------
 def test_a_due_claim_is_armed_from_the_main_menu(bot_on_main_menu: Callable[..., TowerBot]) -> None:
     """The same frame shopping.begin() reserves, and only when it declined.

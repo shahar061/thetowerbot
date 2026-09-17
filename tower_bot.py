@@ -19,7 +19,7 @@ Usage:
 
 from __future__ import annotations
 
-from account_collection import StatsCollection
+from account_collection import StatsCollection, at_home
 from milestones_claim import MilestonesClaim
 from milestones_screen import MilestonesReadings
 from missions_claim import MissionsClaim
@@ -717,6 +717,15 @@ class TowerBot:
         # OPEN_CARDS step - holds nav/claim_reward.png and nav/skip.png, both
         # of which match it at 1.0000.
         milestones_page = self.milestones.scan(self.screen, boxes=shared_boxes)
+        if (self.reroll_progress is not None and not settings.paused
+                and not panel and not missions_page and not milestones_page
+                and not self.shopping.active and not self.shopping.reconciliation_pending
+                and not self.collection.active and not self.visit.active
+                and not self.claim.active and not self.milestones_claim.active
+                and at_home(state.value, screen_readings.current_evidence())
+                and self.reroll_progress.stats_due()):
+            if self.collection.request():
+                self.reroll_progress.note_stats_requested()
         # Pause is the operator's stop-touching-my-device control, and this
         # block is the one path that taps while the guard is up - so pause
         # has to reach it. The runner already refuses to ARM a transaction on
@@ -1108,9 +1117,10 @@ class TowerBot:
                 self.device,
                 now=time.monotonic(),
                 tuning=settings.strategy,
-                go_home=self.shopping.due(
-                    shopping_policy, self.runs.completed
-                ),
+                go_home=(self.shopping.due(shopping_policy, self.runs.completed)
+                         or (state is screens.ScreenState.GAME_OVER
+                             and self.reroll_progress is not None
+                             and self.reroll_progress.stats_due())),
                 # The way off a menu page. NAV_BUTTONS is keyed by
                 # ScreenState, which has no member for one, so the bot could
                 # neither act on the workshop (the loop above gates on

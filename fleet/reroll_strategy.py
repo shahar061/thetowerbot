@@ -26,7 +26,7 @@ def ensure_reroll_strategy(runtime: WorkerRuntime) -> None:
         auto_navigate=True,
         autopilot=AutopilotPolicy(enabled=True, preset="turtle", purpose="milestone"),
         shopping=replace(base.shopping, enabled=True, armed=True,
-                         coin_budget=None, coin_budget_pct=0.5, allow_unlocks=True),
+                         coin_budget=None, coin_budget_pct=None, allow_unlocks=True),
         claims=Claims(enabled=True),
     ))
     store.set_active("reroll")

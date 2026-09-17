@@ -31,6 +31,19 @@ def test_single_planned_row_uses_existing_shopping_executor(tmp_path: Path) -> N
     assert record["state"] == "observe_price"
 
 
+def test_reroll_unlock_rule_is_armed_even_if_saved_strategy_disabled_unlocks(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        for item in ("Damage", "Attack Speed"):
+            connection.execute("INSERT INTO ledger(ts,kind,item,category,currency,dry_run,detail) "
+                               "VALUES(1,'WORKSHOP_BUY',?,'ATTACK','coins',0,?)",
+                               (item, json.dumps({"verdict": "bought"})))
+    policy = progress.shopping_policy(Strategy.from_config().shopping)
+    assert policy.workshop[0].name == "Unlock Cash Bonuses"
+    assert policy.allow_unlocks is True
+    assert policy.coin_budget_pct is None
+
+
 def test_only_confirmed_ledger_purchase_advances_plan(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     path = progress.root / "tower_bot.db"
@@ -71,6 +84,20 @@ def test_verified_account_readings_and_lifetime_coins_feed_decision(tmp_path: Pa
                     "status": "observed", "raw_value": "1.5T"}]}]}}
     progress.account_state = Readings()
     assert progress.decision().lifetime_coins == 1_500_000_000_000
+    restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
+    assert restarted.decision().lifetime_coins == 1_500_000_000_000
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        connection.execute("INSERT INTO runs(id,started_at,ended_at,tier,wave,coins) "
+                           "VALUES(2,11,12,1,10,250)")
+    assert restarted.decision().lifetime_coins == 1_500_000_000_250
+
+
+def test_lifetime_coins_from_another_account_are_rejected(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    (progress.root / "reroll-lifetime.json").write_text(json.dumps({
+        "account_id": "ACCOUNT-B", "lifetime_coins": 500, "observed_at": 10,
+    }))
+    assert progress.decision().lifetime_coins is None
 
 
 def test_stale_price_cannot_authorize_purchase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,8 +115,29 @@ def test_battle_policy_follows_verified_account_stage(tmp_path: Path) -> None:
     base = AutopilotPolicy(enabled=True, preset="turtle")
     opening = progress.battle_policy(base)
     assert opening.enabled and opening.preset == "manual"
-    assert [rule.upgrade_id for rule in opening.rules][-2:] == ["attack_speed", "coins_per_kill_bonus"]
+    assert [rule.upgrade_id for rule in opening.rules] == ["damage", "attack_speed"]
     with db.connect(progress.root / "tower_bot.db") as connection:
         connection.execute("INSERT INTO runs(id,started_at,ended_at,tier,wave) VALUES(1,1,2,1,20)")
     progress.decision()
-    assert progress.battle_policy(base).preset == "turtle"
+    later = progress.battle_policy(base)
+    assert later.preset == "manual"
+    assert [rule.upgrade_id for rule in later.rules] == ["health", "health_regen"]
+
+
+def test_battle_policy_only_uses_confirmed_workshop_unlocks(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    base = AutopilotPolicy(enabled=True, preset="turtle")
+    path = progress.root / "tower_bot.db"
+    with db.connect(path) as connection:
+        connection.execute("INSERT INTO ledger(ts,kind,item,category,currency,dry_run,detail) "
+                           "VALUES(1,'WORKSHOP_BUY','Unlock Cash Bonuses','UTILITY','coins',0,?)",
+                           (json.dumps({"verdict": "unproven"}),))
+    assert all(rule.upgrade_id != "cash_per_wave" for rule in progress.battle_policy(base).rules)
+    with db.connect(path) as connection:
+        connection.execute("INSERT INTO ledger(ts,kind,item,category,currency,dry_run,detail) "
+                           "VALUES(2,'WORKSHOP_BUY','Unlock Cash Bonuses','UTILITY','coins',0,?)",
+                           (json.dumps({"verdict": "bought"}),))
+    opening = progress.battle_policy(base)
+    assert "cash_per_wave" in [rule.upgrade_id for rule in opening.rules]
+    assert "coins_per_wave" not in [rule.upgrade_id for rule in opening.rules]
+    assert "damage" in [rule.upgrade_id for rule in opening.rules]

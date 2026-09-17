@@ -113,6 +113,19 @@ export const fetchRuns = (limit = 30) => getJson<RunRow[]>(`/api/runs?limit=${li
 export const fetchRunEvents = (id: number) => getJson<StoredEvent[]>(`/api/runs/${id}/events`);
 export const fetchRunPurchases = (id: number) =>
   getJson<RunPurchasePayload>(`/api/runs/${id}/purchases`, { cache: "no-store" });
+/** Shared Fleet reads name the worker explicitly; the top account selection
+ * must never change which worker's purchases a row belongs to. */
+const workerRead = <T>(path: string, accountKey: string) =>
+  getJson<T>(path, { cache: "no-store", headers: { "x-account-scope": accountKey } }, false);
+export const fetchAccountWorkshopPurchases = (accountKey: string, before?: number) =>
+  workerRead<LedgerPayload>(
+    `/api/ledger?kind=WORKSHOP_BUY&limit=100${before !== undefined ? `&before=${before}` : ""}`,
+    accountKey,
+  );
+export const fetchAccountRuns = (accountKey: string) =>
+  workerRead<RunRow[]>("/api/runs?limit=1", accountKey);
+export const fetchAccountRunPurchases = (accountKey: string, runId: number) =>
+  workerRead<RunPurchasePayload>(`/api/runs/${runId}/purchases`, accountKey);
 export const fetchUnknown = () => getJson<Snapshot[]>("/api/unknown");
 export const fetchStats = () => getJson<StatsPayload>("/api/stats");
 export const fetchErrors = (limit = 100) => getJson<StoredEvent[]>(`/api/errors?limit=${limit}`);

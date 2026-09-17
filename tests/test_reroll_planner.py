@@ -38,6 +38,12 @@ def test_verified_purchase_moves_the_plan_and_unverified_does_not() -> None:
     assert choose_next(facts(purchases={"damage": 1})).upgrade_id != baseline.upgrade_id
 
 
+def test_utility_unlocks_follow_the_visible_workshop_order() -> None:
+    purchases = {"damage": 1, "attack_speed": 1}
+    assert choose_next(facts(purchases=purchases)).upgrade_id == "unlock_cash_bonuses"
+    assert choose_next(facts(purchases={**purchases, "unlock_cash_bonuses": 1})).upgrade_id == "unlock_coin_bonuses"
+
+
 def test_price_and_balance_decide_buy_or_save() -> None:
     inputs = dict(prices={"damage": 120}, lifetime_coins=200)
     saving = choose_next(facts(wallet_coins=80, **inputs))
