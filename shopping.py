@@ -39,6 +39,7 @@ from device import Image, tap
 from digits import NumberReader
 from perception import Observation, ObservedUpgrade, observe_frame, price_number
 from strategy import Shopping, Strategy
+from supervisor import RecoveryPreflightBlocked
 
 if TYPE_CHECKING:
     from autopilot import AutopilotState
@@ -663,10 +664,23 @@ class ShoppingSession:
             return True
 
         tab_template = config.WORKSHOP_TABS[category]
-        match = vision.locate_template(screen, self._templates.get(tab_template), self._threshold)
+        # These four buttons share a bright border. On the first Workshop
+        # visit the tutorial arrow can make Defense's border match the UW
+        # button more strongly than Defense itself. Search only its column.
+        lane = tuple(config.WORKSHOP_TABS).index(category)
+        lane_width = screen.shape[1] // 4
+        left = lane * lane_width
+        right = (lane + 1) * lane_width
+        template = self._templates.get(tab_template)
+        # The tutorial arrow overlaps the lower half of Defense's button.
+        # Its top border and icon remain unobscured in the live frame.
+        match = vision.locate_template(
+            screen[:, left:right], template[:template.shape[0] // 2], self._threshold,
+        )
         if match is None:
             return self._miss(device, shopping, screen, f"{category} tab button")
-        x, y = match.center
+        x = match.top_left[0] + left + template.shape[1] // 2
+        y = match.top_left[1] + template.shape[0] // 2
         self._register_progress()
         self._try_tap(x, y, device, shopping, screen)
         return False
@@ -825,7 +839,12 @@ class ShoppingSession:
                                                     detail="funds committed to another plan", coins_before=coins))
             self._exhausted.add(rule.name)
             return
-        if not self._try_tap(*seen.tap, device, shopping, screen):
+        try:
+            sent = self._try_tap(*seen.tap, device, shopping, screen)
+        except RecoveryPreflightBlocked:
+            self._abandon_intent(intent, "input refused before tap")
+            return
+        if not sent:
             self._abandon_intent(intent, "the tap was never sent")
             return
         self._mark_acted(intent)
@@ -1101,7 +1120,12 @@ class ShoppingSession:
                 gems_before=gems))
             self._step = Step.RETURN
             return
-        if not self._try_tap(x, y, device, shopping, screen):
+        try:
+            sent = self._try_tap(x, y, device, shopping, screen)
+        except RecoveryPreflightBlocked:
+            self._abandon_intent(intent, "input refused before tap")
+            return
+        if not sent:
             self._abandon_intent(intent, "the tap was never sent")
             return
         self._mark_acted(intent)
