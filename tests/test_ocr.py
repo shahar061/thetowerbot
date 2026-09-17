@@ -24,6 +24,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
         ("$10", 10),
         ("1.77K", 1770),
         ("2M", 2_000_000),
+        ("1.5T", 1_500_000_000_000),
         ("0", 0),
         # Regression: float(digits) * multiplier is not always exact -
         # 2.01 * 1000 lands at 2009.9999999999998, which int() truncates to

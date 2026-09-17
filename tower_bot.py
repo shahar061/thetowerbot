@@ -120,6 +120,7 @@ class TowerBot:
         milestones: MilestonesReadings | None = None,
         unknown_dir: Path | None = None,
         supervisor: DeviceSupervisor | None = None,
+        reroll_progress: Any | None = None,
     ) -> None:
         self.account_state = account_state
         self._screen_readings = account_state.screen_readings if account_state is not None else ScreenReadings()
@@ -160,6 +161,10 @@ class TowerBot:
         self.wallet: int | None = None
         self.autopilot = BattleAutopilot(autopilot_state, bus, account_state)
         self.shopping.account_state = account_state
+        self.reroll_progress = reroll_progress
+        self._reroll_shopping_policy = None
+        if reroll_progress is not None:
+            self.shopping.reroll_observe_price = reroll_progress.observe_price
         self.shopping.observations = self.autopilot.state
         # Read once, here, rather than per scan: both configure an object
         # that carries state across scans (the tracker's part-confirmed
@@ -640,6 +645,13 @@ class TowerBot:
                 self.autopilot.suspend("Run boundary", clear_battle=True)
 
         state = self.tracker.state
+        shopping_policy = settings.strategy.shopping
+        if self.reroll_progress is not None:
+            if self.shopping.active and self._reroll_shopping_policy is not None:
+                shopping_policy = self._reroll_shopping_policy
+            elif state is screens.ScreenState.MAIN_MENU and not self.shopping.reconciliation_pending:
+                shopping_policy = self.reroll_progress.shopping_policy(shopping_policy)
+                self._reroll_shopping_policy = shopping_policy
 
         # A crashed spend owns the device, even if startup finds a different
         # screen. No speed, claim, navigation or battle action may precede proof.
@@ -648,7 +660,7 @@ class TowerBot:
             self.wallet = None
             self.autopilot.suspend("Transaction restart reconciliation; actions held")
             if not settings.paused:
-                self.shopping.advance(self.screen, self.device, settings.strategy.shopping,
+                self.shopping.advance(self.screen, self.device, shopping_policy,
                                       tuning=settings.strategy)
             if self.frames is not None:
                 self.frames.set_boxes([])
@@ -982,7 +994,9 @@ class TowerBot:
                 # could not navigate back off it either. `step()` takes no
                 # anchor; it re-reads the panel from the frame itself.
                 if not speed_changed and not commands:
-                    clicked = self.autopilot.step(self.screen, self.device, settings.strategy.autopilot,
+                    battle_policy = (self.reroll_progress.battle_policy(settings.strategy.autopilot)
+                                     if self.reroll_progress is not None else settings.strategy.autopilot)
+                    clicked = self.autopilot.step(self.screen, self.device, battle_policy,
                                                    cash=self.wallet, cooldown=settings.strategy.click_cooldown,
                                                    run_id=self.runs.current_id,
                                                    identity=self.run_identity(settings),
@@ -1030,7 +1044,7 @@ class TowerBot:
             # only one maintenance walk may hold the menus. So the claim is
             # only offered on a frame the visit declined - reading begin()'s
             # existing answer rather than re-deriving the same decision.
-            if not self.shopping.begin(settings.strategy.shopping, self.runs.completed):
+            if not self.shopping.begin(shopping_policy, self.runs.completed):
                 armed = self._offer_claim(settings)
                 if armed is not None:
                     logger.info("Armed a %s claim from the main menu.", armed)
@@ -1070,7 +1084,7 @@ class TowerBot:
                 now=time.monotonic(),
                 tuning=settings.strategy,
                 go_home=self.shopping.due(
-                    settings.strategy.shopping, self.runs.completed
+                    shopping_policy, self.runs.completed
                 ),
                 # The way off a menu page. NAV_BUTTONS is keyed by
                 # ScreenState, which has no member for one, so the bot could
@@ -1106,7 +1120,7 @@ class TowerBot:
             self.shopping.advance(
                 self.screen,
                 self.device,
-                settings.strategy.shopping,
+                shopping_policy,
                 tuning=settings.strategy,
             )
 
@@ -1802,6 +1816,9 @@ def main(argv: list[str] | None = None) -> int:
 def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     from bluestacks import BlueStacksAdapter, ManualPool
 
+    if args.reroll_pool is not None and not args.store:
+        logger.error("reroll progression requires a stored, account-bound worker database")
+        return 1
     attempt = None
     if runtime is not None:
         if args.reroll_pool is not None:
@@ -1953,6 +1970,10 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     )
 
     account_state = AccountState(AccountRepository(db_path) if args.store else None)
+    reroll_progress = None
+    if args.reroll_pool is not None and runtime is not None:
+        from fleet.reroll_progress import RerollProgress
+        reroll_progress = RerollProgress(runtime.root, registered["account_id"], account_state)
 
     bus = events.EventBus(start_seq=seed_seq)
     state = BotState()
@@ -2064,6 +2085,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 first_run_id=last_run + 1,
                 best_wave=seed_best_wave,
                 account_state=account_state,
+                reroll_progress=reroll_progress,
                 frames=frames,
                 unknown_dir=runtime.evidence_root if runtime is not None else None,
             )
@@ -2087,6 +2109,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 first_run_id=last_run + 1,
                 best_wave=seed_best_wave,
                 account_state=account_state,
+                reroll_progress=reroll_progress,
                 unknown_dir=runtime.evidence_root if runtime is not None else None,
                 attempt=attempt,
                 binding_path=(runtime.checkpoint_root / f"{attempt.generation}.json")
@@ -2130,6 +2153,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 first_run_id=last_run + 1,
                 best_wave=seed_best_wave,
                 account_state=account_state,
+                reroll_progress=reroll_progress,
                 frames=frames,
                 unknown_dir=runtime.evidence_root if runtime is not None else None,
             )

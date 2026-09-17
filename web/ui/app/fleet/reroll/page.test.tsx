@@ -8,7 +8,8 @@ vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ account
 vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
 
 const members = [
-  { name: "Air_1", endpoint: "127.0.0.1:5555", lease_id: "a", state: "running", account_id: "100", wave: 42, tier: 1, wallet_coins: 0 },
+  { name: "Air_1", endpoint: "127.0.0.1:5555", lease_id: "a", state: "running", account_id: "100", wave: 42, tier: 1, battle_cash: 0,
+    reroll_plan: { account_id: "100", stage: "opening", goal: "Reach Tier 1 Wave 20", state: "buy", item: "Damage", price: 10, wallet_coins: 25, lifetime_coins: null, reason: "Damage is affordable.", observed_at: 1 } },
   { name: "Air_2", endpoint: "127.0.0.1:5556", lease_id: "b", state: "needs_choice", account_id: "200", uw_result: "Golden Tower offered" },
 ];
 
@@ -43,6 +44,9 @@ test("running workers have distinct accounts, unknown metrics, and labelled jour
   ] });
   render(<RerollPage />);
   expect(await screen.findByText("Golden Tower offered")).toBeInTheDocument();
+  expect(screen.getByText("Next Workshop decision")).toBeInTheDocument();
+  expect(screen.getByText(/Workshop coins: 25/)).toBeInTheDocument();
+  expect(screen.getAllByText("Battle cash")).toHaveLength(2);
   expect(screen.getAllByText("—").length).toBeGreaterThan(3);
   fireEvent.click(screen.getByRole("link", { name: "Open account 200" }));
   expect(choose).toHaveBeenCalledWith("two");
