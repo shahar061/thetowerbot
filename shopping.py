@@ -226,6 +226,9 @@ class ShoppingSession:
         self.journal = journal
         self.currencies = CurrencyRepository(journal.path) if journal is not None else None
         self.account_state: AccountState | None = None
+        # Optional reroll planner observation. The buyer still owns every
+        # authorization and transaction; this only reports fresh row facts.
+        self.reroll_observe_price: Any | None = None
         self._templates = templates
         self._bus = bus
         self._reader = reader
@@ -767,6 +770,9 @@ class ShoppingSession:
             self._abort(device, shopping, screen, f"{category} heading not confirmed")
             return
         seen = _row_named(rule.name, visible, category)
+        if self.reroll_observe_price is not None:
+            self.reroll_observe_price(rule_id, coins,
+                                      seen.price if seen is not None and seen.status == "available" else None)
         if seen is None and self._already_unlocked(entry, observation):
             self._retire_unlock(rule.name, rule_id, coins)
             return

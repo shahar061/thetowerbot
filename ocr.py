@@ -115,8 +115,9 @@ def read(screen: Image | None, *, strict: bool = False,
 # fullmatch() is itself the anchor - a leading/trailing ^/$ in the pattern
 # would be a no-op. A partial match on "0.00/sec" or "x1.20" would report a
 # stat value as a price; refusing is always safe, while a wrong number is not.
-_NUMBER = re.compile(r"\$?(\d+(?:\.\d+)?)([KMB])?")
-_SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
+_NUMBER = re.compile(r"\$?(\d+(?:\.\d+)?)([KMBT])?")
+_SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000,
+             "T": 1_000_000_000_000}
 
 
 def parse_number(text: str) -> int | None:

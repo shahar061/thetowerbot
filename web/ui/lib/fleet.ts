@@ -44,10 +44,14 @@ export type FleetSetup = {
 };
 
 export type RerollCandidate = { name: string; endpoint: string; state: string };
+export type RerollPlan = { account_id: string; stage: string; goal: string; state: string;
+  item: string | null; price: number | null; wallet_coins: number | null;
+  lifetime_coins: number | null; reason: string; observed_at: number };
 export type RerollMember = { name: string; endpoint: string; lease_id: string; state: string;
   account_id?: string | null; account_key?: string | null; milestone?: string | null;
   tier?: number | null; wave?: number | null; run_duration_seconds?: number | null;
-  best_tier_1_wave?: number | null; wallet_coins?: number | null; run_coins?: number | null;
+  best_tier_1_wave?: number | null; battle_cash?: number | null; run_coins?: number | null;
+  reroll_plan?: RerollPlan | null;
   wallet_gems?: number | null; wallet_stones?: number | null; wallet_medals?: number | null;
   uw_result?: string | null; observed_at?: number | null; error?: string | null;
   evidence?: string | null; recent_runs?: string[] | null };

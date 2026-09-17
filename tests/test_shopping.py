@@ -1885,6 +1885,22 @@ def test_the_visit_budget_keeps_pace_with_the_wallet(
         [] if taps else ["budget"])
 
 
+def test_reroll_planner_receives_verified_row_price_before_purchase(
+    session, monkeypatch, fake_header,
+) -> None:
+    fake_header["coins"] = 1000
+    _priced_row(session, monkeypatch, price=300)
+    seen: list[tuple[str, int | None, int | None]] = []
+    session.reroll_observe_price = lambda upgrade, balance, price: seen.append(
+        (upgrade, balance, price))
+    policy = a_policy(armed=True, coin_budget_pct=.5, workshop=(
+        ShoppingRule(name="Damage", category="ATTACK"),))
+    session.begin(policy, run_count=1)
+    session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                      frame("menu_workshop_attack"), FakeDevice(), policy)
+    assert seen == [("damage", 1000, 300)]
+
+
 def test_a_wallet_share_and_a_coin_ceiling_both_bind(
     session, monkeypatch, fake_header,
 ) -> None:

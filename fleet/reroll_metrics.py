@@ -9,13 +9,16 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.request import urlopen
 
+import db as bot_db
+
 
 def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                      web_port: int, running: bool,
                      fetch: Callable[..., Any] = urlopen) -> dict[str, Any]:
     result: dict[str, Any] = {"milestone": "Reach T1 W60"}
     db_path = Path(worker_root) / "tower_bot.db"
-    if db_path.is_file():
+    account_bound = db_path.is_file() and bot_db.bound_account(db_path) == account_id
+    if account_bound:
         try:
             with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=.1) as db:
                 db.row_factory = sqlite3.Row
@@ -51,11 +54,20 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                 return result
             with fetch(base + "/api/status", timeout=.2) as response:
                 status = json.load(response)
-            result["wallet_coins"] = status.get("wallet")
+            result["battle_cash"] = status.get("wallet")
             run = status.get("run")
             if isinstance(run, dict):
                 result["run_duration_seconds"] = run.get("elapsed")
             result["observed_at"] = time.time()
         except (OSError, ValueError, TypeError, KeyError):
             pass
+    plan_path = Path(worker_root) / "reroll-plan.json"
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if (account_bound and plan.get("account_id") == account_id
+                and isinstance(plan.get("observed_at"), (int, float))
+                and time.time() - plan["observed_at"] <= 120):
+            result["reroll_plan"] = plan
+    except (OSError, ValueError, TypeError):
+        pass
     return result

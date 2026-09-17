@@ -99,6 +99,7 @@ class BotRunner:
         host_adapter: BlueStacksAdapter | None = None,
         host_instance: str | None = None,
         host_popup_checker: Callable[[str], str] | None = None,
+        reroll_progress: Any | None = None,
     ) -> None:
         self._bus = bus
         self._controls = controls
@@ -106,6 +107,7 @@ class BotRunner:
         self._templates = templates
         self._device_factory = device_factory
         self._unknown_dir = unknown_dir
+        self._reroll_progress = reroll_progress
         self._attempt = attempt
         self._binding_path = binding_path
         self._supervisor_path = supervisor_path
@@ -568,7 +570,7 @@ class BotRunner:
                 self._shopping.reset()
 
             strategy = self._controls.snapshot().strategy
-            bot = self._bot_factory(
+            bot_kwargs = dict(
                 device=device,
                 templates=self._templates,
                 bus=self._bus,
@@ -591,6 +593,9 @@ class BotRunner:
                 unknown_dir=self._unknown_dir,
                 supervisor=self._supervisor,
             )
+            if self._reroll_progress is not None:
+                bot_kwargs["reroll_progress"] = self._reroll_progress
+            bot = self._bot_factory(**bot_kwargs)
 
             self._bot = bot
             self._error = None
