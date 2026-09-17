@@ -107,3 +107,51 @@ def test_shopping_commitment_survives_restart_until_purchase_is_proven(tmp_path)
                                wallet_after=90, effect_changed=True)
     assert outcome.verdict == Verdict.BOUGHT
     assert CurrencyRepository(path).committed("gems") == 0
+
+
+def test_fresh_wallet_releases_resolved_uncertain_shopping_commitments(tmp_path) -> None:
+    from shopping import ShoppingSession
+    from transactions import Intent, TransactionJournal, Verdict
+
+    path = tmp_path / "bot.db"
+    journal = TransactionJournal(path)
+    currencies = CurrencyRepository(path)
+    for item, price in (("Unlock Cash Bonuses", 40), ("Unlock Coin Bonuses", 100)):
+        old = journal.open(Intent(item=item, category="UTILITY", currency="coins",
+                                  price=price, wallet_before=205, ts=1.0))
+        assert currencies.reserve(f"purchase:{old.key}", "coins", price, wallet=205)
+        journal.record_action(old.key, at=2.0)
+        assert journal.resolve(old.key, wallet_after=None, effect_changed=None,
+                               ts=3.0).verdict is Verdict.UNPROVEN
+    assert currencies.committed("coins") == 140
+
+    restarted = ShoppingSession(None, None, None, journal=TransactionJournal(path))
+    intent = restarted._open_intent(item="Unlock Defense Upgrades", category="DEFENSE",
+                                    currency="coins", price=75, wallet_before=192,
+                                    armed=True)
+
+    assert intent is not None
+    assert currencies.committed("coins") == 75
+    assert [t.key for t in journal.open_transactions()] == [intent.key]
+
+
+def test_old_wallet_evidence_keeps_uncertain_commitment(tmp_path) -> None:
+    from shopping import ShoppingSession
+    from transactions import Intent, TransactionJournal
+
+    path = tmp_path / "bot.db"
+    journal = TransactionJournal(path)
+    currencies = CurrencyRepository(path)
+    old = journal.open(Intent(item="Unlock Cash Bonuses", category="UTILITY",
+                              currency="coins", price=40, wallet_before=100, ts=1.0))
+    assert currencies.reserve(f"purchase:{old.key}", "coins", 40, wallet=100)
+    journal.record_action(old.key, at=2.0)
+    journal.resolve(old.key, wallet_after=None, effect_changed=None, ts=3.0)
+
+    session = ShoppingSession(None, None, None, journal=journal)
+    with pytest.raises(CommitmentError):
+        session._open_intent(item="Defense Absolute", category="DEFENSE",
+                             currency="coins", price=75, wallet_before=100,
+                             armed=True, before={"observed_at": 2.5})
+
+    assert currencies.committed("coins") == 40
