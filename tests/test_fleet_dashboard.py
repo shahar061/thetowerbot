@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Thread
 import time
 
 import pytest
@@ -123,6 +124,44 @@ def test_preview_reserves_explicit_names_and_capacity_without_host_mutation(tmp_
     with pytest.raises(FleetRequestError, match="capacity"):
         fleet.request("seed", 3)
     assert driver.staged == []
+
+
+def test_slow_source_check_does_not_hold_job_state_lock(tmp_path: Path) -> None:
+    fleet, _ = controller(tmp_path)
+    entered = Event()
+    release = Event()
+    original = fleet._source
+
+    def slow_source() -> tuple[str | None, str]:
+        entered.set()
+        release.wait(2)
+        return original()
+
+    fleet._source = slow_source  # type: ignore[method-assign]
+    reader = Thread(target=fleet.snapshot)
+    reader.start()
+    try:
+        assert entered.wait(1)
+        assert fleet._lock.acquire(timeout=.2), "slow host check held the job state lock"
+        fleet._lock.release()
+    finally:
+        release.set()
+        reader.join(timeout=2)
+    assert not reader.is_alive()
+
+
+def test_live_capabilities_are_attested_once_per_source_check(tmp_path: Path) -> None:
+    fleet, driver = controller(tmp_path)
+    calls = 0
+
+    def attest() -> bool:
+        nonlocal calls
+        calls += 1
+        return True
+
+    driver.attest_clone_capabilities = attest  # type: ignore[attr-defined]
+    assert fleet._source() == ("seed", "qualified")
+    assert calls == 1
 
 
 def test_fresh_request_is_available_without_clone_qualification_but_stays_blocked_for_identity(tmp_path: Path) -> None:

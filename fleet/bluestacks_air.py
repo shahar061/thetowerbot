@@ -887,11 +887,15 @@ class BlueStacksAirDriver:
     def supports_clone_staging(self) -> bool:
         return self._capability_scope() is not None
 
-    @property
-    def supports_m05_live_qualification(self) -> bool:
+    def attest_clone_capabilities(self) -> bool:
+        """Check the live Manager once for all capabilities needed by Fleet."""
         return (self._capability_scope() is not None and self.lineage_path is not None
                 and self.scope is not None
                 and bool(self.scope.instance_config.get("source_lease")))
+
+    @property
+    def supports_m05_live_qualification(self) -> bool:
+        return self.attest_clone_capabilities()
 
     @property
     def required_fresh_prefix(self) -> str | None:

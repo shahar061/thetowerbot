@@ -24,12 +24,18 @@ export default function FleetPage() {
 
   useEffect(() => {
     let active = true;
+    let polling = false;
     if (new URLSearchParams(window.location.search).get("reroll") === "1") setRerollOpen(true);
-    const refresh = () => fetchFleet().then(value => {
-      if (!active) return;
-      setFleet(value);
-      setSource(current => current || value.sources.find(item => item.state === "parallel_session_qualified")?.instance || "");
-    }).catch((failure: Error) => { if (active) setError(failure.message); });
+    const refresh = () => {
+      if (polling) return;
+      polling = true;
+      void fetchFleet().then(value => {
+        if (!active) return;
+        setFleet(value);
+        setSource(current => current || value.sources.find(item => item.state === "parallel_session_qualified")?.instance || "");
+      }).catch((failure: Error) => { if (active) setError(failure.message); })
+        .finally(() => { polling = false; });
+    };
     refresh();
     fetchFleetSetup().then(value => {
       if (!active) return;
@@ -96,7 +102,10 @@ export default function FleetPage() {
       const job = await requestFleetProvision(preview);
       setRerollJobId(job.id);
       setRerollOpen(false);
-      setFleet(await fetchFleet());
+      setFleet(current => current && { ...current, jobs: [
+        ...current.jobs.filter(existing => existing.id !== job.id),
+        { ...job, manager_result_url: `/api/fleet/requests/${job.id}` },
+      ] });
     } catch (failure) {
       setError((failure as Error).message);
     } finally {
@@ -108,9 +117,12 @@ export default function FleetPage() {
     setBusy(true);
     setError(null);
     try {
-      await requestFleetProvision(preview);
+      const job = await requestFleetProvision(preview);
       setConfirmed(false);
-      setFleet(await fetchFleet());
+      setFleet(current => current && { ...current, jobs: [
+        ...current.jobs.filter(existing => existing.id !== job.id),
+        { ...job, manager_result_url: `/api/fleet/requests/${job.id}` },
+      ] });
     } catch (failure) {
       setError((failure as Error).message);
     } finally {
