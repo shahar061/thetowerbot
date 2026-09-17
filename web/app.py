@@ -228,9 +228,11 @@ class CommandRequest(BaseModel):
     command: str
 
 
-class FleetCloneRequest(BaseModel):
-    source: str
+class FleetProvisionRequest(BaseModel):
+    mode: Literal["fresh", "clone"]
+    source: str | None = None
     count: int
+    targets: list[str]
 
 
 _CATEGORY_BY_UPGRADE: dict[str, str] = {u.id: u.category for u in upgrades.CATALOG}
@@ -1107,15 +1109,59 @@ def create_app(
             return {"sources": [], "jobs": [], "unavailable": "fleet_not_configured"}
         return fleet.snapshot()
 
-    @app.post("/api/fleet/clones", status_code=202)
-    def fleet_clone_request(body: FleetCloneRequest, background: BackgroundTasks) -> dict[str, Any]:
+    @app.get("/api/fleet/preview")
+    def fleet_preview(mode: Literal["fresh", "clone"], count: int,
+                      source: str | None = None) -> dict[str, Any]:
         if fleet is None:
             raise HTTPException(status_code=503, detail="fleet_not_configured")
         try:
-            job = fleet.request(body.source, body.count)
+            return fleet.preview(mode, source, count)
+        except FleetRequestError as exc:
+            return {"mode": mode, "source": source, "count": count,
+                    "targets": [], "state": "blocked", "reason": str(exc)}
+
+    @app.get("/api/fleet/qualification")
+    def fleet_qualification_evidence() -> dict[str, Any]:
+        if fleet is None:
+            raise HTTPException(status_code=503, detail="fleet_not_configured")
+        try:
+            return fleet.qualification_evidence()
+        except FleetRequestError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/fleet/requests/{job_id}")
+    def fleet_request_evidence(job_id: str) -> dict[str, Any]:
+        if fleet is None:
+            raise HTTPException(status_code=503, detail="fleet_not_configured")
+        try:
+            return fleet.request_evidence(job_id)
+        except FleetRequestError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/requests", status_code=202)
+    def fleet_provision_request(body: FleetProvisionRequest,
+                                background: BackgroundTasks) -> dict[str, Any]:
+        if fleet is None:
+            raise HTTPException(status_code=503, detail="fleet_not_configured")
+        try:
+            job = fleet.request(body.source, body.count, mode=body.mode,
+                                expected_targets=body.targets)
         except FleetRequestError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         background.add_task(fleet.run_pending, job["id"])
+        return job
+
+    @app.post("/api/fleet/requests/{job_id}/targets/{index}/{action}")
+    def fleet_resolve_target(job_id: str, index: int, action: Literal["retry", "quarantine"],
+                             background: BackgroundTasks) -> dict[str, Any]:
+        if fleet is None:
+            raise HTTPException(status_code=503, detail="fleet_not_configured")
+        try:
+            job = fleet.resolve(job_id, index, action)
+        except FleetRequestError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if action == "retry":
+            background.add_task(fleet.run_pending, job_id)
         return job
 
     @app.api_route("/api/{_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
