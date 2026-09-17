@@ -371,6 +371,16 @@ def test_web_binds_loopback_by_default() -> None:
     assert args.web_host == "127.0.0.1"
 
 
+def test_fleet_requires_explicit_local_idle_configuration(tmp_path) -> None:
+    assert tower_bot.main(["--web", "--idle", "--fleet-capacity", "5"]) == 1
+    assert tower_bot.main(["--web", "--idle", "--fleet-capacity", "5",
+                           "--fleet-name-prefix", "Tiramisu64_", "--fleet-root",
+                           str(tmp_path), "--web-host", "0.0.0.0"]) == 1
+    assert tower_bot.main(["--web", "--idle", "--fleet-capacity", "0",
+                           "--fleet-name-prefix", "Tiramisu64_", "--fleet-root",
+                           str(tmp_path)]) == 1
+
+
 def test_the_store_is_on_by_default_and_can_be_turned_off() -> None:
     assert parse_args([]).store is True
     assert parse_args(["--no-store"]).store is False

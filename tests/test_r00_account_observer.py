@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from config import Rect
 from ocr import TextBox
 from fleet.account_observer import (parse_account_popup, parse_google_play_profile,
+                                    parse_tower_consent,
                                     parse_new_account_warning,
                                     parse_game_stats_home,
                                     parse_settings, parse_home,
@@ -27,6 +28,37 @@ FIXTURE = Path(__file__).parent / "fixtures" / "r00" / "account_before_ocr.json"
 WARNING_FIXTURE = Path(__file__).parent / "fixtures" / "r00" / "new_account_warning_ocr.json"
 AFTER_FIXTURE = Path(__file__).parent / "fixtures" / "r00" / "account_after_ocr.json"
 ACCOUNT_FIXTURES = Path(__file__).parent / "fixtures" / "account_screens"
+
+
+def consent_boxes() -> tuple[TextBox, ...]:
+    return tuple(TextBox(label, .99, Rect(*rect)) for label, rect in (
+        ("THETOWER", (351, 569, 381, 56)),
+        ("This game uses 3rd party analytics", (189, 723, 701, 52)),
+        ("and advertising services", (290, 779, 497, 43)),
+        ("Please refer to all privacy policies", (201, 856, 678, 48)),
+        ("EULA", (471, 1091, 108, 42)),
+        ("Privacy Policy", (380, 1243, 282, 56)),
+        ('By tapping "I Agree," you confirm you\'ve', (144, 1460, 793, 43)),
+        ("I Agree", (449, 1735, 164, 58)),
+    ))
+
+
+def test_first_launch_consent_exposes_only_i_agree() -> None:
+    frame = np.zeros((2400, 1080, 3), dtype=np.uint8)
+    reading = parse_tower_consent(frame, consent_boxes(), observed_at=101.,
+                                  app_version="29.0.3", evidence_ref="capture://consent")
+    assert reading is not None
+    assert reading.screen == "tower_consent"
+    assert reading.controls == {"i_agree": (531, 1764)}
+
+
+@pytest.mark.parametrize("removed", ["THETOWER", "EULA", "Privacy Policy", "I Agree"])
+def test_incomplete_consent_never_exposes_agree(removed: str) -> None:
+    frame = np.zeros((2400, 1080, 3), dtype=np.uint8)
+    assert parse_tower_consent(
+        frame, tuple(box for box in consent_boxes() if box.text != removed),
+        observed_at=101., app_version="29.0.3", evidence_ref="capture://consent",
+    ) is None
 
 
 def boxes() -> tuple[TextBox, ...]:
@@ -212,6 +244,22 @@ def test_live_observer_recognizes_only_the_measured_google_play_profile(
                                      allowed_versions=frozenset({"29.0.2"}))(device)
     assert reading.screen == "google_play_profile"
     assert reading.controls == {"dismiss_google_play_profile": (176, 2289)}
+
+
+def test_loading_play_games_overlay_exposes_no_control(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ocr
+    monkeypatch.setattr(ocr, "read", lambda *_, **__: (google_play_profile_boxes()[0],))
+    device = SimpleNamespace(
+        serial="127.0.0.1:5575",
+        app_current=lambda: SimpleNamespace(package="com.google.android.gms"),
+        app_info=lambda _: SimpleNamespace(version_name="29.0.3"),
+        screenshot=lambda **_: PILImage.fromarray(np.zeros((2400, 1080, 3), dtype=np.uint8)),
+    )
+    reading = StagingAccountObserver(tmp_path, endpoint=device.serial,
+                                     allowed_versions=frozenset({"29.0.3"}))(device)
+    assert reading.screen == "unknown"
+    assert reading.controls == {}
 
 
 def test_live_observer_rejects_wrong_package_before_screenshot(tmp_path: Path) -> None:

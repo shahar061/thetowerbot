@@ -65,9 +65,12 @@ def test_live_manager_observes_named_clone_controls() -> None:
 
 def test_capabilities_require_current_scope_profile_manager_and_adb_evidence(tmp_path: Path) -> None:
     inventory = configured_inventory(tmp_path)
-    scope = scope_for(inventory)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
     manager = AttestedManager()
-    driver = BlueStacksAirDriver(scope, inventory, manager,
+    driver = BlueStacksAirDriver(scope, inventory, manager, lineage_path=tmp_path / "lineage.json",
                                  endpoint_present=lambda endpoint: endpoint == "127.0.0.1:5595")
 
     assert driver.qualification_scope() == scope
@@ -103,9 +106,12 @@ def test_capabilities_fail_closed_when_fresh_host_evidence_is_missing(
 
 def test_capabilities_require_current_source_app_version(tmp_path: Path) -> None:
     inventory = configured_inventory(tmp_path)
-    scope = scope_for(inventory)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
     manager = AttestedManager()
-    driver = BlueStacksAirDriver(scope, inventory, manager,
+    driver = BlueStacksAirDriver(scope, inventory, manager, lineage_path=tmp_path / "lineage.json",
                                  endpoint_present=lambda endpoint: endpoint == "127.0.0.1:5595")
 
     assert driver.supports_m05_live_qualification is True
@@ -114,6 +120,24 @@ def test_capabilities_require_current_source_app_version(tmp_path: Path) -> None
     assert driver.supports_lifecycle is False
     assert driver.supports_clone_staging is False
     assert driver.supports_m05_live_qualification is False
+
+
+def test_live_capability_requires_stable_source_scope_and_lineage_record(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    manager = AttestedManager()
+    endpoint = lambda value: value == "127.0.0.1:5595"
+    legacy = BlueStacksAirDriver(scope_for(inventory), inventory, manager,
+                                 endpoint_present=endpoint)
+    assert legacy.supports_clone_staging is True
+    assert legacy.supports_m05_live_qualification is False
+
+    stable_scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
+    no_lineage = BlueStacksAirDriver(stable_scope, inventory, manager,
+                                     endpoint_present=endpoint)
+    assert no_lineage.supports_m05_live_qualification is False
 
 
 class FakeManagerBridge:
@@ -151,6 +175,8 @@ class FakeModalBridge(FakeManagerBridge):
         self.modal_capture_calls = 0
         self.modal_clone_calls: list[tuple[dict[str, int | float | str],
                                            dict[str, int | float | str], tuple[float, float]]] = []
+        self.modal_fresh_calls: list[tuple[float, float]] = []
+        self.modal_create_calls: list[tuple[float, float]] = []
 
     def inspect_modal(self, parent: dict[str, int | float | str]) -> list[dict[str, int | float | str]]:
         return self.modal_rows
@@ -164,6 +190,16 @@ class FakeModalBridge(FakeManagerBridge):
                           modal: dict[str, int | float | str],
                           point: tuple[float, float]) -> None:
         self.modal_clone_calls.append((dict(parent), dict(modal), point))
+
+    def press_modal_fresh(self, parent: dict[str, int | float | str],
+                          modal: dict[str, int | float | str],
+                          point: tuple[float, float]) -> None:
+        self.modal_fresh_calls.append(point)
+
+    def press_modal_create(self, parent: dict[str, int | float | str],
+                           modal: dict[str, int | float | str],
+                           point: tuple[float, float]) -> None:
+        self.modal_create_calls.append(point)
 
 
 class RevalidatingModalBridge(FakeModalBridge):
@@ -253,12 +289,13 @@ def test_native_modal_clone_uses_the_hid_event_path() -> None:
     assert ".cgSessionEventTap" not in source
 
 
-def test_native_modal_discovery_accepts_an_onscreen_manager_modal_above_layer_zero() -> None:
-    """BlueStacks presents its New instance sheet at window layer 8 after relaunch."""
+def test_native_modal_discovery_binds_focused_manager_modal_above_layer_zero() -> None:
+    """The active sheet is selected by AX focus even when old CG windows remain."""
     source = (Path(__file__).parents[1] / "fleet" / "macos_bluestacks_manager.swift").read_text()
 
     modal_section = source[source.index("func exactModal"):source.index("func verifyParentForModalCapture")]
-    assert "kCGWindowIsOnscreen" in modal_section
+    assert "kAXFocusedWindowAttribute" in modal_section
+    assert "focusedMatches.max" in modal_section
     assert "layer.intValue == 0" not in modal_section
 
 
@@ -402,6 +439,17 @@ def test_manager_presses_only_clone_row_from_fresh_verified_modal() -> None:
     assert bridge.press_calls == 0
 
 
+def test_manager_presses_only_fresh_row_from_verified_modal() -> None:
+    bridge = FakeModalBridge(modal_rows=[modal_row()])
+    manager = MacOSMultiInstanceManager(bridge)
+
+    manager.press_fresh_instance(ModalFrameVerifier(lambda image: modal_text_boxes()))
+
+    assert len(bridge.modal_fresh_calls) == 1
+    assert bridge.modal_fresh_calls[0][0] == 672.
+    assert bridge.modal_clone_calls == []
+
+
 @pytest.mark.parametrize("boxes", [
     modal_text_boxes(duplicate_text="different copy"),
     modal_text_boxes(clone_y=80),
@@ -439,9 +487,12 @@ def test_manager_rejects_modal_when_parent_is_not_companion_owned() -> None:
 
 def configured_inventory(tmp_path: Path) -> BlueStacksAirInventory:
     config = tmp_path / "bluestacks.conf"
-    config.write_text('bst.instance.Air_2.adb_port="5595"\n'
+    config.write_text('bst.installed_images="Air"\n'
+                      'bst.instance.Air_2.adb_port="5595"\n'
+                      'bst.instance.Air_2.android_id="aabbcc22"\n'
                       'bst.instance.Air_2.display_name="BlueStacks Air 2"\n'
                       'bst.instance.Air_3.adb_port="5605"\n'
+                      'bst.instance.Air_3.android_id="aabbcc33"\n'
                       'bst.instance.Air_3.display_name="BlueStacks Air 3"\n')
     return BlueStacksAirInventory(config, executable=EXECUTABLE,
                                   process_rows=lambda: {
@@ -457,6 +508,22 @@ def test_inventory_binds_each_configured_instance_to_one_unique_endpoint(tmp_pat
         HostInstance("Air_3", "127.0.0.1:5605", inventory.lease("Air_3"), "stopped"),
     ]
     assert inventory.display_name("Air_2", digest=inventory.digest()) == "BlueStacks Air 2"
+    assert inventory.installed_image_prefix() == "Air_"
+
+
+def test_lease_is_stable_across_other_instance_creation_but_changes_with_own_identity(
+        tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    source_lease = inventory.lease("Air_2")
+    config = tmp_path / "bluestacks.conf"
+    config.write_text(config.read_text() +
+                      'bst.instance.Air_4.adb_port="5615"\n'
+                      'bst.instance.Air_4.android_id="aabbcc44"\n'
+                      'bst.instance.Air_4.display_name="BlueStacks Air 4"\n')
+    assert inventory.lease("Air_2") == source_lease
+    config.write_text(config.read_text().replace('Air_2.android_id="aabbcc22"',
+                                                  'Air_2.android_id="aabbcc99"'))
+    assert inventory.lease("Air_2") != source_lease
 
 
 @pytest.mark.parametrize("contents", [
@@ -501,6 +568,49 @@ def test_qualification_scope_requires_current_source_digest_and_game_version(tmp
                       'bst.instance.Air_3.display_name="BlueStacks Air 3"\n')
     manager.game_version = "29.0.3"
     assert driver.qualification_scope() is None
+
+
+def test_qualification_scope_with_source_lease_survives_a_new_instance(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
+    driver = BlueStacksAirDriver(scope, inventory, Manager())
+    assert driver.qualification_scope() == scope
+
+    config = tmp_path / "bluestacks.conf"
+    config.write_text(config.read_text() +
+                      'bst.instance.Air_4.adb_port="5615"\n'
+                      'bst.instance.Air_4.android_id="aabbcc44"\n'
+                      'bst.instance.Air_4.display_name="BlueStacks Air 4"\n')
+    assert driver.qualification_scope() == scope
+
+    config.write_text(config.read_text().replace('Air_2.android_id="aabbcc22"',
+                                                  'Air_2.android_id="aabbcc99"'))
+    assert driver.qualification_scope() is None
+
+
+def test_clone_lineage_requires_recorded_exact_identity(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    scope = replace(scope_for(inventory), instance_config={
+        "source_lease": inventory.lease("Air_2"), "source_instance": "Air_2",
+        "source_endpoint": "127.0.0.1:5595",
+    })
+    path = tmp_path / "lineage.json"
+    driver = BlueStacksAirDriver(scope, inventory, Manager(), lineage_path=path)
+    rows = {row.name: row for row in driver.inventory()}
+    assert rows["Air_2"].source_lineage == scope.source_lineage
+    assert rows["Air_3"].source_lineage is None
+
+    recorded = driver._record_clone_lineage(rows["Air_3"])
+    assert recorded.source_lineage == scope.source_lineage
+    assert {row.name: row for row in driver.inventory()}["Air_3"].source_lineage == scope.source_lineage
+
+    config = tmp_path / "bluestacks.conf"
+    config.write_text(config.read_text().replace('Air_3.android_id="aabbcc33"',
+                                                  'Air_3.android_id="aabbcc99"'))
+    assert {row.name: row for row in driver.inventory()}["Air_3"].source_lineage is None
 
 
 def test_qualification_scope_rejects_a_missing_or_remapped_source(tmp_path: Path) -> None:
@@ -726,6 +836,25 @@ def test_manager_row_observation_converts_retina_pixels_to_manager_points() -> N
     assert control.point == (420, 265)
 
 
+def test_manager_row_observation_accepts_joined_status_dot_only() -> None:
+    class ManagerFrameSource:
+        def capture(self) -> ManagerFrame:
+            return ManagerFrame(41, np.zeros((100, 800, 3), dtype=np.uint8))
+
+    def boxes(label: str) -> tuple[TextBox, ...]:
+        return (TextBox(label, .99, Rect(100, 20, 180, 20)),
+                TextBox("Stop", .99, Rect(600, 20, 80, 20)))
+
+    observed = ManagerRowObservation(ManagerFrameSource(),
+                                     ocr_reader=lambda _image: boxes("BlueStacks Air 16○"))
+    assert observed.row_control("BlueStacks Air 16", action="Stop").point == (640, 30)
+
+    observed = ManagerRowObservation(ManagerFrameSource(),
+                                     ocr_reader=lambda _image: boxes("BlueStacks Air 160"))
+    with pytest.raises(HostCapabilityError, match="missing or ambiguous"):
+        observed.row_control("BlueStacks Air 16", action="Stop")
+
+
 class LifecycleInventory:
     def __init__(self, name: str, endpoint: str, *, running: bool) -> None:
         self.name = name
@@ -740,6 +869,35 @@ class LifecycleInventory:
         self.snapshots += 1
         state = "running" if self.running else "stopped"
         return ("configuration-v1", [HostInstance(self.name, self.endpoint, "lease", state)])
+
+
+def test_stable_scope_lifecycle_accepts_host_config_write_after_start() -> None:
+    class MutableLifecycleInventory(LifecycleInventory):
+        digest = "configuration-v1"
+
+        def snapshot(self) -> tuple[str, list[HostInstance]]:
+            _, rows = super().snapshot()
+            return self.digest, rows
+
+    inventory = MutableLifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
+    manager = FakeManager([("Tiramisu64_4", (100, 300)), ("Start", (800, 300))])
+
+    def press(action: str) -> None:
+        if action == "Start":
+            inventory.running = True
+            inventory.digest = "configuration-v2"
+            manager.labels = [("Tiramisu64_4", (100, 300)), ("Stop", (800, 300))]
+
+    manager.on_press = press
+    scope = QualificationScope("mac", "BlueStacks-Air", "source", "image", "29.0.2",
+                               {"source_lease": "lease", "source_instance": inventory.name,
+                                "source_endpoint": inventory.endpoint})
+    driver = BlueStacksAirDriver(scope, inventory, manager,
+                                 ocr_reader=lambda _image: lifecycle_boxes(manager),
+                                 endpoint_present=lambda _endpoint: inventory.running,
+                                 timeout=0., poll_interval=.01)
+    driver.start(inventory.name)
+    assert inventory.running is True
 
 
 def lifecycle_boxes(manager: FakeManager) -> tuple[TextBox, ...]:
@@ -1055,6 +1213,111 @@ class CloneManager(FakeManager):
         if expected_label == "Create" and self.create_record:
             self.inventory.created = True
         self.frame_index += 1
+
+
+class FreshManager(FakeManager):
+    def __init__(self, inventory: CloneInventory, *, valid_form: bool = True,
+                 create_record: bool = True) -> None:
+        super().__init__([("Instance", (300, 700))])
+        self.inventory = inventory
+        self.valid_form = valid_form
+        self.create_record = create_record
+        self.form_open = False
+
+    def capture(self) -> ManagerFrame:
+        self.labels = ([("Tiramisu64_3", (100, 300)), ("Start", (800, 300))]
+                       if self.inventory.created else [("Instance", (300, 700))])
+        return super().capture()
+
+    def capture_modal(self) -> ModalFrame:
+        if not self.form_open:
+            raise HostCapabilityError("fresh form missing")
+        return ModalFrame(52, 41, "", np.zeros((500, 900, 3), dtype=np.uint8),
+                          x=100., y=200., width=450., height=250.)
+
+    def press_fresh_instance(self) -> None:
+        self.form_open = True
+
+    def press_fresh_create(self, window_id: int, point: tuple[int, int]) -> None:
+        assert window_id == 52
+        assert point == (505, 430)
+        if self.create_record:
+            self.inventory.created = True
+        self.form_open = False
+
+
+def fresh_boxes(manager: FreshManager) -> tuple[TextBox, ...]:
+    if not manager.form_open:
+        return lifecycle_boxes(manager)
+    fields = ["Fresh instance - Android 13", "CPU cores", "Memory allocation",
+              "Resolution", "Performance mode", "DPI", "Instance count", "1", "Create"]
+    if not manager.valid_form:
+        fields.remove("Instance count")
+    return tuple(TextBox(label, 1., Rect(790 if label == "Create" else 480
+                                          if label == "1" else 20,
+                                          450 if label in {"Create", "1", "Instance count"}
+                                          else index * 35, 40, 20))
+                 for index, label in enumerate(fields))
+
+
+def fresh_driver(manager: FreshManager, inventory: CloneInventory) -> BlueStacksAirDriver:
+    return BlueStacksAirDriver(
+        QualificationScope("mac", "BlueStacks-Air", "source", "image", "29.0.2", {
+            "configuration_digest": "configuration-v1", "source_instance": "Tiramisu64_2",
+            "source_endpoint": "127.0.0.1:5571"}),
+        inventory, manager, ocr_reader=lambda _image: fresh_boxes(manager),
+        endpoint_present=lambda endpoint: endpoint == "127.0.0.1:5571",
+        timeout=0., poll_interval=.01,
+    )
+
+
+def test_fresh_create_requires_one_form_and_exact_new_manager_row() -> None:
+    inventory = CloneInventory({"Tiramisu64_2"}, create="Tiramisu64_3")
+    manager = FreshManager(inventory)
+    driver = fresh_driver(manager, inventory)
+
+    assert driver.supports_fresh_provision is True
+    assert driver.required_fresh_prefix == "Tiramisu64_"
+    created = driver.create_fresh("Tiramisu64_3")
+
+    assert created.name == "Tiramisu64_3"
+    assert created.state == "stopped"
+    assert manager.presses == [("Instance", (340, 710))]
+
+
+def test_fresh_create_refuses_ambiguous_form_without_creating() -> None:
+    inventory = CloneInventory({"Tiramisu64_2"}, create="Tiramisu64_3")
+    manager = FreshManager(inventory, valid_form=False)
+    driver = fresh_driver(manager, inventory)
+
+    with pytest.raises(HostCapabilityError, match="fresh form"):
+        driver.create_fresh("Tiramisu64_3")
+    assert inventory.created is False
+
+
+def test_fresh_create_refuses_nonunit_accessibility_count() -> None:
+    inventory = CloneInventory({"Tiramisu64_2"}, create="Tiramisu64_3")
+    manager = FreshManager(inventory)
+    manager.fresh_instance_count = lambda _window_id: "2"  # type: ignore[attr-defined]
+    driver = fresh_driver(manager, inventory)
+
+    with pytest.raises(HostCapabilityError, match="instance count"):
+        driver.create_fresh("Tiramisu64_3")
+    assert inventory.created is False
+
+
+def test_fresh_capability_does_not_require_clone_qualification() -> None:
+    inventory = CloneInventory({"Tiramisu64_2"}, create="Tiramisu64_3")
+    manager = FreshManager(inventory)
+    driver = BlueStacksAirDriver(None, inventory, manager,
+                                 fresh_prefix="Tiramisu64_",
+                                 ocr_reader=lambda _image: fresh_boxes(manager),
+                                 endpoint_present=lambda _endpoint: False,
+                                 timeout=0.)
+
+    assert driver.qualification_scope() is None
+    assert driver.supports_clone_staging is False
+    assert driver.supports_fresh_provision is True
 
 
 def clone_frames(source: str, *, create_source: str | None = None,

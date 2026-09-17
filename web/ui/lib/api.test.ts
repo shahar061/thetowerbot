@@ -5,7 +5,7 @@ import {
   fetchStrategy, fetchUnknown, patchControl, saveStrategy, shutdown,
   startBot, stopBot,
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
-  fetchFleet, requestFleetClones,
+  fetchFleet, requestFleetProvision,
 } from "./api";
 import type { Strategy } from "./types";
 
@@ -92,7 +92,8 @@ describe("fleet routes", () => {
   it("requires the fleet capability before sending a clone request", async () => {
     fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(validStatus) });
-    await expect(requestFleetClones("seed", 2)).rejects.toMatchObject({ status: 412 });
+    await expect(requestFleetProvision({ mode: "clone", source: "seed", count: 2,
+      targets: ["seed_1", "seed_2"], state: "eligible" })).rejects.toMatchObject({ status: 412 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

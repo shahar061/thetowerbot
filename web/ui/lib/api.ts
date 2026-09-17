@@ -20,7 +20,7 @@ import type {
   StoredEvent,
 } from "./types";
 import { checkRuntimeCompatibility } from "./runtimeCompatibility";
-import type { FleetJob, FleetSnapshot } from "./fleet";
+import type { FleetJob, FleetPreview, FleetSnapshot } from "./fleet";
 
 /** An HTTP failure that kept its status code.
  *
@@ -57,8 +57,18 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const fetchStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" });
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
-export const requestFleetClones = (source: string, count: number) =>
-  send<FleetJob>("/api/fleet/clones", "POST", { source, count }, "fleet");
+export const fetchFleetPreview = (mode: "fresh" | "clone", source: string | null, count: number) => {
+  const params = new URLSearchParams({ mode, count: String(count) });
+  if (source !== null) params.set("source", source);
+  return getJson<FleetPreview>(`/api/fleet/preview?${params}`, { cache: "no-store" });
+};
+export const requestFleetProvision = (preview: FleetPreview) =>
+  send<FleetJob>("/api/fleet/requests", "POST", {
+    mode: preview.mode, source: preview.source, count: preview.count, targets: preview.targets,
+  }, "fleet");
+export const resolveFleetTarget = (jobId: string, index: number, action: "retry" | "quarantine") =>
+  send<FleetJob>(`/api/fleet/requests/${encodeURIComponent(jobId)}/targets/${index}/${action}`,
+    "POST", {}, "fleet");
 export const fetchUpgrades = () => getJson<Upgrade[]>("/api/upgrades");
 export const fetchAutopilot = () => getJson<AutopilotSnapshot>("/api/autopilot");
 export const fetchAutopilotPresets = () => getJson<AutopilotPreset[]>("/api/autopilot/presets");
