@@ -42,9 +42,9 @@ _WARNING_LINES = (
     ("No", Rect(265, 1370, 175, 125)),
     ("Yes", Rect(625, 1370, 205, 125)),
 )
-_GAME_STATS_TITLE = Rect(300, 580, 480, 130)
-_GAME_STATS_RETRY = Rect(180, 1650, 250, 120)
-_GAME_STATS_HOME = Rect(660, 1650, 260, 120)
+_GAME_STATS_TITLE = Rect(300, 580, 480, 180)
+_GAME_STATS_RETRY = Rect(180, 1600, 250, 140)
+_GAME_STATS_HOME = Rect(660, 1600, 260, 140)
 _GOOGLE_PLAY_PROFILE = (
     ("Create a Play Games profile", Rect(80, 1240, 920, 180)),
     ("No profile", Rect(180, 1510, 400, 180)),
@@ -383,6 +383,10 @@ class StagingAccountObserver:
                                     observed_at, evidence_ref,
                                     {"battle_tab": (position[0] + battle.shape[1] // 2,
                                                     position[1] + battle.shape[0] // 2)})
+        if screens.classify(frame, self.cache).state is screens.ScreenState.IN_RUN:
+            return AccountFrame("battle", None, version,
+                                hashlib.sha256(frame.tobytes()).hexdigest(),
+                                observed_at, evidence_ref, {})
         return AccountFrame("unknown", None, version,
                             hashlib.sha256(frame.tobytes()).hexdigest(),
                             observed_at, evidence_ref, {})

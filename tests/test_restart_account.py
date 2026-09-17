@@ -94,6 +94,39 @@ def test_restart_from_workshop_tutorial_claim() -> None:
                            (925, 600), (905, 510)]
 
 
+def test_restart_from_finished_run_uses_observed_home() -> None:
+    device = Device()
+    supervisor = Supervisor("ACCOUNT-A")
+    verify_restart_account(device=device, supervisor=supervisor,
+        expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
+        observe=observer([
+            frame("game_over", controls={"home_from_game_over": (780, 1659)}),
+            frame("home", controls={"settings": (1, 2)}),
+            frame("settings", controls={"account": (3, 4)}),
+            frame("account", account_id="ACCOUNT-A"),
+            frame("settings"), frame("home"),
+        ]))
+    assert supervisor.verified == "ACCOUNT-A"
+    assert device.taps[0] == (780, 1659)
+
+
+def test_restart_waits_for_battle_without_tapping_it() -> None:
+    device = Device()
+    supervisor = Supervisor("ACCOUNT-A")
+    verify_restart_account(device=device, supervisor=supervisor,
+        expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
+        observe=observer([
+            frame("battle"), frame("battle"),
+            frame("game_over", controls={"home_from_game_over": (780, 1659)}),
+            frame("home", controls={"settings": (1, 2)}),
+            frame("settings", controls={"account": (3, 4)}),
+            frame("account", account_id="ACCOUNT-A"),
+            frame("settings"), frame("home"),
+        ]))
+    assert supervisor.verified == "ACCOUNT-A"
+    assert device.taps == [(780, 1659), (1, 2), (3, 4), (925, 600), (905, 510)]
+
+
 def test_ambiguous_home_control_never_taps() -> None:
     device = Device()
     with pytest.raises(RecoveryBlocked, match="navigation evidence"):

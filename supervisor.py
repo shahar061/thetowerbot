@@ -274,8 +274,8 @@ class DeviceSupervisor:
             self._state, self._reason = RecoveryState.BLOCKED, reason
         self._save()
 
-    def tap(self, x: int, y: int) -> None:
-        """Checkpoint the action before issuing exactly one ADB click."""
+    def _action(self, perform: Callable[[], None]) -> None:
+        """Checkpoint one input before sending it to the verified endpoint."""
         if (self._state is not RecoveryState.READY or self._device is None
                 or self._pending_digest is not None or self._last_digest is None
                 or self._last_observed_at is None
@@ -285,10 +285,18 @@ class DeviceSupervisor:
         self._state, self._reason = RecoveryState.BLOCKED, "action_unconfirmed"
         self._save()
         try:
-            self._device.click(x, y)
+            perform()
         except Exception as exc:  # noqa: BLE001 - the tap may have landed
             self.disconnected()
             raise RecoveryBlocked("action outcome unknown") from exc
+
+    def tap(self, x: int, y: int) -> None:
+        """Checkpoint the action before issuing exactly one ADB click."""
+        self._action(lambda: self._device.click(x, y))
+
+    def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
+        """A panel scroll has the same evidence and replay guard as a tap."""
+        self._action(lambda: self._device.swipe(x, y, x2, y2, duration))
 
     @property
     def device(self) -> Any | None:
@@ -296,7 +304,7 @@ class DeviceSupervisor:
 
 
 class GuardedDevice:
-    """Present the usual adbutils surface while all clicks use the supervisor."""
+    """Present the usual adbutils surface while input uses the supervisor."""
 
     def __init__(self, supervisor: DeviceSupervisor) -> None:
         self.supervisor = supervisor
@@ -317,3 +325,6 @@ class GuardedDevice:
 
     def click(self, x: int, y: int) -> None:
         self.supervisor.tap(x, y)
+
+    def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
+        self.supervisor.swipe(x, y, x2, y2, duration)
