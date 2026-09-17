@@ -1,11 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
-import { addRerollMembers, fetchReroll, fetchRerollJournal, startReroll } from "@/lib/api";
+import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, startReroll } from "@/lib/api";
 
 const choose = vi.fn();
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
-vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
+vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
 
 const members = [
   { name: "Air_1", endpoint: "127.0.0.1:5555", lease_id: "a", state: "running", account_id: "100", wave: 42, tier: 1, battle_cash: 0,
@@ -17,6 +17,30 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [] });
   vi.mocked(fetchRerollJournal).mockResolvedValue({ entries: [] });
+  vi.mocked(fetchAccountWorkshopPurchases).mockResolvedValue({ lines: [], balances: { coins: null, gems: null }, rehearsals: 0, next: null });
+  vi.mocked(fetchAccountRuns).mockResolvedValue([]);
+  vi.mocked(fetchAccountRunPurchases).mockResolvedValue({ purchases: [], totals: { count: 0, spent: 0, unpriced: 0, by_category: {} } });
+});
+
+test("worker cards collapse and scoped ledger shows confirmed purchases", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [{
+    ...members[0], account_key: "worker:Air_1", lifetime_coins: 1200, workshop_upgrades_bought: 1,
+  }] });
+  vi.mocked(fetchAccountWorkshopPurchases).mockResolvedValue({ lines: [{
+    id: 1, seq: 1, ts: 100, kind: "WORKSHOP_BUY", item: "Damage", category: "ATTACK",
+    currency: "coins", delta: -20, price: 20, balance_after: 10, observed: 30,
+    dry_run: 0, run_id: null, visit: 1, reason: null, detail: { verdict: "bought" },
+  }], balances: { coins: 10, gems: null }, rehearsals: 0, next: null });
+  render(<RerollPage />);
+  expect(await screen.findByText("Shared Workshop ledger")).toBeInTheDocument();
+  expect(await screen.findByText(/20 coins/)).toBeInTheDocument();
+  expect(fetchAccountWorkshopPurchases).toHaveBeenCalledWith("worker:Air_1");
+  const toggle = screen.getByRole("button", { name: "Collapse Air_1" });
+  fireEvent.click(toggle);
+  expect(screen.getByRole("button", { name: "Expand Air_1" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByText("Workshop upgrades bought").closest("#worker-Air_1")).toHaveAttribute("hidden");
+  fireEvent.click(screen.getByRole("button", { name: "Collapse Shared Workshop ledger" }));
+  expect(screen.getByRole("button", { name: "Expand Shared Workshop ledger" })).toHaveAttribute("aria-expanded", "false");
 });
 
 test("empty pool offers candidates but rejects protected template", async () => {

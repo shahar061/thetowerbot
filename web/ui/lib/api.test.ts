@@ -6,6 +6,7 @@ import {
   startBot, stopBot,
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
   fetchFleet, requestFleetProvision,
+  fetchAccountWorkshopPurchases, fetchAccountRuns, fetchAccountRunPurchases,
 } from "./api";
 import type { Strategy } from "./types";
 import { setAccountScope } from "./accountScope";
@@ -86,6 +87,26 @@ beforeEach(() => {
 });
 
 describe("fleet routes", () => {
+  it("reads each reroll worker's history independently of the top account selector", async () => {
+    setAccountScope("worker:other");
+    await fetchAccountWorkshopPurchases("worker:Air_1", 42);
+    expect(callArgs()[0]).toBe("/api/ledger?kind=WORKSHOP_BUY&limit=100&before=42");
+    expect((callArgs()[1]?.headers as Record<string, string>)["x-account-scope"])
+      .toBe("worker:Air_1");
+
+    fetchMock.mockClear();
+    await fetchAccountRuns("worker:Air_1");
+    expect(callArgs()[0]).toBe("/api/runs?limit=1");
+    expect((callArgs()[1]?.headers as Record<string, string>)["x-account-scope"])
+      .toBe("worker:Air_1");
+
+    fetchMock.mockClear();
+    await fetchAccountRunPurchases("worker:Air_1", 7);
+    expect(callArgs()[0]).toBe("/api/runs/7/purchases");
+    expect((callArgs()[1]?.headers as Record<string, string>)["x-account-scope"])
+      .toBe("worker:Air_1");
+    setAccountScope(null);
+  });
   it("reads the fleet snapshot", async () => {
     await fetchFleet();
     expect(callArgs()[0]).toBe("/api/fleet");

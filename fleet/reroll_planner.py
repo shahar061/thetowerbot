@@ -41,6 +41,7 @@ class RerollDecision:
 # validates the account, screen, row, balance, price, and transaction.
 _OPENING = (
     ("damage", 6), ("attack_speed", 6),
+    ("unlock_cash_bonuses", 5),
     ("unlock_coin_bonuses", 5), ("coins_per_kill_bonus", 5),
     ("coins_per_wave", 3),
 )
@@ -50,6 +51,7 @@ _TURTLE = (
     ("defense_percent", 5), ("coins_per_kill_bonus", 2),
 )
 _PREREQUISITES = {
+    "unlock_coin_bonuses": "unlock_cash_bonuses",
     "coins_per_kill_bonus": "unlock_coin_bonuses",
     "coins_per_wave": "unlock_coin_bonuses",
     "defense_absolute": "unlock_defense_upgrades",

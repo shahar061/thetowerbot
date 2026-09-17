@@ -14,8 +14,9 @@ import ocr
 import upgrades
 from account_state import AccountState
 from fleet.reroll_journal import RerollJournal
+from fleet.reroll_lifetime import read_lifetime
 from fleet.reroll_planner import RerollDecision, RerollFacts, choose_next
-from policy import AutopilotPolicy, UpgradeRule
+from policy import AutopilotPolicy, UpgradeRule, preset_rules
 from strategy import Shopping, ShoppingRule
 
 
@@ -32,6 +33,21 @@ class RerollProgress:
         self._last_published_at = 0.0
         self._spend_fraction: float | None = None
         self._battle_stage: str | None = None
+        self._last_stats_attempt = 0.0
+
+    def lifetime_record(self) -> dict[str, object] | None:
+        return read_lifetime(self.root, self.account_id)
+
+    def stats_due(self, now: float | None = None) -> bool:
+        moment = time.time() if now is None else now
+        record = self.lifetime_record()
+        if self._last_stats_attempt == 0:
+            return True
+        return (record is None or float(record["observed_at"]) < self._last_stats_attempt) and (
+            moment - self._last_stats_attempt >= 300)
+
+    def note_stats_requested(self, now: float | None = None) -> None:
+        self._last_stats_attempt = time.time() if now is None else now
 
     def _history(self) -> tuple[int | None, dict[str, int]]:
         path = self.root / "tower_bot.db"
@@ -79,6 +95,33 @@ class RerollProgress:
             if (coins is not None and coins.get("status") == "observed"
                     and isinstance(coins.get("raw_value"), str)):
                 lifetime = ocr.parse_number(coins["raw_value"])
+                if lifetime is not None and lifetime >= 0:
+                    stored = self.lifetime_record()
+                    observed_at = latest.get("observed_at")
+                    if (isinstance(observed_at, (int, float))
+                            and (stored is None or observed_at > stored["observed_at"])):
+                        self.root.mkdir(parents=True, exist_ok=True)
+                        with db.reader(self.root / "tower_bot.db") as connection:
+                            baseline_run_id = connection.execute(
+                                "SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL"
+                            ).fetchone()[0]
+                        path = self.root / "reroll-lifetime.json"
+                        temporary = path.with_name(f".reroll-lifetime.{uuid4().hex}.tmp")
+                        try:
+                            with temporary.open("x", encoding="utf-8") as output:
+                                json.dump({"account_id": self.account_id,
+                                           "lifetime_coins": lifetime,
+                                           "observed_at": observed_at,
+                                           "baseline_run_id": baseline_run_id}, output)
+                                output.write("\n")
+                                output.flush()
+                                os.fsync(output.fileno())
+                            os.replace(temporary, path)
+                        finally:
+                            temporary.unlink(missing_ok=True)
+        record = self.lifetime_record()
+        if record is not None:
+            lifetime = int(record["lifetime_coins"])
         return values, lifetime
 
     def decision(self) -> RerollDecision:
@@ -97,12 +140,15 @@ class RerollProgress:
         ))
 
     def shopping_policy(self, base: Shopping) -> Shopping:
-        self._spend_fraction = base.coin_budget_pct
+        # The reroll planner selects one item; a visit-wide percentage cap
+        # otherwise rejects an affordable unlock after the planner selects it.
+        self._spend_fraction = None
         plan = self.decision()
         self._publish(plan)
         if plan.item is None or plan.category is None:
             return replace(base, enabled=False, workshop=())
-        return replace(base, workshop=(ShoppingRule(plan.item, plan.category),))
+        return replace(base, workshop=(ShoppingRule(plan.item, plan.category),),
+                       allow_unlocks=True, coin_budget_pct=None)
 
     def battle_policy(self, base: AutopilotPolicy) -> AutopilotPolicy:
         if self._battle_stage is None:
@@ -110,13 +156,26 @@ class RerollProgress:
             self._battle_stage = "stones" if best is not None and best >= 60 else (
                 "turtle" if best is not None and best >= 20 else "opening")
         if self._battle_stage == "opening":
-            return replace(base, preset="manual", purpose="milestone", rules=(
+            candidates = (
                 UpgradeRule("cash_per_wave", target=10),
                 UpgradeRule("coins_per_wave", target=10),
                 UpgradeRule("damage"), UpgradeRule("attack_speed"),
                 UpgradeRule("coins_per_kill_bonus"),
-            ))
-        return replace(base, preset="turtle", purpose="milestone", rules=())
+            )
+        else:
+            candidates = preset_rules("turtle")
+        _, purchases = self._history()
+        confirmed_unlocks = {entry.id for entry in upgrades.CATALOG
+                             if entry.unlock and purchases.get(entry.id, 0) > 0}
+        utility_open = any(upgrades.by_id(unlock_id).category == "UTILITY"
+                           for unlock_id in confirmed_unlocks)
+        locked_children = {child: entry.id for entry in upgrades.CATALOG
+                           if entry.unlock for child in entry.unlocks}
+        available = tuple(rule for rule in candidates
+                          if (utility_open or upgrades.by_id(rule.upgrade_id).category != "UTILITY")
+                          and locked_children.get(rule.upgrade_id) in
+                          (None, *confirmed_unlocks))
+        return replace(base, preset="manual", purpose="milestone", rules=available)
 
     def observe_price(self, upgrade_id: str, wallet: int | None,
                       price: int | None) -> None:

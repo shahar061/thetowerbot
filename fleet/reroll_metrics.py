@@ -10,6 +10,7 @@ from typing import Any, Callable
 from urllib.request import urlopen
 
 import db as bot_db
+from fleet.reroll_lifetime import read_lifetime
 
 
 def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
@@ -27,6 +28,11 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                     "ORDER BY id DESC LIMIT 3").fetchall()
                 best = db.execute(
                     "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL").fetchone()[0]
+                bought = db.execute(
+                    "SELECT COUNT(*) FROM ledger WHERE kind='WORKSHOP_BUY' AND dry_run=0 "
+                    "AND json_extract(detail, '$.verdict') IN ('bought','free')"
+                ).fetchone()[0]
+            result["workshop_upgrades_bought"] = bought
             result["best_tier_1_wave"] = best
             result["milestone"] = (
                 "T1 W60 reached · earn stones" if best is not None and best >= 60
@@ -43,6 +49,10 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                 result["observed_at"] = rows[0]["ended_at"]
         except (OSError, sqlite3.Error):
             pass
+        lifetime = read_lifetime(Path(worker_root), account_id)
+        if lifetime is not None:
+            result["lifetime_coins"] = lifetime["lifetime_coins"]
+            result["lifetime_coins_incomplete"] = lifetime["coins_incomplete"]
     if running:
         try:
             base = f"http://127.0.0.1:{web_port}"
@@ -54,10 +64,16 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                 return result
             with fetch(base + "/api/status", timeout=.2) as response:
                 status = json.load(response)
+            screen = status.get("screen")
+            if screen in {"IN_RUN", "MAIN_MENU", "GAME_OVER", "UNKNOWN"}:
+                result["game_screen"] = screen
             result["battle_cash"] = status.get("wallet")
             run = status.get("run")
             if isinstance(run, dict):
                 result["run_duration_seconds"] = run.get("elapsed")
+                if (screen == "IN_RUN" and isinstance(run.get("id"), int)
+                        and not isinstance(run["id"], bool) and run["id"] > 0):
+                    result["current_run_id"] = run["id"]
             result["observed_at"] = time.time()
         except (OSError, ValueError, TypeError, KeyError):
             pass

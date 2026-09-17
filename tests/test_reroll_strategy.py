@@ -19,7 +19,7 @@ def test_new_worker_has_active_battle_and_bounded_workshop(tmp_path: Path) -> No
     assert strategy.autopilot.enabled and strategy.autopilot.preset == "turtle"
     assert strategy.shopping.enabled and strategy.shopping.armed
     assert strategy.shopping.coin_budget is None
-    assert strategy.shopping.coin_budget_pct == 0.5
+    assert strategy.shopping.coin_budget_pct is None
     assert strategy.claims.enabled
 
 
