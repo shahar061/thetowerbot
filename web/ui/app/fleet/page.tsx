@@ -19,9 +19,12 @@ export default function FleetPage() {
   const [count, setCount] = useState(1);
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [rerollOpen, setRerollOpen] = useState(false);
+  const [rerollJobId, setRerollJobId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    if (new URLSearchParams(window.location.search).get("reroll") === "1") setRerollOpen(true);
     const refresh = () => fetchFleet().then(value => {
       if (!active) return;
       setFleet(value);
@@ -75,6 +78,31 @@ export default function FleetPage() {
   };
   const canRequest = preview?.state === "eligible" && preview.targets.length === count
     && confirmed && !busy && !error;
+  const canCreateReroll = rerollOpen && mode === "clone" && count === 1
+    && preview?.state === "eligible" && preview.targets.length === 1 && !busy && !error;
+  const openReroll = () => {
+    setMode("clone");
+    setCount(1);
+    setSource(qualified[0]?.instance ?? source);
+    setConfirmed(false);
+    setRerollOpen(true);
+    setError(null);
+  };
+  const createReroll = async () => {
+    if (!canCreateReroll || !preview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const job = await requestFleetProvision(preview);
+      setRerollJobId(job.id);
+      setRerollOpen(false);
+      setFleet(await fetchFleet());
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const submit = async () => {
     if (!canRequest || !preview) return;
     setBusy(true);
@@ -110,10 +138,25 @@ export default function FleetPage() {
   };
 
   return <div className="mx-auto flex max-w-6xl flex-col gap-4">
-    <PageHeader title="Fleet" meta="BlueStacks Air provisioning" />
-    <p className="max-w-3xl text-sm text-muted-foreground">Select the unopened Tower template, set host capacity, and start the source through Manager. Clones complete Tower onboarding, accept I Agree, prove account recovery, and register as ready workers.</p>
+    <PageHeader title="Fleet" meta="BlueStacks Air provisioning" action={<a href="/fleet/how-it-works/" className="text-sm text-primary underline">How rerolls work</a>} />
+    <p className="max-w-3xl text-sm text-muted-foreground">Create a separate Tower account from the unopened Air 6 template, then track the clone through verification and registration.</p>
     {error && <p role="alert" className="rounded-md border border-danger p-3 text-sm text-danger">Fleet state or request failed: {error}. Refresh before trying again.</p>}
-    <SectionCard title="Set up Fleet">
+    <SectionCard id="reroll" title="Create reroll account" tone="live">
+      <p className="text-sm">Create a new Tower account in a separate clone. Your existing accounts stay untouched, and Tower stays unopened on the Air 6 source.</p>
+      {!rerollOpen ? <button onClick={openReroll} className="w-fit rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Start a reroll</button> : <div className="flex flex-col gap-3 rounded-md border p-3 text-sm">
+        <p className="font-medium">Create one new account</p>
+        {!setup?.configured && <p>Set up Fleet below to select the unopened source and capacity.</p>}
+        {setup?.configured && !qualified.length && <p>Start and verify the template below before creating a clone.</p>}
+        {preview?.state === "blocked" && <p role="status" className="text-danger">Creation blocked: {preview.reason?.replaceAll("_", " ")}. {preview.reason === "fleet_capacity_exceeded" && <a href="#fleet-setup" className="underline">Increase Fleet capacity</a>}</p>}
+        {preview?.state === "eligible" && <p>Source <strong>{source}</strong> · new emulator <strong>{preview.targets[0]}</strong>. The clone will first launch Tower, accept I Agree, complete the tutorial, and prove its new account ID after restart.</p>}
+        <div className="flex flex-wrap gap-2">
+          <button onClick={createReroll} disabled={!canCreateReroll} className="rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground disabled:opacity-50">{busy ? "Creating…" : `Create ${preview?.state === "eligible" ? preview.targets[0] : "clone"}`}</button>
+          <button onClick={() => setRerollOpen(false)} disabled={busy} className="rounded-md border px-3 py-2 disabled:opacity-50">Cancel</button>
+        </div>
+      </div>}
+      {rerollJobId && <p role="status" className="text-sm">Reroll request recorded. Follow its progress under Provisioning below.</p>}
+    </SectionCard>
+    <SectionCard id="fleet-setup" title="Set up Fleet">
       {!setup && <p className="text-sm">Loading local qualifications…</p>}
       {setup && <>
         <p className="text-sm">{setup.host.unavailable ? "BlueStacks Air inventory unavailable" : `${setup.host.instance_count} instances installed · image prefix ${setup.host.installed_prefix}`}</p>
@@ -163,7 +206,7 @@ export default function FleetPage() {
       <button onClick={submit} disabled={!canRequest} className="mt-3 rounded-md border px-3 py-2 text-sm disabled:opacity-50">{busy ? "Requesting…" : mode === "clone" ? "Request clones" : "Request fresh instances"}</button>
     </SectionCard>
     <SectionCard title="Provisioning">
-      {!fleet?.jobs.length && <p className="text-sm text-muted-foreground">No provisioning requests recorded.</p>}
+      {!fleet?.jobs.length && <p className="text-sm text-muted-foreground">No reroll accounts yet. <a href="#reroll" className="text-primary underline">Start a reroll</a> above to create one.</p>}
       {fleet?.jobs.map(job => <div key={job.id} className="mt-3 rounded-md border p-3 text-sm">
         <p className="font-medium">{job.mode} · {job.source || "new instance"} · {new Date(job.requested_at * 1000).toLocaleString()}</p>
         {job.manager_result_url && <a className="text-sm underline" href={job.manager_result_url}>View request and Manager steps</a>}
