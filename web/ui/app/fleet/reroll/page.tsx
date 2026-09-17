@@ -129,6 +129,15 @@ export default function RerollPage() {
         <div className="mt-3 flex gap-2"><button className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy || !selected.length} onClick={add}>Add selected</button><button className="rounded border px-3 py-2" onClick={() => { setPicker(false); setSelected([]); }}>Cancel</button></div>
       </div>}
     </SectionCard>
+    <SectionCard title="Reroll strategy">
+      <p className="text-sm text-muted-foreground">Each worker uses its own verified runs and purchases to choose the next Workshop upgrade. It checks the observed price and coin balance before spending.</p>
+      <ol className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+        <li className="rounded border p-3"><strong>1. Reach Tier 1 Wave 20</strong><p className="mt-1 text-muted-foreground">Build Damage, Attack Speed, and coin income.</p></li>
+        <li className="rounded border p-3"><strong>2. Reach Tier 1 Wave 60</strong><p className="mt-1 text-muted-foreground">Shift toward Defense Absolute, Thorns, and Defense %.</p></li>
+        <li className="rounded border p-3"><strong>3. Review the first Ultimate Weapon</strong><p className="mt-1 text-muted-foreground">Earn stones, then choose Golden Tower or Black Hole yourself. If neither is offered, replace that emulator manually.</p></li>
+      </ol>
+      <p className="mt-3 text-sm text-muted-foreground">Each worker card shows its current Workshop decision and the reason behind it.</p>
+    </SectionCard>
     {!!members.length && <SectionCard title="Workers"><div className="grid gap-3 lg:grid-cols-2">{members.map(member => {
       const account = accountFor(member);
       return <article key={member.name} className="min-w-0 rounded border p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">{member.name}</h2><p className="text-muted-foreground">{stateLabel(member.state)} · {member.endpoint}</p></div>{account && <Link href="/" onClick={() => choose(account.key)} className="text-primary underline">Open account {account.account_id}</Link>}</div>
