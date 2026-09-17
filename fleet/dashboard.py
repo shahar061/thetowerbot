@@ -101,9 +101,11 @@ class FleetController:
         driver = self.adapter.driver
         try:
             scope = getattr(driver, "qualification_scope", lambda: None)()
-            capabilities = (getattr(driver, "supports_clone_staging", False) is True
-                            and getattr(driver, "supports_m05_live_qualification", False) is True
-                            and self.adapter.supports_lifecycle)
+            attest = getattr(driver, "attest_clone_capabilities", None)
+            capabilities = (attest() is True if callable(attest) else
+                            (getattr(driver, "supports_clone_staging", False) is True
+                             and getattr(driver, "supports_m05_live_qualification", False) is True
+                             and self.adapter.supports_lifecycle))
             qualified = isinstance(scope, QualificationScope) and self.qualification_gate(self.qualification_path, scope)
         except Exception:
             return None, "live_host_evidence_unavailable"
@@ -115,33 +117,31 @@ class FleetController:
         return name, "qualified"
 
     def snapshot(self) -> dict[str, Any]:
+        name, reason = self._source()
+        scope = getattr(self.adapter.driver, "scope", None)
+        configured = (scope.instance_config.get("source_instance")
+                      if isinstance(scope, QualificationScope) else None)
+        try:
+            used = len(self.adapter.inventory())
+        except Exception:
+            used = self.policy.capacity
+        evidence_at = None
+        if name is not None:
+            try:
+                record = json.loads(self.qualification_path.read_text(encoding="utf-8"))
+                evidence_at = record.get("evaluated_at")
+            except (OSError, ValueError, TypeError):
+                pass
         with self._lock:
-            name, reason = self._source()
-            try:
-                scope = self.adapter.driver.qualification_scope()
-                configured = scope.instance_config.get("source_instance") if scope else None
-            except Exception:
-                configured = None
-            try:
-                used = len(self.adapter.inventory())
-            except Exception:
-                used = self.policy.capacity
-            evidence_at = None
-            if name is not None:
-                try:
-                    record = json.loads(self.qualification_path.read_text(encoding="utf-8"))
-                    evidence_at = record.get("evaluated_at")
-                except (OSError, ValueError, TypeError):
-                    pass
-            return {"capacity": {"limit": self.policy.capacity, "used": used,
-                                 "available": max(0, self.policy.capacity - used)},
-                    "sources": [{"instance": name or configured or "Unavailable",
-                                 "state": "parallel_session_qualified" if name else "blocked",
-                                 "reason": reason, "evidence_at": evidence_at,
-                                 "evidence_url": "/api/fleet/qualification" if name else None}],
-                    "jobs": [{**json.loads(json.dumps(job)),
-                              "manager_result_url": f"/api/fleet/requests/{job['id']}"}
-                             for job in self._jobs[-20:]]}
+            jobs = json.loads(json.dumps(self._jobs[-20:]))
+        return {"capacity": {"limit": self.policy.capacity, "used": used,
+                             "available": max(0, self.policy.capacity - used)},
+                "sources": [{"instance": name or configured or "Unavailable",
+                             "state": "parallel_session_qualified" if name else "blocked",
+                             "reason": reason, "evidence_at": evidence_at,
+                             "evidence_url": "/api/fleet/qualification" if name else None}],
+                "jobs": [{**job, "manager_result_url":
+                          f"/api/fleet/requests/{job['id']}"} for job in jobs]}
 
     def qualification_evidence(self) -> dict[str, Any]:
         with self._lock:

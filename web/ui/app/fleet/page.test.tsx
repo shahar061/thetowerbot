@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import FleetPage from "./page";
 import { fetchFleet, fetchFleetPreview, fetchFleetSetup, saveFleetSetup, startFleetSource, requestFleetProvision } from "@/lib/api";
@@ -15,6 +15,24 @@ beforeEach(() => {
   vi.mocked(saveFleetSetup).mockReset();
   vi.mocked(startFleetSource).mockReset();
   vi.mocked(fetchFleetSetup).mockResolvedValue({ configured: false, settings: null, qualifications: [], host: { installed_prefix: "seed_", instance_count: 1 } });
+});
+
+test("Fleet polling waits for the previous host check to finish", async () => {
+  vi.useFakeTimers();
+  try {
+    let resolveFleet!: (value: { capacity: typeof capacity; sources: []; jobs: [] }) => void;
+    vi.mocked(fetchFleet).mockImplementationOnce(() => new Promise(resolve => { resolveFleet = resolve; }));
+    vi.mocked(fetchFleet).mockResolvedValue({ capacity, sources: [], jobs: [] });
+    render(<FleetPage />);
+    expect(fetchFleet).toHaveBeenCalledTimes(1);
+    act(() => { vi.advanceTimersByTime(12_000); });
+    expect(fetchFleet).toHaveBeenCalledTimes(1);
+    await act(async () => { resolveFleet({ capacity, sources: [], jobs: [] }); });
+    act(() => { vi.advanceTimersByTime(3_000); });
+    expect(fetchFleet).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("setup saves the selected live source and starts its emulator", async () => {
@@ -91,6 +109,22 @@ test("reroll entry point explains and previews one clone before creating it", as
     mode: "clone", source: "Tiramisu64_6", count: 1,
     targets: ["Tiramisu64_18"], state: "eligible",
   }));
+});
+
+test("accepted reroll leaves Creating state before the next slow Fleet refresh", async () => {
+  const snapshot = { capacity, sources: [{ instance: "seed", state: "parallel_session_qualified" as const,
+    reason: "qualified" }], jobs: [] };
+  vi.mocked(fetchFleet).mockResolvedValueOnce(snapshot);
+  vi.mocked(fetchFleet).mockImplementationOnce(() => new Promise(() => {}));
+  vi.mocked(fetchFleetPreview).mockResolvedValue({ mode: "clone", source: "seed", count: 1,
+    targets: ["seed_1"], state: "eligible" });
+  vi.mocked(requestFleetProvision).mockResolvedValue({ id: "job", mode: "clone", source: "seed",
+    requested_at: 1, clones: [{ instance: "seed_1", state: "queued", reason: "awaiting_staging" }] });
+  render(<FleetPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Start a reroll" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Create seed_1" }));
+  expect(await screen.findByText(/Reroll request recorded/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Request clones" })).toBeInTheDocument();
 });
 
 test("empty Fleet points to the reroll action without creating an instance", async () => {
