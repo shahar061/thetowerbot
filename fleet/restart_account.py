@@ -15,12 +15,16 @@ _CONTROLS = {
     "settings": "account",
     "game_over": "home_from_game_over",
     "google_play_profile": "dismiss_google_play_profile",
+    "workshop_tutorial_claim": "claim",
+    "workshop": "battle_tab",
 }
 _NEXT_SCREEN = {
     "home": "settings",
     "settings": "account",
     "game_over": "home",
     "google_play_profile": "home",
+    "workshop_tutorial_claim": "workshop",
+    "workshop": "home",
 }
 
 

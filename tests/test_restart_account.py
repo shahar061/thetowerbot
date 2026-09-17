@@ -77,6 +77,23 @@ def test_wrong_account_stops_before_closing_popup() -> None:
     assert device.taps == []
 
 
+def test_restart_from_workshop_tutorial_claim() -> None:
+    device = Device()
+    supervisor = Supervisor("ACCOUNT-A")
+    verify_restart_account(device=device, supervisor=supervisor,
+        expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
+        observe=observer([
+            frame("workshop_tutorial_claim", controls={"claim": (5, 6)}),
+            frame("workshop", controls={"battle_tab": (7, 8)}),
+            frame("home", controls={"settings": (1, 2)}),
+            frame("settings", controls={"account": (3, 4)}),
+            frame("account", account_id="ACCOUNT-A"),
+            frame("settings"), frame("home"),
+        ]))
+    assert device.taps == [(5, 6), (7, 8), (1, 2), (3, 4),
+                           (925, 600), (905, 510)]
+
+
 def test_ambiguous_home_control_never_taps() -> None:
     device = Device()
     with pytest.raises(RecoveryBlocked, match="navigation evidence"):
