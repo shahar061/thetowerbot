@@ -49,6 +49,7 @@ from control import ControlError, Controls
 from events import EventBus
 from frames import FrameBuffer
 from fleet.dashboard import FleetController, FleetRequestError
+from bluestacks import HostCapabilityError
 from runner import BotRunner, RunnerError
 from sinks.sse import SseSink, to_payload
 from sinks.state import BotState
@@ -233,6 +234,12 @@ class FleetProvisionRequest(BaseModel):
     source: str | None = None
     count: int
     targets: list[str]
+
+
+class FleetSetupRequest(BaseModel):
+    capacity: int
+    name_prefix: str
+    qualification_id: str
 
 
 _CATEGORY_BY_UPGRADE: dict[str, str] = {u.id: u.category for u in upgrades.CATALOG}
@@ -1103,6 +1110,31 @@ def create_app(
     # looks identical to "the route was never registered." See
     # test_the_unmatched_api_catch_all_does_not_shadow_real_routes in
     # tests/test_lifecycle_api.py, which pins this ordering.
+    @app.get("/api/fleet/setup")
+    def fleet_setup_snapshot() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "setup_snapshot", None)):
+            raise HTTPException(status_code=503, detail="fleet_setup_unavailable")
+        return fleet.setup_snapshot()
+
+    @app.post("/api/fleet/setup")
+    def fleet_setup_save(body: FleetSetupRequest) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "configure", None)):
+            raise HTTPException(status_code=503, detail="fleet_setup_unavailable")
+        try:
+            return fleet.configure(capacity=body.capacity, name_prefix=body.name_prefix,
+                                   qualification_id=body.qualification_id)
+        except (ValueError, HostCapabilityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/setup/start-source")
+    def fleet_setup_start_source() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "start_source", None)):
+            raise HTTPException(status_code=503, detail="fleet_setup_unavailable")
+        try:
+            return fleet.start_source()
+        except (FleetRequestError, HostCapabilityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/api/fleet")
     def fleet_snapshot() -> dict[str, Any]:
         if fleet is None:
@@ -1150,6 +1182,14 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         background.add_task(fleet.run_pending, job["id"])
         return job
+
+    @app.post("/api/fleet/requests/{job_id}/targets/{index}/resume-first-launch")
+    def fleet_resume_first_launch(job_id: str, index: int,
+                                  background: BackgroundTasks) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "resume_unopened_clone", None)):
+            raise HTTPException(status_code=503, detail="fleet_setup_unavailable")
+        background.add_task(fleet.resume_unopened_clone, job_id, index)
+        return {"state": "resuming", "job_id": job_id, "index": index}
 
     @app.post("/api/fleet/requests/{job_id}/targets/{index}/{action}")
     def fleet_resolve_target(job_id: str, index: int, action: Literal["retry", "quarantine"],

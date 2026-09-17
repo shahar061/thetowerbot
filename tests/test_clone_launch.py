@@ -127,3 +127,23 @@ def test_first_launch_refuses_unmeasured_agree() -> None:
             sleep=lambda _: None,
         )
     assert device.actions == []
+
+
+def test_first_launch_can_continue_after_recorded_consent() -> None:
+    device = Device([])
+    actions: list[str] = []
+    frames = iter([
+        SimpleNamespace(screen="google_play_profile", conflict_dialog=None,
+                        controls={"dismiss_google_play_profile": (176, 2289)}),
+        SimpleNamespace(screen="game_over", conflict_dialog=None,
+                        controls={"home_from_game_over": (780, 1708)}),
+        SimpleNamespace(screen="home", conflict_dialog=None,
+                        controls={"settings": (1020, 230)}),
+    ])
+    complete_first_launch_onboarding(
+        device, lambda _: next(frames), sleep=lambda _: None,
+        before_action=lambda action, _: actions.append(action),
+        consent_already_recorded=True,
+    )
+    assert actions == ["dismiss_google_play_profile", "home_from_game_over"]
+    assert device.actions == [(176, 2289), (780, 1708)]

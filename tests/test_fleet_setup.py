@@ -1,0 +1,91 @@
+"""UI setup persists only explicit, host-bound Fleet choices."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from fleet.setup import FleetSetupStore, FleetSetupError
+from web.app import create_app
+from events import EventBus
+from sinks.sse import SseSink
+from sinks.state import BotState
+
+
+def qualification(root: Path, *, source: str = "Tiramisu64_6") -> None:
+    directory = root / "m05-air6"
+    directory.mkdir()
+    (directory / "m05.json").write_text(json.dumps({
+        "schema": 2, "state": "passed", "live": True, "source_instance": source,
+        "source_evidence": {"tower_unopened": True, "lease_id": "source-lease"},
+        "scope": {"host_id": "local-air", "bluestacks_version": "Air",
+                  "source_lineage": "source", "source_version": "image",
+                  "game_version": "29.0.3", "instance_config": {
+                      "source_instance": source, "source_endpoint": "127.0.0.1:5615",
+                      "source_lease": "source-lease"}},
+    }))
+
+
+def test_setup_discovers_existing_proof_and_persists_host_policy(tmp_path: Path) -> None:
+    qualification(tmp_path)
+    store = FleetSetupStore(tmp_path / "fleet", qualification_root=tmp_path)
+
+    assert store.snapshot()["configured"] is False
+    assert store.snapshot()["qualifications"][0]["id"] == "m05-air6"
+    saved = store.configure(capacity=7, name_prefix="Tiramisu64_",
+                            qualification_id="m05-air6", installed_prefix="Tiramisu64_",
+                            host_count=5)
+
+    assert saved["configured"] is True
+    assert saved["settings"] == {"capacity": 7, "name_prefix": "Tiramisu64_",
+                                  "qualification_id": "m05-air6"}
+    assert FleetSetupStore(tmp_path / "fleet", qualification_root=tmp_path).settings() \
+        == saved["settings"]
+    assert (tmp_path / "fleet" / "settings.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_setup_rejects_arbitrary_source_and_prefix(tmp_path: Path) -> None:
+    qualification(tmp_path)
+    store = FleetSetupStore(tmp_path / "fleet", qualification_root=tmp_path)
+    for values in (
+        {"capacity": 5, "name_prefix": "Tiramisu64_", "qualification_id": "m05-air6"},
+        {"capacity": 7, "name_prefix": "other_", "qualification_id": "m05-air6"},
+        {"capacity": 7, "name_prefix": "Tiramisu64_", "qualification_id": "../other"},
+    ):
+        with pytest.raises(FleetSetupError):
+            store.configure(**values, installed_prefix="Tiramisu64_", host_count=5)
+    assert store.settings() is None
+
+
+def test_setup_api_routes_save_start_and_resume_before_generic_action() -> None:
+    class Setup:
+        def __init__(self) -> None:
+            self.actions: list[str] = []
+
+        def setup_snapshot(self) -> dict:
+            return {"configured": False, "settings": None, "qualifications": [], "host": {}}
+
+        def configure(self, *, capacity: int, name_prefix: str, qualification_id: str) -> dict:
+            self.actions.append(f"save:{capacity}:{name_prefix}:{qualification_id}")
+            return self.setup_snapshot()
+
+        def start_source(self) -> dict:
+            self.actions.append("start")
+            return {"sources": [], "jobs": []}
+
+        def resume_unopened_clone(self, job_id: str, index: int) -> dict:
+            self.actions.append(f"resume:{job_id}:{index}")
+            return {}
+
+    setup = Setup()
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=setup))
+    assert client.get("/api/fleet/setup").status_code == 200
+    assert client.post("/api/fleet/setup", json={"capacity": 7, "name_prefix": "Tiramisu64_",
+                                                  "qualification_id": "m05-air6"}).status_code == 200
+    assert client.post("/api/fleet/setup/start-source").status_code == 200
+    assert client.post("/api/fleet/requests/job/targets/0/resume-first-launch").status_code == 200
+    assert setup.actions == ["save:7:Tiramisu64_:m05-air6", "start", "resume:job:0"]

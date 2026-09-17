@@ -503,6 +503,12 @@ class MacOSMultiInstanceManager:
                     raise HostCapabilityError("BlueStacks Air Manager did not appear") from exc
                 self._sleeper(.1)
 
+    def activate(self) -> ManagerFrame:
+        """Bring the exact installed Manager app forward for a dashboard action."""
+        self._require_macos()
+        self._launcher()
+        return self.ensure_open()
+
     def _press_exact_manager(self, window_id: int, point: tuple[int, int],
                              expected_label: str) -> None:
         self._require_macos()
@@ -1093,6 +1099,9 @@ class BlueStacksAirDriver:
     def _lifecycle(self, name: str, *, action: str, before_state: str, after_state: str) -> None:
         if self.timeout < 0 or self.poll_interval <= 0:
             raise ValueError("bounded lifecycle settings required")
+        activate = getattr(self.manager, "activate", None)
+        if callable(activate):
+            activate()
         digest, before, control = self._prepress_evidence(name, action=action,
                                                            before_state=before_state)
         self.manager.press(control.window_id, control.point, action)
@@ -1435,6 +1444,9 @@ class BlueStacksAirDriver:
         """Create one scoped, deterministically named clone through the manager UI."""
         if self.timeout < 0 or self.poll_interval <= 0:
             raise ValueError("bounded clone settings required")
+        activate = getattr(self.manager, "activate", None)
+        if callable(activate):
+            activate()
         self._validate_next_clone_name(name, source)
         restore_source = self._stop_clone_source_if_running(source)
         before_digest, before = self._require_next_clone_name(name, source)

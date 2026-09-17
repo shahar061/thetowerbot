@@ -1807,7 +1807,16 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
         if args.bluestacks_pool is not None and runtime is not None else None
     )
     fleet_controller = None
-    if args.fleet_root is not None:
+    if (args.web and args.bluestacks_instance is None
+            and args.web_host in {"127.0.0.1", "localhost", "::1"}
+            and args.fleet_root is None):
+        from fleet.setup import FleetSetupService
+
+        fleet_controller = FleetSetupService(
+            Path.home() / ".local/share/thetowerbot/fleet",
+            qualification_root=Path.home() / ".local/share/thetowerbot",
+        )
+    elif args.fleet_root is not None:
         from fleet.bluestacks_air import (
             BlueStacksAirDriver, BlueStacksAirInventory, MacOSMultiInstanceManager,
             _EXECUTABLE, live_process_rows,

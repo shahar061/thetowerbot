@@ -83,13 +83,14 @@ def complete_first_launch_onboarding(
     device: Any, observe: Callable[[Any], Any], *,
     sleep: Callable[[float], None] = time.sleep,
     before_action: Callable[[str, Any], None] | None = None,
+    consent_already_recorded: bool = False,
 ) -> None:
     """Accept measured clone-only consent and wait through the first short run.
 
     The caller must attest that this is a new clone with Tower never launched.
     No source instance or New Account action belongs in this flow.
     """
-    agreed = False
+    agreed = consent_already_recorded
     dismissed_profile = False
     left_game_over = False
     for _ in range(180):
@@ -100,7 +101,7 @@ def complete_first_launch_onboarding(
                     "new session detected", "cloud session different than local session",
                 )) else "ambiguous dialog")
         if frame.screen == "google_play_profile":
-            if dismissed_profile or agreed or set(frame.controls) != {"dismiss_google_play_profile"}:
+            if dismissed_profile or set(frame.controls) != {"dismiss_google_play_profile"}:
                 raise ValueError("unexpected Play Games profile prompt")
             if before_action is not None:
                 before_action("dismiss_google_play_profile", frame)

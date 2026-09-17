@@ -153,7 +153,7 @@ class FleetController:
                 return {"state": "parallel_session_qualified", "source_instance": source,
                         "clone_instances": record["clone_instances"],
                         "evaluated_at": record["evaluated_at"],
-                        "source_evidence_ref": record["source_evidence"]["evidence_ref"],
+                        "source_evidence_ref": record["source_evidence"].get("evidence_ref"),
                         "worker_evidence_refs": [proof["evidence_ref"]
                                                  for proof in record["worker_proofs"]]}
             except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
