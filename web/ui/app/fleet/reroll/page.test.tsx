@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
 import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, startReroll } from "@/lib/api";
@@ -80,6 +80,24 @@ test("running workers have distinct accounts, unknown metrics, and labelled jour
   fireEvent.change(screen.getByLabelText("Journal emulator"), { target: { value: "Air_2" } });
   expect(screen.queryByText("Run started")).not.toBeInTheDocument();
   expect(screen.getByText("Choose UW")).toBeInTheDocument();
+});
+
+test("worker shows ten ordered Workshop buys including defense unlocks", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [{
+    ...members[0], reroll_plan: { ...members[0].reroll_plan,
+      next_purchases: Array.from({ length: 10 }, (_, index) => ({
+        account_id: "100", position: index + 1,
+        upgrade_id: index === 0 ? "unlock_defense_upgrades" : "defense_absolute",
+        item: index === 0 ? "Unlock Defense Upgrades" : "Defense Absolute",
+        category: "DEFENSE", unlock: index === 0,
+        focus: "Survive longer",
+      })),
+    },
+  }] });
+  render(<RerollPage />);
+  const list = await screen.findByRole("list", { name: "Next 10 Workshop buys for Air_1" });
+  expect(within(list).getAllByRole("listitem")).toHaveLength(10);
+  expect(within(list).getByText("Unlock Defense Upgrades")).toBeInTheDocument();
 });
 
 test("start failure is visible and four workers warn about resources", async () => {
