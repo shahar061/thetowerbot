@@ -1885,6 +1885,17 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
         return 0
 
     db_path = runtime.db_path if runtime is not None else Path(args.db)
+    if runtime is not None and args.store:
+        from web.account_catalog import registered_worker
+        registration = registered_worker(runtime.root)
+        if registration is None:
+            logger.error("identity incident: worker registration is missing or invalid")
+            return 1
+        try:
+            db.bind_account(db_path, registration.account_id or "")
+        except ValueError as exc:
+            logger.error("identity incident: %s", exc)
+            return 1
     seed_seq, last_run, seed_best_wave = (
         prepare_store(db_path) if args.store else (0, 0, None)
     )

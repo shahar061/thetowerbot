@@ -125,6 +125,53 @@ class FleetSetupService:
             result["host"] = {"unavailable": "host_inventory_unavailable"}
         return result
 
+    def instances_snapshot(self) -> dict[str, Any]:
+        """List exact Manager instances without opening any game app."""
+        from fleet.bluestacks_air import BlueStacksAirInventory, _EXECUTABLE, live_process_rows
+
+        inventory = BlueStacksAirInventory(
+            Path("/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"),
+            _EXECUTABLE, live_process_rows)
+        source = None
+        settings = self.store.settings()
+        if settings is not None:
+            source = next((item["source_instance"] for item in self.store.qualifications()
+                           if item["id"] == settings["qualification_id"]), None)
+            if source is None:
+                try:
+                    saved = json.loads((self.store.qualification_root /
+                                        settings["qualification_id"] / "m05.json").read_text(encoding="utf-8"))
+                    candidate = saved.get("source_instance")
+                    if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_]+", candidate):
+                        source = candidate
+                except (OSError, ValueError, TypeError):
+                    pass
+        elif len(self.store.qualifications()) == 1:
+            source = self.store.qualifications()[0]["source_instance"]
+        return {"instances": [{"name": item.name, "endpoint": item.endpoint,
+                               "state": item.state, "template": item.name == source}
+                              for item in inventory.instances()],
+                "can_start": self.controller is not None}
+
+    def start_instance(self, name: str) -> dict[str, Any]:
+        """Start one exact Manager row; leave The Tower unopened."""
+        from fleet.dashboard import FleetRequestError
+
+        if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+            raise FleetRequestError("invalid_instance_name")
+        controller = self._require_controller()
+        snapshot = self.instances_snapshot()
+        row = next((item for item in snapshot["instances"] if item["name"] == name), None)
+        if row is None:
+            raise FleetRequestError("instance_not_installed")
+        if row["template"]:
+            self.start_source()
+        elif row["state"] == "stopped":
+            controller.adapter.driver.start(name)
+        elif row["state"] != "running":
+            raise FleetRequestError("instance_state_unavailable")
+        return self.instances_snapshot()
+
     def configure(self, *, capacity: int, name_prefix: str,
                   qualification_id: str) -> dict[str, Any]:
         from fleet.bluestacks_air import BlueStacksAirInventory, _EXECUTABLE, live_process_rows

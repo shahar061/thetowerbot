@@ -5,6 +5,7 @@ const { fetchAccount, fetchConcepts, collectStats, claimMissions, claimMilestone
   fetchAccount: vi.fn(), fetchConcepts: vi.fn(), collectStats: vi.fn(), claimMissions: vi.fn(), claimMilestones: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ fetchAccount, fetchConcepts, collectStats, claimMissions, claimMilestones }));
+vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ selected: { running: true } }) }));
 const concept = { concept_id: "stats.damage", name: "Damage", domain: "stats", kind: "stat", unit: null, execution_scopes: ["workshop"], prerequisites: null, unlocks: [], rule_verified: false };
 const unknown = { revision_id: null, registry_version: "1", account_id: null, game_version: null, workshop_stats: [], workshop_levels: null, lab_levels: null, inventory: null, effective_account_stats: null, unlocks: null, settings: null };
 const snapshot = { persistence_available: true, error: null, errors: { account: null, run: null }, revision: null, unknown_state: unknown };

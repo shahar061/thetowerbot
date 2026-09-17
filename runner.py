@@ -187,6 +187,13 @@ class BotRunner:
         with self._lock:
             return {"serial": self._device_serial, "game_version": None}
 
+    def verified_account(self) -> str | None:
+        """Account bound to the current supervised attempt, if verified."""
+        with self._lock:
+            if not self._running_locked():
+                return None
+            return self._verified_account()
+
     def record_identity_evidence(self, evidence: IdentityEvidence) -> None:
         """Commit an account binding only after a connected attempt is observed."""
         with self._lock:

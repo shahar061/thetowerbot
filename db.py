@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS account_identity (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    account_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS account_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT, detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS account_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, revision_id INTEGER NOT NULL, detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, observed_at REAL NOT NULL, detail TEXT NOT NULL);
@@ -147,6 +151,38 @@ def reader(path: Path | str) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         yield conn
+    finally:
+        conn.close()
+
+
+def bound_account(path: Path | str) -> str | None:
+    """Return the account explicitly assigned to a worker database."""
+    try:
+        with reader(path) as conn:
+            row = conn.execute("SELECT account_id FROM account_identity WHERE id = 1").fetchone()
+        return row[0] if row is not None else None
+    except sqlite3.OperationalError:
+        return None  # An older database has no identity marker.
+
+
+def bind_account(path: Path | str, account_id: str) -> None:
+    """Assign an empty worker database once; reject reused or mixed history."""
+    if not account_id:
+        raise ValueError("worker account identity is required")
+    conn = connect(path)
+    try:
+        with conn:
+            row = conn.execute("SELECT account_id FROM account_identity WHERE id = 1").fetchone()
+            if row is not None:
+                if row[0] != account_id:
+                    raise ValueError("worker database is bound to another account")
+                return
+            for table in ("runs", "events", "ledger", "transactions",
+                          "account_revisions", "account_observations", "run_observations"):
+                if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+                    raise ValueError("worker database has unattributed history")
+            conn.execute("INSERT INTO account_identity(id, account_id) VALUES (1, ?)",
+                         (account_id,))
     finally:
         conn.close()
 

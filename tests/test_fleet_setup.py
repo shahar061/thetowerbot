@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from fleet.setup import FleetSetupStore, FleetSetupError
+from fleet.setup import FleetSetupStore, FleetSetupError, FleetSetupService
+from fleet.dashboard import FleetRequestError
 from web.app import create_app
 from events import EventBus
 from sinks.sse import SseSink
@@ -58,6 +60,23 @@ def test_setup_rejects_arbitrary_source_and_prefix(tmp_path: Path) -> None:
         with pytest.raises(FleetSetupError):
             store.configure(**values, installed_prefix="Tiramisu64_", host_count=5)
     assert store.settings() is None
+
+
+def test_start_instance_uses_exact_installed_row_and_never_opens_tower(tmp_path: Path) -> None:
+    service = FleetSetupService(tmp_path / "fleet", qualification_root=tmp_path)
+    started: list[str] = []
+    service.controller = SimpleNamespace(adapter=SimpleNamespace(
+        driver=SimpleNamespace(start=lambda name: started.append(name))))
+    service.instances_snapshot = lambda: {"instances": [
+        {"name": "Tiramisu64_6", "endpoint": "127.0.0.1:5615", "state": "running", "template": True},
+        {"name": "Tiramisu64_18", "endpoint": "127.0.0.1:5735", "state": "stopped", "template": False},
+    ], "can_start": True}
+
+    service.start_instance("Tiramisu64_18")
+    assert started == ["Tiramisu64_18"]
+    with pytest.raises(FleetRequestError, match="instance_not_installed"):
+        service.start_instance("Tiramisu64_99")
+    assert started == ["Tiramisu64_18"]
 
 
 def test_setup_api_routes_save_start_and_resume_before_generic_action() -> None:

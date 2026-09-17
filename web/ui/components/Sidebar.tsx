@@ -10,6 +10,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { fetchErrors, fetchStrategies } from "@/lib/api";
 import { useConnected } from "@/lib/useEventStream";
+import { useAccountSelection } from "@/lib/AccountSelection";
 import { cn } from "@/lib/utils";
 
 type Item = { href: string; label: string; icon: typeof Activity };
@@ -42,6 +43,9 @@ const GROUPS: { label: string; items: Item[] }[] = [
 const GUIDE: Item = { href: "/guide/", label: "Guide", icon: BookOpen };
 
 export function Sidebar() {
+  const { selected } = useAccountSelection();
+  const selectedKey = selected?.key;
+  const selectedRunning = selected?.running;
   const pathname = usePathname();
   // Read from the shared stream rather than opening one here: this component
   // is on every page, including the two that already subscribe via
@@ -52,14 +56,17 @@ export function Sidebar() {
 
   // Slow polls: neither of these changes often, and the rail is on every page.
   useEffect(() => {
+    let active = true;
+    setErrorCount(null);
     const load = () => {
-      fetchErrors(100).then((rows) => setErrorCount(rows.length)).catch(() => {});
-      fetchStrategies().then((list) => setActive(list.active)).catch(() => {});
+      if (selectedKey) fetchErrors(100).then((rows) => { if (active) setErrorCount(rows.length); }).catch(() => {});
+      if (selectedRunning) fetchStrategies().then((list) => { if (active) setActive(list.active); }).catch(() => {});
+      else setActive(null);
     };
     load();
     const id = setInterval(load, 30_000);
-    return () => clearInterval(id);
-  }, []);
+    return () => { active = false; clearInterval(id); };
+  }, [selectedKey, selectedRunning]);
 
   function link({ href, label, icon: Icon }: Item) {
     const isActive = pathname === href;
@@ -115,8 +122,8 @@ export function Sidebar() {
       <div className="contents md:mt-auto md:block">
         {link(GUIDE)}
         <div className="mt-3 hidden items-center gap-2 md:flex">
-          <StatusBadge state={connected ? "live" : "warn"}>
-            {connected ? "live" : "no bot"}
+          <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
+            {selected?.running && connected ? "live" : "no bot"}
           </StatusBadge>
           <ThemeToggle />
         </div>
@@ -125,8 +132,8 @@ export function Sidebar() {
       {/* On the mobile strip the badge rides beside the theme toggle - the
           rail is horizontal there and has no footer to sit in. */}
       <div className="ml-auto flex items-center gap-2 self-center md:hidden">
-        <StatusBadge state={connected ? "live" : "warn"}>
-          {connected ? "live" : "no bot"}
+        <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
+          {selected?.running && connected ? "live" : "no bot"}
         </StatusBadge>
         <ThemeToggle />
       </div>

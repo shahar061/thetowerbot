@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { MatchBox } from "@/lib/types";
+import { accountScope } from "@/lib/accountScope";
 
 export function DeviceView({
   boxes,
@@ -12,6 +13,7 @@ export function DeviceView({
 }) {
   const [overlay, setOverlay] = useState(true);
   const best = boxes.length ? boxes.reduce((a, b) => (b.score > a.score ? b : a)) : null;
+  const scope = accountScope();
 
   return (
     <div className="flex flex-col">
@@ -22,7 +24,7 @@ export function DeviceView({
         {size ? (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/api/frame" alt="device screen" className="block w-full" />
+            <img src={`/api/frame${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`} alt="device screen" className="block w-full" />
             {overlay
               ? boxes.map((box) => (
                   <div key={`${box.name}-${box.x}-${box.y}`}>

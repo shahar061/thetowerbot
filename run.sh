@@ -112,12 +112,12 @@ else
 fi
 
 # --- 4. free the port -----------------------------------------------------
-# Read from config.py rather than hardcoded, and overridden by a --port in the
-# passed-through flags, so this never kills the wrong thing on the wrong port.
+# Read the dashboard port, independently of --port (the emulator ADB port).
+# Only --web-port changes which local dashboard listener we replace.
 port=$(uv run --quiet python -c 'import config; print(config.WEB_PORT)')
 args=("$@")
 for i in "${!args[@]}"; do
-    if [[ "${args[i]}" == '--port' && -n "${args[i+1]:-}" ]]; then
+    if [[ "${args[i]}" == '--web-port' && -n "${args[i+1]:-}" ]]; then
         port="${args[i+1]}"
     fi
 done

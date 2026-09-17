@@ -8,6 +8,7 @@ import {
   fetchFleet, requestFleetProvision,
 } from "./api";
 import type { Strategy } from "./types";
+import { setAccountScope } from "./accountScope";
 
 /** Every page test mocks `@/lib/api` wholesale and the Python suite tests the
  * routes from the server side, so nothing else in either suite ever asserts
@@ -124,7 +125,15 @@ describe("advisor routes", () => {
 });
 
 afterEach(() => {
+  setAccountScope(null);
   vi.unstubAllGlobals();
+});
+
+it("sends the chosen account with history reads", async () => {
+  setAccountScope("worker:Tiramisu64_18");
+  await fetchRuns();
+  const [, init] = callArgs();
+  expect((init?.headers as Record<string, string>)["x-account-scope"]).toBe("worker:Tiramisu64_18");
 });
 
 describe("read routes", () => {
