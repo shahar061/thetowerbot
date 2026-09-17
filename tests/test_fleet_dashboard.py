@@ -135,6 +135,13 @@ def test_preview_uses_installed_host_names_after_old_clones_were_removed(tmp_pat
     assert fleet.preview("clone", "seed", 2)["targets"] == ["seed_1", "seed_2"]
 
 
+def test_preview_uses_manager_counter_when_it_exceeds_installed_names(tmp_path: Path) -> None:
+    fleet, driver = controller(tmp_path)
+    driver.next_clone_name = lambda source: "seed_20"  # type: ignore[attr-defined]
+
+    assert fleet.preview("clone", "seed", 2)["targets"] == ["seed_20", "seed_21"]
+
+
 def test_slow_source_check_does_not_hold_job_state_lock(tmp_path: Path) -> None:
     fleet, _ = controller(tmp_path)
     entered = Event()
