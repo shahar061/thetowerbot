@@ -20,6 +20,7 @@ import type {
   StoredEvent,
 } from "./types";
 import { checkRuntimeCompatibility } from "./runtimeCompatibility";
+import type { FleetJob, FleetSnapshot } from "./fleet";
 
 /** An HTTP failure that kept its status code.
  *
@@ -55,6 +56,9 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const fetchStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" });
+export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
+export const requestFleetClones = (source: string, count: number) =>
+  send<FleetJob>("/api/fleet/clones", "POST", { source, count }, "fleet");
 export const fetchUpgrades = () => getJson<Upgrade[]>("/api/upgrades");
 export const fetchAutopilot = () => getJson<AutopilotSnapshot>("/api/autopilot");
 export const fetchAutopilotPresets = () => getJson<AutopilotPreset[]>("/api/autopilot/presets");
@@ -131,7 +135,7 @@ export async function patchControl(
   return body as ControlPayload;
 }
 
-type Capability = "control" | "lifecycle" | "strategies" | "autopilot" | "advisor";
+type Capability = "control" | "lifecycle" | "strategies" | "autopilot" | "advisor" | "fleet";
 
 function mutationHeaders(): Record<string, string> {
   const headers: Record<string, string> = {

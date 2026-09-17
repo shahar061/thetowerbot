@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Literal
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -48,6 +48,7 @@ from progression import compare_tiers, rates as progression_rates
 from control import ControlError, Controls
 from events import EventBus
 from frames import FrameBuffer
+from fleet.dashboard import FleetController, FleetRequestError
 from runner import BotRunner, RunnerError
 from sinks.sse import SseSink, to_payload
 from sinks.state import BotState
@@ -227,6 +228,11 @@ class CommandRequest(BaseModel):
     command: str
 
 
+class FleetCloneRequest(BaseModel):
+    source: str
+    count: int
+
+
 _CATEGORY_BY_UPGRADE: dict[str, str] = {u.id: u.category for u in upgrades.CATALOG}
 
 
@@ -257,6 +263,7 @@ def create_app(
     shopping: Any | None = None,
     advisor: AdvisorStore | None = None,
     account_state: AccountState | None = None,
+    fleet: FleetController | None = None,
 ) -> FastAPI:
     # See event_stream()'s docstring for why this exists: without it, an
     # open dashboard tab and a shutting-down uvicorn wait on each other
@@ -507,6 +514,8 @@ def create_app(
         if runner is not None:
             runtime_capabilities.append("autopilot")
         runtime_capabilities.append("advisor")
+        if fleet is not None:
+            runtime_capabilities.append("fleet")
 
         control_snapshot = controls.snapshot() if controls is not None else None
         strategy = control_snapshot.strategy if control_snapshot is not None else None
@@ -1092,6 +1101,23 @@ def create_app(
     # looks identical to "the route was never registered." See
     # test_the_unmatched_api_catch_all_does_not_shadow_real_routes in
     # tests/test_lifecycle_api.py, which pins this ordering.
+    @app.get("/api/fleet")
+    def fleet_snapshot() -> dict[str, Any]:
+        if fleet is None:
+            return {"sources": [], "jobs": [], "unavailable": "fleet_not_configured"}
+        return fleet.snapshot()
+
+    @app.post("/api/fleet/clones", status_code=202)
+    def fleet_clone_request(body: FleetCloneRequest, background: BackgroundTasks) -> dict[str, Any]:
+        if fleet is None:
+            raise HTTPException(status_code=503, detail="fleet_not_configured")
+        try:
+            job = fleet.request(body.source, body.count)
+        except FleetRequestError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        background.add_task(fleet.run_pending, job["id"])
+        return job
+
     @app.api_route("/api/{_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
     def unmatched_api_route(_path: str) -> None:
         raise HTTPException(status_code=404, detail="no such route")
