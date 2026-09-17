@@ -225,8 +225,10 @@ class BotRunner:
         import json
 
         staging_journal = self._binding_path.parent / ".r00-account-creation.json"
+        first_launch_journal = self._binding_path.parent / ".first-launch-account.json"
         host_adapter = getattr(self, "_host_adapter", None)
         host_instance = getattr(self, "_host_instance", None)
+        designated = None
         if host_adapter is not None and host_instance is not None:
             try:
                 designated = host_adapter.designated(host_instance, self._attempt)
@@ -234,10 +236,16 @@ class BotRunner:
                 # HostBoundConnect will pass the mismatch to DeviceSupervisor,
                 # which durably quarantines this exact worker before a frame.
                 return None
-            if designated.source_lineage is not None and not staging_journal.exists():
-                raise RunnerError("identity incident: R00 staging account unverified", 503)
+            if designated.source_lineage is not None:
+                if staging_journal.exists() and first_launch_journal.exists():
+                    raise RunnerError("identity incident: conflicting account audits", 503)
+                if not staging_journal.exists() and not first_launch_journal.exists():
+                    label = ("first-launch" if designated.source_lineage.startswith("manual:")
+                             else "R00 staging")
+                    raise RunnerError(f"identity incident: {label} account unverified", 503)
 
         accounts: set[str] = set()
+        matching_binding: dict[str, Any] | None = None
         for path in self._binding_path.parent.glob("*.json"):
             if re.fullmatch(r"[0-9a-f]{32}", path.stem) is None:
                 continue
@@ -259,6 +267,7 @@ class BotRunner:
                         or created <= 0 or observed < created):
                     raise RunnerError("identity incident: incomplete account binding", 503)
                 accounts.add(account)
+                matching_binding = row
         if len(accounts) > 1:
             raise RunnerError("identity incident: conflicting account bindings", 503)
         account = next(iter(accounts), None)
@@ -282,6 +291,30 @@ class BotRunner:
                     raise ValueError("unverified staging journal")
             except (OSError, ValueError, TypeError, AttributeError):
                 raise RunnerError("identity incident: R00 staging account unverified", 503) from None
+        if first_launch_journal.exists():
+            try:
+                row = json.loads(first_launch_journal.read_text(encoding="utf-8"))
+                evidence = row.get("evidence")
+                final = evidence[-1] if isinstance(evidence, list) and evidence else None
+                if (designated is None or designated.source_lineage is None
+                        or row.get("state") != "verified" or row.get("account_id") != account
+                        or row.get("instance") != host_instance
+                        or row.get("source_lineage") != designated.source_lineage
+                        or any(row.get(key) != getattr(self._attempt, key)
+                               for key in ("worker_id", "endpoint", "lease_id", "attempt_id",
+                                           "generation", "created_at"))
+                        or not row.get("app_version") or matching_binding is None
+                        or not isinstance(evidence, list)
+                        or not any(isinstance(item, dict) and item.get("action") == "i_agree"
+                                   for item in evidence)
+                        or not isinstance(final, dict) or final.get("screen") != "account"
+                        or final.get("account_id") != account
+                        or final.get("app_version") != row["app_version"]
+                        or final.get("observed_at") != matching_binding["observed_at"]
+                        or final.get("evidence_ref") != matching_binding["evidence_ref"]):
+                    raise ValueError("unverified first-launch journal")
+            except (OSError, ValueError, TypeError, AttributeError):
+                raise RunnerError("identity incident: first-launch account unverified", 503) from None
         return account
 
     def request_autopilot(self, command: dict[str, Any]) -> None:
