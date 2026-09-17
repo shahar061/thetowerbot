@@ -34,3 +34,10 @@ export type FleetPreview = {
   state: "eligible" | "blocked";
   reason?: string;
 };
+
+export type FleetSetup = {
+  configured: boolean;
+  settings: { capacity: number; name_prefix: string; qualification_id: string } | null;
+  qualifications: { id: string; source_instance: string; evaluated_at?: number }[];
+  host: { installed_prefix?: string; instance_count?: number; unavailable?: string };
+};

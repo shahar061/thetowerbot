@@ -91,6 +91,21 @@ def test_google_play_profile_exposes_only_cancel() -> None:
     assert reading.controls == {"dismiss_google_play_profile": (176, 2289)}
 
 
+def test_google_play_no_profile_sheet_after_consent_exposes_cancel() -> None:
+    frame = np.zeros((2400, 1080, 3), dtype=np.uint8)
+    boxes = (
+        TextBox("Google Play Games", .99, Rect(397, 670, 382, 52)),
+        TextBox("No profile", .99, Rect(283, 1725, 203, 49)),
+        TextBox("Cancel", .99, Rect(109, 2268, 135, 42)),
+    )
+    reading = parse_google_play_profile(
+        frame, boxes, observed_at=101., app_version="29.0.3",
+        evidence_ref="capture://no-profile",
+    )
+    assert reading is not None
+    assert reading.controls == {"dismiss_google_play_profile": (176, 2289)}
+
+
 @pytest.mark.parametrize("removed", ["Create a Play Games profile", "No profile", "Cancel", "Next"])
 def test_incomplete_google_play_profile_never_exposes_cancel(removed: str) -> None:
     frame = np.zeros((2400, 1080, 3), dtype=np.uint8)

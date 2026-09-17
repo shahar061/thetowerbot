@@ -32,24 +32,40 @@ def create_first_launch_account(
     instance: str, source_lineage: str, protected_ids: frozenset[str],
     connect: Callable[[], Any], observe: Callable[[Any], AccountFrame],
     registry: Path, clock: Callable[[], float] = time.time,
+    resume_after_consent: bool = False,
 ) -> dict[str, Any]:
     """Journal clone consent and first run before binding its observed account ID."""
     journal = runtime.checkpoint_root / ".first-launch-account.json"
     with runtime.reserve(attempt.endpoint), adapter.staging_lease():
-        if journal.exists():
+        if journal.exists() and not resume_after_consent:
             raise StagingQuarantined("previous first-launch attempt requires review")
-        audit: dict[str, Any] = {
-            **asdict(attempt), "instance": instance, "source_lineage": source_lineage,
-            "state": "started", "evidence": [], "started_at": clock(),
-        }
-        _save(journal, audit)
+        if resume_after_consent:
+            try:
+                audit = json.loads(journal.read_text(encoding="utf-8"))
+                if (audit.get("state") not in {"pending_i_agree", "quarantined"}
+                        or audit.get("instance") != instance
+                        or audit.get("source_lineage") != source_lineage
+                        or any(audit.get(key) != value for key, value in asdict(attempt).items())
+                        or [row.get("action") for row in audit.get("evidence", [])] != ["i_agree"]):
+                    raise ValueError("consent journal changed")
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise StagingQuarantined("consent journal unavailable") from exc
+        else:
+            audit = {
+                **asdict(attempt), "instance": instance, "source_lineage": source_lineage,
+                "state": "started", "evidence": [], "started_at": clock(),
+            }
+            _save(journal, audit)
         try:
             bound = adapter.designated(instance, attempt)
             if bound.state != "running" or bound.source_lineage != source_lineage:
                 raise ValueError("clone lineage or state changed")
             device = connect()
-            if getattr(device, "serial", None) != attempt.endpoint or not tower_is_unopened(device):
+            if getattr(device, "serial", None) != attempt.endpoint or (
+                    not resume_after_consent and not tower_is_unopened(device)):
                 raise ValueError("clone Tower was already launched or endpoint changed")
+            if resume_after_consent and observe(device).screen != "google_play_profile":
+                raise ValueError("expected post-consent Play Games sheet unavailable")
 
             def before_action(action: str, frame: AccountFrame) -> None:
                 if (frame.screen not in {"google_play_profile", "tower_consent", "game_over"}
@@ -65,8 +81,12 @@ def create_first_launch_account(
                 audit["state"] = f"pending_{action}"
                 _save(journal, audit)
 
-            launch_tower_from_game_center(device)
-            complete_first_launch_onboarding(device, observe, before_action=before_action)
+            if not resume_after_consent:
+                launch_tower_from_game_center(device)
+            complete_first_launch_onboarding(
+                device, observe, before_action=before_action,
+                consent_already_recorded=resume_after_consent,
+            )
 
             def read_screen(expected: str, *, previous: str | None = None) -> AccountFrame:
                 for _ in range(12):

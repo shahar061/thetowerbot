@@ -49,6 +49,11 @@ _GOOGLE_PLAY_PROFILE = (
     ("Cancel", Rect(50, 2200, 260, 120)),
     ("Next", Rect(800, 2200, 220, 120)),
 )
+_GOOGLE_PLAY_NO_PROFILE = (
+    ("Google Play Games", Rect(300, 600, 520, 160)),
+    ("No profile", Rect(180, 1660, 400, 180)),
+    ("Cancel", Rect(50, 2200, 260, 120)),
+)
 _TOWER_CONSENT = (
     ("THETOWER", Rect(300, 525, 470, 135)),
     ("This game uses 3rd party analytics", Rect(135, 680, 810, 130)),
@@ -145,12 +150,19 @@ def parse_google_play_profile(
             or not evidence_ref.strip() or not math.isfinite(observed_at)):
         return None
     found: dict[str, TextBox] = {}
-    for label, bounds in _GOOGLE_PLAY_PROFILE:
-        matches = tuple(box for box in boxes if box.text.strip() == label
-                        and _inside(box, bounds) and _trusted(box))
-        if len(matches) != 1:
-            return None
-        found[label] = matches[0]
+    for layout in (_GOOGLE_PLAY_PROFILE, _GOOGLE_PLAY_NO_PROFILE):
+        matches_by_label: dict[str, TextBox] = {}
+        for label, bounds in layout:
+            matches = tuple(box for box in boxes if box.text.strip() == label
+                            and _inside(box, bounds) and _trusted(box))
+            if len(matches) != 1:
+                break
+            matches_by_label[label] = matches[0]
+        if len(matches_by_label) == len(layout):
+            found = matches_by_label
+            break
+    if not found:
+        return None
     cancel = found["Cancel"].rect
     return AccountFrame(
         screen="google_play_profile", account_id=None, app_version=app_version,

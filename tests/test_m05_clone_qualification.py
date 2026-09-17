@@ -475,6 +475,43 @@ def test_worker_probe_restarts_exact_instance_and_reads_fresh_account(tmp_path: 
     assert device.serial == attempt.endpoint
 
 
+def test_worker_probe_dismisses_measured_play_games_sheet_on_recovery(tmp_path: Path) -> None:
+    host, adapter, _, clones, scope = setup(tmp_path)
+    item = clones[0]
+    host.instances.append(HostInstance(item.instance, item.attempt.endpoint,
+                                       item.attempt.lease_id, "running", scope.source_lineage))
+    attempt = replace(item.attempt, created_at=time.time() - 1.)
+    taps: list[tuple[int, int]] = []
+    device = SimpleNamespace(
+        serial=attempt.endpoint,
+        app_current=lambda: SimpleNamespace(package="com.google.android.gms"),
+        app_start=lambda _: None,
+        click=lambda x, y: taps.append((x, y)),
+    )
+    screens = iter(["google_play_profile", "home", "settings", "account"] * 2)
+    def observe(_: object) -> AccountFrame:
+        screen = next(screens)
+        controls = {
+            "google_play_profile": {"dismiss_google_play_profile": (176, 2289)},
+            "home": {"settings": (1000, 200)},
+            "settings": {"account": (800, 300)},
+            "account": {},
+        }[screen]
+        stamp = time.time()
+        return AccountFrame(screen, "ACCOUNT-A" if screen == "account" else None,
+                            scope.game_version, f"digest-{stamp}", stamp,
+                            f"capture://{stamp}", controls,
+                            popup_title="ACCOUNT" if screen == "account" else None,
+                            id_label="ID:" if screen == "account" else None)
+    proof = probe_clone_worker(adapter=adapter,
+                               candidate=replace(item, attempt=attempt,
+                                                 connect=lambda: device, observe=observe),
+                               account_id="ACCOUNT-A", scope=scope, navigate=True)
+    assert proof["recovered_at"] > proof["started_at"]
+    assert taps.count((176, 2289)) == 2
+    assert host.calls == [("stop", "clone-a"), ("start", "clone-a")]
+
+
 def test_worker_probe_conflict_never_taps_and_does_not_restart(tmp_path: Path) -> None:
     host, adapter, _, clones, scope = setup(tmp_path)
     item = clones[0]

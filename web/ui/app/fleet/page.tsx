@@ -3,14 +3,18 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { SectionCard } from "@/components/ui/section-card";
-import { fetchFleet, fetchFleetPreview, requestFleetProvision, resolveFleetTarget } from "@/lib/api";
-import type { FleetPreview, FleetSnapshot } from "@/lib/fleet";
+import { fetchFleet, fetchFleetPreview, fetchFleetSetup, saveFleetSetup, startFleetSource, requestFleetProvision, resolveFleetTarget, resumeFleetFirstLaunch } from "@/lib/api";
+import type { FleetPreview, FleetSnapshot, FleetSetup } from "@/lib/fleet";
 
 export default function FleetPage() {
   const [fleet, setFleet] = useState<FleetSnapshot | null>(null);
+  const [setup, setSetup] = useState<FleetSetup | null>(null);
+  const [qualificationId, setQualificationId] = useState("");
+  const [capacity, setCapacity] = useState(1);
+  const [namePrefix, setNamePrefix] = useState("");
   const [preview, setPreview] = useState<FleetPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"fresh" | "clone">("fresh");
+  const [mode, setMode] = useState<"fresh" | "clone">("clone");
   const [source, setSource] = useState("");
   const [count, setCount] = useState(1);
   const [confirmed, setConfirmed] = useState(false);
@@ -22,9 +26,16 @@ export default function FleetPage() {
       if (!active) return;
       setFleet(value);
       setSource(current => current || value.sources.find(item => item.state === "parallel_session_qualified")?.instance || "");
-      setError(null);
     }).catch((failure: Error) => { if (active) setError(failure.message); });
     refresh();
+    fetchFleetSetup().then(value => {
+      if (!active) return;
+      setSetup(value);
+      setQualificationId(value.settings?.qualification_id ?? value.qualifications[0]?.id ?? "");
+      setCapacity(value.settings?.capacity ?? Math.min(100, (value.host.instance_count ?? 0) + 2));
+      setNamePrefix(value.settings?.name_prefix ?? value.host.installed_prefix ?? "");
+      setSource(current => current || value.qualifications[0]?.source_instance || "");
+    }).catch((failure: Error) => { if (active) setError(failure.message); });
     const timer = setInterval(refresh, 3000);
     return () => { active = false; clearInterval(timer); };
   }, []);
@@ -45,6 +56,23 @@ export default function FleetPage() {
   }, [mode, source, count, fleet]);
 
   const qualified = fleet?.sources.filter(item => item.state === "parallel_session_qualified") ?? [];
+  const saveSetup = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setSetup(await saveFleetSetup({ capacity, name_prefix: namePrefix, qualification_id: qualificationId }));
+      setFleet(await fetchFleet());
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally { setBusy(false); }
+  };
+  const startSource = async () => {
+    setBusy(true);
+    setError(null);
+    try { setFleet(await startFleetSource()); }
+    catch (failure) { setError((failure as Error).message); }
+    finally { setBusy(false); }
+  };
   const canRequest = preview?.state === "eligible" && preview.targets.length === count
     && confirmed && !busy && !error;
   const submit = async () => {
@@ -73,11 +101,42 @@ export default function FleetPage() {
       setBusy(false);
     }
   };
+  const resume = async (jobId: string, index: number) => {
+    setBusy(true);
+    setError(null);
+    try { await resumeFleetFirstLaunch(jobId, index); setFleet(await fetchFleet()); }
+    catch (failure) { setError((failure as Error).message); }
+    finally { setBusy(false); }
+  };
 
   return <div className="mx-auto flex max-w-6xl flex-col gap-4">
     <PageHeader title="Fleet" meta="BlueStacks Air provisioning" />
-    <p className="max-w-3xl text-sm text-muted-foreground">Fresh instances require a proven host create flow. Clones require a current, parallel session qualified template. A provisioned instance stays unavailable until exact host ownership and account evidence pass. No account is linked automatically.</p>
+    <p className="max-w-3xl text-sm text-muted-foreground">Select the unopened Tower template, set host capacity, and start the source through Manager. Clones complete Tower onboarding, accept I Agree, prove account recovery, and register as ready workers.</p>
     {error && <p role="alert" className="rounded-md border border-danger p-3 text-sm text-danger">Fleet state or request failed: {error}. Refresh before trying again.</p>}
+    <SectionCard title="Set up Fleet">
+      {!setup && <p className="text-sm">Loading local qualifications…</p>}
+      {setup && <>
+        <p className="text-sm">{setup.host.unavailable ? "BlueStacks Air inventory unavailable" : `${setup.host.instance_count} instances installed · image prefix ${setup.host.installed_prefix}`}</p>
+        <label className="mt-3 flex flex-col gap-1 text-sm">Unopened Tower template
+          <select value={qualificationId} onChange={event => { setQualificationId(event.target.value); setSource(setup.qualifications.find(item => item.id === event.target.value)?.source_instance || ""); }} className="w-fit rounded-md border bg-background px-3 py-2">
+            <option value="">Select a qualified source</option>
+            {setup.qualifications.map(item => <option key={item.id} value={item.id}>{item.source_instance} · {item.id}</option>)}
+          </select>
+        </label>
+        {setup.qualifications.length === 0 && <p role="status" className="mt-2 text-sm text-danger">No completed live first-launch qualification was found on this host.</p>}
+        <label className="mt-3 flex flex-col gap-1 text-sm">Fleet capacity
+          <input type="number" min={(setup.host.instance_count ?? 0) + 1} max={100} value={capacity} onChange={event => setCapacity(Number(event.target.value))} className="w-28 rounded-md border bg-background px-3 py-2" />
+        </label>
+        <label className="mt-3 flex flex-col gap-1 text-sm">Installed instance prefix
+          <input value={namePrefix} readOnly className="w-44 rounded-md border bg-muted px-3 py-2" />
+        </label>
+        <div className="mt-3 flex gap-2">
+          <button onClick={saveSetup} disabled={busy || !qualificationId || !namePrefix || !!setup.host.unavailable} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50">Save Fleet setup</button>
+          <button onClick={startSource} disabled={busy || !setup.configured} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50">Start and verify template</button>
+        </div>
+        {setup.configured && <p className="mt-2 text-sm">Saved source: {setup.qualifications.find(item => item.id === setup.settings?.qualification_id)?.source_instance ?? setup.settings?.qualification_id}. Tower stays unopened on this source.</p>}
+      </>}
+    </SectionCard>
     <SectionCard title="Provision instances">
       {fleet?.unavailable && <p className="text-sm text-muted-foreground">Fleet unavailable: {fleet.unavailable}</p>}
       {!fleet && !error && <p className="text-sm">Loading fleet state…</p>}
@@ -115,6 +174,8 @@ export default function FleetPage() {
           {clone.registration_evidence_ref && <span> · Registration: {clone.registration_evidence_ref}</span>}
           {clone.steps && <details className="mt-1"><summary>Host steps ({clone.steps.length})</summary><ol>{clone.steps.map((step, stepIndex) => <li key={stepIndex}>{new Date(step.at * 1000).toLocaleString()} · {step.state} · {step.reason.replaceAll("_", " ")}{step.endpoint ? ` · ${step.endpoint}` : ""}</li>)}</ol></details>}
           {(clone.state === "blocked" || clone.state === "quarantined") && <div className="mt-2 flex gap-2">
+            {clone.state === "quarantined" && (clone.reason === "first_launch_clone_requires_review" || clone.reason === "resume_first_launch_requires_review") &&
+              <button disabled={busy} onClick={() => resume(job.id, index)} className="rounded border px-2 py-1 disabled:opacity-50">Resume if Tower unopened</button>}
             <button disabled={busy} onClick={() => resolve(job.id, index, "retry")} className="rounded border px-2 py-1 disabled:opacity-50">Retry exact target</button>
             <button disabled={busy} onClick={() => resolve(job.id, index, "quarantine")} className="rounded border px-2 py-1 disabled:opacity-50">Quarantine</button>
           </div>}

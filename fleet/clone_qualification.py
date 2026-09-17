@@ -117,8 +117,10 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
                 raise ValueError("session_conflict")
             if shot.screen == "account":
                 return shot
-            if navigate and shot.screen in {"home", "settings"}:
-                control = "settings" if shot.screen == "home" else "account"
+            if navigate and shot.screen in {"home", "settings", "google_play_profile"}:
+                control = ("settings" if shot.screen == "home" else
+                           "account" if shot.screen == "settings" else
+                           "dismiss_google_play_profile")
                 if set(shot.controls) != {control} or clock() - shot.observed_at > 5:
                     raise ValueError("worker account navigation unavailable")
                 device.click(*shot.controls[control])
@@ -158,7 +160,8 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
         device = supervisor._device
         if device is None:
             raise ValueError("worker recovery exhausted")
-        if navigate:
+        if navigate and getattr(device.app_current(), "package", None) not in {
+                GAME_PACKAGE, "com.google.android.gms"}:
             launch_tower_from_game_center(device)
         after = read_account(device)
         _account_reading(after, account_id, scope.game_version, clock(),
@@ -172,6 +175,7 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
             raise ValueError("worker recovery evidence blocked")
         adapter.designated(candidate.instance, attempt)
         return {"account_id": account_id, "started_at": before.observed_at,
+                "startup_evidence_ref": before.evidence_ref,
                 "recovered_at": after.observed_at, "evidence_ref": after.evidence_ref,
                 "instance": candidate.instance, "endpoint": attempt.endpoint,
                 "lease_id": attempt.lease_id, "worker_id": attempt.worker_id}
