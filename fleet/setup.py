@@ -103,11 +103,222 @@ class FleetSetupService:
         self._verify_clone: Any | None = None
         self._connect: Any | None = None
         self._build_error: str | None = None
+        self._reroll_pool: Any | None = None
+        self._reroll_supervisor: Any | None = None
+        self._reroll_start_thread: Any | None = None
+        from threading import Lock
+        self._reroll_dispatch_lock = Lock()
         if self.store.settings() is not None:
             try:
                 self._build()
             except (OSError, ValueError, TypeError, KeyError):
                 self._build_error = "saved_qualification_unavailable"
+
+    def _manual_pool(self) -> Any:
+        if self._reroll_pool is None:
+            from adbutils import AdbClient
+            import config
+            from fleet.bluestacks_air import BlueStacksAirInventory, _EXECUTABLE, live_process_rows
+            from fleet.first_launch_account import tower_is_unopened
+            from fleet.reroll_pool import RerollPool
+            from web.account_catalog import registered_worker
+
+            inventory = BlueStacksAirInventory(
+                Path("/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"),
+                _EXECUTABLE, live_process_rows)
+
+            def package_state(endpoint: str) -> str:
+                client = AdbClient(host=config.ADB_HOST, port=config.ADB_PORT)
+                client.connect(endpoint, timeout=2.)
+                device = client.device(serial=endpoint)
+                if not device.shell("pm path com.TechTreeGames.TheTower").strip():
+                    return "not_installed"
+                return "installed_unopened" if tower_is_unopened(device) else "opened"
+
+            def protected_names() -> set[str]:
+                return {"Tiramisu64_6"} | {item["source_instance"]
+                                          for item in self.store.qualifications()}
+
+            def registered(row: Any) -> bool:
+                worker_root = self.root / "workers" / row.name
+                if registered_worker(worker_root) is None:
+                    return False
+                try:
+                    record = json.loads((worker_root / "fleet-registration.json").read_text())
+                    return (record.get("endpoint") == row.endpoint
+                            and record.get("lease_id") == row.lease_id)
+                except (OSError, ValueError, TypeError):
+                    return False
+
+            self._reroll_pool = RerollPool(
+                self.root, inventory=inventory.instances,
+                package_state=package_state, protected_names=protected_names,
+                registered=registered)
+        return self._reroll_pool
+
+    def reroll_snapshot(self) -> dict[str, Any]:
+        snapshot = self._manual_pool().snapshot()
+        supervisor = self._manual_supervisor()
+        statuses = supervisor.reconcile(snapshot)
+        from web.account_catalog import registered_worker
+        from fleet.reroll_metrics import observed_metrics
+        for member in snapshot["members"]:
+            status = statuses.get(member["name"], {"state": "paused"})
+            registration = registered_worker(self.root / "workers" / member["name"])
+            member["host_state"] = member["state"]
+            if status["state"] != "paused":
+                member["state"] = status["state"]
+            elif registration is not None:
+                member["state"] = "paused"
+            if registration is not None:
+                member["account_id"] = registration.account_id
+                member["account_key"] = registration.key
+                member.update(observed_metrics(self.root / "workers" / member["name"],
+                    account_key=registration.key, account_id=registration.account_id or "",
+                    web_port=registration.web_port or 0,
+                    running=status["state"] == "running"))
+            if status.get("error"):
+                member["error"] = status["error"]
+        snapshot["workers"] = statuses
+        snapshot["pressure"] = supervisor.pressure(statuses)
+        snapshot["concurrency_limit"] = supervisor.max_concurrent_workers
+        return snapshot
+
+    def reroll_add(self, names: list[str]) -> dict[str, Any]:
+        self._manual_pool().add(names)
+        return self.reroll_snapshot()
+
+    def reroll_remove(self, name: str) -> dict[str, Any]:
+        status = self._manual_supervisor().reconcile().get(name)
+        if status is not None and status["state"] in {"running", "starting", "unverified", "stopping", "identity_changed"}:
+            raise ValueError("pause_worker_before_removing")
+        self._manual_pool().remove(name)
+        return self.reroll_snapshot()
+
+    def _manual_supervisor(self) -> Any:
+        if self._reroll_supervisor is None:
+            from adbutils import AdbClient
+            import config
+            from fleet.bluestacks_air import BlueStacksAirInventory, _EXECUTABLE, live_process_rows
+            from fleet.manual_air_worker import ManualAirWorker
+            from fleet.manual_enrollment import enroll_manual_instance
+            from fleet.reroll_journal import RerollJournal
+            from fleet.reroll_supervisor import RerollSupervisor
+
+            inventory = BlueStacksAirInventory(
+                Path("/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"),
+                _EXECUTABLE, live_process_rows)
+
+            def connect(endpoint: str) -> Any:
+                client = AdbClient(host=config.ADB_HOST, port=config.ADB_PORT)
+                client.connect(endpoint, timeout=2.)
+                device = client.device(serial=endpoint)
+                device.shell("getprop ro.serialno")
+                return device
+
+            def protected_names() -> set[str]:
+                return {"Tiramisu64_6"} | {item["source_instance"]
+                                          for item in self.store.qualifications()}
+
+            def enroll(member: dict[str, str], runtime: Any, attempt: Any) -> dict[str, Any]:
+                journal = RerollJournal(self.root)
+                journal.append(instance=member["name"], level="info",
+                               kind="first_launch", message="Starting first launch verification")
+                try:
+                    registration = enroll_manual_instance(root=self.root, member=member,
+                        runtime=runtime, attempt=attempt, inventory=inventory,
+                        connect=connect, protected_names=protected_names())
+                except Exception as exc:
+                    journal.append(instance=member["name"], level="error",
+                                   kind="first_launch_failed", message=str(exc))
+                    raise
+                journal.append(instance=member["name"], level="info",
+                               kind="account_verified",
+                               message=f"Account {registration['account_id']} verified after restart")
+                return registration
+
+            def start_instance(member: dict[str, str]) -> None:
+                if member["name"] in protected_names():
+                    raise ValueError("protected_template")
+                ManualAirWorker(member["name"], member["endpoint"],
+                                member["lease_id"], inventory=inventory).start(member["name"])
+
+            try:
+                limit = int((self.root / "reroll-concurrency.txt").read_text().strip())
+            except FileNotFoundError:
+                limit = 2
+            self._reroll_supervisor = RerollSupervisor(
+                self.root, pool_snapshot=self._manual_pool().snapshot,
+                enroll=enroll, start_instance=start_instance,
+                max_concurrent_workers=limit, start_stagger_seconds=1.0)
+        return self._reroll_supervisor
+
+    def reroll_set_concurrency(self, limit: int) -> dict[str, Any]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 4:
+            raise ValueError("invalid_reroll_capacity")
+        supervisor = self._manual_supervisor()
+        pressure = supervisor.pressure()
+        if limit < pressure["running"] + pressure["starting"]:
+            raise ValueError("pause_workers_before_reducing_capacity")
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = self.root / f".reroll-concurrency.{uuid4().hex}.tmp"
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                file.write(f"{limit}\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, self.root / "reroll-concurrency.txt")
+        finally:
+            temporary.unlink(missing_ok=True)
+        supervisor.max_concurrent_workers = limit
+        return self.reroll_snapshot()
+
+    def _reroll_dispatch(self, operation: Any, *, exclusive_start: bool = False) -> dict[str, Any]:
+        from threading import Thread
+        from fleet.reroll_journal import RerollJournal
+
+        def run() -> None:
+            journal = RerollJournal(self.root)
+            try:
+                results = operation()
+                for name, status in results.items():
+                    journal.append(instance=name,
+                                   level="error" if status["state"] == "failed" else "info",
+                                   kind="worker_state", message=status.get("error", status["state"]))
+            except Exception as exc:
+                journal.append(instance="Fleet", level="error", kind="operation_failed",
+                               message=str(exc))
+
+        thread = Thread(target=run, daemon=True, name="reroll-operation")
+        with self._reroll_dispatch_lock:
+            if (exclusive_start and self._reroll_start_thread is not None
+                    and self._reroll_start_thread.is_alive()):
+                raise ValueError("reroll_start_in_progress")
+            if exclusive_start:
+                self._reroll_start_thread = thread
+            thread.start()
+        return self.reroll_snapshot()
+
+    def reroll_start(self, name: str | None = None) -> dict[str, Any]:
+        supervisor = self._manual_supervisor()
+        return self._reroll_dispatch(
+            (lambda: {name: supervisor.start(name)}) if name else supervisor.start_all,
+            exclusive_start=True)
+
+    def reroll_pause(self, name: str | None = None) -> dict[str, Any]:
+        supervisor = self._manual_supervisor()
+        return self._reroll_dispatch(
+            (lambda: {name: supervisor.pause(name)}) if name else supervisor.pause_all)
+
+    def reroll_journal(self, *, cursor: int | None = None,
+                       instances: list[str] | None = None,
+                       levels: list[str] | None = None) -> dict[str, Any]:
+        from fleet.reroll_journal import RerollJournal
+        entries = RerollJournal(self.root).list_entries(
+            cursor=cursor, instances=instances, levels=levels)
+        return {"entries": entries, "next_cursor": max(
+            (entry["sequence"] for entry in entries), default=cursor or 0)}
 
     def setup_snapshot(self) -> dict[str, Any]:
         from fleet.bluestacks_air import BlueStacksAirInventory, _EXECUTABLE, live_process_rows

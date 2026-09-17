@@ -32,6 +32,7 @@ import argparse
 import dataclasses
 import hashlib
 import ipaddress
+import json
 import logging
 import signal
 import sys
@@ -1299,6 +1300,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="named BlueStacks instance for this fleet worker")
     parser.add_argument("--bluestacks-pool", type=Path, default=None,
                         help="read-only, manually provisioned BlueStacks pool JSON")
+    parser.add_argument("--reroll-pool", type=Path, default=None,
+                        help="live host-bound manually selected Reroll pool")
     parser.add_argument("--fleet-capacity", type=int, default=None,
                         help="explicit maximum BlueStacks instance count")
     parser.add_argument("--fleet-name-prefix", default=None,
@@ -1764,8 +1767,9 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(args.tui)
     try:
         runtime = resolve_worker_runtime(args)
-        if (args.bluestacks_instance is None) != (args.bluestacks_pool is None):
-            raise ValueError("BlueStacks instance and manual pool must be specified together")
+        pools = (args.bluestacks_pool is not None) + (args.reroll_pool is not None)
+        if (args.bluestacks_instance is None and pools) or (args.bluestacks_instance is not None and pools != 1):
+            raise ValueError("BlueStacks instance requires exactly one manual pool")
         if args.bluestacks_instance is not None and (
             runtime is None or not args.web or args.once or args.debug_scores
         ):
@@ -1798,14 +1802,62 @@ def main(argv: list[str] | None = None) -> int:
 def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     from bluestacks import BlueStacksAdapter, ManualPool
 
-    attempt = (
-        Attempt.new(args.worker_id, f"{args.host}:{args.port}", args.lease_id, args.attempt_id)
-        if runtime is not None else None
-    )
-    host_adapter = (
-        BlueStacksAdapter(ManualPool(args.bluestacks_pool), staging_root=runtime.checkpoint_root)
-        if args.bluestacks_pool is not None and runtime is not None else None
-    )
+    attempt = None
+    if runtime is not None:
+        if args.reroll_pool is not None:
+            from web.account_catalog import registered_worker
+
+            registration = registered_worker(runtime.root)
+            if registration is None:
+                logger.error("identity incident: reroll worker registration unavailable")
+                return 1
+            try:
+                registered = json.loads((runtime.root / "fleet-registration.json").read_text())
+                binding = json.loads(Path(registered["binding"]).read_text())
+                attempt = Attempt(**{key: binding[key] for key in (
+                    "worker_id", "endpoint", "lease_id", "attempt_id", "generation", "created_at")})
+            except (OSError, ValueError, TypeError, KeyError):
+                logger.error("identity incident: reroll attempt binding unavailable")
+                return 1
+            if (attempt.worker_id != args.worker_id
+                    or attempt.endpoint != f"{args.host}:{args.port}"
+                    or attempt.lease_id != args.lease_id
+                    or attempt.attempt_id != args.attempt_id
+                    or registered.web_port != runtime.web_port):
+                logger.error("identity incident: reroll attempt changed")
+                return 1
+        else:
+            attempt = Attempt.new(args.worker_id, f"{args.host}:{args.port}",
+                                  args.lease_id, args.attempt_id)
+    host_adapter = None
+    if args.bluestacks_pool is not None and runtime is not None:
+        host_adapter = BlueStacksAdapter(ManualPool(args.bluestacks_pool),
+                                         staging_root=runtime.checkpoint_root)
+    elif args.reroll_pool is not None and runtime is not None:
+        from fleet.bluestacks_air import BlueStacksAirInventory, _EXECUTABLE, live_process_rows
+        from fleet.manual_air_worker import ManualAirWorker
+
+        if args.bluestacks_instance == "Tiramisu64_6":
+            logger.error("protected Tower template cannot be a reroll worker")
+            return 1
+        endpoint = f"{args.host}:{args.port}"
+        try:
+            members = json.loads(args.reroll_pool.read_text(encoding="utf-8"))
+            selected = [item for item in members
+                        if isinstance(item, dict) and item.get("name") == args.bluestacks_instance]
+        except (OSError, ValueError, TypeError):
+            logger.error("identity incident: reroll pool is unreadable")
+            return 1
+        if (len(selected) != 1 or selected[0].get("endpoint") != endpoint
+                or selected[0].get("lease_id") != args.lease_id):
+            logger.error("identity incident: reroll pool member changed")
+            return 1
+        inventory = BlueStacksAirInventory(
+            Path("/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"),
+            _EXECUTABLE, live_process_rows)
+        host_adapter = BlueStacksAdapter(
+            ManualAirWorker(args.bluestacks_instance, endpoint, args.lease_id,
+                            inventory=inventory), staging_root=runtime.checkpoint_root)
     fleet_controller = None
     if (args.web and args.bluestacks_instance is None
             and args.web_host in {"127.0.0.1", "localhost", "::1"}
@@ -1905,6 +1957,12 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     bus = events.EventBus(start_seq=seed_seq)
     state = BotState()
     sinks: list[events.Sink] = [TuiSink(state=state) if args.tui else LogSink()]
+    if runtime is not None and args.reroll_pool is not None and not args.tui:
+        from fleet.reroll_journal import RerollJournal
+        from sinks.reroll_journal import RerollJournalSink
+
+        sinks = [RerollJournalSink(RerollJournal(runtime.root.parent.parent),
+                                  runtime.worker_id)]
     if args.store:
         sinks.append(StoreSink(db_path))
     if args.web and not args.tui:

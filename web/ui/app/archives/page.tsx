@@ -13,7 +13,7 @@ export default function ArchivesPage() {
     <p className="max-w-3xl text-sm text-muted-foreground">History stays with the worker that recorded it. Older shared history has no verified account identity and appears separately as Unattributed.</p>
     {archived.length === 0 ? <SectionCard title="No archived accounts">
       <p className="text-sm">Create a reroll account from Fleet to start a new worker. Its history will appear here when the worker is no longer running.</p>
-      <Link href="/fleet/?reroll=1" className="mt-3 inline-block text-sm text-primary underline">Start a reroll</Link>
+      <Link href="/fleet/reroll/" className="mt-3 inline-block text-sm text-primary underline">Start a reroll</Link>
     </SectionCard> : archived.map(account => <SectionCard key={account.key} title={account.kind === "unattributed" ? `Unattributed history${account.instance ? ` · ${account.instance}` : ""}` : `Tower account ${account.account_id}`}>
       <p className="mb-3 text-sm text-muted-foreground">{account.kind === "unattributed" ? "Account ownership was not recorded for this database" : `${account.instance} · registered worker · bot not running`}</p>
       <div className="flex gap-4 text-sm text-primary underline">

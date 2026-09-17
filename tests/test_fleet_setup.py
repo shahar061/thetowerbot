@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +80,32 @@ def test_start_instance_uses_exact_installed_row_and_never_opens_tower(tmp_path:
     assert started == ["Tiramisu64_18"]
 
 
+def test_pause_dispatches_while_start_is_enrolling(tmp_path: Path) -> None:
+    service = FleetSetupService(tmp_path / "fleet", qualification_root=tmp_path)
+    entered = Event()
+    release = Event()
+    paused = Event()
+
+    def start_all() -> dict:
+        entered.set()
+        assert release.wait(2)
+        return {"Tiramisu64_20": {"state": "running"}}
+
+    def pause_all() -> dict:
+        paused.set()
+        return {"Tiramisu64_21": {"state": "paused"}}
+
+    service._manual_supervisor = lambda: SimpleNamespace(start_all=start_all, pause_all=pause_all)
+    service.reroll_snapshot = lambda: {"members": []}
+    try:
+        service.reroll_start()
+        assert entered.wait(2)
+        service.reroll_pause()
+        assert paused.wait(2)
+    finally:
+        release.set()
+
+
 def test_setup_api_routes_save_start_and_resume_before_generic_action() -> None:
     class Setup:
         def __init__(self) -> None:
@@ -108,3 +135,58 @@ def test_setup_api_routes_save_start_and_resume_before_generic_action() -> None:
     assert client.post("/api/fleet/setup/start-source").status_code == 200
     assert client.post("/api/fleet/requests/job/targets/0/resume-first-launch").status_code == 200
     assert setup.actions == ["save:7:Tiramisu64_:m05-air6", "start", "resume:job:0"]
+
+
+def test_manual_reroll_pool_api_routes_are_reachable() -> None:
+    class Pool:
+        def reroll_snapshot(self) -> dict:
+            return {"candidates": [], "members": []}
+
+        def reroll_add(self, names: list[str]) -> dict:
+            return {"candidates": [], "members": [{"name": name} for name in names]}
+
+        def reroll_remove(self, name: str) -> dict:
+            return {"candidates": [{"name": name}], "members": []}
+
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=Pool()))
+    assert client.get("/api/fleet/reroll").json() == {"candidates": [], "members": []}
+    assert client.post("/api/fleet/reroll/members", json={"names": ["Tiramisu64_20"]}).json()[
+        "members"] == [{"name": "Tiramisu64_20"}]
+    assert client.delete("/api/fleet/reroll/members/Tiramisu64_20").json()[
+        "candidates"] == [{"name": "Tiramisu64_20"}]
+
+
+def test_manual_reroll_actions_and_journal_routes() -> None:
+    class Pool:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def reroll_start(self, name: str | None = None) -> dict:
+            self.calls.append(f"start:{name}")
+            return {"members": []}
+
+        def reroll_pause(self, name: str | None = None) -> dict:
+            self.calls.append(f"pause:{name}")
+            return {"members": []}
+
+        def reroll_set_concurrency(self, limit: int) -> dict:
+            self.calls.append(f"limit:{limit}")
+            return {"concurrency_limit": limit}
+
+        def reroll_journal(self, *, cursor: int | None = None) -> dict:
+            return {"entries": [], "next_cursor": cursor or 0}
+
+    pool = Pool()
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=pool))
+    assert client.post("/api/fleet/reroll/start").status_code == 200
+    assert client.post("/api/fleet/reroll/members/Tiramisu64_20/start").status_code == 200
+    assert client.post("/api/fleet/reroll/pause").status_code == 200
+    assert client.post("/api/fleet/reroll/members/Tiramisu64_20/pause").status_code == 200
+    assert client.patch("/api/fleet/reroll/concurrency", json={"limit": 4}).json() == {
+        "concurrency_limit": 4}
+    assert client.get("/api/fleet/reroll/journal?cursor=5").json() == {
+        "entries": [], "next_cursor": 5}
+    assert pool.calls == ["start:None", "start:Tiramisu64_20", "pause:None",
+                          "pause:Tiramisu64_20", "limit:4"]
