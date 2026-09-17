@@ -1299,6 +1299,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="named BlueStacks instance for this fleet worker")
     parser.add_argument("--bluestacks-pool", type=Path, default=None,
                         help="read-only, manually provisioned BlueStacks pool JSON")
+    parser.add_argument("--fleet-capacity", type=int, default=None,
+                        help="explicit maximum BlueStacks instance count")
+    parser.add_argument("--fleet-name-prefix", default=None,
+                        help="exact host-generated fresh instance prefix, ending in underscore")
+    parser.add_argument("--fleet-root", type=Path, default=None,
+                        help="private fleet request and qualification state directory")
     parser.add_argument(
         "--db", default=str(config.DB_PATH), help="SQLite file for the event log"
     )
@@ -1766,6 +1772,14 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("named BlueStacks requires a supervised fleet dashboard worker")
         if args.bluestacks_instance is not None and not args.game_package:
             raise ValueError("named BlueStacks requires --game-package for verified relaunch")
+        fleet_settings = (args.fleet_capacity, args.fleet_name_prefix, args.fleet_root)
+        if any(value is not None for value in fleet_settings):
+            if (not all(value is not None for value in fleet_settings) or not args.web
+                    or not args.idle or args.web_host not in {"127.0.0.1", "localhost", "::1"}
+                    or args.bluestacks_instance is not None):
+                raise ValueError("fleet provisioning requires explicit capacity, prefix, root, and a loopback idle dashboard")
+            from fleet.dashboard import FleetPolicy
+            FleetPolicy(capacity=args.fleet_capacity, name_prefix=args.fleet_name_prefix)
     except ValueError as exc:
         logger.error("identity incident: %s", exc)
         return 1
@@ -1792,6 +1806,28 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
         BlueStacksAdapter(ManualPool(args.bluestacks_pool), staging_root=runtime.checkpoint_root)
         if args.bluestacks_pool is not None and runtime is not None else None
     )
+    fleet_controller = None
+    if args.fleet_root is not None:
+        from fleet.bluestacks_air import (
+            BlueStacksAirDriver, BlueStacksAirInventory, MacOSMultiInstanceManager,
+            _EXECUTABLE, live_process_rows,
+        )
+        from fleet.dashboard import FleetController, FleetPolicy
+
+        policy = FleetPolicy(capacity=args.fleet_capacity, name_prefix=args.fleet_name_prefix)
+        fleet_driver = BlueStacksAirDriver(
+            scope=None,
+            inventory_source=BlueStacksAirInventory(
+                Path("/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"),
+                _EXECUTABLE, live_process_rows),
+            manager=MacOSMultiInstanceManager(), fresh_prefix=policy.name_prefix,
+            timeout=30.,
+        )
+        fleet_controller = FleetController(
+            BlueStacksAdapter(fleet_driver, staging_root=args.fleet_root / "locks"),
+            qualification_path=args.fleet_root / "m05.json",
+            state_path=args.fleet_root / "jobs.json", policy=policy,
+        )
     host_popup_checker = None
     if (args.dismiss_bluestacks_upgrade and host_adapter is not None
             and sys.platform == "darwin"):
@@ -1996,6 +2032,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 unknown_dir=runtime.evidence_root if runtime is not None else config.UNKNOWN_DIR,
                 store=store,
                 shopping=shopping_session,
+                fleet=fleet_controller,
             )
             # No signal handlers of ours here: uvicorn installs its own and
             # would overwrite them anyway.

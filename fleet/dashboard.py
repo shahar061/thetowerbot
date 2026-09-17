@@ -180,6 +180,9 @@ class FleetController:
                 raise FleetRequestError("fresh_provisioning_has_no_source")
             elif getattr(self.adapter.driver, "supports_fresh_provision", False) is not True:
                 raise FleetRequestError("fresh_host_capability_unavailable")
+            elif (required_prefix := getattr(self.adapter.driver, "required_fresh_prefix", None)) is not None \
+                    and required_prefix != self.policy.name_prefix:
+                raise FleetRequestError("configured_prefix_does_not_match_host")
             try:
                 inventory = self.adapter.inventory()
             except Exception as exc:
@@ -301,12 +304,14 @@ class FleetController:
                         or (expected_scope is not None
                             and staged.source_lineage != expected_scope.source_lineage)):
                     raise ValueError("clone_host_identity_unbound")
-                if (self.adapter.designated(name, Attempt.new(
-                        name, staged.endpoint, staged.lease_id, job["id"])).state != "running"):
-                    raise ValueError("created_endpoint_not_running")
+                designated = self.adapter.designated(name, Attempt.new(
+                    name, staged.endpoint, staged.lease_id, job["id"]))
+                if designated.state != "running" and not (job["mode"] == "fresh"
+                                                           and designated.state == "stopped"):
+                    raise ValueError("created_endpoint_state_unproven")
                 self._update(job, index, state="verifying", reason=("identity_reset_and_evidence_pending"
                             if job["mode"] == "clone" else "first_launch_identity_pending"),
-                             endpoint=staged.endpoint)
+                             endpoint=staged.endpoint, lease_id=staged.lease_id)
                 if job["mode"] == "fresh":
                     if self.verify_fresh is None:
                         self._update(job, index, state="blocked", reason="first_launch_identity_required")
@@ -361,6 +366,10 @@ class FleetController:
 
     def _register(self, job: dict[str, Any], index: int, staged: HostInstance,
                   proof: dict[str, Any], reason: str) -> None:
+        current = self.adapter.designated(staged.name, Attempt.new(
+            staged.name, staged.endpoint, staged.lease_id, job["id"]))
+        if current.state != "running":
+            raise ValueError("worker_endpoint_not_running")
         if self.register_worker is None:
             self._update(job, index, state="blocked", reason="worker_registration_required")
             return

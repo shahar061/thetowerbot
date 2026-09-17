@@ -187,6 +187,16 @@ class ModalFrameVerifier:
         # right edge; use that stable hit target while OCR supplies the row y.
         return int(width * .95), clone.rect.y + clone.rect.h // 2
 
+    def fresh_point(self, frame: ModalFrame) -> tuple[int, int]:
+        """Return the verified Fresh instance row's right-hand navigation target."""
+        _, fresh, clone, _ = self._profile(frame)
+        height, width = frame.image.shape[:2]
+        target_y = fresh.rect.y + fresh.rect.h + 12
+        if (width <= 0 or height <= 0 or not 0 <= target_y < height
+                or target_y >= clone.rect.y):
+            raise HostCapabilityError("manager modal profile is unavailable")
+        return int(width * .93), target_y
+
 
 def _adb_endpoint_rows() -> tuple[str, ...]:
     """Read the current attached ADB transports without initiating a connection."""
@@ -213,6 +223,14 @@ class _ManagerBridge(Protocol):
     def press_modal_clone(self, parent: Mapping[str, int | float | str],
                           modal: Mapping[str, int | float | str],
                           point: tuple[float, float]) -> None: ...
+    def press_modal_fresh(self, parent: Mapping[str, int | float | str],
+                          modal: Mapping[str, int | float | str],
+                          point: tuple[float, float]) -> None: ...
+    def press_modal_create(self, parent: Mapping[str, int | float | str],
+                           modal: Mapping[str, int | float | str],
+                           point: tuple[float, float]) -> None: ...
+    def modal_count(self, parent: Mapping[str, int | float | str],
+                    modal: Mapping[str, int | float | str]) -> str: ...
 
 
 class _SwiftManagerBridge:
@@ -232,6 +250,10 @@ class _SwiftManagerBridge:
                 raise HostCapabilityError("macOS Accessibility permission required") from exc
             if "manager window changed" in message:
                 raise HostCapabilityError("manager window changed") from exc
+            if "manager modal is not foreground" in message:
+                raise HostCapabilityError("BlueStacks Air Manager must be foreground for modal actions") from exc
+            if "manager window is not foreground" in message:
+                raise HostCapabilityError("BlueStacks Air Manager must be foreground for this action") from exc
             if "no visible exact manager window" in message:
                 raise HostCapabilityError("exact manager window unavailable") from exc
             if "multiple visible exact manager windows" in message:
@@ -301,6 +323,22 @@ class _SwiftManagerBridge:
                           point: tuple[float, float]) -> None:
         self._run("modal-press-clone", *self._modal_capture_arguments(parent, modal),
                   str(point[0]), str(point[1]))
+
+    def press_modal_fresh(self, parent: Mapping[str, int | float | str],
+                          modal: Mapping[str, int | float | str],
+                          point: tuple[float, float]) -> None:
+        self._run("modal-press-fresh", *self._modal_capture_arguments(parent, modal),
+                  str(point[0]), str(point[1]))
+
+    def press_modal_create(self, parent: Mapping[str, int | float | str],
+                           modal: Mapping[str, int | float | str],
+                           point: tuple[float, float]) -> None:
+        self._run("modal-press-create", *self._modal_capture_arguments(parent, modal),
+                  str(point[0]), str(point[1]))
+
+    def modal_count(self, parent: Mapping[str, int | float | str],
+                    modal: Mapping[str, int | float | str]) -> str:
+        return self._run("modal-count", *self._modal_capture_arguments(parent, modal))
 
 
 class MacOSMultiInstanceManager:
@@ -499,6 +537,42 @@ class MacOSMultiInstanceManager:
         except Exception as exc:
             raise HostCapabilityError("manager modal changed") from exc
 
+    def press_fresh_instance(self, verifier: ModalFrameVerifier | None = None) -> None:
+        """Press only the Fresh instance row from one freshly verified popup."""
+        frame, parent, modal = self._capture_modal_evidence()
+        verifier = verifier if verifier is not None else ModalFrameVerifier()
+        pixel_x, pixel_y = verifier.fresh_point(frame)
+        if frame.width <= 0 or frame.height <= 0:
+            raise HostCapabilityError("manager modal profile is unavailable")
+        image_height, image_width = frame.image.shape[:2]
+        point = (frame.x + frame.width * pixel_x / image_width,
+                 frame.y + frame.height * pixel_y / image_height)
+        try:
+            self._bridge.press_modal_fresh(parent, modal, point)
+        except HostCapabilityError:
+            raise
+        except Exception as exc:
+            raise HostCapabilityError("manager modal changed") from exc
+
+    def press_fresh_create(self, window_id: int, point: tuple[int, int]) -> None:
+        """Press Create only within the same focused Manager-owned fresh form."""
+        frame, parent, modal = self._capture_modal_evidence()
+        if frame.window_id != window_id or not (frame.x <= point[0] <= frame.x + frame.width
+                                                and frame.y <= point[1] <= frame.y + frame.height):
+            raise HostCapabilityError("manager fresh form changed")
+        try:
+            self._bridge.press_modal_create(parent, modal, point)
+        except HostCapabilityError:
+            raise
+        except Exception as exc:
+            raise HostCapabilityError("manager fresh form changed") from exc
+
+    def fresh_instance_count(self, window_id: int) -> str:
+        frame, parent, modal = self._capture_modal_evidence()
+        if frame.window_id != window_id:
+            raise HostCapabilityError("manager fresh form changed")
+        return self._bridge.modal_count(parent, modal)
+
     def press(self, window_id: int, point: tuple[int, int], expected_label: str) -> None:
         """Press one allowlisted label after native window/control revalidation.
 
@@ -530,6 +604,14 @@ class BlueStacksAirInventory:
     def digest(self) -> str:
         """Return the exact configuration fingerprint used by the live scope."""
         return hashlib.sha256(self._config_bytes()).hexdigest()
+
+    def installed_image_prefix(self) -> str:
+        """Require exactly one installed image family for Manager-generated names."""
+        matches = re.findall(rb'^bst\.installed_images="([A-Za-z][A-Za-z0-9_]*)"$',
+                             self._config_bytes(), flags=re.MULTILINE)
+        if len(matches) != 1:
+            raise HostCapabilityError("BlueStacks installed image family is ambiguous")
+        return matches[0].decode("ascii") + "_"
 
     def lease(self, name: str) -> str:
         """Bind a named instance lease to the complete current configuration."""
@@ -597,13 +679,35 @@ class BlueStacksAirInventory:
         return self.snapshot()[1]
 
 
+def live_process_rows() -> Mapping[str, bool]:
+    """Observe exact named BlueStacks player processes without launching them."""
+    if sys.platform != "darwin":
+        raise HostCapabilityError("supported macOS BlueStacks Air host is required")
+    try:
+        lines = subprocess.run(["ps", "-axo", "pid=,command="], check=True,
+                               text=True, capture_output=True, timeout=5).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HostCapabilityError("BlueStacks process observation unavailable") from exc
+    counts: dict[str, int] = {}
+    for line in lines:
+        match = re.fullmatch(r"\s*[0-9]+\s+" + re.escape(str(_EXECUTABLE))
+                             + r" --instance ([A-Za-z0-9_]+)\s*", line)
+        if match is not None:
+            name = match.group(1)
+            counts[name] = counts.get(name, 0) + 1
+    if any(count != 1 for count in counts.values()):
+        raise HostCapabilityError("duplicate named BlueStacks process")
+    return {name: True for name in counts}
+
+
 @dataclass(frozen=True)
 class BlueStacksAirDriver:
     """Named manager lifecycle boundary with fresh, fail-closed evidence."""
 
-    scope: QualificationScope
+    scope: QualificationScope | None
     inventory_source: BlueStacksAirInventory
     manager: MultiInstanceManager
+    fresh_prefix: str | None = None
     ocr_reader: Callable[[Image], tuple[ocr.TextBox, ...]] = ocr.read
     endpoint_present: Callable[[str], bool] = _adb_endpoint_present
     timeout: float = 10.
@@ -641,6 +745,40 @@ class BlueStacksAirDriver:
     @property
     def supports_m05_live_qualification(self) -> bool:
         return self._capability_scope() is not None
+
+    @property
+    def required_fresh_prefix(self) -> str | None:
+        if self.fresh_prefix is not None:
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*_", self.fresh_prefix):
+                return None
+            image_prefix = getattr(self.inventory_source, "installed_image_prefix", None)
+            try:
+                if callable(image_prefix) and image_prefix() != self.fresh_prefix:
+                    return None
+            except HostCapabilityError:
+                return None
+            return self.fresh_prefix
+        if self.scope is None:
+            return None
+        source = self.scope.instance_config.get("source_instance")
+        if not isinstance(source, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", source):
+            return None
+        numbered = re.fullmatch(r"(.+_)[1-9][0-9]*", source)
+        return numbered.group(1) if numbered else f"{source}_"
+
+    @property
+    def supports_fresh_provision(self) -> bool:
+        if (self.required_fresh_prefix is None
+                or not callable(getattr(self.manager, "press_fresh_instance", None))
+                or not callable(getattr(self.manager, "press_fresh_create", None))
+                or not callable(getattr(self.manager, "capture_modal", None))):
+            return False
+        try:
+            self._clone_snapshot()
+            frame = self.manager.capture()
+            return isinstance(frame, ManagerFrame) and frame.window_id > 0
+        except Exception:
+            return False
 
     def inventory(self) -> list[HostInstance]:
         return self.inventory_source.instances()
@@ -752,6 +890,68 @@ class BlueStacksAirDriver:
         if len(names) != len(set(names)) or len(endpoints) != len(set(endpoints)):
             raise HostCapabilityError("BlueStacks Air clone inventory is ambiguous")
         return digest, tuple(instances)
+
+    def _fresh_form_control(self) -> _ManagerControl:
+        try:
+            frame = self.manager.capture_modal()
+            boxes = self.ocr_reader(frame.image)
+        except Exception as exc:
+            raise HostCapabilityError("BlueStacks Air fresh form is unavailable") from exc
+        required = ("Fresh instance - Android 13", "CPU cores", "Memory allocation",
+                    "Resolution", "Performance mode", "DPI", "Instance count", "Create")
+        found = {label: [box for box in boxes if box.text == label] for label in required}
+        if not isinstance(frame, ModalFrame) or any(len(found[label]) != 1 for label in required):
+            raise HostCapabilityError("BlueStacks Air fresh form is ambiguous")
+        observed_count = [box for box in boxes if box.text == "1"]
+        count_reader = getattr(self.manager, "fresh_instance_count", None)
+        if ((callable(count_reader) and count_reader(frame.window_id) != "1")
+                or (not callable(count_reader) and len(observed_count) != 1)):
+            raise HostCapabilityError("BlueStacks Air fresh instance count is unavailable")
+        create = found["Create"][0]
+        if observed_count and abs(observed_count[0].rect.y - create.rect.y) > max(
+                observed_count[0].rect.h, create.rect.h):
+            raise HostCapabilityError("BlueStacks Air fresh instance count is unavailable")
+        point = ManagerRowObservation._global_point(
+            frame, (create.rect.x + create.rect.w // 2, create.rect.y + create.rect.h // 2))
+        return _ManagerControl(frame.window_id, point)
+
+    def create_fresh(self, name: str) -> HostInstance:
+        """Create exactly one default fresh instance and attest its Manager row."""
+        prefix = self.required_fresh_prefix
+        if prefix is None or not self.supports_fresh_provision:
+            raise HostCapabilityError("BlueStacks Air fresh creation capability unavailable")
+        before_digest, before = self._clone_snapshot()
+        suffixes = [int(match.group(1)) for row in before
+                    if (match := re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", row.name))]
+        if name != f"{prefix}{max(suffixes, default=0) + 1}":
+            raise HostCapabilityError("BlueStacks Air next fresh name is required")
+        self._modal_control("Instance", failure="BlueStacks Air Manager Instance control unavailable")
+        final_digest, final_before = self._clone_snapshot()
+        if final_digest != before_digest or final_before != before:
+            raise HostCapabilityError("BlueStacks Air fresh inventory changed")
+        control = self._modal_control("Instance", failure="BlueStacks Air Manager Instance control unavailable")
+        self.manager.press(control.window_id, control.point, "Instance")
+        self.manager.press_fresh_instance()
+        create = self._fresh_form_control()
+        confirmed = self._fresh_form_control()
+        if confirmed != create or self._clone_snapshot() != (before_digest, before):
+            raise HostCapabilityError("BlueStacks Air fresh form or inventory changed")
+        self.manager.press_fresh_create(create.window_id, create.point)
+        deadline = self.clock() + self.timeout
+        before_names = {row.name for row in before}
+        while True:
+            digest, current = self._clone_snapshot()
+            new_names = {row.name for row in current} - before_names
+            if digest != before_digest and new_names == {name} and before_names <= {row.name for row in current}:
+                created = next(row for row in current if row.name == name)
+                if (created.endpoint and created.lease_id
+                        and self._endpoint_has_state(created.endpoint,
+                                                     present=created.state == "running")):
+                    self._row_control(name, action="Start" if created.state == "stopped" else "Stop")
+                    return created
+            if self.clock() >= deadline:
+                raise HostCapabilityError("BlueStacks Air fresh postcondition was not proven")
+            self.sleep(min(self.poll_interval, max(0., deadline - self.clock())))
 
     def _validate_next_clone_name(self, name: str, source: str) -> tuple[str, tuple[HostInstance, ...]]:
         """Validate a requested target before changing the source lifecycle state."""
@@ -929,7 +1129,7 @@ class BlueStacksAirDriver:
 
     def qualification_scope(self) -> QualificationScope | None:
         """Return the captured scope only while fresh host evidence still agrees."""
-        if not self.scope.valid():
+        if self.scope is None or not self.scope.valid():
             return None
         details = self.scope.instance_config
         digest = details.get("configuration_digest")

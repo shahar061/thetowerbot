@@ -2,6 +2,7 @@
 // It supports only inspect, read-only capture, and one Accessibility button press.
 
 import ApplicationServices
+import AppKit
 import CoreGraphics
 import Darwin
 import Foundation
@@ -135,7 +136,6 @@ func exactModal(_ parent: WindowInfo) -> ModalInfo {
     ) as? [[String: Any]] else { fail("modal window inventory") }
     let matches: [ModalInfo] = rows.compactMap { row in
         guard let layer = row[kCGWindowLayer as String] as? NSNumber, layer.intValue >= 0,
-              let isOnscreen = row[kCGWindowIsOnscreen as String] as? NSNumber, isOnscreen.boolValue,
               let alpha = row[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue > 0.01,
               let owner = row[kCGWindowOwnerPID as String] as? NSNumber, owner.int32Value == parent.pid,
               let number = row[kCGWindowNumber as String] as? NSNumber, number.uint32Value != parent.id,
@@ -155,8 +155,22 @@ func exactModal(_ parent: WindowInfo) -> ModalInfo {
                          x: x.doubleValue, y: y.doubleValue,
                          width: width.doubleValue, height: height.doubleValue)
     }
-    guard matches.count == 1 else { fail("modal window missing or ambiguous") }
-    return matches[0]
+    let app = AXUIElementCreateApplication(parent.pid)
+    guard let focused = attribute(app, kAXFocusedWindowAttribute),
+          let focusedFrame = elementFrame(focused as! AXUIElement) else {
+        fail("focused manager modal unavailable")
+    }
+    let focusedMatches = matches.filter {
+        $0.x == focusedFrame.minX && $0.y == focusedFrame.minY
+            && $0.width == focusedFrame.width && $0.height == focusedFrame.height
+    }
+    // CGWindow omits kCGWindowIsOnscreen and retains older sheets with the
+    // same bounds. The newest matching window is captured, then its exact
+    // text profile is checked by the caller before any press.
+    guard let newestFocused = focusedMatches.max(by: { $0.id < $1.id }) else {
+        fail("modal window missing or ambiguous")
+    }
+    return newestFocused
 }
 
 func verifyParentForModalCapture(_ current: WindowInfo, _ args: ArraySlice<String>) {
@@ -216,15 +230,33 @@ func systemEventsClick(_ point: CGPoint) {
     }
     move.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.05)
+    guard let observed = CGEvent(source: nil)?.location,
+          abs(observed.x - point.x) <= 3 && abs(observed.y - point.y) <= 3 else {
+        fail("manager pointer movement was not observed")
+    }
     down.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.05)
     up.post(tap: .cghidEventTap)
 }
 
-func clickModalClone(_ modal: ModalInfo, _ point: CGPoint) {
+func clickModalOption(_ parent: WindowInfo, _ modal: ModalInfo, _ point: CGPoint) {
     guard point.x >= modal.x, point.x <= modal.x + modal.width,
           point.y >= modal.y, point.y <= modal.y + modal.height else {
         fail("target outside exact manager modal")
+    }
+    let current = exactManager()
+    guard current.id == parent.id && current.pid == parent.pid
+            && current.x == parent.x && current.y == parent.y
+            && current.width == parent.width && current.height == parent.height else {
+        fail("modal parent window changed")
+    }
+    let focused = exactModal(current)
+    guard focused.id == modal.id && focused.x == modal.x && focused.y == modal.y
+            && focused.width == modal.width && focused.height == modal.height else {
+        fail("modal window changed")
+    }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == parent.pid else {
+        fail("manager modal is not foreground")
     }
     systemEventsClick(point)
 }
@@ -288,6 +320,22 @@ func namedPressableButtons(_ element: AXUIElement, _ label: String,
         }
     }
     return matches
+}
+
+func editableTextValues(_ element: AXUIElement, _ depth: Int = 0) -> [String] {
+    if depth > 12 { return [] }
+    var values: [String] = []
+    if attribute(element, kAXRoleAttribute) as? String == kAXTextFieldRole,
+       attribute(element, kAXEnabledAttribute) as? Bool == true,
+       let value = attribute(element, kAXValueAttribute) as? String {
+        values.append(value)
+    }
+    if let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] {
+        for child in children {
+            values.append(contentsOf: editableTextValues(child, depth + 1))
+        }
+    }
+    return values
 }
 
 func closeButtonAtTopRight(_ element: AXUIElement, _ dialog: CGRect,
@@ -415,14 +463,29 @@ if args[1] == "inspect" && args.count == 2 {
     let modal = exactModal(current)
     verifyModal(modal, args[8...13])
     captureWindow(modal.id, "manager-modal")
-} else if args[1] == "modal-press-clone" && args.count == 16 {
+} else if args[1] == "modal-count" && args.count == 14 {
+    verifyParentForModalCapture(current, args[2...7])
+    let modal = exactModal(current)
+    verifyModal(modal, args[8...13])
+    let app = AXUIElementCreateApplication(current.pid)
+    guard let focused = attribute(app, kAXFocusedWindowAttribute),
+          let frame = elementFrame(focused as! AXUIElement),
+          frame.minX == modal.x && frame.minY == modal.y
+            && frame.width == modal.width && frame.height == modal.height else {
+        fail("focused manager fresh form unavailable")
+    }
+    let values = editableTextValues(focused as! AXUIElement)
+    guard values.count == 1 else { fail("fresh instance count is ambiguous") }
+    print(values[0])
+} else if (args[1] == "modal-press-clone" || args[1] == "modal-press-fresh"
+           || args[1] == "modal-press-create") && args.count == 16 {
     verifyParentForModalCapture(current, args[2...7])
     let modal = exactModal(current)
     verifyModal(modal, args[8...13])
     guard let x = Double(args[14]), let y = Double(args[15]), x.isFinite, y.isFinite else {
         fail("target outside exact manager modal")
     }
-    clickModalClone(modal, CGPoint(x: x, y: y))
+    clickModalOption(current, modal, CGPoint(x: x, y: y))
     print("pressed")
 } else if args[1] == "press" && args.count == 10 {
     verify(current, args[2...6])
@@ -432,7 +495,19 @@ if args[1] == "inspect" && args.count == 2 {
           y >= current.y, y <= current.y + current.height else {
         fail("target outside exact manager window")
     }
-    systemEventsClick(CGPoint(x: x, y: y))
+    if ["Start", "Stop", "Instance"].contains(args[9]) {
+        let window = matchingAccessibilityWindow(current)
+        let controls = buttonsNear(window, CGPoint(x: x, y: y), args[9], 0)
+        guard controls.count == 1,
+              AXUIElementPerformAction(controls[0], kAXPressAction as CFString) == .success else {
+            fail("exact manager Accessibility control unavailable")
+        }
+    } else {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == current.pid else {
+            fail("manager window is not foreground")
+        }
+        systemEventsClick(CGPoint(x: x, y: y))
+    }
     if args[9] == "Stop" { confirmStopDialog(current) }
     print("pressed")
 } else {
