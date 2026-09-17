@@ -134,7 +134,8 @@ func exactModal(_ parent: WindowInfo) -> ModalInfo {
         [.optionAll, .excludeDesktopElements], kCGNullWindowID
     ) as? [[String: Any]] else { fail("modal window inventory") }
     let matches: [ModalInfo] = rows.compactMap { row in
-        guard let layer = row[kCGWindowLayer as String] as? NSNumber, layer.intValue == 0,
+        guard let layer = row[kCGWindowLayer as String] as? NSNumber, layer.intValue >= 0,
+              let isOnscreen = row[kCGWindowIsOnscreen as String] as? NSNumber, isOnscreen.boolValue,
               let alpha = row[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue > 0.01,
               let owner = row[kCGWindowOwnerPID as String] as? NSNumber, owner.int32Value == parent.pid,
               let number = row[kCGWindowNumber as String] as? NSNumber, number.uint32Value != parent.id,
@@ -203,11 +204,7 @@ func captureWindow(_ id: UInt32, _ filename: String) {
     print(data.base64EncodedString())
 }
 
-func clickModalClone(_ modal: ModalInfo, _ point: CGPoint) {
-    guard point.x >= modal.x, point.x <= modal.x + modal.width,
-          point.y >= modal.y, point.y <= modal.y + modal.height else {
-        fail("target outside exact manager modal")
-    }
+func systemEventsClick(_ point: CGPoint) {
     guard let source = CGEventSource(stateID: .hidSystemState),
           let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved,
                              mouseCursorPosition: point, mouseButton: .left),
@@ -215,15 +212,21 @@ func clickModalClone(_ modal: ModalInfo, _ point: CGPoint) {
                              mouseCursorPosition: point, mouseButton: .left),
           let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
                            mouseCursorPosition: point, mouseButton: .left) else {
-        fail("Clone Instance click unavailable")
+        fail("manager click unavailable")
     }
-    move.post(tap: .cgSessionEventTap)
+    move.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.05)
-    down.setIntegerValueField(.mouseEventClickState, value: 1)
-    up.setIntegerValueField(.mouseEventClickState, value: 1)
-    down.post(tap: .cgSessionEventTap)
+    down.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.05)
-    up.post(tap: .cgSessionEventTap)
+    up.post(tap: .cghidEventTap)
+}
+
+func clickModalClone(_ modal: ModalInfo, _ point: CGPoint) {
+    guard point.x >= modal.x, point.x <= modal.x + modal.width,
+          point.y >= modal.y, point.y <= modal.y + modal.height else {
+        fail("target outside exact manager modal")
+    }
+    systemEventsClick(point)
 }
 
 func matchingAccessibilityWindow(_ current: WindowInfo) -> AXUIElement {
@@ -429,11 +432,7 @@ if args[1] == "inspect" && args.count == 2 {
           y >= current.y, y <= current.y + current.height else {
         fail("target outside exact manager window")
     }
-    let matches = buttonsNear(matchingAccessibilityWindow(current), CGPoint(x: x, y: y), args[9], 0)
-    guard matches.count == 1 else { fail("Accessibility button missing or ambiguous") }
-    guard AXUIElementPerformAction(matches[0], kAXPressAction as CFString) == .success else {
-        fail("Accessibility button press failed")
-    }
+    systemEventsClick(CGPoint(x: x, y: y))
     if args[9] == "Stop" { confirmStopDialog(current) }
     print("pressed")
 } else {

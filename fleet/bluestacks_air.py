@@ -27,7 +27,9 @@ import ocr
 
 
 _ADB_PORT = re.compile(r'^bst\.instance\.([A-Za-z0-9_]+)\.adb_port="(\d+)"$')
-_ADB_PORT_KEY = re.compile(r"^bst\.instance\..*\.adb_port=")
+_ADB_PORT_KEY = re.compile(r"^bst\.instance\.[^.]+\.adb_port=")
+_DISPLAY_NAME = re.compile(r'^bst\.instance\.([A-Za-z0-9_]+)\.display_name="([^"]+)"$')
+_DISPLAY_NAME_KEY = re.compile(r"^bst\.instance\.[^.]+\.display_name=")
 _EXECUTABLE = Path("/Applications/BlueStacks.app/Contents/MacOS/BlueStacks")
 _MANAGER_EXECUTABLE = Path(
     "/Applications/BlueStacks Air multi-instance manager.app/Contents/MacOS/"
@@ -115,15 +117,17 @@ class ManagerRowObservation:
             raise HostCapabilityError("BlueStacks Air manager layout is unavailable") from exc
         names = [box for box in boxes if box.text == name]
         actions = [box for box in boxes if box.text == action]
-        if len(names) != 1 or len(actions) != 1:
+        if len(names) != 1 or not actions:
             raise HostCapabilityError("BlueStacks Air manager row is missing or ambiguous")
-        row_name, control = names[0], actions[0]
+        row_name = names[0]
         name_centre_y = row_name.rect.y + row_name.rect.h // 2
-        control_centre_y = control.rect.y + control.rect.h // 2
-        same_row = abs(name_centre_y - control_centre_y) <= max(row_name.rect.h, control.rect.h)
-        action_is_right_of_name = control.rect.x >= row_name.rect.x + row_name.rect.w
-        if not same_row or not action_is_right_of_name:
+        candidates = [control for control in actions
+                      if (abs(name_centre_y - (control.rect.y + control.rect.h // 2))
+                          <= max(row_name.rect.h, control.rect.h)
+                          and control.rect.x >= row_name.rect.x + row_name.rect.w)]
+        if len(candidates) != 1:
             raise HostCapabilityError("BlueStacks Air manager row layout is not actionable")
+        control = candidates[0]
         return _ManagerControl(frame.window_id, self._global_point(
             frame, (control.rect.x + control.rect.w // 2,
                     control.rect.y + control.rect.h // 2)))
@@ -533,24 +537,47 @@ class BlueStacksAirInventory:
             raise HostCapabilityError("BlueStacks Air inventory instance name is invalid")
         return hashlib.sha256(self._config_bytes() + b"\0" + name.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _configured_instances(config: bytes) -> dict[str, tuple[int, str]]:
+        """Bind each internal name to its Manager label and configured ADB port."""
+        ports: dict[str, int] = {}
+        labels: dict[str, str] = {}
+        for raw_line in config.decode("utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if (match := _ADB_PORT.fullmatch(line)) is not None:
+                name, raw_port = match.groups()
+                port = int(raw_port)
+                if not 1 <= port <= 65535 or name in ports:
+                    raise HostCapabilityError("BlueStacks Air inventory contains ambiguous ADB endpoint")
+                ports[name] = port
+            elif _ADB_PORT_KEY.match(line):
+                raise HostCapabilityError("BlueStacks Air inventory contains malformed ADB endpoint")
+            elif (match := _DISPLAY_NAME.fullmatch(line)) is not None:
+                name, label = match.groups()
+                if name in labels:
+                    raise HostCapabilityError("BlueStacks Air inventory contains ambiguous Manager label")
+                labels[name] = label
+            elif _DISPLAY_NAME_KEY.match(line):
+                raise HostCapabilityError("BlueStacks Air inventory contains malformed Manager label")
+        if len(set(ports.values())) != len(ports):
+            raise HostCapabilityError("BlueStacks Air inventory contains duplicate ADB endpoint")
+        if set(ports) != set(labels) or len(set(labels.values())) != len(labels):
+            raise HostCapabilityError("BlueStacks Air inventory lacks an unambiguous Manager label")
+        return {name: (port, labels[name]) for name, port in ports.items()}
+
+    def display_name(self, name: str, *, digest: str | None = None) -> str:
+        config = self._config_bytes()
+        if digest is not None and hashlib.sha256(config).hexdigest() != digest:
+            raise HostCapabilityError("BlueStacks Air inventory configuration changed")
+        try:
+            return self._configured_instances(config)[name][1]
+        except KeyError as exc:
+            raise HostCapabilityError("BlueStacks Air inventory instance is missing") from exc
+
     def snapshot(self) -> tuple[str, list[HostInstance]]:
         """Capture one configuration generation and derive all inventory evidence from it."""
         config = self._config_bytes()
-        ports: dict[str, int] = {}
-        for raw_line in config.decode("utf-8", errors="replace").splitlines():
-            line = raw_line.strip()
-            match = _ADB_PORT.fullmatch(line)
-            if match is None:
-                if _ADB_PORT_KEY.match(line):
-                    raise HostCapabilityError("BlueStacks Air inventory contains malformed ADB endpoint")
-                continue
-            name, raw_port = match.groups()
-            port = int(raw_port)
-            if not 1 <= port <= 65535 or name in ports:
-                raise HostCapabilityError("BlueStacks Air inventory contains ambiguous ADB endpoint")
-            ports[name] = port
-        if len(set(ports.values())) != len(ports):
-            raise HostCapabilityError("BlueStacks Air inventory contains duplicate ADB endpoint")
+        configured = self._configured_instances(config)
         try:
             running = self.process_rows()
         except Exception as exc:
@@ -563,7 +590,7 @@ class BlueStacksAirInventory:
             name, f"127.0.0.1:{port}",
             hashlib.sha256(config + b"\0" + name.encode("utf-8")).hexdigest(),
             "running" if running.get(name, False) else "stopped",
-        ) for name, port in sorted(ports.items())]
+        ) for name, (port, _) in sorted(configured.items())]
         return digest, instances
 
     def instances(self) -> list[HostInstance]:
@@ -638,7 +665,12 @@ class BlueStacksAirDriver:
 
     def _row_control(self, name: str, *, action: str) -> _ManagerControl:
         """Find one exact named row and one exact adjacent action in one fresh frame."""
-        return ManagerRowObservation(self.manager, self.ocr_reader).row_control(name, action=action)
+        display_name = getattr(self.inventory_source, "display_name", None)
+        if not callable(display_name):
+            # Simulation inventories model the Manager label as their internal name.
+            return ManagerRowObservation(self.manager, self.ocr_reader).row_control(name, action=action)
+        return ManagerRowObservation(self.manager, self.ocr_reader).row_control(
+            display_name(name), action=action)
 
     def _endpoint_has_state(self, endpoint: str, *, present: bool) -> bool:
         """Return whether a fresh endpoint observation has the required strict state."""
@@ -733,12 +765,10 @@ class BlueStacksAirDriver:
         if len(source_rows) != 1:
             raise HostCapabilityError("BlueStacks Air clone source is missing or ambiguous")
         match = re.fullmatch(r"(.+_)([1-9][0-9]*)", source)
-        if match is None:
-            raise HostCapabilityError("BlueStacks Air next clone name is unavailable")
-        prefix = match.group(1)
+        prefix = match.group(1) if match is not None else f"{source}_"
         suffixes = [int(candidate.group(1)) for item in instances
                     if (candidate := re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", item.name))]
-        if not suffixes or name != f"{prefix}{max(suffixes) + 1}":
+        if name != f"{prefix}{max(suffixes, default=0) + 1}":
             raise HostCapabilityError("BlueStacks Air next clone name is required")
         return digest, instances
 
@@ -771,12 +801,13 @@ class BlueStacksAirDriver:
             if len(matches) != 1:
                 raise HostCapabilityError(failure)
             box = matches[0]
-            controls[label] = _ManagerControl(
-                frame.window_id, (box.rect.x + box.rect.w // 2, box.rect.y + box.rect.h // 2))
+            controls[label] = _ManagerControl(frame.window_id, ManagerRowObservation._global_point(
+                frame, (box.rect.x + box.rect.w // 2, box.rect.y + box.rect.h // 2)))
         return controls
 
     def _open_clone_dialog(self, source: str) -> None:
-        control = self._row_control(source, action="Instance")
+        del source
+        control = self._modal_control("Instance", failure="BlueStacks Air manager Instance control is unavailable")
         self.manager.press(control.window_id, control.point, "Instance")
 
     def _stop_clone_source_if_running(self, source: str) -> bool:
@@ -834,7 +865,9 @@ class BlueStacksAirDriver:
         fields = [box for box in boxes if box.text == "Source"]
         source_boxes = [box for box in boxes if box.text == source]
         candidates = [box for box in boxes if re.fullmatch(r".+_[1-9][0-9]*", box.text)]
-        if len(fields) != 1 or len(source_boxes) != 1 or len(candidates) != 1:
+        expected_numbered_sources = 1 if re.fullmatch(r".+_[1-9][0-9]*", source) else 0
+        if (len(fields) != 1 or len(source_boxes) != 1
+                or len(candidates) != expected_numbered_sources):
             raise HostCapabilityError("BlueStacks Air clone create form source mismatch")
         field, selected = fields[0], source_boxes[0]
         same_row = abs((field.rect.y + field.rect.h // 2)

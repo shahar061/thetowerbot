@@ -245,6 +245,23 @@ def test_native_modal_clone_press_forwards_pinned_windows_and_point() -> None:
                                 "52", "900", "5.0", "6.0", "7.0", "8.0", "9.5", "10.5")
 
 
+def test_native_modal_clone_uses_the_hid_event_path() -> None:
+    """BlueStacks accepts HID events where its session-level clicks are ignored."""
+    source = (Path(__file__).parents[1] / "fleet" / "macos_bluestacks_manager.swift").read_text()
+
+    assert ".cghidEventTap" in source
+    assert ".cgSessionEventTap" not in source
+
+
+def test_native_modal_discovery_accepts_an_onscreen_manager_modal_above_layer_zero() -> None:
+    """BlueStacks presents its New instance sheet at window layer 8 after relaunch."""
+    source = (Path(__file__).parents[1] / "fleet" / "macos_bluestacks_manager.swift").read_text()
+
+    modal_section = source[source.index("func exactModal"):source.index("func verifyParentForModalCapture")]
+    assert "kCGWindowIsOnscreen" in modal_section
+    assert "layer.intValue == 0" not in modal_section
+
+
 def test_native_stop_binds_its_confirmation_to_the_exact_close_instance_dialog() -> None:
     """The native bridge must not leave BlueStacks' Stop confirmation unhandled."""
     source = (Path(__file__).parents[1] / "fleet" / "macos_bluestacks_manager.swift").read_text()
@@ -423,7 +440,9 @@ def test_manager_rejects_modal_when_parent_is_not_companion_owned() -> None:
 def configured_inventory(tmp_path: Path) -> BlueStacksAirInventory:
     config = tmp_path / "bluestacks.conf"
     config.write_text('bst.instance.Air_2.adb_port="5595"\n'
-                      'bst.instance.Air_3.adb_port="5605"\n')
+                      'bst.instance.Air_2.display_name="BlueStacks Air 2"\n'
+                      'bst.instance.Air_3.adb_port="5605"\n'
+                      'bst.instance.Air_3.display_name="BlueStacks Air 3"\n')
     return BlueStacksAirInventory(config, executable=EXECUTABLE,
                                   process_rows=lambda: {
                                       "Air_2": True, "Air_3": False,
@@ -437,6 +456,7 @@ def test_inventory_binds_each_configured_instance_to_one_unique_endpoint(tmp_pat
         HostInstance("Air_2", "127.0.0.1:5595", inventory.lease("Air_2"), "running"),
         HostInstance("Air_3", "127.0.0.1:5605", inventory.lease("Air_3"), "stopped"),
     ]
+    assert inventory.display_name("Air_2", digest=inventory.digest()) == "BlueStacks Air 2"
 
 
 @pytest.mark.parametrize("contents", [
@@ -476,7 +496,9 @@ def test_qualification_scope_requires_current_source_digest_and_game_version(tmp
     assert driver.qualification_scope() is None
 
     config.write_text('bst.instance.Air_2.adb_port="5595"\n'
-                      'bst.instance.Air_3.adb_port="5605"\n')
+                      'bst.instance.Air_2.display_name="BlueStacks Air 2"\n'
+                      'bst.instance.Air_3.adb_port="5605"\n'
+                      'bst.instance.Air_3.display_name="BlueStacks Air 3"\n')
     manager.game_version = "29.0.3"
     assert driver.qualification_scope() is None
 
@@ -1075,6 +1097,40 @@ def test_clone_requires_the_next_deterministic_name_and_exact_source() -> None:
         clone_driver(manager, inventory).stage_clone("Tiramisu64_7", "Tiramisu64_2")
 
     assert manager.presses == []
+
+
+def test_clone_uses_the_single_manager_instance_control_not_a_row_action() -> None:
+    """The Manager's Instance button is in its footer, below every source row."""
+    inventory = CloneInventory({"Tiramisu64_2"}, create="Tiramisu64_3")
+    frames = clone_frames("Tiramisu64_2")
+    frames[1] = [("Tiramisu64_2", (100, 300)), ("Start", (800, 300)),
+                 ("Instance", (300, 700))]
+    manager = CloneManager(frames, inventory)
+
+    created = clone_driver(manager, inventory).stage_clone("Tiramisu64_3", "Tiramisu64_2")
+
+    assert created.name == "Tiramisu64_3"
+    assert manager.presses[1] == ("Instance", (340, 710))
+
+
+def test_clone_allows_a_base_template_and_derives_the_next_numbered_clone() -> None:
+    """BlueStacks names the first template without a numeric suffix."""
+    inventory = CloneInventory({"Tiramisu64", "Tiramisu64_6"}, create="Tiramisu64_7")
+    frames = clone_frames("Tiramisu64")[1:]
+    manager = CloneManager(frames, inventory)
+    driver = BlueStacksAirDriver(
+        QualificationScope("mac", "BlueStacks-Air", "source", "image", "29.0.2", {
+            "configuration_digest": "configuration-v1", "source_instance": "Tiramisu64",
+            "source_endpoint": next(item.endpoint for item in inventory.instances()
+                                    if item.name == "Tiramisu64"),
+        }), inventory, manager, ocr_reader=lambda _image: lifecycle_boxes(manager),
+        endpoint_present=lambda _endpoint: False,
+        timeout=0., poll_interval=.01,
+    )
+
+    created = driver.stage_clone("Tiramisu64_7", "Tiramisu64")
+
+    assert created.name == "Tiramisu64_7"
 
 
 def test_clone_requires_the_exact_scoped_source_before_press() -> None:
