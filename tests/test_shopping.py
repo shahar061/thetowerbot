@@ -1528,6 +1528,28 @@ def test_a_blinded_screen_is_tapped_clear(session, fake_header) -> None:
     assert device.taps[-1] == config.PANEL_DISMISS_POINT
 
 
+def test_info_panel_after_unlock_is_dismissed_while_purchase_stays_pending(
+    session, fake_header,
+) -> None:
+    device = FakeDevice()
+    fake_header["coins"] = 163
+    policy = a_policy(armed=True, workshop=(
+        ShoppingRule(name="Unlock Coin Bonuses", category="UTILITY"),
+    ))
+    session.begin(policy, run_count=1)
+    session.advance(frame("menu_main"), device, policy)
+    session.advance(frame("menu_workshop_utility_restocked"), device, policy)
+    assert session._pending is not None
+    assert session._pending.row.name == "Unlock Coin Bonuses"
+
+    # An unlock can rearrange the tiles under the tap and open a child row's
+    # info panel. It must be cleared before the pending debit is judged.
+    session.advance(frame("menu_workshop_info_panel"), device, policy)
+    assert device.taps[-1] == config.PANEL_DISMISS_POINT
+    assert session._pending is not None
+    assert session._bus.of_type("PurchaseSkipped") == []
+
+
 def test_a_screen_that_stays_blind_ends_the_visit(session, fake_header) -> None:
     """The dismiss tap is one attempt, not a loop. If the page is still
     unreadable on the next scan it is something this code does not
