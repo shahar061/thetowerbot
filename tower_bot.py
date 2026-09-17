@@ -574,6 +574,7 @@ class TowerBot:
         self.refresh_screen()
 
         reading = screens.classify(self.screen, self.templates)
+        tutorial_claim = None
         if self.supervisor is not None:
             observed_screen = reading.state.value
             if observed_screen == "UNKNOWN":
@@ -583,6 +584,11 @@ class TowerBot:
                     observed_screen = "UNKNOWN"
             try:
                 boxes = ocr.read(self.screen, strict=True)
+                if self.reroll_progress is not None:
+                    from fleet.tutorial import workshop_coin_claim
+                    tutorial_claim = workshop_coin_claim(self.screen, boxes)
+                    if tutorial_claim is not None:
+                        observed_screen = "WORKSHOP_TUTORIAL_CLAIM"
                 text = " ".join(box.text.lower() for box in boxes)
                 online_required = (
                     ("online" in text and ("required" in text or "connect" in text))
@@ -610,6 +616,14 @@ class TowerBot:
             if recovery is not RecoveryState.READY:
                 self.autopilot.suspend("Device recovery blocked actions")
                 return False
+            if tutorial_claim is not None:
+                if settings.paused:
+                    return False
+                self.device.click(*tutorial_claim)
+                self.bus.publish(events.Tapped(
+                    action="reroll:workshop_tutorial_claim", x=tutorial_claim[0],
+                    y=tutorial_claim[1], score=1.0))
+                return True
         previous = self.tracker.state
         if self.tracker.observe(reading) is not None:
             if self.account_state is not None:
