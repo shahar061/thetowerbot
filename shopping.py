@@ -16,6 +16,7 @@ no device actions and identify their hypothetical purchases with dry_run.
 from __future__ import annotations
 
 from account_state import AccountState
+from currencies import CommitmentError, CurrencyRepository
 
 import logging
 import hashlib
@@ -223,6 +224,7 @@ class ShoppingSession:
         # one simply keeps no crash-proof record - it does not behave
         # differently while the process lives.
         self.journal = journal
+        self.currencies = CurrencyRepository(journal.path) if journal is not None else None
         self.account_state: AccountState | None = None
         self._templates = templates
         self._bus = bus
@@ -801,15 +803,21 @@ class ShoppingSession:
                                                     detail=detail, coins_before=coins))
             self._exhausted.add(rule.name)
             return
-        intent = self._open_intent(
-            item=seen.name, category=seen.category, currency="coins",
-            price=seen.price, wallet_before=coins, armed=shopping.armed,
-            before={"upgrade_id": seen.upgrade_id, "value": seen.value,
-                    "price": seen.price, "status": seen.status,
-                    "confidence": seen.confidence, "observed_at": observation.observed_at,
-                    "frame_digest": observation.frame_digest,
-                    "frame_width": observation.frame_width, "frame_height": observation.frame_height},
-        )
+        try:
+            intent = self._open_intent(
+                item=seen.name, category=seen.category, currency="coins",
+                price=seen.price, wallet_before=coins, armed=shopping.armed,
+                before={"upgrade_id": seen.upgrade_id, "value": seen.value,
+                        "price": seen.price, "status": seen.status,
+                        "confidence": seen.confidence, "observed_at": observation.observed_at,
+                        "frame_digest": observation.frame_digest,
+                        "frame_width": observation.frame_width, "frame_height": observation.frame_height},
+            )
+        except CommitmentError:
+            self._bus.publish(events.PurchaseSkipped(item=rule.name, reason="reserve",
+                                                    detail="funds committed to another plan", coins_before=coins))
+            self._exhausted.add(rule.name)
+            return
         if not self._try_tap(*seen.tap, device, shopping, screen):
             self._abandon_intent(intent, "the tap was never sent")
             return
@@ -1061,10 +1069,17 @@ class ShoppingSession:
         # Written BEFORE the tap, which is the only ordering that helps: a
         # journal entry made afterwards is lost by exactly the crash it
         # exists to survive.
-        intent = self._open_intent(
-            item=item, category="CARDS", currency="gems", price=price,
-            wallet_before=gems, armed=shopping.armed,
-        )
+        try:
+            intent = self._open_intent(
+                item=item, category="CARDS", currency="gems", price=price,
+                wallet_before=gems, armed=shopping.armed,
+            )
+        except CommitmentError:
+            self._bus.publish(events.PurchaseSkipped(
+                item=item, reason="reserve", detail="funds committed to another plan",
+                gems_before=gems))
+            self._step = Step.RETURN
+            return
         if not self._try_tap(x, y, device, shopping, screen):
             self._abandon_intent(intent, "the tap was never sent")
             return
@@ -1175,6 +1190,8 @@ class ShoppingSession:
             if self.observations is not None:
                 self.observations.decision("blocked", outcome.reason)
             return True
+        if self.currencies is not None:
+            self.currencies.release(f"purchase:{txn.key}", txn.currency)
         self._restore_recovered_visit()
         self._recovery_sample = None
         return True
@@ -1213,11 +1230,21 @@ class ShoppingSession:
         """
         if self.journal is None or not armed:
             return None
-        return self.journal.open(transactions.Intent(
+        request = transactions.Intent(
             item=item, category=category, currency=currency, price=price,
             wallet_before=wallet_before, ts=time.time(),
             before=before or {},
-        ))
+        )
+        owner = f"purchase:{request.key}"
+        if self.currencies is not None and not self.currencies.reserve(
+                owner, currency, price, wallet=wallet_before):
+            raise CommitmentError("wallet cannot cover this purchase and its commitments")
+        try:
+            return self.journal.open(request)
+        except Exception:
+            if self.currencies is not None:
+                self.currencies.release(owner, currency)
+            raise
 
     def _mark_acted(self, intent: transactions.Transaction | None) -> None:
         if self.journal is not None and intent is not None:
@@ -1236,6 +1263,8 @@ class ShoppingSession:
                 intent.key, wallet_after=intent.wallet_before,
                 effect_changed=False, ts=time.time(),
             )
+            if self.currencies is not None:
+                self.currencies.release(f"purchase:{intent.key}", intent.currency)
             logger.debug("intent for %s abandoned: %s", intent.item, reason)
 
     def _close(
@@ -1249,10 +1278,15 @@ class ShoppingSession:
         session without a journal must not fall back to the read price.
         """
         if self.journal is not None and key is not None:
-            return self.journal.resolve(
+            currency = self.journal._require(key).currency
+            outcome = self.journal.resolve(
                 key, wallet_after=wallet_after, effect_changed=effect_changed,
                 ts=time.time(),
             )
+            if (self.currencies is not None and currency is not None
+                    and outcome.verdict != transactions.Verdict.UNPROVEN):
+                self.currencies.release(f"purchase:{key}", currency)
+            return outcome
         return transactions.judge(
             key or "", price=price, wallet_before=wallet_before,
             wallet_after=wallet_after, effect_changed=effect_changed,

@@ -9,15 +9,16 @@
     "B04",
     "B05",
     "B06",
+    "B07",
     "B08",
     "E01",
     "O01"
   ],
   "next_ready_task_ids": [
-    "B07",
     "C01",
     "C03",
     "F01",
+    "F03",
     "F08",
     "L01",
     "U01",
@@ -25,9 +26,9 @@
   ],
   "counts": {
     "total": 63,
-    "completed": 9,
-    "remaining": 54,
-    "partial_remaining": 19,
+    "completed": 10,
+    "remaining": 53,
+    "partial_remaining": 18,
     "not_started": 35
   },
   "domains": {
@@ -280,15 +281,16 @@
       "id": "B07",
       "domain": "foundation",
       "title": "Allocate currencies and reserves",
-      "status": "partial",
+      "status": "completed",
       "depends_on": [
         "B03",
         "B05"
       ],
       "work": "Separate run cash from permanent coins, gems, stones, medals, cells, keys, shards, tickets, Bits and other versioned resources. Reserve across competing plans and timers, not just per shopping visit.",
       "acceptance": "Two queued actions cannot reserve the same funds; lab-slot savings and UW synchronization savings survive lower-priority purchases and process restarts.",
-      "ready": true,
-      "task_file": "tasks/B07.md"
+      "ready": false,
+      "task_file": "tasks/B07.md",
+      "current_state": "Atomic, durable multi-currency commitments and shopping purchase holds protect lab-slot and UW synchronization savings across competing plans and process restarts; focused tests and the production UI build passed."
     },
     {
       "id": "B08",
@@ -347,7 +349,7 @@
       ],
       "work": "Model every standard unlock chain and actual levels/costs, purchase batches and decreasing stats. Replace limited early unlock links with verified account prerequisites and stage-aware exclusions.",
       "acceptance": "An initially locked upgrade becomes discoverable through its prerequisite chain; no premature Wall/Rend or irrelevant unlock is bought; target spending remains bounded.",
-      "ready": false,
+      "ready": true,
       "task_file": "tasks/F03.md"
     },
     {
