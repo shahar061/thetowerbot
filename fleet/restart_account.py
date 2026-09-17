@@ -44,10 +44,18 @@ def verify_restart_account(
         raise RecoveryBlocked("registered account identity unavailable")
     account: AccountFrame | None = None
     awaiting: tuple[str, str] | None = None
-    for _ in range(12):
+    battle_deadline = clock() + 180
+    navigation_steps = 0
+    while navigation_steps < 12:
         frame = observe(device)
         if frame.conflict_dialog:
             raise RecoveryBlocked("session conflict during account verification")
+        if frame.screen == "battle" and awaiting is None:
+            if clock() >= battle_deadline:
+                raise RecoveryBlocked("battle did not finish during account verification")
+            sleep(1.)
+            continue
+        navigation_steps += 1
         if awaiting is not None:
             previous, destination = awaiting
             if frame.screen in {previous, "unknown"}:

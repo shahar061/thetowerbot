@@ -149,6 +149,18 @@ def test_game_stats_exposes_only_measured_home() -> None:
                                  app_version="29.0.2", evidence_ref="capture://game-over") is None
 
 
+def test_game_stats_new_layout_exposes_home() -> None:
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "game_over_newhigh.png"))
+    observed = (TextBox("GAMESTATS", .99, Rect(333, 668, 413, 56)),
+                TextBox("RETRY", 1., Rect(225, 1636, 153, 46)),
+                TextBox("HOME", 1., Rect(708, 1636, 145, 46)))
+    cache = vision.TemplateCache(config.TEMPLATE_DIR)
+    reading = parse_game_stats_home(frame, observed, cache, observed_at=101.,
+                                    app_version="29.0.2", evidence_ref="capture://game-over")
+    assert reading is not None
+    assert reading.controls == {"home_from_game_over": (780, 1659)}
+
+
 def parse(observed: tuple[TextBox, ...] | None = None, *, shape: tuple[int, int, int] = (2400, 1080, 3)):
     return parse_account_popup(np.zeros(shape, dtype=np.uint8), boxes() if observed is None else observed,
                                observed_at=101., app_version="29.0.2", evidence_ref="capture://before")
@@ -243,6 +255,23 @@ def test_live_observer_saves_private_frame_and_returns_popup(tmp_path: Path,
     assert reading.account_id == "AAAAAAAAAAAAAAAA"
     saved = Path(reading.evidence_ref)
     assert saved.exists() and saved.stat().st_mode & 0o777 == 0o600
+
+
+def test_live_observer_identifies_battle_without_exposing_controls(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ocr
+    monkeypatch.setattr(ocr, "read", lambda *_, **__: ())
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "in_run_utility.png"))
+    device = SimpleNamespace(
+        serial="127.0.0.1:5575",
+        app_current=lambda: SimpleNamespace(package="com.TechTreeGames.TheTower"),
+        app_info=lambda _: SimpleNamespace(version_name="29.0.2"),
+        screenshot=lambda **_: PILImage.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)),
+    )
+    reading = StagingAccountObserver(tmp_path, endpoint=device.serial,
+                                     allowed_versions=frozenset({"29.0.2"}))(device)
+    assert reading.screen == "battle"
+    assert reading.controls == {}
 
 
 def test_live_observer_recognizes_only_the_measured_google_play_profile(

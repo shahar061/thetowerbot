@@ -28,9 +28,30 @@ class Device:
     def __init__(self, serial: str = "127.0.0.1:5555") -> None:
         self.serial = serial
         self.taps: list[tuple[int, int]] = []
+        self.swipes: list[tuple[int, int, int, int, float]] = []
 
     def click(self, x: int, y: int) -> None:
         self.taps.append((x, y))
+
+    def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
+        self.swipes.append((x, y, x2, y2, duration))
+
+
+def test_guarded_swipe_requires_fresh_evidence_and_checkpoints_action(tmp_path: Path) -> None:
+    clock = Clock()
+    device = Device()
+    sut = supervisor(tmp_path / "supervisor.json", clock, [device])
+    sut.recover()
+    guarded = GuardedDevice(sut)
+    with pytest.raises(RuntimeError):
+        guarded.swipe(1, 2, 3, 4, .35)
+    assert device.swipes == []
+    assert observed(sut, clock, "before") is RecoveryState.READY
+    guarded.swipe(1, 2, 3, 4, .35)
+    assert device.swipes == [(1, 2, 3, 4, .35)]
+    assert sut.status().reason == "action_unconfirmed"
+    with pytest.raises(RuntimeError):
+        guarded.swipe(1, 2, 3, 4, .35)
 
 
 def supervisor(path: Path, clock: Clock, devices: list[Device | Exception]) -> DeviceSupervisor:
