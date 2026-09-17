@@ -299,6 +299,23 @@ class TransactionJournal:
             conn.close()
         return tuple(_transaction(row) for row in rows)
 
+    def resolved_unproven_keys(self, currency: str, *, before: float) -> tuple[str, ...]:
+        """Closed uncertain attempts older than a fresh wallet observation.
+
+        Their purchase cannot be replayed. Once a newer wallet has been read,
+        a reservation from the old attempt no longer protects any spend.
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT key FROM transactions WHERE stage = ? AND outcome = ? "
+                "AND currency = ? AND resolved_at < ?",
+                (Stage.RESOLVED.value, Verdict.UNPROVEN.value, currency, before),
+            ).fetchall()
+        finally:
+            conn.close()
+        return tuple(row["key"] for row in rows)
+
     @staticmethod
     def recovery_event(txn: Transaction, outcome: Outcome) -> events.Purchased:
         return events.Purchased(

@@ -1275,6 +1275,12 @@ class ShoppingSession:
         """
         if self.journal is None or not armed:
             return None
+        observed_at = (before or {}).get("observed_at")
+        if observed_at is None:
+            observed_at = time.time()
+        if self.currencies is not None:
+            for key in self.journal.resolved_unproven_keys(currency, before=observed_at):
+                self.currencies.release(f"purchase:{key}", currency)
         request = transactions.Intent(
             item=item, category=category, currency=currency, price=price,
             wallet_before=wallet_before, ts=time.time(),
