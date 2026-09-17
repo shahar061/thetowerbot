@@ -85,7 +85,7 @@ export const requestFleetProvision = (preview: FleetPreview) =>
   send<FleetJob>("/api/fleet/requests", "POST", {
     mode: preview.mode, source: preview.source, count: preview.count, targets: preview.targets,
   }, "fleet");
-export const resolveFleetTarget = (jobId: string, index: number, action: "retry" | "quarantine") =>
+export const resolveFleetTarget = (jobId: string, index: number, action: "retry" | "quarantine" | "dismiss") =>
   send<FleetJob>(`/api/fleet/requests/${encodeURIComponent(jobId)}/targets/${index}/${action}`,
     "POST", {}, "fleet");
 export const resumeFleetFirstLaunch = (jobId: string, index: number) =>

@@ -171,6 +171,10 @@ class FleetController:
         with self._lock:
             if mode not in {"fresh", "clone"} or not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 5:
                 raise FleetRequestError("invalid_provisioning_request")
+            if any(clone["state"] in {"queued", "staging", "verifying", "quarantined"}
+                   for job in self._jobs for index, clone in enumerate(job["clones"])
+                   if (job["id"], index) != ignore_target):
+                raise FleetRequestError("provisioning_or_quarantine_requires_review")
             if mode == "clone":
                 qualified, reason = self._source()
                 if qualified is None or source != qualified:
@@ -194,9 +198,10 @@ class FleetController:
             names = {row.name for row in inventory}
             names.update(clone.get("instance") for job in self._jobs
                          for index, clone in enumerate(job["clones"])
-                         if (job["id"], index) != ignore_target)
-            numbers = [int(found.group(1)) for name in names if isinstance(name, str)
-                       if (found := re.fullmatch(re.escape(self.policy.name_prefix) + r"([1-9][0-9]*)", name))]
+                         if (job["id"], index) != ignore_target
+                         and clone["state"] != "dismissed")
+            numbers = [int(found.group(1)) for name in (row.name for row in inventory)
+                      if (found := re.fullmatch(re.escape(self.policy.name_prefix) + r"([1-9][0-9]*)", name))]
             next_number = max(numbers, default=0) + 1
             targets = [f"{self.policy.name_prefix}{next_number + index}" for index in range(count)]
             if any(name in names for name in targets):
@@ -238,12 +243,12 @@ class FleetController:
         """Resolve only the exact interrupted target; never replay an uncertain host create."""
         with self._lock:
             job = next((item for item in self._jobs if item["id"] == job_id), None)
-            if job is None or not 0 <= index < len(job["clones"]) or action not in {"retry", "quarantine"}:
+            if job is None or not 0 <= index < len(job["clones"]) or action not in {"retry", "quarantine", "dismiss"}:
                 raise FleetRequestError("unknown_provisioning_target")
             target = job["clones"][index]
             if target["state"] not in {"blocked", "quarantined"}:
                 raise FleetRequestError("target_does_not_require_review")
-            if action == "retry":
+            if action in {"retry", "dismiss"}:
                 try:
                     if any(row.name == target["instance"] for row in self.adapter.inventory()):
                         raise FleetRequestError("existing_host_instance_requires_quarantine")
@@ -251,13 +256,18 @@ class FleetController:
                     raise
                 except Exception as exc:
                     raise FleetRequestError("host_inventory_unavailable") from exc
+                if action == "dismiss":
+                    self._update(job, index, state="dismissed",
+                                 reason="operator_dismissed_absent_target")
+                    return json.loads(json.dumps(job))
                 expected = self.preview(job["mode"], job["source"], 1,
                                         ignore_target=(job_id, index))["targets"][0]
                 if expected != target["instance"]:
                     raise FleetRequestError("retry_target_name_changed")
                 if self._source()[0] != job["source"] and job["mode"] == "clone":
                     raise FleetRequestError("qualification_scope_changed")
-                self._update(job, index, state="queued", reason="operator_retry_requested")
+                self._update(job, index, state="queued", reason="operator_retry_requested",
+                             detail=None)
             else:
                 self._update(job, index, state="quarantined", reason="operator_quarantined")
             return json.loads(json.dumps(job))
@@ -407,8 +417,9 @@ class FleetController:
                     self._update(job, index, state="blocked", reason="qualification_scope_changed_after_verification")
                     continue
                 self._register(job, index, staged, proof, "identity_and_recovery_verified")
-            except HostCapabilityError:
-                self._update(job, index, state="quarantined", reason="host_capability_or_result_unavailable")
+            except HostCapabilityError as exc:
+                self._update(job, index, state="quarantined",
+                             reason="host_capability_or_result_unavailable", detail=str(exc))
             except HostIdentityError:
                 self._update(job, index, state="quarantined", reason="host_identity_unproven")
             except ValueError:

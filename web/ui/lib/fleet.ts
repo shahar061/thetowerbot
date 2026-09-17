@@ -1,7 +1,8 @@
 export type FleetClone = {
   instance?: string;
-  state: "queued" | "staging" | "verifying" | "blocked" | "quarantined" | "ready";
+  state: "queued" | "staging" | "verifying" | "blocked" | "quarantined" | "dismissed" | "ready";
   reason: string;
+  detail?: string | null;
   endpoint?: string;
   account_id?: string;
   evidence_ref?: string;

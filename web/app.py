@@ -1325,7 +1325,7 @@ def create_app(
         return {"state": "resuming", "job_id": job_id, "index": index}
 
     @app.post("/api/fleet/requests/{job_id}/targets/{index}/{action}")
-    def fleet_resolve_target(job_id: str, index: int, action: Literal["retry", "quarantine"],
+    def fleet_resolve_target(job_id: str, index: int, action: Literal["retry", "quarantine", "dismiss"],
                              background: BackgroundTasks) -> dict[str, Any]:
         if fleet is None:
             raise HTTPException(status_code=503, detail="fleet_not_configured")

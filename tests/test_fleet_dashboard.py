@@ -10,7 +10,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from bluestacks import BlueStacksAdapter, HostInstance
+from bluestacks import BlueStacksAdapter, HostCapabilityError, HostInstance
 from events import EventBus
 from fleet.clone_qualification import QualificationScope
 from fleet.dashboard import FleetController, FleetPolicy, FleetRequestError
@@ -124,6 +124,15 @@ def test_preview_reserves_explicit_names_and_capacity_without_host_mutation(tmp_
     with pytest.raises(FleetRequestError, match="capacity"):
         fleet.request("seed", 3)
     assert driver.staged == []
+
+
+def test_preview_uses_installed_host_names_after_old_clones_were_removed(tmp_path: Path) -> None:
+    fleet, _ = controller(tmp_path)
+    fleet._jobs = [{"id": "old", "clones": [
+        {"instance": "seed_18", "state": "ready"},
+        {"instance": "seed_19", "state": "ready"},
+    ]}]
+    assert fleet.preview("clone", "seed", 2)["targets"] == ["seed_1", "seed_2"]
 
 
 def test_slow_source_check_does_not_hold_job_state_lock(tmp_path: Path) -> None:
@@ -259,6 +268,32 @@ def test_exact_target_retry_is_allowed_before_any_host_create(tmp_path: Path) ->
     retried = fleet.resolve(job["id"], 0, "retry")
     assert retried["clones"][0]["instance"] == "seed_1"
     assert retried["clones"][0]["state"] == "queued"
+
+
+def test_absent_quarantined_target_can_be_dismissed_then_replaced(tmp_path: Path) -> None:
+    fleet, driver = controller(tmp_path)
+    job = fleet.request("seed", 1)
+
+    def fail_before_create(name: str, source: str) -> HostInstance:
+        raise HostCapabilityError("BlueStacks Air next clone name is required")
+
+    driver.stage_clone = fail_before_create  # type: ignore[method-assign]
+    fleet.run_pending(job["id"])
+    assert fleet.snapshot()["jobs"][0]["clones"][0]["detail"] == "BlueStacks Air next clone name is required"
+    with pytest.raises(FleetRequestError, match="provisioning_or_quarantine_requires_review"):
+        fleet.preview("clone", "seed", 1)
+    dismissed = fleet.resolve(job["id"], 0, "dismiss")
+    assert dismissed["clones"][0]["state"] == "dismissed"
+    assert fleet.preview("clone", "seed", 1)["targets"] == ["seed_1"]
+    assert fleet.request("seed", 1)["clones"][0]["instance"] == "seed_1"
+
+
+def test_created_host_instance_cannot_be_dismissed(tmp_path: Path) -> None:
+    fleet, _ = controller(tmp_path)
+    job = fleet.request("seed", 1)
+    fleet.run_pending(job["id"])
+    with pytest.raises(FleetRequestError, match="existing_host_instance_requires_quarantine"):
+        fleet.resolve(job["id"], 0, "dismiss")
 
 
 def test_identity_confirmation_failure_is_quarantined_without_leaking_detail(tmp_path: Path) -> None:

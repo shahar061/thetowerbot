@@ -135,7 +135,7 @@ export default function FleetPage() {
       setBusy(false);
     }
   };
-  const resolve = async (jobId: string, index: number, action: "retry" | "quarantine") => {
+  const resolve = async (jobId: string, index: number, action: "retry" | "quarantine" | "dismiss") => {
     setBusy(true);
     setError(null);
     try {
@@ -232,6 +232,7 @@ export default function FleetPage() {
         {job.manager_result_url && <a className="text-sm underline" href={job.manager_result_url}>View request and Manager steps</a>}
         <ol className="mt-2 space-y-2">{job.clones.map((clone, index) => <li key={index} className="rounded-md bg-muted p-2">
           <strong>{clone.instance || `Instance ${index + 1}`}</strong> · {clone.state} · {clone.reason.replaceAll("_", " ")}
+          {clone.detail && <span> · {clone.detail}</span>}
           {clone.account_id && clone.state === "ready" && <span> · Tower account {clone.account_id}</span>}
           {clone.evidence_ref && <span> · Evidence: {clone.evidence_ref}</span>}
           {clone.registration_evidence_ref && <span> · Registration: {clone.registration_evidence_ref}</span>}
@@ -241,6 +242,7 @@ export default function FleetPage() {
               <button disabled={busy} onClick={() => resume(job.id, index)} className="rounded border px-2 py-1 disabled:opacity-50">Resume if Tower unopened</button>}
             <button disabled={busy} onClick={() => resolve(job.id, index, "retry")} className="rounded border px-2 py-1 disabled:opacity-50">Retry exact target</button>
             <button disabled={busy} onClick={() => resolve(job.id, index, "quarantine")} className="rounded border px-2 py-1 disabled:opacity-50">Quarantine</button>
+            <button disabled={busy} onClick={() => resolve(job.id, index, "dismiss")} className="rounded border px-2 py-1 disabled:opacity-50">Dismiss if instance absent</button>
           </div>}
         </li>)}</ol>
       </div>)}
