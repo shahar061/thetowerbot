@@ -238,15 +238,7 @@ class RerollSupervisor:
                 current = self._status(name, member)
                 if current["state"] in {"running", "identity_changed", "starting", "unverified", "stopping"}:
                     return current
-                if member["state"] == "start_required" and self.start_instance is not None:
-                    with self._enroll_lock:
-                        self.start_instance(member)
-                    refreshed = self._members().get(name)
-                    if refreshed is None or any(refreshed.get(key) != member[key]
-                            for key in ("name", "endpoint", "lease_id")):
-                        raise ValueError("host_identity_changed_after_start")
-                    member = refreshed
-                if member["state"] not in {"ready", "tower_already_opened"}:
+                if member["state"] not in {"ready", "start_required", "tower_already_opened"}:
                     return {"name": name, "state": "failed", "error": member["state"]}
                 number = int(name.rsplit("_", 1)[-1])
                 runtime = WorkerRuntime.for_worker(self.root / "workers", name, 10000 + number)
@@ -260,6 +252,16 @@ class RerollSupervisor:
                                       "lease_id": member["lease_id"], "state": "starting",
                                       "pid": None, "attempt_id": attempt.attempt_id,
                                       "owner_pid": os.getpid()})
+                if member["state"] == "start_required" and self.start_instance is not None:
+                    with self._enroll_lock:
+                        self.start_instance(member)
+                    refreshed = self._members().get(name)
+                    if refreshed is None or any(refreshed.get(key) != member[key]
+                            for key in ("name", "endpoint", "lease_id")):
+                        raise ValueError("host_identity_changed_after_start")
+                    member = refreshed
+                if member["state"] not in {"ready", "tower_already_opened"}:
+                    raise ValueError(member["state"])
                 registration_path = runtime.root / "fleet-registration.json"
                 registration = None
                 if registration_path.exists():
@@ -357,4 +359,9 @@ class RerollSupervisor:
                 return {"name": name, "state": "failed", "error": str(exc)}
 
     def pause_all(self) -> dict[str, Status]:
-        return {name: self.pause(name) for name in self._members()}
+        members = self._members()
+        if not members:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(len(members), 4)) as workers:
+            results = list(workers.map(self.pause, members))
+        return dict(zip(members, results))

@@ -105,7 +105,9 @@ class FleetSetupService:
         self._build_error: str | None = None
         self._reroll_pool: Any | None = None
         self._reroll_supervisor: Any | None = None
-        self._reroll_thread: Any | None = None
+        self._reroll_start_thread: Any | None = None
+        from threading import Lock
+        self._reroll_dispatch_lock = Lock()
         if self.store.settings() is not None:
             try:
                 self._build()
@@ -272,12 +274,9 @@ class FleetSetupService:
         supervisor.max_concurrent_workers = limit
         return self.reroll_snapshot()
 
-    def _reroll_dispatch(self, operation: Any) -> dict[str, Any]:
+    def _reroll_dispatch(self, operation: Any, *, exclusive_start: bool = False) -> dict[str, Any]:
         from threading import Thread
         from fleet.reroll_journal import RerollJournal
-
-        if self._reroll_thread is not None and self._reroll_thread.is_alive():
-            raise ValueError("reroll_operation_in_progress")
 
         def run() -> None:
             journal = RerollJournal(self.root)
@@ -291,14 +290,21 @@ class FleetSetupService:
                 journal.append(instance="Fleet", level="error", kind="operation_failed",
                                message=str(exc))
 
-        self._reroll_thread = Thread(target=run, daemon=True, name="reroll-operation")
-        self._reroll_thread.start()
+        thread = Thread(target=run, daemon=True, name="reroll-operation")
+        with self._reroll_dispatch_lock:
+            if (exclusive_start and self._reroll_start_thread is not None
+                    and self._reroll_start_thread.is_alive()):
+                raise ValueError("reroll_start_in_progress")
+            if exclusive_start:
+                self._reroll_start_thread = thread
+            thread.start()
         return self.reroll_snapshot()
 
     def reroll_start(self, name: str | None = None) -> dict[str, Any]:
         supervisor = self._manual_supervisor()
         return self._reroll_dispatch(
-            (lambda: {name: supervisor.start(name)}) if name else supervisor.start_all)
+            (lambda: {name: supervisor.start(name)}) if name else supervisor.start_all,
+            exclusive_start=True)
 
     def reroll_pause(self, name: str | None = None) -> dict[str, Any]:
         supervisor = self._manual_supervisor()

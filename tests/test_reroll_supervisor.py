@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Lock
+import time
+from threading import Event, Lock, Thread
 
 from fleet.reroll_supervisor import RerollSupervisor
 
@@ -191,3 +192,59 @@ def test_stopped_member_is_started_then_rechecked_before_enrollment(tmp_path: Pa
     assert supervisor.start(member["name"])["state"] == "running"
     assert started == [member["name"]]
     assert len(spawned) == 1
+
+
+def test_capacity_wait_does_not_start_stopped_emulator(tmp_path: Path) -> None:
+    make, spawned, _, _ = _harness(tmp_path)
+    supervisor = make()
+    assert supervisor.start("Tiramisu64_20")["state"] == "running"
+    assert supervisor.start("Tiramisu64_21")["state"] == "running"
+    members = supervisor.pool_snapshot()["members"]
+    members.append({"name": "Tiramisu64_22", "endpoint": "127.0.0.1:5775",
+                    "lease_id": "c", "state": "start_required"})
+    started = []
+    supervisor.start_instance = lambda member: started.append(member["name"])
+    assert supervisor.start("Tiramisu64_22")["state"] == "capacity_wait"
+    assert started == []
+    assert len(spawned) == 2
+
+
+def test_unavailable_manager_start_records_failure(tmp_path: Path) -> None:
+    make, _, _, _ = _harness(tmp_path)
+    supervisor = make()
+    member = supervisor.pool_snapshot()["members"][0]
+    member["state"] = "start_required"
+    assert supervisor.start(member["name"]) == {
+        "name": member["name"], "state": "failed", "error": "start_required"}
+    assert supervisor.reconcile()[member["name"]]["state"] == "failed"
+
+
+def test_pause_all_stops_running_peer_while_another_enrolls(tmp_path: Path) -> None:
+    make, _, _, killed = _harness(tmp_path)
+    supervisor = make()
+    assert supervisor.start("Tiramisu64_21")["state"] == "running"
+    entered = Event()
+    release = Event()
+    original_enroll = supervisor.enroll
+
+    def slow_enroll(member, runtime, attempt):
+        if member["name"] == "Tiramisu64_20":
+            entered.set()
+            assert release.wait(2)
+        return original_enroll(member, runtime, attempt)
+
+    supervisor.enroll = slow_enroll
+    starting = Thread(target=lambda: supervisor.start("Tiramisu64_20"))
+    starting.start()
+    assert entered.wait(2)
+    pausing = Thread(target=supervisor.pause_all)
+    pausing.start()
+    try:
+        deadline = time.monotonic() + 2
+        while not killed and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert killed, "running peer was not paused until enrollment finished"
+    finally:
+        release.set()
+        starting.join(2)
+        pausing.join(2)

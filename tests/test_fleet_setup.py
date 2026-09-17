@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -77,6 +78,32 @@ def test_start_instance_uses_exact_installed_row_and_never_opens_tower(tmp_path:
     with pytest.raises(FleetRequestError, match="instance_not_installed"):
         service.start_instance("Tiramisu64_99")
     assert started == ["Tiramisu64_18"]
+
+
+def test_pause_dispatches_while_start_is_enrolling(tmp_path: Path) -> None:
+    service = FleetSetupService(tmp_path / "fleet", qualification_root=tmp_path)
+    entered = Event()
+    release = Event()
+    paused = Event()
+
+    def start_all() -> dict:
+        entered.set()
+        assert release.wait(2)
+        return {"Tiramisu64_20": {"state": "running"}}
+
+    def pause_all() -> dict:
+        paused.set()
+        return {"Tiramisu64_21": {"state": "paused"}}
+
+    service._manual_supervisor = lambda: SimpleNamespace(start_all=start_all, pause_all=pause_all)
+    service.reroll_snapshot = lambda: {"members": []}
+    try:
+        service.reroll_start()
+        assert entered.wait(2)
+        service.reroll_pause()
+        assert paused.wait(2)
+    finally:
+        release.set()
 
 
 def test_setup_api_routes_save_start_and_resume_before_generic_action() -> None:
