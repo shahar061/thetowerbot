@@ -171,6 +171,7 @@ class PendingPurchase:
     coins: int
     visible_ids: frozenset[str]
     frames: int = 0
+    info_dismissed: bool = False
     # The durable row this pending answers for, when a journal is attached.
     key: str | None = None
 
@@ -918,6 +919,14 @@ class ShoppingSession:
     def _confirm_purchase(self, observation: Observation, coins: int | None, device: Any,
                           shopping: Shopping, screen: Image) -> None:
         pending = self._pending
+        # Buying an unlock can move the newly granted tiles under the same
+        # touch. The game sometimes opens a child's info panel as the layout
+        # changes. That overlay hides the receipt, so clear it once from the
+        # Workshop title before counting confirmation frames.
+        if not pending.info_dismissed and not observation.rows and self._info_panel_visible(screen):
+            if self._try_tap(*config.PANEL_DISMISS_POINT, device, shopping, screen):
+                pending.info_dismissed = True
+            return
         before = pending.row
         after = next((r for r in observation.rows if r.upgrade_id == before.upgrade_id), None)
         same_category = observation.category == before.category
@@ -963,6 +972,12 @@ class ShoppingSession:
             self._abort(device, shopping, screen, "purchase acknowledgement was inconclusive")
         elif self.observations is not None:
             self.observations.decision("verifying", f"Waiting for {before.name} to change", before.upgrade_id)
+
+    @staticmethod
+    def _info_panel_visible(screen: Image) -> bool:
+        labels = {box.text.strip().lower() for box in ocr.read(screen)
+                  if box.confidence >= .9}
+        return "current level" in labels and "max level" in labels
 
     def _find_row(self, name: str, observation: Observation, device: Any,
                   shopping: Shopping, screen: Image, coins: int) -> None:
