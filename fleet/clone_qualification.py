@@ -173,6 +173,18 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
                               screen=after.screen, account_id=account_id,
                               session_conflict=bool(after.conflict_dialog)) is not RecoveryState.READY:
             raise ValueError("worker recovery evidence blocked")
+        if navigate:
+            # The account proof leaves two stacked dialogs over the game.
+            # These measured 1080x2400 close controls were verified on Air 20;
+            # observe each transition before touching the next control.
+            device.click(925, 600)
+            settings = candidate.observe(device)
+            if settings.screen != "settings" or settings.conflict_dialog:
+                raise ValueError("account dialog did not close after recovery")
+            device.click(905, 510)
+            home = candidate.observe(device)
+            if home.screen != "home" or home.conflict_dialog:
+                raise ValueError("settings dialog did not close after recovery")
         adapter.designated(candidate.instance, attempt)
         return {"account_id": account_id, "started_at": before.observed_at,
                 "startup_evidence_ref": before.evidence_ref,

@@ -298,6 +298,8 @@ class RerollSupervisor:
                     raise ValueError("worker_registration_attempt_missing")
                 attempt = Attempt.new(name, member["endpoint"], member["lease_id"],
                                       registration["job_id"])
+                from fleet.reroll_strategy import ensure_reroll_strategy
+                ensure_reroll_strategy(runtime)
                 args = self._args(member, runtime, attempt)
                 record = {"name": name, "endpoint": member["endpoint"],
                           "lease_id": member["lease_id"], "attempt_id": attempt.attempt_id,

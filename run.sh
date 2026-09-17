@@ -123,7 +123,7 @@ for i in "${!args[@]}"; do
 done
 
 step 4 "freeing port $port"
-holders=$(lsof -ti "tcp:$port" 2>/dev/null || true)
+holders=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
 if [[ -z "$holders" ]]; then
     printf '      nothing listening\n'
 else

@@ -488,7 +488,8 @@ def test_worker_probe_dismisses_measured_play_games_sheet_on_recovery(tmp_path: 
         app_start=lambda _: None,
         click=lambda x, y: taps.append((x, y)),
     )
-    screens = iter(["google_play_profile", "home", "settings", "account"] * 2)
+    screens = iter(["google_play_profile", "home", "settings", "account"] * 2
+                   + ["settings", "home"])
     def observe(_: object) -> AccountFrame:
         screen = next(screens)
         controls = {
@@ -509,6 +510,7 @@ def test_worker_probe_dismisses_measured_play_games_sheet_on_recovery(tmp_path: 
                                account_id="ACCOUNT-A", scope=scope, navigate=True)
     assert proof["recovered_at"] > proof["started_at"]
     assert taps.count((176, 2289)) == 2
+    assert taps[-2:] == [(925, 600), (905, 510)]
     assert host.calls == [("stop", "clone-a"), ("start", "clone-a")]
 
 
