@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import FleetPage from "./page";
-import { fetchFleet, fetchFleetPreview, fetchFleetSetup, saveFleetSetup, startFleetSource, requestFleetProvision } from "@/lib/api";
+import { fetchFleet, fetchFleetPreview, fetchFleetSetup, saveFleetSetup, startFleetSource, requestFleetProvision, resolveFleetTarget } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({ fetchFleet: vi.fn(), fetchFleetPreview: vi.fn(), fetchFleetSetup: vi.fn(), saveFleetSetup: vi.fn(), startFleetSource: vi.fn(), requestFleetProvision: vi.fn(), resolveFleetTarget: vi.fn(), resumeFleetFirstLaunch: vi.fn() }));
 
@@ -14,6 +14,7 @@ beforeEach(() => {
   vi.mocked(requestFleetProvision).mockReset();
   vi.mocked(saveFleetSetup).mockReset();
   vi.mocked(startFleetSource).mockReset();
+  vi.mocked(resolveFleetTarget).mockReset();
   vi.mocked(fetchFleetSetup).mockResolvedValue({ configured: false, settings: null, qualifications: [], host: { installed_prefix: "seed_", instance_count: 1 } });
 });
 
@@ -85,6 +86,21 @@ test("blocked source is visible and cannot submit a clone request", async () => 
   fireEvent.click(screen.getByRole("radio", { name: /clone/i }));
   expect(await screen.findByText(/qualification expired/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /request clones/i })).toBeDisabled();
+});
+
+test("quarantined absent target offers dismissal and shows host failure detail", async () => {
+  const job = { id: "job", mode: "clone" as const, source: "seed", requested_at: 1,
+    clones: [{ instance: "seed_20", state: "quarantined" as const,
+      reason: "host_capability_or_result_unavailable", detail: "BlueStacks Air next clone name is required" }] };
+  vi.mocked(fetchFleet).mockResolvedValue({ capacity, sources: [], jobs: [job] });
+  vi.mocked(fetchFleetPreview).mockResolvedValue({ mode: "clone", source: "seed", count: 1,
+    targets: [], state: "blocked", reason: "provisioning_or_quarantine_requires_review" });
+  vi.mocked(resolveFleetTarget).mockResolvedValue({ ...job,
+    clones: [{ ...job.clones[0], state: "dismissed", reason: "operator_dismissed_absent_target" }] });
+  render(<FleetPage />);
+  expect(await screen.findByText(/BlueStacks Air next clone name is required/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss if instance absent" }));
+  await waitFor(() => expect(resolveFleetTarget).toHaveBeenCalledWith("job", 0, "dismiss"));
 });
 
 test("qualified source requires explicit confirmation and submits bounded count", async () => {
