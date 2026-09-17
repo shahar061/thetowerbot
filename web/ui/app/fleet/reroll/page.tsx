@@ -7,6 +7,7 @@ import { SectionCard } from "@/components/ui/section-card";
 import { useAccountSelection } from "@/lib/AccountSelection";
 import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, setRerollConcurrency, startReroll } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
+import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
 
 const journalColors = ["#2563eb", "#b45309", "#7c3aed", "#047857", "#be185d", "#0e7490"];
 
@@ -75,11 +76,17 @@ export default function RerollPage() {
   useEffect(() => {
     let active = true;
     let polling = false;
+    let redirecting = false;
     const poll = () => {
-      if (polling) return;
+      if (polling || redirecting) return;
       polling = true;
       void fetchReroll().then(next => { if (active) { setPool(next); setLimit(next.concurrency_limit ?? 2); setError(null); } })
-        .catch((failure: Error) => { if (active) setError(failure.message); })
+        .catch((failure: Error) => {
+          if (!active) return;
+          const destination = rerollCoordinatorUrl(failure, window.location.href);
+          if (destination) { redirecting = true; window.location.replace(destination); return; }
+          setError(failure.message);
+        })
         .finally(() => { polling = false; });
       void fetchRerollJournal().then(value => { if (active) { setEntries(value.entries); setJournalError(null); } })
         .catch((failure: Error) => { if (active) setJournalError(failure.message); });
