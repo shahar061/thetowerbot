@@ -671,6 +671,19 @@ class BlueStacksAirInventory:
             raise HostCapabilityError("BlueStacks installed image family is ambiguous")
         return matches[0].decode("ascii") + "_"
 
+    def next_clone_name(self, source: str, *, digest: str | None = None) -> str:
+        """Use Manager's persisted VM counter, including numbers of removed clones."""
+        config = self._config_bytes()
+        if digest is not None and hashlib.sha256(config).hexdigest() != digest:
+            raise HostCapabilityError("BlueStacks Air inventory configuration changed")
+        match = re.fullmatch(r"(.+_)[1-9][0-9]*", source)
+        prefix = match.group(1) if match is not None else f"{source}_"
+        counters = re.findall(rb'^bst\.next_vm_id="([1-9][0-9]*)"$', config,
+                              flags=re.MULTILINE)
+        if len(counters) != 1:
+            raise HostCapabilityError("BlueStacks Air next VM counter is unavailable")
+        return f"{prefix}{int(counters[0])}"
+
     def lease(self, name: str) -> str:
         """Bind a named instance lease to its own host identity fields."""
         if not re.fullmatch(r"[A-Za-z0-9_]+", name):
@@ -1210,13 +1223,20 @@ class BlueStacksAirDriver:
             scope_matches = details.get("configuration_digest") == digest
         if not scope_matches:
             raise HostCapabilityError("BlueStacks Air clone configuration changed")
-        match = re.fullmatch(r"(.+_)([1-9][0-9]*)", source)
-        prefix = match.group(1) if match is not None else f"{source}_"
-        suffixes = [int(candidate.group(1)) for item in instances
-                    if (candidate := re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", item.name))]
-        if name != f"{prefix}{max(suffixes, default=0) + 1}":
+        if name != self.next_clone_name(source, digest=digest):
             raise HostCapabilityError("BlueStacks Air next clone name is required")
         return digest, instances
+
+    def next_clone_name(self, source: str, *, digest: str | None = None) -> str:
+        next_name = getattr(self.inventory_source, "next_clone_name", None)
+        if callable(next_name):
+            return next_name(source, digest=digest)
+        match = re.fullmatch(r"(.+_)[1-9][0-9]*", source)
+        prefix = match.group(1) if match is not None else f"{source}_"
+        _, instances = self._clone_snapshot()
+        suffixes = [int(candidate.group(1)) for item in instances
+                    if (candidate := re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", item.name))]
+        return f"{prefix}{max(suffixes, default=0) + 1}"
 
     def _require_next_clone_name(self, name: str, source: str) -> tuple[str, tuple[HostInstance, ...]]:
         """Bind the already-validated clone request to a stopped, isolated source."""

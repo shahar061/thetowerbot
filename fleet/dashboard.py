@@ -200,9 +200,20 @@ class FleetController:
                          for index, clone in enumerate(job["clones"])
                          if (job["id"], index) != ignore_target
                          and clone["state"] != "dismissed")
-            numbers = [int(found.group(1)) for name in (row.name for row in inventory)
-                      if (found := re.fullmatch(re.escape(self.policy.name_prefix) + r"([1-9][0-9]*)", name))]
-            next_number = max(numbers, default=0) + 1
+            next_clone_name = getattr(self.adapter.driver, "next_clone_name", None)
+            if mode == "clone" and callable(next_clone_name):
+                try:
+                    expected = next_clone_name(source)
+                except Exception as exc:
+                    raise FleetRequestError("host_next_clone_name_unavailable") from exc
+                found = re.fullmatch(re.escape(self.policy.name_prefix) + r"([1-9][0-9]*)", expected)
+                if found is None:
+                    raise FleetRequestError("host_next_clone_name_unavailable")
+                next_number = int(found.group(1))
+            else:
+                numbers = [int(found.group(1)) for name in (row.name for row in inventory)
+                          if (found := re.fullmatch(re.escape(self.policy.name_prefix) + r"([1-9][0-9]*)", name))]
+                next_number = max(numbers, default=0) + 1
             targets = [f"{self.policy.name_prefix}{next_number + index}" for index in range(count)]
             if any(name in names for name in targets):
                 raise FleetRequestError("duplicate_instance_name")

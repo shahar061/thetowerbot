@@ -4,6 +4,7 @@ from dataclasses import replace
 import base64
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Callable
 
@@ -509,6 +510,24 @@ def test_inventory_binds_each_configured_instance_to_one_unique_endpoint(tmp_pat
     ]
     assert inventory.display_name("Air_2", digest=inventory.digest()) == "BlueStacks Air 2"
     assert inventory.installed_image_prefix() == "Air_"
+
+
+def test_inventory_uses_persisted_manager_counter_after_clones_removed(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    inventory.config_path.write_text(inventory.config_path.read_text() +
+                                     'bst.next_vm_id="20"\n')
+    assert inventory.next_clone_name("Air_2") == "Air_20"
+
+
+def test_inventory_refuses_missing_or_changed_manager_counter(tmp_path: Path) -> None:
+    inventory = configured_inventory(tmp_path)
+    with pytest.raises(HostCapabilityError, match="next VM counter"):
+        inventory.next_clone_name("Air_2")
+    original_digest = inventory.digest()
+    inventory.config_path.write_text(inventory.config_path.read_text() +
+                                     'bst.next_vm_id="20"\n')
+    with pytest.raises(HostCapabilityError, match="configuration changed"):
+        inventory.next_clone_name("Air_2", digest=original_digest)
 
 
 def test_lease_is_stable_across_other_instance_creation_but_changes_with_own_identity(
@@ -1178,6 +1197,15 @@ class CloneInventory:
     def instances(self) -> list[HostInstance]:
         return self.snapshot()[1]
 
+    def next_clone_name(self, source: str, *, digest: str | None = None) -> str:
+        prefix = (match.group(1) if (match := re.fullmatch(r"(.+_)[1-9][0-9]*", source))
+                  else f"{source}_")
+        number = getattr(self, "next_id", max((int(name[len(prefix):])
+                                                for name in self.names
+                                                if name.startswith(prefix) and name[len(prefix):].isdigit()),
+                                               default=0) + 1)
+        return f"{prefix}{number}"
+
     def snapshot(self) -> tuple[str, list[HostInstance]]:
         self.snapshots += 1
         return ("configuration-v2" if self.created else "configuration-v1", self._instances())
@@ -1360,6 +1388,16 @@ def test_clone_requires_the_next_deterministic_name_and_exact_source() -> None:
         clone_driver(manager, inventory).stage_clone("Tiramisu64_7", "Tiramisu64_2")
 
     assert manager.presses == []
+
+
+def test_clone_uses_manager_counter_when_removed_clones_leave_a_gap() -> None:
+    inventory = CloneInventory({"Tiramisu64_2", "Tiramisu64_6"}, create="Tiramisu64_20")
+    inventory.next_id = 20
+    manager = CloneManager(clone_frames("Tiramisu64_2"), inventory)
+
+    created = clone_driver(manager, inventory).stage_clone("Tiramisu64_20", "Tiramisu64_2")
+
+    assert created.name == "Tiramisu64_20"
 
 
 def test_clone_uses_the_single_manager_instance_control_not_a_row_action() -> None:
