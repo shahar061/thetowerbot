@@ -21,7 +21,7 @@ import type {
 } from "./types";
 import { checkRuntimeCompatibility } from "./runtimeCompatibility";
 import { accountScope } from "./accountScope";
-import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup } from "./fleet";
+import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup, RerollSnapshot, RerollJournal } from "./fleet";
 
 /** An HTTP failure that kept its status code.
  *
@@ -66,6 +66,19 @@ export type AccountChoice = { key: string; account_id: string | null; instance: 
 export type AccountCatalog = { accounts: AccountChoice[]; active: string | null };
 export const fetchAccounts = () => getJson<AccountCatalog>("/api/accounts", { cache: "no-store" });
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
+export const fetchReroll = () => getJson<RerollSnapshot>("/api/fleet/reroll", { cache: "no-store" }, false);
+export const setRerollConcurrency = (limit: number) =>
+  send<RerollSnapshot>("/api/fleet/reroll/concurrency", "PATCH", { limit }, "fleet");
+export const addRerollMembers = (names: string[]) =>
+  send<RerollSnapshot>("/api/fleet/reroll/members", "POST", { names }, "fleet");
+export const removeRerollMember = (name: string) =>
+  send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}`, "DELETE", undefined, "fleet");
+export const startReroll = (name?: string) =>
+  send<RerollSnapshot>(name ? `/api/fleet/reroll/members/${encodeURIComponent(name)}/start` : "/api/fleet/reroll/start", "POST", undefined, "fleet");
+export const pauseReroll = (name?: string) =>
+  send<RerollSnapshot>(name ? `/api/fleet/reroll/members/${encodeURIComponent(name)}/pause` : "/api/fleet/reroll/pause", "POST", undefined, "fleet");
+export const fetchRerollJournal = () =>
+  getJson<RerollJournal>("/api/fleet/reroll/journal", { cache: "no-store" }, false);
 export type FleetInstance = { name: string; endpoint: string; state: string; template: boolean };
 export type FleetInstances = { instances: FleetInstance[]; can_start: boolean };
 export const fetchFleetInstances = () => getJson<FleetInstances>("/api/fleet/instances", { cache: "no-store" });

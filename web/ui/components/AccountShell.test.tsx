@@ -23,7 +23,7 @@ test("empty dashboard points to reroll without showing old live data", () => {
   render(<AccountShell><p>old live data</p></AccountShell>);
   expect(screen.getByText("No account selected")).toBeInTheDocument();
   expect(screen.queryByText("old live data")).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Start a reroll" })).toHaveAttribute("href", "/fleet/?reroll=1");
+  expect(screen.getByRole("link", { name: "Start a reroll" })).toHaveAttribute("href", "/fleet/reroll/");
 });
 
 test("archived account shows history but blocks live content", () => {

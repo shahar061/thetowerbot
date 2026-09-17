@@ -42,3 +42,17 @@ export type FleetSetup = {
   qualifications: { id: string; source_instance: string; evaluated_at?: number }[];
   host: { installed_prefix?: string; instance_count?: number; unavailable?: string };
 };
+
+export type RerollCandidate = { name: string; endpoint: string; state: string };
+export type RerollMember = { name: string; endpoint: string; lease_id: string; state: string;
+  account_id?: string | null; account_key?: string | null; milestone?: string | null;
+  tier?: number | null; wave?: number | null; run_duration_seconds?: number | null;
+  best_tier_1_wave?: number | null; wallet_coins?: number | null; run_coins?: number | null;
+  wallet_gems?: number | null; wallet_stones?: number | null; wallet_medals?: number | null;
+  uw_result?: string | null; observed_at?: number | null; error?: string | null;
+  evidence?: string | null; recent_runs?: string[] | null };
+export type RerollSnapshot = { candidates: RerollCandidate[]; members: RerollMember[];
+  concurrency_limit?: number; pressure?: { running: number; starting: number; limit: number; available: number } };
+export type RerollJournalEntry = { sequence: number; at: string | number; instance: string;
+  level: string; kind: string; message: string; color: string };
+export type RerollJournal = { entries: RerollJournalEntry[] };

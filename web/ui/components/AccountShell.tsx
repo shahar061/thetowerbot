@@ -28,7 +28,7 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
         </optgroup>}
       </select>
       {selected && <span className="text-xs text-muted-foreground">{selected.running ? "Running account" : selected.kind === "unattributed" ? "History without verified account identity" : "Registered account · no running bot"}</span>}
-      <Link href="/fleet/?reroll=1" className="ml-auto text-sm text-primary underline">Reroll account</Link>
+      <Link href="/fleet/reroll/" className="ml-auto text-sm text-primary underline">Reroll account</Link>
       <Link href="/archives/" className="text-sm text-primary underline">Archives</Link>
     </header>
     {error && <p role="alert" className="border-b px-4 py-2 text-sm text-danger">Could not refresh account list: {error}</p>}
@@ -37,7 +37,7 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
       : !selected ? <main className="m-4 flex max-w-2xl flex-col gap-3 rounded-lg border p-6">
           <h1 className="text-lg font-semibold">No account selected</h1>
           <p className="text-sm text-muted-foreground">Choose a verified account above to view its data. Existing shared history remains in Unattributed archive. To create a new account, start a reroll.</p>
-          <Link href="/fleet/?reroll=1" className="w-fit rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">Start a reroll</Link>
+          <Link href="/fleet/reroll/" className="w-fit rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">Start a reroll</Link>
           <EmulatorRecovery />
         </main>
       : remote ? <main className="m-4 flex max-w-2xl flex-col gap-3 rounded-lg border p-6">

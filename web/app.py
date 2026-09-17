@@ -251,6 +251,14 @@ class FleetStartInstanceRequest(BaseModel):
     name: str
 
 
+class RerollAddRequest(BaseModel):
+    names: list[str]
+
+
+class RerollConcurrencyRequest(BaseModel):
+    limit: int
+
+
 _CATEGORY_BY_UPGRADE: dict[str, str] = {u.id: u.category for u in upgrades.CATALOG}
 
 
@@ -1239,6 +1247,87 @@ def create_app(
             return fleet.instances_snapshot()
         except HostCapabilityError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/fleet/reroll")
+    def fleet_reroll_snapshot() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_snapshot", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_snapshot()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/members")
+    def fleet_reroll_add(body: RerollAddRequest) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_add", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_add(body.names)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.delete("/api/fleet/reroll/members/{name}")
+    def fleet_reroll_remove(name: str) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_remove", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_remove(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.patch("/api/fleet/reroll/concurrency")
+    def fleet_reroll_concurrency(body: RerollConcurrencyRequest) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_set_concurrency", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_set_concurrency(body.limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/start")
+    def fleet_reroll_start() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_start", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_start()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/pause")
+    def fleet_reroll_pause() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_pause", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_pause()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/members/{name}/start")
+    def fleet_reroll_start_member(name: str) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_start", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_start(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/members/{name}/pause")
+    def fleet_reroll_pause_member(name: str) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_pause", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_pause(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/fleet/reroll/journal")
+    def fleet_reroll_journal(cursor: int | None = None) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_journal", None)):
+            raise HTTPException(status_code=503, detail="reroll_journal_unavailable")
+        try:
+            return fleet.reroll_journal(cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/fleet/instances/start")
     def fleet_start_instance(body: FleetStartInstanceRequest) -> dict[str, Any]:
