@@ -16,8 +16,8 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
   const remote = selected?.running && selected.dashboard_url && typeof window !== "undefined"
     && new URL(selected.dashboard_url).origin !== window.location.origin;
 
-  return <div className="flex min-w-0 flex-1 flex-col">
-    <header className="flex flex-wrap items-center gap-3 border-b bg-card px-4 py-3" aria-label="Game account">
+  return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+    <header className="sticky top-0 z-10 flex shrink-0 flex-wrap items-center gap-3 border-b bg-card px-4 py-3" aria-label="Game account">
       <label htmlFor="game-account" className="text-sm font-semibold">Game account</label>
       <select id="game-account" value={selected?.key ?? ""} disabled={loading}
         onChange={event => choose(event.target.value)} className="min-w-44 max-w-full rounded-md border bg-background px-3 py-2 text-sm">

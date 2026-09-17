@@ -98,7 +98,7 @@ export function Sidebar() {
   }
 
   return (
-    <nav className="flex shrink-0 gap-1 overflow-x-auto border-b bg-sidebar p-2 md:h-dvh md:w-52 md:flex-col md:gap-0 md:overflow-visible md:border-b-0 md:border-r md:p-3">
+    <nav className="flex shrink-0 gap-1 overflow-x-auto border-b bg-sidebar p-2 md:h-full md:w-52 md:flex-col md:gap-0 md:overflow-x-hidden md:overflow-y-auto md:border-b-0 md:border-r md:p-3">
       <div className="hidden pb-4 pl-2.5 md:block">
         <div className="font-mono text-xs font-bold uppercase tracking-[0.14em] text-primary">
           The Tower
