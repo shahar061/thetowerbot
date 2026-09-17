@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useReducer, useState } from "react";
 import { feedReducer } from "./eventReducer";
+import { useAccountSelection } from "./AccountSelection";
 import type { BotEvent } from "./types";
 
 /** Two contexts, not one, and that split is the point.
@@ -24,17 +25,26 @@ const ConnectedContext = createContext(false);
  * connection badge - without each caller opening a socket of its own.
  */
 export function EventStreamProvider({ children }: { children: React.ReactNode }) {
+  const { selected } = useAccountSelection();
   const [events, dispatch] = useReducer(feedReducer, []);
   const [connected, setConnected] = useState(false);
+  const key = selected?.key;
+  const running = selected?.running;
+  const dashboardUrl = selected?.dashboard_url;
 
   useEffect(() => {
-    const source = new EventSource("/api/events/stream");
-    source.onopen = () => setConnected(true);
-    source.onerror = () => setConnected(false);
-    source.onmessage = (message) =>
-      dispatch({ kind: "event", event: JSON.parse(message.data) as BotEvent });
-    return () => source.close();
-  }, []);
+    dispatch({ kind: "clear" });
+    setConnected(false);
+    if (!key || !running || (dashboardUrl && new URL(dashboardUrl).origin !== window.location.origin)) return;
+    let active = true;
+    const source = new EventSource(`/api/events/stream?scope=${encodeURIComponent(key)}`);
+    source.onopen = () => { if (active) setConnected(true); };
+    source.onerror = () => { if (active) setConnected(false); };
+    source.onmessage = (message) => {
+      if (active) dispatch({ kind: "event", event: JSON.parse(message.data) as BotEvent });
+    };
+    return () => { active = false; source.close(); };
+  }, [key, running, dashboardUrl]);
 
   return (
     <ConnectedContext.Provider value={connected}>

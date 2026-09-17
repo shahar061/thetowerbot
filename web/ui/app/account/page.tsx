@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { SectionCard } from "@/components/ui/section-card";
+import { useAccountSelection } from "@/lib/AccountSelection";
 import { claimMilestones, claimMissions, collectStats, fetchAccount, fetchConcepts } from "@/lib/api";
 import { ACCOUNT_SECTIONS, describeCollection, evidenceAge, readerSupported } from "@/lib/account";
 import type { AccountConcept, AccountFact, AccountSection, AccountSnapshot, ClaimSnapshot, ConceptCatalog, StatsCollection } from "@/lib/account";
@@ -72,6 +73,7 @@ function ClaimButton({ label, busyLabel, action }: { label: string; busyLabel: s
 }
 
 export default function AccountPage() {
+  const { selected } = useAccountSelection();
   const [account, setAccount] = useState<AccountSnapshot | null>(null);
   const [catalog, setCatalog] = useState<ConceptCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,15 +117,15 @@ export default function AccountPage() {
         <SectionCard title="Account identity"><p>{state?.account_id ?? "Unknown account"}</p><p className="text-xs text-muted-foreground">Game version: {state?.game_version ?? "unknown"}</p><p className="break-all text-xs text-muted-foreground">Registry: {state?.registry_version ?? "unknown"}</p></SectionCard>
         <SectionCard title="Reader capability"><p>Saved Workshop values</p><p className="text-xs text-muted-foreground">{account.persistence_available ? "Persistence available" : "Persistence unavailable"}. {account.screen_readings ? "Settings and Stats screen observations are available separately for this session." : "Other permanent readers have no supported ingestion in this account API."}</p></SectionCard>
       </div>
-      <CollectStats collection={account.collection} onArmed={() => setReload(n => n + 1)} />
+      {selected?.running && <><CollectStats collection={account.collection} onArmed={() => setReload(n => n + 1)} />
       <SectionCard title="Claim rewards">
         <p className="text-sm text-muted-foreground">Two separate device walks: Home → Missions → claim → Home, and Home → Milestones → Claim All → Home. Each holds all other automation while it walks.</p>
         <div className="mt-3 flex flex-wrap gap-3">
           <ClaimButton label="Claim missions" busyLabel="Claiming…" action={claimMissions} />
           <ClaimButton label="Claim milestones" busyLabel="Claiming…" action={claimMilestones} />
         </div>
-      </SectionCard>
-      <ScreenReadings data={account.screen_readings} />
+      </SectionCard></>}
+      {selected?.running && <ScreenReadings data={account.screen_readings} />}
       <SectionCard title="Missing optimizer inputs" tone="warn">
         <p className="text-sm text-muted-foreground">Unknown does not mean locked, unavailable in the game, or zero. Catalog membership does not prove ownership or execution support.</p>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{sections.map(([key, label]) => <div key={key} className="rounded-md bg-muted/40 p-3 text-sm"><p className="font-medium">{label}</p><p className="text-xs text-muted-foreground">{state?.[key]?.length ? `${state[key]!.length} saved observations; coverage may be partial` : key === "workshop_stats" ? unavailable ? "Unknown · account state unavailable" : "Not yet scanned / no verified values" : "Unknown · reader unavailable in this API"}</p></div>)}</div>

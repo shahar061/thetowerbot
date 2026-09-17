@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Sidebar } from "@/components/Sidebar";
 import { EventStreamProvider } from "@/lib/useEventStream";
-import { RuntimeGate } from "@/components/RuntimeGate";
+import { AccountShell } from "@/components/AccountShell";
+import { AccountSelectionProvider } from "@/lib/AccountSelection";
 import "./globals.css";
 
 // Self-hosted at build time, so the exported site has no runtime dependency on
@@ -43,14 +44,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* One SSE connection for the whole tab. It has to wrap the rail as
             well as the page, because the rail reports whether the bot is
             reachable from every page, not just the Live one. */}
-        <EventStreamProvider>
+        <AccountSelectionProvider><EventStreamProvider>
           <div className="flex min-h-dvh flex-col md:flex-row">
             <Sidebar />
-            <RuntimeGate>
-              <main className="min-w-0 flex-1 p-4">{children}</main>
-            </RuntimeGate>
+            <AccountShell>{children}</AccountShell>
           </div>
-        </EventStreamProvider>
+        </EventStreamProvider></AccountSelectionProvider>
       </body>
     </html>
   );

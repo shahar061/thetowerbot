@@ -47,7 +47,7 @@ exit 0
         commands / "npm",
         "#!/usr/bin/env bash\nprintf 'npm %s\\n' \"$*\" >> \"$RUN_LOG\"\n",
     )
-    _write_executable(commands / "lsof", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(commands / "lsof", "#!/usr/bin/env bash\nprintf 'lsof %s\\n' \"$*\" >> \"$RUN_LOG\"\nexit 0\n")
 
     env = {
         **os.environ,
@@ -56,7 +56,7 @@ exit 0
         "FRESH_ONCE": str(tmp_path / "freshness-ran"),
     }
     completed = subprocess.run(
-        ["bash", str(script), "--idle"],
+        ["bash", str(script), "--idle", "--port", "5735"],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -67,3 +67,5 @@ exit 0
     assert completed.returncode == 0, completed.stderr
     commands_run = log.read_text(encoding="utf-8").splitlines()
     assert commands_run.index("npm ci") < commands_run.index("npm run build")
+    assert "lsof -ti tcp:8765" in commands_run
+    assert "dashboard -> http://127.0.0.1:8765" in completed.stdout

@@ -20,9 +20,11 @@ from __future__ import annotations
 from account_state import AccountRevision, AccountState
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import threading
 import time
+from urllib.request import urlopen
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Literal
 
@@ -42,6 +44,7 @@ from concepts import REGISTRY
 from runtime_identity import API_VERSION, PROCESS_IDENTITY, read_frontend_identity
 from advisor import AdvisorStore
 from web.advisor import advisor_router
+from web.account_catalog import AccountChoice, account_choices
 from autopilot import AutopilotState
 from policy import PRESETS, preset_rules
 from progression import compare_tiers, rates as progression_rates
@@ -89,6 +92,7 @@ async def event_stream(
     poll: float = config.SSE_POLL_SECONDS,
     heartbeat: float = config.SSE_HEARTBEAT_SECONDS,
     shutdown: threading.Event | None = None,
+    allowed: Callable[[], bool] | None = None,
 ) -> AsyncIterator[str]:
     """Server-sent events, resumable through Last-Event-ID.
 
@@ -135,7 +139,7 @@ async def event_stream(
         cursor = 0
 
     idle = 0.0
-    while not shutdown.is_set() and not await is_disconnected():
+    while not shutdown.is_set() and (allowed is None or allowed()) and not await is_disconnected():
         batch = sse.since(cursor)
         for event in batch:
             cursor = event.seq
@@ -159,6 +163,7 @@ async def frame_stream(
     *,
     shutdown: threading.Event,
     poll: float = config.FRAME_POLL_SECONDS,
+    allowed: Callable[[], bool] | None = None,
 ) -> AsyncIterator[bytes]:
     """MJPEG: one connection, rendered natively by a plain <img>.
 
@@ -174,7 +179,7 @@ async def frame_stream(
     scan rather than one per poll.
     """
     sent = 0
-    while not shutdown.is_set() and not await is_disconnected():
+    while not shutdown.is_set() and (allowed is None or allowed()) and not await is_disconnected():
         current = frames.latest()
         if current is not None and current[0] != sent:
             sent, payload = current
@@ -242,6 +247,10 @@ class FleetSetupRequest(BaseModel):
     qualification_id: str
 
 
+class FleetStartInstanceRequest(BaseModel):
+    name: str
+
+
 _CATEGORY_BY_UPGRADE: dict[str, str] = {u.id: u.category for u in upgrades.CATALOG}
 
 
@@ -291,11 +300,96 @@ def create_app(
     app = FastAPI(title="The Tower bot")
     accounts = account_state or getattr(runner, "account_state", None) or AccountState()
 
+    def _choices() -> list[AccountChoice]:
+        root = getattr(fleet, "root", None)
+        if root is None and db_path is not None and (db_path.parent / "fleet-registration.json").exists():
+            root = db_path.parent.parent.parent
+        return account_choices(Path(root) if root is not None else None, db_path)
+
+    def _running_account(choice: AccountChoice) -> bool:
+        if (choice.kind != "worker" or db_path is None or runner is None
+                or choice.db_path.resolve() != db_path.resolve()
+                or db.bound_account(choice.db_path) != choice.account_id
+                or not runner.status().get("running")):
+            return False
+        try:
+            return runner.verified_account() == choice.account_id
+        except (RunnerError, AttributeError, OSError, ValueError, TypeError):
+            return False
+
+    def _selected(request: Request) -> AccountChoice | None:
+        key = request.headers.get("x-account-scope")
+        if key is None:
+            return None  # Existing API callers retain the single-runtime contract.
+        choice = next((item for item in _choices() if item.key == key), None)
+        if choice is None:
+            raise HTTPException(404, "account_scope_unavailable")
+        return choice
+
+    def _history_path(request: Request) -> Path | None:
+        choice = _selected(request)
+        path = choice.db_path if choice is not None else db_path
+        if choice is not None and choice.kind == "worker" and db.bound_account(path) != choice.account_id:
+            return None
+        return path if path is not None and path.is_file() else None
+
+    def _live_choice(request: Request) -> AccountChoice | None:
+        key = request.query_params.get("scope")
+        if key is None:
+            return None  # Legacy non-browser clients retain the existing route.
+        choice = next((item for item in _choices() if item.key == key), None)
+        if choice is None or not _running_account(choice):
+            raise HTTPException(409, "selected_account_not_running")
+        return choice
+
+    @app.get("/api/accounts")
+    def account_catalog(local_only: bool = False) -> dict[str, Any]:
+        choices = _choices()
+        local = {choice.key for choice in choices if _running_account(choice)}
+
+        def remote_running(choice: AccountChoice) -> bool:
+            if (local_only or choice.kind != "worker" or choice.key in local
+                    or choice.web_port is None):
+                return False
+            try:
+                with urlopen(f"http://127.0.0.1:{choice.web_port}/api/accounts?local_only=true",
+                             timeout=0.15) as response:
+                    payload = json.load(response)
+                return (payload.get("active") == choice.key
+                        and any(item.get("key") == choice.key
+                                and item.get("account_id") == choice.account_id
+                                and item.get("running") is True
+                                for item in payload.get("accounts", [])))
+            except (OSError, ValueError, TypeError, KeyError):
+                return False
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            remote = {choice.key for choice, running in zip(choices, pool.map(remote_running, choices))
+                      if running}
+        running = local | remote
+        return {"accounts": [choice.payload(running=choice.key in running) for choice in choices],
+                "active": (next(iter(local), None)
+                           or next((choice.key for choice in choices if choice.key in remote), None))}
+
     @app.get("/api/account")
-    def account_snapshot() -> dict[str, Any]:
+    def account_snapshot(request: Request) -> dict[str, Any]:
         # `collection` is absent, not null, on a backend with no runner: a
         # browser has to tell "cannot run transactions here" apart from "no
         # transaction has been run yet".
+        choice = _selected(request)
+        if choice is not None and not _running_account(choice):
+            payload = AccountState().snapshot()
+            if (choice.kind == "worker" and choice.db_path.is_file()
+                    and db.bound_account(choice.db_path) == choice.account_id):
+                with db.reader(choice.db_path) as conn:
+                    row = conn.execute("SELECT id, detail FROM account_revisions ORDER BY id DESC LIMIT 1").fetchone()
+                if row is not None:
+                    revision = json.loads(row["detail"])
+                    if revision.get("account_id") == choice.account_id:
+                        revision["revision_id"] = row["id"]
+                        payload["revision"] = revision
+                payload["persistence_available"] = True
+            return payload
         payload = accounts.snapshot()
         collection = getattr(runner, "collection", None)
         if collection is not None:
@@ -491,7 +585,10 @@ def create_app(
         return {"queued": True}
 
     @app.get("/api/status")
-    def status() -> dict:
+    def status(request: Request) -> dict:
+        choice = _selected(request)
+        if choice is not None and not _running_account(choice):
+            raise HTTPException(409, "selected_account_not_running")
         payload = state.snapshot()
         # Dropped events are the bus's business, not the state's: they were
         # never delivered to a sink, so no accumulator ever saw them.
@@ -604,24 +701,26 @@ def create_app(
         return payload
 
     @app.get("/api/runs")
-    def runs(limit: int = 50) -> list[dict]:
+    def runs(request: Request, limit: int = 50) -> list[dict]:
         # --no-store is a supported mode, not an error: there is no file to
         # read, so an empty history is the honest answer, not a 500.
-        if db_path is None:
+        path = _history_path(request)
+        if path is None:
             return []
-        with db.reader(db_path) as conn:
+        with db.reader(path) as conn:
             return db.list_runs(conn, limit=max(1, min(limit, MAX_RUNS_PER_PAGE)))
 
     @app.get("/api/runs/{run_id}/events")
-    def run_events(run_id: int) -> list[dict]:
+    def run_events(run_id: int, request: Request) -> list[dict]:
         # Same as /api/runs above: --no-store means there is nothing to read.
-        if db_path is None:
+        path = _history_path(request)
+        if path is None:
             return []
-        with db.reader(db_path) as conn:
+        with db.reader(path) as conn:
             return db.run_events(conn, run_id)
 
     @app.get("/api/runs/{run_id}/purchases")
-    def run_purchases(run_id: int) -> dict:
+    def run_purchases(run_id: int, request: Request) -> dict:
         """The in-run upgrades one run bought, with its totals.
 
         Serves a live run and a finished one alike - the store writes a
@@ -631,8 +730,9 @@ def create_app(
         # Same as the two routes above: --no-store means there is nothing to
         # read, and empty totals are the honest answer, not a 500.
         rows = []
-        if db_path is not None:
-            with db.reader(db_path) as conn:
+        path = _history_path(request)
+        if path is not None:
+            with db.reader(path) as conn:
                 rows = db.run_purchases(conn, run_id)
 
         purchases = [row | {"category": _category_of(row["upgrade_id"])} for row in rows]
@@ -656,17 +756,22 @@ def create_app(
 
     @app.get("/api/events/stream")
     async def stream(request: Request) -> StreamingResponse:
+        choice = _live_choice(request)
         return StreamingResponse(
             event_stream(
                 sse, resume_point(request), request.is_disconnected,
                 shutdown=shutdown,
+                allowed=(lambda: _running_account(choice)) if choice is not None else None,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
 
     @app.get("/api/unknown")
-    def unknown() -> list[dict]:
+    def unknown(request: Request) -> list[dict]:
+        choice = _selected(request)
+        if choice is not None and not _running_account(choice):
+            return []
         if not unknown_dir.exists():
             return []
         shots = sorted(
@@ -678,7 +783,10 @@ def create_app(
         ]
 
     @app.get("/api/unknown/{name}")
-    def unknown_image(name: str) -> FileResponse:
+    def unknown_image(name: str, request: Request) -> FileResponse:
+        choice = _selected(request)
+        if choice is not None and not _running_account(choice):
+            raise HTTPException(status_code=404, detail="no such snapshot")
         # The name arrives off the URL, percent-decoded. Resolve it and check
         # the parent rather than trusting it: "../../etc/passwd" must 404, not
         # read the disk.
@@ -688,7 +796,8 @@ def create_app(
         return FileResponse(path, media_type="image/png")
 
     @app.get("/api/frame.jpg")
-    def frame_still() -> Response:
+    def frame_still(request: Request) -> Response:
+        _live_choice(request)
         # Same distinction frame_mjpeg already makes: no buffer at all (this
         # process was never given one - --once, --tui, or plain logging) is
         # a different fact than a buffer that simply has not been fed a
@@ -704,10 +813,12 @@ def create_app(
 
     @app.get("/api/frame")
     async def frame_mjpeg(request: Request) -> StreamingResponse:
+        choice = _live_choice(request)
         if frames is None:
             raise HTTPException(status_code=404, detail="no frame buffer")
         return StreamingResponse(
-            frame_stream(frames, request.is_disconnected, shutdown=shutdown),
+            frame_stream(frames, request.is_disconnected, shutdown=shutdown,
+                         allowed=(lambda: _running_account(choice)) if choice is not None else None),
             media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
@@ -996,12 +1107,13 @@ def create_app(
         return {"stopping": True}
 
     @app.get("/api/stats")
-    def stats() -> dict:
+    def stats(request: Request) -> dict:
         # --no-store is a supported mode, not an error: empty aggregates are
         # the honest answer, and the page renders an explicit empty state.
-        if db_path is None:
+        path = _history_path(request)
+        if path is None:
             return {"runs": [], "taps": [], "screens": []}
-        with db.reader(db_path) as conn:
+        with db.reader(path) as conn:
             return {
                 "runs": db.run_stats(conn),
                 "taps": db.taps_by_action(conn),
@@ -1009,10 +1121,11 @@ def create_app(
             }
 
     @app.get("/api/errors")
-    def errors(limit: int = 100) -> list[dict]:
-        if db_path is None:
+    def errors(request: Request, limit: int = 100) -> list[dict]:
+        path = _history_path(request)
+        if path is None:
             return []
-        with db.reader(db_path) as conn:
+        with db.reader(path) as conn:
             return db.error_log(conn, limit=max(1, min(limit, 500)))
 
     # Above the catch-all below, like every other /api route. A route
@@ -1021,6 +1134,7 @@ def create_app(
     # shadowing - see that route's comment.
     @app.get("/api/ledger")
     def ledger_lines(
+        request: Request,
         limit: int = 50,
         before: int | None = None,
         kind: str | None = None,
@@ -1029,7 +1143,8 @@ def create_app(
     ) -> dict:
         # --no-store: there is no file to read, so an empty account history
         # is the honest answer, the same as /api/runs and /api/errors.
-        if db_path is None:
+        path = _history_path(request)
+        if path is None:
             return {
                 "lines": [],
                 "balances": {"coins": None, "gems": None},
@@ -1037,7 +1152,7 @@ def create_app(
                 "next": None,
             }
         capped = max(1, min(limit, MAX_LEDGER_PER_PAGE))
-        with db.reader(db_path) as conn:
+        with db.reader(path) as conn:
             lines = db.ledger_page(
                 conn,
                 limit=capped,
@@ -1115,6 +1230,24 @@ def create_app(
         if fleet is None or not callable(getattr(fleet, "setup_snapshot", None)):
             raise HTTPException(status_code=503, detail="fleet_setup_unavailable")
         return fleet.setup_snapshot()
+
+    @app.get("/api/fleet/instances")
+    def fleet_instances() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "instances_snapshot", None)):
+            raise HTTPException(status_code=503, detail="fleet_instances_unavailable")
+        try:
+            return fleet.instances_snapshot()
+        except HostCapabilityError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/instances/start")
+    def fleet_start_instance(body: FleetStartInstanceRequest) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "start_instance", None)):
+            raise HTTPException(status_code=503, detail="fleet_instances_unavailable")
+        try:
+            return fleet.start_instance(body.name)
+        except (FleetRequestError, HostCapabilityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/fleet/setup")
     def fleet_setup_save(body: FleetSetupRequest) -> dict[str, Any]:

@@ -20,6 +20,7 @@ import type {
   StoredEvent,
 } from "./types";
 import { checkRuntimeCompatibility } from "./runtimeCompatibility";
+import { accountScope } from "./accountScope";
 import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup } from "./fleet";
 
 /** An HTTP failure that kept its status code.
@@ -39,8 +40,11 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { accept: "application/json", ...init?.headers } });
+async function getJson<T>(path: string, init?: RequestInit, scoped = true): Promise<T> {
+  const scope = scoped ? accountScope() : null;
+  const response = await fetch(path, { ...init, headers: {
+    accept: "application/json", ...(scope ? { "x-account-scope": scope } : {}), ...init?.headers,
+  } });
   // Parsed before the ok check and flattened through the same describeDetail
   // as the writes below: the server takes real trouble to distinguish
   // 404-absent from 422-corrupt with a message, and a read that reported
@@ -56,7 +60,17 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const fetchStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" });
+export const fetchHostStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" }, false);
+export type AccountChoice = { key: string; account_id: string | null; instance: string | null;
+  kind: "worker" | "unattributed"; running: boolean; dashboard_url: string | null };
+export type AccountCatalog = { accounts: AccountChoice[]; active: string | null };
+export const fetchAccounts = () => getJson<AccountCatalog>("/api/accounts", { cache: "no-store" });
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
+export type FleetInstance = { name: string; endpoint: string; state: string; template: boolean };
+export type FleetInstances = { instances: FleetInstance[]; can_start: boolean };
+export const fetchFleetInstances = () => getJson<FleetInstances>("/api/fleet/instances", { cache: "no-store" });
+export const startFleetInstance = (name: string) =>
+  send<FleetInstances>("/api/fleet/instances/start", "POST", { name }, "fleet");
 export const fetchFleetSetup = () => getJson<FleetSetup>("/api/fleet/setup", { cache: "no-store" });
 export const saveFleetSetup = (value: { capacity: number; name_prefix: string; qualification_id: string }) =>
   send<FleetSetup>("/api/fleet/setup", "POST", value, "fleet");
@@ -167,7 +181,7 @@ function mutationHeaders(): Record<string, string> {
 async function preflight(capability: Capability): Promise<Record<string, string>> {
   let status: StatusPayload;
   try {
-    status = await fetchStatus();
+    status = await (capability === "fleet" ? fetchHostStatus() : fetchStatus());
   } catch {
     throw new ApiError(412, "Unable to verify runtime compatibility; the command was not sent.");
   }
