@@ -47,6 +47,23 @@ def test_saved_runs_and_verified_live_wallet(tmp_path: Path) -> None:
     assert result["workshop_upgrades_bought"] == 2
 
 
+def test_visible_unlock_grants_count_once_without_claiming_a_price(tmp_path: Path) -> None:
+    db = tmp_path / "tower_bot.db"
+    bot_db.bind_account(db, "42")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO ledger(ts,kind,item,category,reason,detail) "
+                     "VALUES(1,'BUY_SKIPPED','Unlock Cash Bonuses','UTILITY',"
+                     "'already_unlocked',?)",
+                     (json.dumps({"detail": "the rows it grants are on the tab"}),))
+        conn.execute("INSERT INTO ledger(ts,kind,item,category,reason,detail) "
+                     "VALUES(2,'BUY_SKIPPED','Unlock Cash Bonuses','UTILITY',"
+                     "'already_unlocked',?)",
+                     (json.dumps({"detail": "the rows it grants are on the tab"}),))
+    result = observed_metrics(tmp_path, account_key="worker:Air_2", account_id="42",
+                              web_port=0, running=False)
+    assert result["workshop_upgrades_bought"] == 1
+
+
 def test_unverified_live_account_does_not_supply_wallet(tmp_path: Path) -> None:
     def fetch(_url: str, *, timeout: float) -> Response:
         return Response(b'{"active":"worker:other","accounts":[]}')

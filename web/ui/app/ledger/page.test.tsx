@@ -108,6 +108,16 @@ group("LedgerPage", () => {
     await waitFor(() => expect(fetchLedger).toHaveBeenLastCalledWith({}));
   });
 
+  it("filters by the kind tag on a ledger row", async () => {
+    fetchLedger.mockResolvedValue(payload({ lines: [A_PURCHASE] }));
+    render(<LedgerPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Filter WORKSHOP_BUY" }));
+    await waitFor(() =>
+      expect(fetchLedger).toHaveBeenLastCalledWith({ kind: "WORKSHOP_BUY" }),
+    );
+  });
+
   it("asks the route for one currency, and sends none for all", async () => {
     fetchLedger.mockResolvedValue(payload({ lines: [A_PURCHASE] }));
     render(<LedgerPage />);

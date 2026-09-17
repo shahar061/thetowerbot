@@ -56,6 +56,22 @@ def test_only_confirmed_ledger_purchase_advances_plan(tmp_path: Path) -> None:
     assert progress.decision().upgrade_id == "attack_speed"
 
 
+def test_visible_granted_rows_advance_unlock_after_unproven_debit(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        for item in ("Damage", "Attack Speed"):
+            connection.execute("INSERT INTO ledger(ts,kind,item,category,dry_run,detail) "
+                               "VALUES(1,'WORKSHOP_BUY',?,'ATTACK',0,?)",
+                               (item, json.dumps({"verdict": "bought"})))
+        connection.execute("INSERT INTO ledger(ts,kind,item,category,reason,detail) "
+                           "VALUES(2,'BUY_SKIPPED','Unlock Cash Bonuses','UTILITY',"
+                           "'already_unlocked',?)",
+                           (json.dumps({"detail": "the rows it grants are on the tab"}),))
+    assert progress.decision().upgrade_id == "unlock_coin_bonuses"
+    assert "cash_per_wave" in [r.upgrade_id for r in progress.battle_policy(
+        AutopilotPolicy(enabled=True, preset="turtle")).rules]
+
+
 def test_price_and_wallet_are_fresh_and_specific_to_planned_item(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     progress.observe_price("attack_speed", 100, 10)

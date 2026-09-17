@@ -10,6 +10,7 @@ from typing import Any, Callable
 from urllib.request import urlopen
 
 import db as bot_db
+import upgrades
 from fleet.reroll_lifetime import read_lifetime
 
 
@@ -32,6 +33,17 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                     "SELECT COUNT(*) FROM ledger WHERE kind='WORKSHOP_BUY' AND dry_run=0 "
                     "AND json_extract(detail, '$.verdict') IN ('bought','free')"
                 ).fetchone()[0]
+                confirmed_unlocks = {row[0] for row in db.execute(
+                    "SELECT DISTINCT item FROM ledger WHERE kind='WORKSHOP_BUY' AND dry_run=0 "
+                    "AND json_extract(detail, '$.verdict') IN ('bought','free')")}
+                observed_unlocks = {(row[0], row[1]) for row in db.execute(
+                    "SELECT DISTINCT item, category FROM ledger WHERE kind='BUY_SKIPPED' "
+                    "AND reason='already_unlocked' "
+                    "AND json_extract(detail, '$.detail')='the rows it grants are on the tab'")}
+                bought += sum(1 for item, category in observed_unlocks
+                              if item not in confirmed_unlocks
+                              and (upgrade := upgrades.resolve(item, category)) is not None
+                              and upgrade.unlock)
             result["workshop_upgrades_bought"] = bought
             result["best_tier_1_wave"] = best
             result["milestone"] = (

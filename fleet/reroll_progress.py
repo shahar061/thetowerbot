@@ -59,18 +59,23 @@ class RerollProgress:
                 "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL"
             ).fetchone()[0]
             rows = connection.execute(
-                "SELECT item, category, detail FROM ledger WHERE kind='WORKSHOP_BUY' "
-                "AND dry_run=0"
+                "SELECT kind, item, category, reason, detail FROM ledger "
+                "WHERE kind IN ('WORKSHOP_BUY', 'BUY_SKIPPED') AND dry_run=0"
             ).fetchall()
-        for item, category, detail in rows:
+        for kind, item, category, reason, detail in rows:
             try:
-                verdict = json.loads(detail or "{}").get("verdict")
+                evidence = json.loads(detail or "{}")
             except (TypeError, ValueError):
                 continue
-            if verdict not in {"bought", "free"}:
+            bought = kind == "WORKSHOP_BUY" and evidence.get("verdict") in {"bought", "free"}
+            observed_unlock = (kind == "BUY_SKIPPED" and reason == "already_unlocked"
+                               and evidence.get("detail") == "the rows it grants are on the tab")
+            if not bought and not observed_unlock:
                 continue
             upgrade = upgrades.resolve(item, category)
-            if upgrade is not None:
+            if upgrade is not None and (bought or upgrade.unlock):
+                if observed_unlock and purchases.get(upgrade.id, 0):
+                    continue
                 purchases[upgrade.id] = purchases.get(upgrade.id, 0) + 1
         return best, purchases
 
