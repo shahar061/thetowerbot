@@ -1,0 +1,122 @@
+[
+  {
+    "text": "7:18",
+    "confidence": 0.9834553897380829,
+    "rect": [
+      13,
+      11,
+      64,
+      29
+    ]
+  },
+  {
+    "text": "A",
+    "confidence": 0.9895409941673279,
+    "rect": [
+      88,
+      17,
+      18,
+      17
+    ]
+  },
+  {
+    "text": "Searchforgames& apps",
+    "confidence": 0.9767923533916474,
+    "rect": [
+      246,
+      161,
+      279,
+      29
+    ]
+  },
+  {
+    "text": "Store",
+    "confidence": 0.999780249595642,
+    "rect": [
+      164,
+      429,
+      87,
+      38
+    ]
+  },
+  {
+    "text": "System apps",
+    "confidence": 0.9997092322869734,
+    "rect": [
+      446,
+      431,
+      191,
+      39
+    ]
+  },
+  {
+    "text": "The Tower",
+    "confidence": 0.9854267968071831,
+    "rect": [
+      794,
+      427,
+      158,
+      41
+    ]
+  },
+  {
+    "text": "POPULAR GAMES TO PLAY",
+    "confidence": 0.9494375274294898,
+    "rect": [
+      391,
+      1654,
+      299,
+      25
+    ]
+  },
+  {
+    "text": "Divine Throne: Idle",
+    "confidence": 0.9748235784078899,
+    "rect": [
+      34,
+      1821,
+      257,
+      30
+    ]
+  },
+  {
+    "text": "Magic Forest: Dragon",
+    "confidence": 0.9995264500379563,
+    "rect": [
+      390,
+      1818,
+      302,
+      39
+    ]
+  },
+  {
+    "text": "Blade Idle",
+    "confidence": 0.9308713972568512,
+    "rect": [
+      852,
+      1820,
+      140,
+      31
+    ]
+  },
+  {
+    "text": "RPG",
+    "confidence": 0.9992689291636149,
+    "rect": [
+      127,
+      1854,
+      70,
+      36
+    ]
+  },
+  {
+    "text": "Quest",
+    "confidence": 0.9961756110191345,
+    "rect": [
+      499,
+      1857,
+      90,
+      32
+    ]
+  }
+]

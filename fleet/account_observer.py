@@ -7,6 +7,7 @@ import math
 import os
 import re
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,6 +23,7 @@ from config import Rect
 from device import Image, capture_screen
 from fleet.account_creation import AccountFrame
 from fleet.tutorial import workshop_coin_claim
+from geometry import anchored_y, supported_frame
 from ocr import TextBox
 
 
@@ -77,6 +79,11 @@ def _inside(box: TextBox, bounds: Rect) -> bool:
             and rect.y + rect.h <= bounds.y + bounds.h)
 
 
+def _centered(bounds: Rect, frame_height: int) -> Rect:
+    """Move a dialog band with BlueStacks' centered popup layout."""
+    return Rect(bounds.x, anchored_y(bounds.y, frame_height, 'center'), bounds.w, bounds.h)
+
+
 def _trusted(box: TextBox) -> bool:
     return math.isfinite(box.confidence) and .9 <= box.confidence <= 1.
 
@@ -86,19 +93,19 @@ def parse_account_popup(
     app_version: str, evidence_ref: str,
 ) -> AccountFrame | None:
     """Read one native frame, refusing ambiguous or unmeasured identities."""
-    if (frame.shape[:2] != (2400, 1080) or not app_version.strip()
+    if (not supported_frame(frame.shape[1], frame.shape[0]) or not app_version.strip()
             or not evidence_ref.strip() or not math.isfinite(observed_at)):
         return None
     titles = tuple(box for box in boxes if box.text.strip().upper() == "ACCOUNT"
-                   and _inside(box, _TITLE))
+                   and _inside(box, _centered(_TITLE, frame.shape[0])))
     identities = tuple((box, match) for box in boxes
-                       if _inside(box, _IDENTITY)
+                       if _inside(box, _centered(_IDENTITY, frame.shape[0]))
                        for match in [_ID.fullmatch(box.text.strip())] if match is not None)
     if (len(titles) != 1 or not _trusted(titles[0])
             or len(identities) != 1 or not _trusted(identities[0][0])):
         return None
     buttons = tuple(box for box in boxes if box.text.strip().lower() == "new account"
-                    and _inside(box, _NEW_ACCOUNT))
+                    and _inside(box, _centered(_NEW_ACCOUNT, frame.shape[0])))
     controls: dict[str, tuple[int, int]] = {}
     if len(buttons) == 1 and _trusted(buttons[0]):
         rect = buttons[0].rect
@@ -182,13 +189,16 @@ def parse_tower_consent(
     app_version: str, evidence_ref: str,
 ) -> AccountFrame | None:
     """Expose I Agree only on the measured first-launch Tower consent popup."""
-    if (frame.shape[:2] != (2400, 1080) or not app_version.strip()
+    if (not supported_frame(frame.shape[1], frame.shape[0]) or not app_version.strip()
             or not evidence_ref.strip() or not math.isfinite(observed_at)):
         return None
     found: dict[str, TextBox] = {}
     for label, bounds in _TOWER_CONSENT:
-        matches = tuple(box for box in boxes if box.text.strip() == label
-                        and _inside(box, bounds) and _trusted(box))
+        matches = tuple(box for box in boxes
+                        if (box.text.strip().replace(' ', '') == label
+                            if label == 'THETOWER' else box.text.strip() == label)
+                        and _inside(box, _centered(bounds, frame.shape[0]))
+                        and _trusted(box))
         if len(matches) != 1:
             return None
         found[label] = matches[0]
@@ -207,17 +217,18 @@ def parse_settings(
     app_version: str, evidence_ref: str,
 ) -> AccountFrame | None:
     """Locate only the measured Settings -> Account row."""
-    if frame.shape[:2] != (2400, 1080) or not app_version or not evidence_ref:
+    if not supported_frame(frame.shape[1], frame.shape[0]) or not app_version or not evidence_ref:
         return None
     titles = tuple(box for box in boxes if box.text.strip().upper() == "SETTINGS"
-                   and _inside(box, _SETTINGS_TITLE))
+                   and _inside(box, _centered(_SETTINGS_TITLE, frame.shape[0])))
     accounts = tuple(box for box in boxes if box.text.strip().lower() == "account"
-                     and _inside(box, _SETTINGS_ACCOUNT))
+                     and _inside(box, _centered(_SETTINGS_ACCOUNT, frame.shape[0])))
     versions = tuple(box for box in boxes if box.text.strip() == f"v{app_version}"
-                     and _inside(box, _VERSION))
+                     and _inside(box, _centered(_VERSION, frame.shape[0])))
     if (any(len(found) != 1 or not _trusted(found[0])
             for found in (titles, accounts, versions))
-            or any(box.text.strip().upper() == "ACCOUNT" and _inside(box, _TITLE)
+            or any(box.text.strip().upper() == "ACCOUNT"
+                   and _inside(box, _centered(_TITLE, frame.shape[0]))
                    for box in boxes)):
         return None
     rect = accounts[0].rect
@@ -234,7 +245,7 @@ def parse_home(
     observed_at: float, app_version: str, evidence_ref: str,
 ) -> AccountFrame | None:
     """Require the main-menu anchor and one undimmed Settings icon."""
-    if frame.shape[:2] != (2400, 1080) or not app_version or not evidence_ref:
+    if not supported_frame(frame.shape[1], frame.shape[0]) or not app_version or not evidence_ref:
         return None
     if any(box.text.strip().upper() in {"ACCOUNT", "SETTINGS"} for box in boxes):
         return None
@@ -258,7 +269,8 @@ def parse_game_stats_home(
     observed_at: float, app_version: str, evidence_ref: str,
 ) -> AccountFrame | None:
     """Locate only Home on the measured post-creation Game Stats screen."""
-    if frame.shape[:2] != (2400, 1080) or not app_version or not evidence_ref:
+    if (not supported_frame(frame.shape[1], frame.shape[0])
+            or not app_version or not evidence_ref):
         return None
     if screens.classify(frame, cache).state is not screens.ScreenState.GAME_OVER:
         return None
@@ -267,7 +279,8 @@ def parse_game_stats_home(
     found: dict[str, TextBox] = {}
     for label, bounds in expected:
         candidates = tuple(box for box in boxes if box.text.strip() == label
-                           and _inside(box, bounds) and _trusted(box))
+                           and _inside(box, _centered(bounds, frame.shape[0]))
+                           and _trusted(box))
         if len(candidates) != 1:
             return None
         found[label] = candidates[0]
@@ -305,7 +318,7 @@ class StagingAccountObserver:
             raise ValueError("unapproved game version")
         frame = capture_screen(device)
         observed_at = time.time()
-        if frame.shape[:2] != (2400, 1080):
+        if not supported_frame(frame.shape[1], frame.shape[0]):
             raise ValueError("unsupported native frame geometry")
         boxes = ocr.read(frame, strict=True, min_confidence=0.)
         self.evidence_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -360,6 +373,11 @@ class StagingAccountObserver:
                            app_version=version, evidence_ref=evidence_ref),
         ):
             if reading is not None:
+                target = account_collection.locate_control(
+                    frame, self.cache.get(account_collection.CLOSE_TEMPLATE), "close",
+                )
+                if target.point is not None:
+                    return replace(reading, controls={**reading.controls, "close": target.point})
                 return reading
         home = parse_home(frame, boxes, self.cache, observed_at=observed_at,
                           app_version=version, evidence_ref=evidence_ref)
@@ -377,7 +395,9 @@ class StagingAccountObserver:
             battle = self.cache.get(config.NAV_TARGETS["BATTLE_TAB"])
             score, position = vision.best_score(frame, battle)
             if (len(titles) == 1 and score >= .95 and position is not None
-                    and 0 <= position[0] <= 180 and 2200 <= position[1] <= 2320):
+                    and 0 <= position[0] <= 180
+                    and anchored_y(2200, frame.shape[0], 'bottom') <= position[1]
+                    <= anchored_y(2320, frame.shape[0], 'bottom')):
                 return AccountFrame("workshop", None, version,
                                     hashlib.sha256(frame.tobytes()).hexdigest(),
                                     observed_at, evidence_ref,

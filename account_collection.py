@@ -37,6 +37,7 @@ import config
 import jitter
 from account_screens import ControlTarget, ScreenReadings
 from device import Image, tap
+from geometry import supported_frame
 
 if TYPE_CHECKING:
     from strategy import Strategy
@@ -113,10 +114,9 @@ def locate_control(screen: Image, template: Image | None, name: str,
     footprint, makes the target ambiguous rather than "the better of two":
     picking one would be picking a tap by luck.
     """
-    if screen.shape[:2] != EXPECTED_FRAME:
-        # Ambiguous geometry stops everything: on a resized emulator the
-        # winning peak proves only that some region matched, never that the
-        # region is this control.
+    if not supported_frame(screen.shape[1], screen.shape[0]):
+        # The measured Android layouts keep control art at the same pixel
+        # scale; any other geometry must be qualified before it can tap.
         return ControlTarget(name, None, 'unusable')
     if template is None or getattr(template, 'size', 0) == 0:
         return ControlTarget(name, None, 'unusable')

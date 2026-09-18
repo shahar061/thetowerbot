@@ -1,7 +1,8 @@
-"""Passive, provisional readings of recorded English v29.0.1/v29.0.2 account panels.
+"""Passive, provisional readings of measured English account panels.
 
 These raw strings are neither permanent account facts nor executable upgrade
-identities. Bounds are supported only by the native 1080x2400 captures.
+identities. Settings and summary are measured at both BlueStacks portrait
+heights; tier rows remain qualified only at 1080x2400.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from typing import Any
 import ocr
 from config import Rect
 from device import Image
+from geometry import anchored_y, supported_frame
 
 _LABELS = (
     'Game Started', 'Coins Earned', 'Recent Coins Per Hour', 'Cash Earned',
@@ -100,6 +102,10 @@ def _inside(box: ocr.TextBox, rect: Rect) -> bool:
             and b.x + b.w <= rect.x + rect.w and b.y + b.h <= rect.y + rect.h)
 
 
+def _centered(rect: Rect, frame_height: int) -> Rect:
+    return Rect(rect.x, anchored_y(rect.y, frame_height, 'center'), rect.w, rect.h)
+
+
 def _trusted(box: ocr.TextBox) -> bool:
     return math.isfinite(box.confidence) and _MIN_CONFIDENCE <= box.confidence <= 1.
 
@@ -144,28 +150,32 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                 now: float | None = None, locale: str = 'en') -> ScreenReading | None:
     """Parse only measured panels. No values are inferred, merged or coerced."""
     observed_at = time.time() if now is None else now
-    if screen.shape[:2] != (2400, 1080) or locale != 'en' or not math.isfinite(observed_at):
+    if not supported_frame(screen.shape[1], screen.shape[0]) or locale != 'en' or not math.isfinite(observed_at):
         return None
-    titles = tuple(b for b in boxes if _inside(b, _TITLE) and _normal(b.text) in ('stats', 'settings'))
+    frame_height = screen.shape[0]
+    titles = tuple(b for b in boxes if _inside(b, _centered(_TITLE, frame_height))
+                   and _normal(b.text) in ('stats', 'settings'))
     if len(titles) != 1 or not _trusted(titles[0]):
         return None
     fields: tuple[ScreenField, ...] = ()
     tiers: tuple[TierReading, ...] = ()
     if _normal(titles[0].text) == 'settings':
         # Never serialize other Settings OCR, which includes the account ID.
-        versions = tuple(b for b in boxes if _inside(b, Rect(800, 1880, 170, 90))
+        versions = tuple(b for b in boxes if _inside(b, _centered(Rect(800, 1880, 170, 90), frame_height))
                          and re.fullmatch(r'v\d+\.\d+\.\d+', b.text))
         fields = (_field('game_version', 'Game version', versions),)
         screen_id = 'account.settings'
     else:
         headings = {name: tuple(b for b in boxes if _normal(b.text) == name
-                    and _inside(b, Rect(x, 575, 155, 75)))
+                    and _inside(b, _centered(Rect(x, 575, 155, 75), frame_height)))
                     for name, x in (('wave', 360), ('coins', 565), ('cells', 770))}
         if any(headings.values()):
+            if frame_height == 1920:
+                return None  # native BlueStacks tier rows need their own captured proof
             if any(len(bs) != 1 or not _trusted(bs[0]) for bs in headings.values()):
                 return None
             rows = tuple(b for b in boxes if re.fullmatch(r'Tier\s+\d+', b.text)
-                         and _inside(b, Rect(160, 640, 170, 1320)))
+                         and _inside(b, _centered(Rect(160, 640, 170, 1320), frame_height)))
             numbers = [int(re.search(r'\d+', b.text)[0]) for b in rows]
             if not rows or len(set(numbers)) != len(numbers) or any(not 1 <= n <= 24 for n in numbers):
                 return None
@@ -176,7 +186,7 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                 cells = []
                 for key, x in (('wave', 360), ('coins', 565), ('cells', 770)):
                     width = 170 if key == 'coins' else 145
-                    candidates = tuple(b for b in boxes if _inside(b, Rect(x, 640, width, 1320))
+                    candidates = tuple(b for b in boxes if _inside(b, _centered(Rect(x, 640, width, 1320), frame_height))
                                        and _same_row(row, b))
                     field = _field(key, key.title(), candidates, row)
                     if field.raw_value is not None and not re.fullmatch(r'\d+(?:\.\d+)?[KMBT]?', field.raw_value):
@@ -186,7 +196,7 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
             tiers = tuple(parsed)
             screen_id = 'account.stats.tiers'
         else:
-            labels = {label: tuple(b for b in boxes if _inside(b, Rect(175, 580, 420, 1290))
+            labels = {label: tuple(b for b in boxes if _inside(b, _centered(Rect(175, 580, 420, 1290), frame_height))
                       and _normal(b.text) == _normal(label)) for label in _LABELS}
             if sum(len(bs) == 1 and _trusted(bs[0]) for bs in labels.values()) < 3:
                 return None
@@ -195,16 +205,17 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
             parsed_fields = []
             for label, matches in labels.items():
                 row = matches[0] if len(matches) == 1 else None
-                candidates = tuple(b for b in boxes if _inside(b, Rect(610, 580, 315, 1290))
+                candidates = tuple(b for b in boxes if _inside(b, _centered(Rect(610, 580, 315, 1290), frame_height))
                                    and row is not None and _same_row(row, b))
                 parsed_fields.append(_field(label.lower().replace(' ', '_'), label, candidates, row))
             fields = tuple(parsed_fields)
             screen_id = 'account.stats.summary'
-    return ScreenReading(screen_id, observed_at, 1080, 2400,
+    return ScreenReading(screen_id, observed_at, screen.shape[1], frame_height,
                          hashlib.sha256(screen.tobytes()).hexdigest(), fields, tiers)
 
 
-def control_targets(screen_id: str, boxes: tuple[ocr.TextBox, ...]) -> dict[str, ControlTarget]:
+def control_targets(screen_id: str, boxes: tuple[ocr.TextBox, ...], *,
+                    frame_height: int = 2400) -> dict[str, ControlTarget]:
     """Tap targets derived from ONE frame's OCR, for that frame only.
 
     Only the named controls above are ever located, so no other Settings
@@ -216,7 +227,8 @@ def control_targets(screen_id: str, boxes: tuple[ocr.TextBox, ...]) -> dict[str,
     for name, owner, label, bounds in _CONTROLS:
         if owner != screen_id:
             continue
-        matches = tuple(b for b in boxes if _inside(b, bounds) and _normal(b.text) == label)
+        matches = tuple(b for b in boxes if _inside(b, _centered(bounds, frame_height))
+                        and _normal(b.text) == label)
         if len(matches) > 1:
             targets[name] = ControlTarget(name, None, 'ambiguous')
         elif not matches:
@@ -287,13 +299,11 @@ class ScreenReadings:
         """
         self.observe(None)
         observed_at = time.time()
-        # Left unscanned deliberately: every region in this module was
-        # measured at 1080x2400, so on any other frame this reader has not
-        # looked at the screen rather than found it clean.
-        if screen.shape[:2] != (2400, 1080):
+        if not supported_frame(screen.shape[1], screen.shape[0]):
             return False
         try:
-            crop = screen[_TITLE.y:_TITLE.y + _TITLE.h, _TITLE.x:_TITLE.x + _TITLE.w]
+            title = _centered(_TITLE, screen.shape[0])
+            crop = screen[title.y:title.y + title.h, title.x:title.x + title.w]
             titles = ocr.read(crop, strict=True, min_confidence=0.)
             if not any(_normal(b.text) in ('stats', 'settings') for b in titles):
                 # A supported frame the title reader did examine: no account
@@ -304,7 +314,8 @@ class ScreenReadings:
             boxes = ocr.read(screen, strict=True)
             reading = parse_frame(screen, boxes, now=observed_at)
             self.observe(reading, error=None if reading else 'Account panel could not be read reliably',
-                         controls=control_targets(reading.screen_id, boxes) if reading else None,
+                         controls=control_targets(reading.screen_id, boxes,
+                                                  frame_height=screen.shape[0]) if reading else None,
                          scanned=True)
             return True
         except Exception:

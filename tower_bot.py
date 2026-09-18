@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from account_collection import StatsCollection, at_home
 from milestones_claim import MilestonesClaim
-from milestones_screen import MilestonesReadings
+from milestones_screen import MilestonesReadings, parse_frame as parse_milestones_frame
 from missions_claim import MissionsClaim
 from missions_screen import MissionsReadings
 from missions_visit import MissionsVisit
@@ -585,6 +585,13 @@ class TowerBot:
                     observed_screen = "UNKNOWN"
             try:
                 boxes = ocr.read(self.screen, strict=True)
+                if observed_screen == "UNKNOWN":
+                    # Recovery preflight runs before MilestonesReadings.scan.
+                    # A valid ladder or reward modal must be named here or the
+                    # supervisor blocks the active claim walk before it can act.
+                    milestone_frame = parse_milestones_frame(self.screen, boxes)
+                    if milestone_frame is not None:
+                        observed_screen = milestone_frame.screen_id
                 if self.reroll_progress is not None:
                     from fleet.tutorial import workshop_coin_claim
                     tutorial_claim = workshop_coin_claim(self.screen, boxes)
@@ -1127,7 +1134,10 @@ class TowerBot:
                 # IN_RUN) nor leave it: measured live, twenty unbroken
                 # minutes on the UTILITY tab. UNKNOWN with nothing named
                 # still taps nothing - see config.MENU_NAV_BUTTONS.
-                menu_page=None if menu_page == pages.UNKNOWN else menu_page,
+                menu_page=("MILESTONES" if deadlocked and milestones_page
+                           and self.milestones.current_evidence()['screen_id']
+                           == 'milestones.ladder' else
+                           None if menu_page == pages.UNKNOWN else menu_page),
                 # Only once the hold above has proved itself permanent. A
                 # ceremony has no exit button of its own, so without this
                 # the released guard buys nothing: navigation looks for a

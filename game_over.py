@@ -41,6 +41,7 @@ import time
 import ocr
 from config import Rect
 from device import Image
+from geometry import anchored_y, supported_frame
 
 SCREEN_ID = 'game_over.result'
 
@@ -115,7 +116,8 @@ def _matches(boxes: tuple[ocr.TextBox, ...], pattern: re.Pattern[str],
 
 
 def _labelled(key: str, label: str, boxes: tuple[ocr.TextBox, ...], pattern: re.Pattern[str],
-              *, missing: str, extract: re.Pattern[str] | None = None) -> ResultField:
+              *, missing: str, extract: re.Pattern[str] | None = None,
+              region: Rect = _MODAL) -> ResultField:
     """A field whose own text carries its value (`Wave 6`, `Tier 1`, ...).
 
     `missing` is `absent` for a caption the game only sometimes draws and
@@ -124,7 +126,7 @@ def _labelled(key: str, label: str, boxes: tuple[ocr.TextBox, ...], pattern: re.
     that is somehow missing an always-drawn line reports a failed read, not
     a feature the account does not have.
     """
-    matches = _matches(boxes, pattern)
+    matches = _matches(boxes, pattern, region)
     if len(matches) != 1 or not _trusted(matches[0]):
         return ResultField(key, label, None, missing if not matches else 'unreadable', 0., None)
     box = matches[0]
@@ -147,7 +149,8 @@ def _value_below(boxes: tuple[ocr.TextBox, ...], caption: ocr.TextBox,
 
 
 def _coin_column(key: str, label: str, boxes: tuple[ocr.TextBox, ...],
-                 caption_pattern: re.Pattern[str], *, caption_missing: str = 'absent') -> ResultField:
+                 caption_pattern: re.Pattern[str], *, caption_missing: str = 'absent',
+                 region: Rect = _MODAL) -> ResultField:
     """A coins caption plus the count the game draws beneath it.
 
     `ad_coins_earned` and `total_coins` are optional - the single-line
@@ -159,11 +162,11 @@ def _coin_column(key: str, label: str, boxes: tuple[ocr.TextBox, ...],
     optional - the screenshots show a number is always drawn there - so a
     caption with no readable count below it is `unreadable`, never `absent`.
     """
-    captions = _matches(boxes, caption_pattern)
+    captions = _matches(boxes, caption_pattern, region)
     if len(captions) != 1 or not _trusted(captions[0]):
         return ResultField(key, label, None, caption_missing if not captions else 'unreadable', 0., None)
     caption = captions[0]
-    values = _value_below(boxes, caption)
+    values = _value_below(boxes, caption, region)
     if len(values) != 1 or not _trusted(values[0]) or not _COUNT.fullmatch(values[0].text.strip()):
         return ResultField(key, label, None, 'unreadable', 0., None)
     value = values[0]
@@ -197,24 +200,32 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
     a death modal" answer to give a retry policy.
     """
     observed_at = time.time() if now is None else now
-    if screen.shape[:2] != (2400, 1080) or locale != 'en' or not math.isfinite(observed_at):
+    height, width = screen.shape[:2]
+    if not supported_frame(width, height) or locale != 'en' or not math.isfinite(observed_at):
         return None
-    titles = _matches(boxes, _TITLE)
+    modal = Rect(_MODAL.x, anchored_y(_MODAL.y, height, 'center'),
+                 _MODAL.w, _MODAL.h)
+    titles = _matches(boxes, _TITLE, modal)
     if len(titles) != 1 or not _trusted(titles[0]):
         return None
     fields = (
-        _labelled('wave', 'Wave', boxes, _WAVE, missing='unreadable', extract=re.compile(r'(\d+)')),
-        _labelled('new_highest_wave', 'New Highest Wave', boxes, _NEW_HIGHEST, missing='absent'),
-        _labelled('tier', 'Tier', boxes, _TIER, missing='unreadable', extract=re.compile(r'(\d+)')),
+        _labelled('wave', 'Wave', boxes, _WAVE, missing='unreadable',
+                  extract=re.compile(r'(\d+)'), region=modal),
+        _labelled('new_highest_wave', 'New Highest Wave', boxes, _NEW_HIGHEST,
+                  missing='absent', region=modal),
+        _labelled('tier', 'Tier', boxes, _TIER, missing='unreadable',
+                  extract=re.compile(r'(\d+)'), region=modal),
         _labelled('highest_wave', 'Highest Wave', boxes, _HIGHEST_WAVE, missing='unreadable',
-                  extract=re.compile(r'(\d+)')),
+                  extract=re.compile(r'(\d+)'), region=modal),
         _labelled('killed_by', 'Killed By', boxes, _KILLED_BY, missing='unreadable',
-                  extract=re.compile(r'killed\s+by\s+(.+)', re.I)),
+                  extract=re.compile(r'killed\s+by\s+(.+)', re.I), region=modal),
         _bonus_status(boxes),
         _coin_column('coins_earned', 'Coins earned', boxes, _COINS_EARNED,
-                     caption_missing='unreadable'),
-        _coin_column('ad_coins_earned', 'Ad coins earned', boxes, _AD_COINS_EARNED),
-        _coin_column('total_coins', 'Total coins', boxes, _TOTAL_COINS),
+                     caption_missing='unreadable', region=modal),
+        _coin_column('ad_coins_earned', 'Ad coins earned', boxes, _AD_COINS_EARNED,
+                     region=modal),
+        _coin_column('total_coins', 'Total coins', boxes, _TOTAL_COINS,
+                     region=modal),
     )
-    return GameOverReading(SCREEN_ID, observed_at, 1080, 2400,
+    return GameOverReading(SCREEN_ID, observed_at, width, height,
                            hashlib.sha256(screen.tobytes()).hexdigest(), fields)

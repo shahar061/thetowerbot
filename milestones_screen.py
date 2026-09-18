@@ -27,6 +27,7 @@ from typing import Any
 import ocr
 import screen_discovery
 import tiles
+from geometry import anchored_y, supported_frame
 from device import Image
 
 _MIN_CONFIDENCE = .90
@@ -41,6 +42,7 @@ _CLAIM_ALL_LABEL = 'claimall'
 # and `15GEMS`, and normalise() would strip the space from one and not create
 # it in the other. \b so that '25 COINSXYZ' is not read as 25 coins.
 _REWARD = re.compile(r'(\d+)\s*(coins|gems)\b', re.I)
+_PROGRESS = re.compile(r'(\d+)\s*/\s*(\d+)')
 
 # Where the modal draws its reward line. Absolute, because the modal carries no
 # title to measure from, and captured on ONE layout only - see the spec Limits.
@@ -62,6 +64,10 @@ class MilestonesReading:
     reward_text: str | None
     currency: str | None
     amount: int | None
+    modal_action: str | None = None
+    modal_control: tuple[int, int, int, int] | None = None
+    modal_index: int | None = None
+    modal_total: int | None = None
 
 
 def _trusted(box: ocr.TextBox) -> bool:
@@ -97,10 +103,21 @@ def _claim_all(boxes: tuple[ocr.TextBox, ...]) -> tuple[int, int, int, int] | No
     return (rect.x, rect.y, rect.w, rect.h)
 
 
-def _modal_reward(boxes: tuple[ocr.TextBox, ...]) -> str | None:
+def _modal_reward(boxes: tuple[ocr.TextBox, ...], frame_height: int) -> str | None:
+    shift = anchored_y(0, frame_height, 'center')
     hits = [b for b in boxes if _trusted(b)
-            and _MODAL_REWARD_Y[0] <= b.rect.y <= _MODAL_REWARD_Y[1]]
+            and _MODAL_REWARD_Y[0] + shift <= b.rect.y <= _MODAL_REWARD_Y[1] + shift]
     return hits[0].text if len(hits) == 1 else None
+
+
+def _modal_progress(boxes: tuple[ocr.TextBox, ...], frame_height: int) -> tuple[int | None, int | None]:
+    hits = [m for b in boxes if _trusted(b)
+            and frame_height - 180 <= b.rect.y <= frame_height - 80
+            if (m := _PROGRESS.fullmatch(b.text.strip())) is not None]
+    if len(hits) != 1:
+        return None, None
+    index, total = map(int, hits[0].groups())
+    return (index, total) if 1 <= index <= total <= 20 else (None, None)
 
 
 def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
@@ -121,12 +138,21 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
     if found.screen_id is None or not found.readable:
         return None
     if found.screen_id == MODAL_SCREEN:
-        text = _modal_reward(boxes)
+        text = _modal_reward(boxes, screen.shape[0])
         currency, amount = reward_of(text) if text is not None else (None, None)
+        action = screen_discovery.milestone_modal_action(boxes, frame_height=screen.shape[0])
+        if action is None:
+            return None
+        index, total = _modal_progress(boxes, screen.shape[0])
+        if (action[0] == 'next' and (index is None or total is None or index >= total)
+                or action[0] == 'claim' and index is not None and index != total):
+            return None
+        rect = action[1].rect
         return MilestonesReading(MODAL_SCREEN, moment, None, None,
-                                 text, currency, amount)
+                                 text, currency, amount, action[0],
+                                 (rect.x, rect.y, rect.w, rect.h), index, total)
     return MilestonesReading(LADDER_SCREEN, moment,
-                             screen_discovery.milestones_tier(boxes),
+                             screen_discovery.milestones_tier(boxes, frame_height=screen.shape[0]),
                              _claim_all(boxes), None, None, None)
 
 
@@ -164,7 +190,11 @@ class MilestonesReadings:
                     'claim_all': None if reading is None else reading.claim_all,
                     'reward_text': None if reading is None else reading.reward_text,
                     'currency': None if reading is None else reading.currency,
-                    'amount': None if reading is None else reading.amount}
+                    'amount': None if reading is None else reading.amount,
+                    'modal_action': None if reading is None else reading.modal_action,
+                    'modal_control': None if reading is None else reading.modal_control,
+                    'modal_index': None if reading is None else reading.modal_index,
+                    'modal_total': None if reading is None else reading.modal_total}
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -219,13 +249,13 @@ class MilestonesReadings:
         that is not actually on screen.
         """
         self.observe(None)
-        if screen.shape[:2] != _EXPECTED_FRAME:
+        if not supported_frame(screen.shape[1], screen.shape[0]):
             return False
         try:
             if boxes is None:
                 boxes = ocr.read(screen, strict=True)
             present = (screen_discovery._milestones_title(boxes) is not None
-                      or screen_discovery._modal_skip(boxes) is not None
+                      or screen_discovery._modal_skip(boxes, frame_height=screen.shape[0]) is not None
                       or _claim_all(boxes) is not None)
             if not present:
                 # Examined the whole frame, and no milestones anchor anywhere:

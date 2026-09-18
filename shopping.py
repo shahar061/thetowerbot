@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 import config
 import events
+from geometry import anchored_point
 import jitter
 import ocr
 import pages
@@ -777,7 +778,8 @@ class ShoppingSession:
             if self._blind_streak >= 2:
                 self._abort(device, shopping, screen, "nothing readable on the page")
                 return
-            self._try_tap(*config.PANEL_DISMISS_POINT, device, shopping, screen)
+            self._try_tap(*anchored_point(screen, config.PANEL_DISMISS_POINT, 'top'),
+                          device, shopping, screen)
             self._bus.publish(events.PurchaseSkipped(item=rule.name, reason="unreadable", detail="screen"))
             return
         self._blind_streak = 0
@@ -943,7 +945,8 @@ class ShoppingSession:
         # changes. That overlay hides the receipt, so clear it once from the
         # Workshop title before counting confirmation frames.
         if not pending.info_dismissed and not observation.rows and self._info_panel_visible(screen):
-            if self._try_tap(*config.PANEL_DISMISS_POINT, device, shopping, screen):
+            if self._try_tap(*anchored_point(screen, config.PANEL_DISMISS_POINT, 'top'),
+                             device, shopping, screen):
                 pending.info_dismissed = True
             return
         before = pending.row

@@ -1,8 +1,11 @@
 """Guard the BlueStacks Game Center to Tower transition on staged clones."""
 
 from types import SimpleNamespace
+from pathlib import Path
+import json
 
 import numpy as np
+import cv2
 import pytest
 
 from config import Rect
@@ -49,6 +52,20 @@ def test_launch_accepts_measured_launcher_ocr_without_space() -> None:
         sleep=lambda _: None,
     )
     assert device.actions == [(879, 367)]
+
+
+def test_bluestacks_native_launcher_taps_the_observed_tower_icon() -> None:
+    root = Path(__file__).parent / "fixtures"
+    frame = cv2.imread(str(root / "bluestacks_launcher_1920.png"))
+    rows = json.loads((root / "ocr" / "bluestacks_launcher_1920.json").read_text())
+    boxes = tuple(TextBox(row["text"], row["confidence"], Rect(*row["rect"]))
+                  for row in rows)
+    device = Device(["com.uncube.launcher3", "com.TechTreeGames.TheTower"])
+    launch_tower_from_game_center(
+        device, capture=lambda _: frame, read_text=lambda _: boxes,
+        sleep=lambda _: None,
+    )
+    assert device.actions == [(873, 317)]
 
 
 def test_launch_waits_for_game_center_after_boot_overlay() -> None:

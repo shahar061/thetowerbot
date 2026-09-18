@@ -5,12 +5,11 @@ the same mission keeps its id when the list reorders and when a new mission
 appears above it. That is the whole point of this reader, so `parse_frame`
 binds every number to the card the text was read from.
 
-Nothing here produces a tap. Claiming a mission reward, claiming a weekly
-milestone and buying anything a mission asks for are all out of scope; the
-recorded capture shows no claimable state to verify one against.
+Claim targets come only from a visible button on the current card. A separate
+walk owns the tap and verifies the following frame.
 
-Bounds are supported only by the native 1080x2400 capture
-`tests/fixtures/menu_missions.png` and its recorded OCR.
+The Daily Missions layout is measured at both 1080x2400 and native
+1080x1920 BlueStacks height, with captures and OCR under tests/fixtures.
 """
 from __future__ import annotations
 
@@ -26,14 +25,13 @@ from typing import Any, Iterable
 import ocr
 import screen_discovery
 import tiles
+from geometry import supported_frame
 from config import Rect
 from device import Image
 
 _MIN_CONFIDENCE = .90
 
-# Every bound in this module was measured on the 1080x2400 capture. A frame of
-# any other size is one this reader has not looked at, never one it found clear.
-_EXPECTED_FRAME = (2400, 1080)
+# Unmeasured frame sizes are never interpreted as a clear page.
 
 # The page title, measured at (32, 249, 433, 40).
 _TITLE_LABEL = 'dailymissions'
@@ -620,7 +618,7 @@ class MissionsReadings:
         frame that is not actually on screen.
         """
         self.observe(None)
-        if screen.shape[:2] != _EXPECTED_FRAME:
+        if not supported_frame(screen.shape[1], screen.shape[0]):
             return False
         try:
             if boxes is None:

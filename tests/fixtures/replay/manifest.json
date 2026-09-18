@@ -362,6 +362,7 @@
     "menu_workshop_attack_late": {"game_version": "v29.0.2", "device_geometry": "native_1080x2400", "layout_origin": "Workshop Attack with Upgrade/Enhance tabs and late rows", "png_sha256": "60583c880cc768b30d1d13ee3540374954d66c36f82cb587ebdf5efcd397ca9b"},
     "settings_redacted": {"game_version": "v29.0.1", "device_geometry": "native_1080x2400", "layout_origin": "Settings heading and Stats control OCR", "png_sha256": "f4c5ff73e75840da3e9c5968bf8c354f33cd2a261e2430546b10df79a360d891"},
     "stats_summary": {"game_version": "v29.0.1", "device_geometry": "native_1080x2400", "layout_origin": "Stats heading and field-label OCR", "png_sha256": "cdcc34514b3e6a9d42d22049e294883f5667e2f079f5741f6119f7567cb29385"},
+    "stats_summary_bluestacks_1920": {"game_version": "v29.0.3", "device_geometry": "native_1080x1920", "layout_origin": "Air 20 Settings to Stats capture; centered panel and field-label OCR", "png_sha256": "f062710e192959a4706a9e85a16ab87ff134e8d383a5422cdf937f7a45a20a92"},
     "stats_summary_progressed": {"game_version": "v29.0.2", "device_geometry": "native_1080x2400", "layout_origin": "Stats heading and summary labels before the tier-table scroll", "png_sha256": "018d4a2c260a533de61e82e6b368a2a500f364dc1b6a8a8e6812d0022237a3dd", "why": "Same live account and Stats visit as stats_tiers_progressed; the Settings panel showed v29.0.2 but its unredacted image is excluded because it contains an account ID."},
     "stats_tiers": {"game_version": "v29.0.1", "device_geometry": "native_1080x2400", "layout_origin": "Stats headings and Tier-row OCR", "png_sha256": "25ddf0b0f27c5ee2f9e57d8170d3a04a3f5a9d1efad5f272f4fd4523e26ce44e"},
     "stats_tiers_progressed": {"game_version": "v29.0.2", "device_geometry": "native_1080x2400", "layout_origin": "Stats headings and Tier-row OCR after scrolling the same panel", "png_sha256": "5139495b9faafcda6e8e7d6e3bd62b4f90af6d547cc18f379b105726e948f372", "why": "Same live account and Stats visit as stats_summary_progressed; no account ID appears on this capture."},
@@ -384,6 +385,12 @@
       "layout_origin": "own caption (GAMESTATS title + per-field regex), never a frame-relative offset",
       "png_sha256": "89c97261e8ceb555e289b21ac2a960272f74aeb2384beee9033f3fd7fbcf5e58",
       "why": "Added in 38e9665, which recalibrates the production digit reader against this capture but names no build string."
+    },
+    "game_over_bluestacks_1920": {
+      "game_version": "v29.0.3",
+      "device_geometry": "native_1080x1920",
+      "layout_origin": "Air 22 first-run Game Stats title, per-field captions, and centered modal",
+      "png_sha256": "018c6f56efa127dbd4505c611b9964e3a5db03a6f6a59a1b5ac5e62db16ab873"
     },
     "game_over_stats": {
       "game_version": "unknown",

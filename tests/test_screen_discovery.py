@@ -33,6 +33,47 @@ def test_recorded_supported_screens(name: str, context: str, expected: str) -> N
     assert result.readable
 
 
+def test_native_1920_battle_defense_exposes_only_frame_local_buy_targets() -> None:
+    import screen_discovery
+
+    name = 'in_run_defense_1920'
+    frame = cv2.imread(str(FIXTURES / f'{name}.png'))
+    boxes = recorded(name)
+    assert screen_discovery.discover(frame, boxes, 'battle').screen_id == 'battle.defense'
+    observation = perception.parse_frame(frame, boxes, 'battle')
+    assert observation.category == 'DEFENSE'
+    targets = [row.tap for row in observation.rows if row.tap is not None]
+    assert targets and all(0 <= x < 1080 and 0 <= y < 1920 for x, y in targets)
+
+
+def test_bluestacks_native_missions_page_keeps_its_top_anchored_cards() -> None:
+    import missions_screen
+    import screen_discovery
+
+    name = 'menu_missions_bluestacks_1920'
+    frame = cv2.imread(str(FIXTURES / f'{name}.png'))
+    boxes = recorded(name)
+    assert screen_discovery.discover(frame, boxes, 'missions').screen_id == 'missions.daily'
+    reading = missions_screen.parse_frame(frame, boxes, now=123.)
+    assert reading is not None and reading.frame_height == 1920
+    assert reading.shown == 2 and reading.offered == 8
+    assert len(reading.missions) == 2
+
+
+@pytest.mark.parametrize('category', ('attack', 'defense', 'utility'))
+def test_native_1920_workshop_keeps_buy_targets_on_visible_rows(category: str) -> None:
+    import screen_discovery
+
+    name = f'menu_workshop_{category}_1920'
+    frame = cv2.imread(str(FIXTURES / f'{name}.png'))
+    boxes = recorded(name)
+    assert screen_discovery.discover(frame, boxes, 'workshop').screen_id == f'workshop.{category}'
+    observation = perception.parse_frame(frame, boxes, 'workshop')
+    assert observation.category == category.upper()
+    targets = [row.tap for row in observation.rows if row.tap is not None]
+    assert targets and all(0 <= x < 1080 and 0 <= y < 1920 for x, y in targets)
+
+
 @pytest.mark.parametrize('name,screen_id', [
     ('menu_workshop_info_panel', 'workshop.info_overlay'),
     ('menu_workshop_explainer_modal', 'workshop.ultimate_explainer'),

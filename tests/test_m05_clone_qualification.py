@@ -495,8 +495,8 @@ def test_worker_probe_dismisses_measured_play_games_sheet_on_recovery(tmp_path: 
         controls = {
             "google_play_profile": {"dismiss_google_play_profile": (176, 2289)},
             "home": {"settings": (1000, 200)},
-            "settings": {"account": (800, 300)},
-            "account": {},
+            "settings": {"account": (800, 300), "close": (910, 490)},
+            "account": {"close": (940, 585)},
         }[screen]
         stamp = time.time()
         return AccountFrame(screen, "ACCOUNT-A" if screen == "account" else None,
@@ -510,7 +510,7 @@ def test_worker_probe_dismisses_measured_play_games_sheet_on_recovery(tmp_path: 
                                account_id="ACCOUNT-A", scope=scope, navigate=True)
     assert proof["recovered_at"] > proof["started_at"]
     assert taps.count((176, 2289)) == 2
-    assert taps[-2:] == [(925, 600), (905, 510)]
+    assert taps[-2:] == [(940, 585), (910, 490)]
     assert host.calls == [("stop", "clone-a"), ("start", "clone-a")]
 
 

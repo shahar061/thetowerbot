@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import ocr
 from device import Image, capture_screen
+from geometry import supported_frame
 
 
 _GAME_CENTER = "com.bluestacks.gamecenter"
@@ -36,7 +37,7 @@ def launch_tower_from_game_center(
             last_home = tick
         elif package == _LAUNCHER:
             frame = capture(device)
-            if frame.shape[:2] != (2400, 1080):
+            if not supported_frame(frame.shape[1], frame.shape[0]):
                 raise ValueError("unsupported BlueStacks launcher geometry")
             boxes = (read_text(frame) if read_text is not None
                      else ocr.read(frame, strict=True, min_confidence=0.))

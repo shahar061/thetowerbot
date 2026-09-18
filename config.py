@@ -297,13 +297,12 @@ GAME_OVER_HOME: tuple[str, str] = ("HOME", "buttons/home.png")
 # Both land on the bottom tab bar's Battle tab, which is the same control
 # shopping.py's RETURN step taps to end a visit.
 #
-# MISSIONS and the MILESTONES screens are deliberately absent. Their passive
-# readers own the frame and return from the scan before the navigation block
-# is reached, and their transactions tap MISSIONS_RETURN themselves - an
-# entry here would be a second hand on the same wheel.
+# The MILESTONES exit is used only after the passive guard proves that no
+# transaction owns a stranded ladder. The normal claim walk taps it itself.
 MENU_NAV_BUTTONS: dict[str, tuple[str, str]] = {
     "WORKSHOP": ("BATTLE_TAB", "nav/tab_battle.png"),
     "CARDS": ("BATTLE_TAB", "nav/tab_battle.png"),
+    "MILESTONES": ("MILESTONES_RETURN", "nav/missions_return.png"),
 }
 
 # --- Digit reading --------------------------------------------------------

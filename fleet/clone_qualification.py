@@ -121,7 +121,8 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
                 control = ("settings" if shot.screen == "home" else
                            "account" if shot.screen == "settings" else
                            "dismiss_google_play_profile")
-                if set(shot.controls) != {control} or clock() - shot.observed_at > 5:
+                allowed = ({control}, {control, "close"}) if shot.screen == "settings" else ({control},)
+                if set(shot.controls) not in allowed or clock() - shot.observed_at > 5:
                     raise ValueError("worker account navigation unavailable")
                 device.click(*shot.controls[control])
             elif not navigate or shot.screen != "unknown":
@@ -175,13 +176,17 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
             raise ValueError("worker recovery evidence blocked")
         if navigate:
             # The account proof leaves two stacked dialogs over the game.
-            # These measured 1080x2400 close controls were verified on Air 20;
-            # observe each transition before touching the next control.
-            device.click(925, 600)
+            # Use the controls located on each fresh dialog frame. Their
+            # absolute positions change with the emulator height.
+            if "close" not in after.controls:
+                raise ValueError("account close control unavailable")
+            device.click(*after.controls["close"])
             settings = candidate.observe(device)
             if settings.screen != "settings" or settings.conflict_dialog:
                 raise ValueError("account dialog did not close after recovery")
-            device.click(905, 510)
+            if "close" not in settings.controls:
+                raise ValueError("settings close control unavailable")
+            device.click(*settings.controls["close"])
             home = candidate.observe(device)
             if home.screen != "home" or home.conflict_dialog:
                 raise ValueError("settings dialog did not close after recovery")

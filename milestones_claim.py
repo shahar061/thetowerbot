@@ -123,6 +123,8 @@ class _PendingClaim:
     currency: str | None
     amount: int | None
     tier: int | None
+    modal_index: int | None = None
+    modal_total: int | None = None
 
 
 class Step(Enum):
@@ -328,16 +330,52 @@ class MilestonesClaim(ControlTaps):
         successful, if uninformative, reading, not a failure. Only a genuine
         reader error refuses the tap here.
         """
+        if self._pending is not None and (
+                evidence['error'] is not None or evidence['screen_id'] != MODAL_SCREEN):
+            return self._wait_for_claim_confirmation(self._pending, moment)
         if evidence['error'] is not None:
             return self._refuse('modal_unreadable', 'The reward ceremony was reached but '
                                 'could not be read; nothing was tapped.', moment)
         if evidence['screen_id'] != MODAL_SCREEN:
             return self._wait('modal_not_reached', 'The reward ceremony was not observed after '
                               'Claim All was tapped.', moment)
-        self._pending = _PendingClaim(evidence['reward_text'], evidence['currency'],
-                                      evidence['amount'], self._tier_at_claim)
-        return self._tap(screen, device, templates, CLAIM_TEMPLATE, 'claim_button',
-                         Step.LADDER, moment)
+        if self._pending is not None:
+            pending = self._pending
+            if (pending.modal_index is None
+                    or evidence.get('modal_index') != pending.modal_index + 1
+                    or evidence.get('modal_total') != pending.modal_total):
+                return self._wait_for_claim_confirmation(pending, moment)
+            self._pending = None
+            self._waited = 0
+            self._claimed += 1
+            self._publish(events.MilestoneClaimed(
+                reward_text=pending.reward_text, currency=pending.currency,
+                amount=pending.amount, tier=pending.tier))
+
+        pending = _PendingClaim(evidence['reward_text'], evidence['currency'],
+                                evidence['amount'], self._tier_at_claim,
+                                evidence.get('modal_index'), evidence.get('modal_total'))
+        modal_action = evidence.get('modal_action')
+        if modal_action == 'next':
+            rect = evidence.get('modal_control')
+            if rect is None or pending.modal_index is None or pending.modal_total is None:
+                return self._refuse('next_unreadable',
+                                    'The next reward control or progress was unreadable.', moment)
+            x, y = rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
+            action = self._tap_target(
+                ControlTarget('next_button', (x, y), 'located', 1., rect),
+                device, 'next_button', Step.MODAL, moment)
+        elif modal_action in ('claim', None):
+            # Legacy scripted evidence predates modal_action; the actual
+            # reader always supplies it on a recognized reward ceremony.
+            action = self._tap(screen, device, templates, CLAIM_TEMPLATE,
+                               'claim_button', Step.LADDER, moment)
+        else:
+            return self._refuse('modal_action_unreadable',
+                                'The reward ceremony action was not recognized.', moment)
+        if action is not None:
+            self._pending = pending
+        return action
 
     def _wait_for_claim_confirmation(self, claimed: _PendingClaim,
                                      moment: float) -> ClaimAction | None:

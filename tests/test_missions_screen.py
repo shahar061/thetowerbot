@@ -30,6 +30,18 @@ def frame() -> Image:
     return cv2.imread(str(FIXTURES / 'menu_missions.png'))
 
 
+def test_bluestacks_native_missions_scan_locates_claim_on_live_frame() -> None:
+    native = cv2.imread(str(FIXTURES / 'menu_missions_bluestacks_1920.png'))
+    boxes = recorded('menu_missions_bluestacks_1920')
+    readings = missions_screen.MissionsReadings()
+    assert readings.scan(native, boxes=boxes)
+    evidence = readings.current_evidence()
+    assert evidence['screen_id'] == 'missions.daily'
+    targets = readings.claim_evidence()['claims']
+    assert len(targets) == 1
+    assert 0 <= targets[0].rect[1] < 1920
+
+
 def recorded(name: str = 'menu_missions') -> tuple[ocr.TextBox, ...]:
     return tuple(ocr.TextBox(b['text'], b['confidence'], config.Rect(*b['rect']))
                  for b in json.loads((FIXTURES / 'ocr' / f'{name}.json').read_text()))

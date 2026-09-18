@@ -94,11 +94,16 @@ def ladder(tier: int | None, claim_all: tuple[int, int, int, int] | None, *,
 
 def modal(reward_text: str | None, currency: str | None, amount: int | None, *,
          error: str | None = None,
-         screen_id: str | None = milestones_claim.MODAL_SCREEN) -> dict[str, Any]:
+         screen_id: str | None = milestones_claim.MODAL_SCREEN,
+         action: str = 'claim', index: int | None = None,
+         total: int | None = None,
+         control: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
     """A reward-modal frame. `error`/`screen_id` default to a clean read."""
     return {'screen_id': screen_id, 'error': error, 'scanned': True, 'tier': None,
             'claim_all': None, 'reward_text': reward_text, 'currency': currency,
-            'amount': amount}
+            'amount': amount, 'modal_action': action,
+            'modal_index': index, 'modal_total': total,
+            'modal_control': control}
 
 
 def image(name: str) -> Any:
@@ -237,6 +242,34 @@ def test_a_claim_is_only_recorded_once_the_ladder_reappears() -> None:
     result = claim.snapshot()['result']
     assert result['status'] == 'completed' and result['reason'] == 'claimed'
     assert device.taps == [MILESTONES_CONTROL, CLAIM_ALL_TAP, CLAIM_MODAL_CONTROL, RETURN_CONTROL]
+
+
+def test_claim_all_walks_next_then_claim_and_records_both_rewards() -> None:
+    claim, bus, device = drive([
+        home(), ladder(1, CLAIM_ALL_RECT),
+        modal('25 COINS', 'coins', 25, action='next', index=1, total=2,
+              control=(444, 1860, 191, 63)),
+        modal('10 GEMS', 'gems', 10, action='claim', index=2, total=2),
+        ladder(1, None), home(),
+    ])
+    assert claim.snapshot()['result']['status'] == 'completed'
+    assert [(e.reward_text, e.amount, e.tier) for e in bus.of(events.MilestoneClaimed)] == [
+        ('25 COINS', 25, 1), ('10 GEMS', 10, 1)]
+    assert bus.of(events.ClaimEnded)[0].claimed == 2
+    assert device.taps == [MILESTONES_CONTROL, CLAIM_ALL_TAP,
+                           (539, 1891), CLAIM_MODAL_CONTROL, RETURN_CONTROL]
+
+
+def test_next_without_confirmed_following_reward_reports_uncertainty() -> None:
+    claim, bus, _ = drive([
+        home(), ladder(1, CLAIM_ALL_RECT),
+        modal('25 COINS', 'coins', 25, action='next', index=1, total=2,
+              control=(444, 1860, 191, 63)),
+        modal(None, None, None, error='unreadable', action='claim', index=2, total=2),
+    ])
+    assert claim.snapshot()['result']['status'] == 'failed'
+    assert bus.of(events.ClaimUncertain)
+    assert not bus.of(events.ClaimSkipped)
 
 
 def test_a_claim_with_no_currency_is_recorded_as_a_reward_that_moved_nothing() -> None:
@@ -520,6 +553,22 @@ def test_the_milestones_screens_hold_actions_with_no_walk_armed(
     assert bot.device.taps == []
 
 
+def test_stranded_milestones_ladder_returns_to_game_after_guard_budget(
+        bot_on_main_menu: Any, monkeypatch: Any) -> None:
+    """After a worker restart loses its claim walk, the ladder needs an exit."""
+    import ocr
+    from strategy import Shopping
+
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    bot.controls.apply({'tap_jitter_px': 0, 'tap_delay': 0})
+    bot._screen = image('menu_milestones_claimable')
+    boxes = recorded('menu_milestones_claimable')
+    monkeypatch.setattr(ocr, 'read', lambda *a, **k: boxes)
+    for _ in range(config.HELD_PAGE_SCAN_LIMIT + 1):
+        bot.run_once()
+    assert bot.device.taps == [RETURN_CONTROL]
+
+
 def test_an_ordinary_menu_frame_is_not_held_by_the_milestones_guard(
         bot_on_main_menu: Any, monkeypatch: Any) -> None:
     """The guard has to be the milestones screens and not "any menu", or it
@@ -534,6 +583,99 @@ def test_an_ordinary_menu_frame_is_not_held_by_the_milestones_guard(
     assert not [e for e in bot.bus.published
                 if isinstance(e, events.Skipped)
                 and e.reason == 'milestones_screen_guard']
+
+
+def test_supervised_claim_walk_reaches_claim_all_and_reward_modal(
+        bot_on_main_menu: Any, monkeypatch: Any) -> None:
+    """Recovery must recognize the ladder before the claim reader can tap."""
+    import ocr
+    from strategy import Shopping
+    from supervisor import RecoveryState
+
+    class Supervisor:
+        current_account = 'account-a'
+
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+
+        def observe(self, **evidence: Any) -> RecoveryState:
+            self.seen.append(evidence['screen'])
+            return (RecoveryState.BLOCKED if evidence['screen'] == 'UNKNOWN'
+                    else RecoveryState.READY)
+
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    bot.controls.apply({'tap_jitter_px': 0, 'tap_delay': 0})
+    supervisor = Supervisor()
+    bot.supervisor = supervisor
+    entry = image('menu_milestones_entry')
+    ladder_frame = image('menu_milestones_claimable')
+    modal_frame = image('menu_milestones_reward_modal')
+    bot._screen = entry
+    def boxes_for_frame(*args: Any, **kwargs: Any) -> Any:
+        fixture = ('menu_milestones_entry' if bot._screen is entry else
+                   'menu_milestones_claimable' if bot._screen is ladder_frame else
+                   'menu_milestones_reward_modal')
+        return recorded(fixture)
+
+    monkeypatch.setattr(ocr, 'read', boxes_for_frame)
+    assert bot.milestones_claim.request()
+    bot.run_once()
+    assert MILESTONES_CONTROL in bot.device.taps
+
+    bot._screen = ladder_frame
+    bot.run_once()
+    assert supervisor.seen[-1] == milestones_claim.LADDER_SCREEN
+    assert CLAIM_ALL_TAP in bot.device.taps
+
+    bot._screen = modal_frame
+    bot.run_once()
+    assert supervisor.seen[-1] == milestones_claim.MODAL_SCREEN
+    assert CLAIM_MODAL_CONTROL in bot.device.taps
+
+
+def test_native_1920_milestones_controls_are_located_on_that_frame() -> None:
+    cache = vision.TemplateCache(config.TEMPLATE_DIR)
+    cases = (
+        ('menu_milestones_claimable_1920', 'MILESTONES_RETURN', (540, 1813)),
+        ('menu_milestones_reward_claim_1920', None, (540, 1626)),
+    )
+    for name, target, point in cases:
+        template = (config.NAV_TARGETS[target] if target is not None
+                    else milestones_claim.CLAIM_TEMPLATE)
+        found = account_collection.locate_control(image(name), cache.get(template), template)
+        assert found.status == 'located', name
+        assert found.point == point
+
+
+def test_supervised_1920_claim_walk_uses_live_next_and_claim_positions(
+        bot_on_main_menu: Any, monkeypatch: Any) -> None:
+    import ocr
+    from strategy import Shopping
+    from supervisor import RecoveryState
+
+    class Supervisor:
+        current_account = 'account-a'
+
+        def observe(self, **evidence: Any) -> RecoveryState:
+            return (RecoveryState.BLOCKED if evidence['screen'] == 'UNKNOWN'
+                    else RecoveryState.READY)
+
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    bot.controls.apply({'tap_jitter_px': 0, 'tap_delay': 0})
+    bot.supervisor = Supervisor()
+    frames = {
+        name: image(name) for name in (
+            'menu_milestones_entry', 'menu_milestones_claimable_1920',
+            'menu_milestones_reward_next_1920', 'menu_milestones_reward_claim_1920')
+    }
+    monkeypatch.setattr(ocr, 'read', lambda *a, **k: recorded(
+        next(name for name, frame in frames.items() if bot._screen is frame)))
+    assert bot.milestones_claim.request()
+    for name in frames:
+        bot._screen = frames[name]
+        bot.run_once()
+    assert bot.device.taps == [MILESTONES_CONTROL, (543, 281),
+                               (540, 1651), (540, 1626)]
 
 
 def test_a_pause_cancels_a_half_walked_milestones_claim(

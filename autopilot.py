@@ -13,6 +13,7 @@ from typing import Any
 import cv2
 
 import config
+from geometry import supported_frame
 import events
 import upgrades
 from device import Image, tap
@@ -93,13 +94,13 @@ class AutopilotState:
 
 
 def battle_tab_point(screen: Image, category: str) -> tuple[int, int] | None:
-    """Three icon tabs, calibrated to the supported 1080x2400 layout.
+    """Three icon tabs, calibrated on both measured portrait heights.
 
     Verify the three cell borders before using their centers. A fourth tab or
     changed layout fails closed. Arrival is checked from OCR on the next frame.
     """
     h, w = screen.shape[:2]
-    if (w, h) != config.EXPECTED_RESOLUTION or category not in ("ATTACK", "DEFENSE", "UTILITY"):
+    if not supported_frame(w, h) or category not in ("ATTACK", "DEFENSE", "UTILITY"):
         return None
     grey = cv2.cvtColor(screen[h-80:h-20], cv2.COLOR_BGR2GRAY)
     for x in (0, w//3, 2*w//3, w-1):

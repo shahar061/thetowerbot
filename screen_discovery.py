@@ -13,6 +13,7 @@ from typing import Any
 
 import ocr
 import tiles
+from geometry import anchored_y, supported_frame
 from device import Image
 
 
@@ -397,7 +398,7 @@ def _milestones_title(boxes: tuple[ocr.TextBox, ...]) -> ocr.TextBox | None:
                    (_MILESTONES_TITLE_Y[0], _MILESTONES_TITLE_Y[1] + MAX_TOP_INSET))
 
 
-def milestones_tier(boxes: tuple[ocr.TextBox, ...]) -> int | None:
+def milestones_tier(boxes: tuple[ocr.TextBox, ...], *, frame_height: int = 2400) -> int | None:
     """Which tier's ladder this is, or None if not certain.
 
     Located by its measured distance below the page title rather than by
@@ -407,14 +408,16 @@ def milestones_tier(boxes: tuple[ocr.TextBox, ...]) -> int | None:
     title = _milestones_title(boxes)
     if title is None:
         return None
-    low, high = _MILESTONES_TITLE_TO_TIER
+    offset = anchored_y(0, frame_height, 'bottom')
+    low, high = (bound + offset for bound in _MILESTONES_TITLE_TO_TIER)
     matches = [m for m in (_MILESTONES_TIER.fullmatch(b.text.strip())
                            for b in boxes if b.confidence >= .9
                            and low <= b.rect.y - title.rect.y <= high) if m]
     return int(matches[0][1]) if len(matches) == 1 else None
 
 
-def _modal_skip(boxes: tuple[ocr.TextBox, ...]) -> ocr.TextBox | None:
+def _modal_skip(boxes: tuple[ocr.TextBox, ...], *,
+                frame_height: int = 2400) -> ocr.TextBox | None:
     """The reward modal's SKIP button, wherever this device's inset put it.
 
     Public-enough for milestones_screen to probe with directly, the way
@@ -423,17 +426,34 @@ def _modal_skip(boxes: tuple[ocr.TextBox, ...]) -> ocr.TextBox | None:
     a discriminating presence signal on its own - unlike `claim`, which also
     appears on the missions page and would false-positive there.
     """
+    shift = anchored_y(0, frame_height, 'center')
     return _single(boxes, 'skip',
-                   (_MODAL_SKIP_Y[0], _MODAL_SKIP_Y[1] + MAX_TOP_INSET))
+                   (_MODAL_SKIP_Y[0] + shift,
+                    _MODAL_SKIP_Y[1] + shift + MAX_TOP_INSET))
 
 
-def _modal_claim(boxes: tuple[ocr.TextBox, ...]) -> ocr.TextBox | None:
-    """The reward modal's CLAIM button, wherever this device's inset put it."""
-    return _single(boxes, 'claim',
-                   (_MODAL_CLAIM_Y[0], _MODAL_CLAIM_Y[1] + MAX_TOP_INSET))
+def milestone_modal_action(boxes: tuple[ocr.TextBox, ...], *,
+                           frame_height: int = 2400) -> tuple[str, ocr.TextBox] | None:
+    """The single NEXT or CLAIM control on a measured reward ceremony."""
+    shift = anchored_y(0, frame_height, 'center')
+    candidates = [b for b in boxes if b.confidence >= .9
+                  and tiles.normalise(b.text) in {'next', 'claim'}
+                  and _MODAL_CLAIM_Y[0] + shift <= b.rect.y
+                  <= _MODAL_CLAIM_Y[1] + shift + MAX_TOP_INSET]
+    if len(candidates) != 1:
+        return None
+    box = candidates[0]
+    return tiles.normalise(box.text), box
 
 
-def _discover_milestones(boxes: tuple[ocr.TextBox, ...]) -> ScreenDiscovery:
+def _modal_claim(boxes: tuple[ocr.TextBox, ...], *,
+                 frame_height: int = 2400) -> ocr.TextBox | None:
+    """The reward modal's final CLAIM, if that is its only action."""
+    found = milestone_modal_action(boxes, frame_height=frame_height)
+    return found[1] if found is not None and found[0] == 'claim' else None
+
+
+def _discover_milestones(boxes: tuple[ocr.TextBox, ...], frame_height: int) -> ScreenDiscovery:
     """The ladder on its title and tier, the modal on its two buttons.
 
     The modal is checked first, and that ordering is an ASSUMPTION rather
@@ -444,12 +464,12 @@ def _discover_milestones(boxes: tuple[ocr.TextBox, ...]) -> ScreenDiscovery:
     anchor sets are disjoint on every frame measured so far, so this order
     does not currently decide anything.
     """
-    skip = _modal_skip(boxes)
-    claim = _modal_claim(boxes)
-    if skip is not None and claim is not None:
+    skip = _modal_skip(boxes, frame_height=frame_height)
+    action = milestone_modal_action(boxes, frame_height=frame_height)
+    if skip is not None and action is not None:
         return ScreenDiscovery('milestones.reward_modal', True, 'recorded_layout')
     title = _milestones_title(boxes)
-    if title is None or milestones_tier(boxes) is None:
+    if title is None or milestones_tier(boxes, frame_height=frame_height) is None:
         return ScreenDiscovery(None, False, 'ambiguous_or_unreadable_heading')
     if not 0 <= title.rect.x <= 70:
         return ScreenDiscovery(None, False, 'unsupported_layout')
@@ -589,7 +609,9 @@ def discover(
     English headings. It is not automatic detection of an entire game locale.
     Unknown screens and recorded overlays never provide action coordinates.
     """
-    if screen.shape[:2] != (2400, 1080):
+    if screen.shape[:2] != (2400, 1080) and not (
+            context in ('milestones', 'battle', 'workshop', 'missions')
+            and supported_frame(screen.shape[1], screen.shape[0])):
         return ScreenDiscovery(None, False, 'unsupported_geometry')
     if locale != 'en':
         return ScreenDiscovery(None, False, 'unsupported_locale')
@@ -607,7 +629,7 @@ def discover(
     if context == 'cards':
         return _discover_cards(boxes)
     if context == 'milestones':
-        return _discover_milestones(boxes)
+        return _discover_milestones(boxes, screen.shape[0])
     headings = [b for b in boxes if _upgrade_label(b) is not None]
     if len(headings) != 1 or headings[0].confidence < .9:
         return ScreenDiscovery(None, False, 'ambiguous_or_unreadable_heading')
@@ -626,7 +648,9 @@ def discover(
                  <= _WORKSHOP_TITLE_TO_HEADING[1])
     else:
         valid = ('workshop' not in labels
-                 and _BATTLE_HEADING_Y[0] <= heading.rect.y <= _BATTLE_HEADING_Y[1])
+                 and anchored_y(_BATTLE_HEADING_Y[0], screen.shape[0], 'bottom')
+                 <= heading.rect.y
+                 <= anchored_y(_BATTLE_HEADING_Y[1], screen.shape[0], 'bottom'))
     if not valid or not (0 <= heading.rect.x <= 70):
         return ScreenDiscovery(None, False, 'unsupported_layout')
     screen_id = f'{context}.{category}'
