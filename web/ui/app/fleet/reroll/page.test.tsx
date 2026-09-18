@@ -25,6 +25,7 @@ beforeEach(() => {
 test("worker cards collapse and scoped ledger shows confirmed purchases", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [{
     ...members[0], account_key: "worker:Air_1", lifetime_coins: 1200, workshop_upgrades_bought: 1,
+    game_started: "2026-08-29", account_age_days: 20, recent_cps: .2,
   }] });
   vi.mocked(fetchAccountWorkshopPurchases).mockResolvedValue({ lines: [{
     id: 1, seq: 1, ts: 100, kind: "WORKSHOP_BUY", item: "Damage", category: "ATTACK",
@@ -34,6 +35,8 @@ test("worker cards collapse and scoped ledger shows confirmed purchases", async 
   render(<RerollPage />);
   expect(await screen.findByText("Shared Workshop ledger")).toBeInTheDocument();
   expect(await screen.findByText(/20 coins/)).toBeInTheDocument();
+  expect(screen.getByText("20 days")).toBeInTheDocument();
+  expect(screen.getByText("0.2")).toBeInTheDocument();
   expect(fetchAccountWorkshopPurchases).toHaveBeenCalledWith("worker:Air_1");
   const toggle = screen.getByRole("button", { name: "Collapse Air_1" });
   fireEvent.click(toggle);

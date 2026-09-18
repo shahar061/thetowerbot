@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, BookOpen, Compass, Contact, ChartLine, List, Monitor, Power, Receipt, SlidersHorizontal, TriangleAlert,
+  Activity, BookOpen, Compass, Contact, ChartLine, List, Map, Monitor, Power, Receipt, SlidersHorizontal, TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -27,6 +27,7 @@ const GROUPS: { label: string; items: Item[] }[] = [
       { href: "/errors/", label: "Errors", icon: TriangleAlert },
       { href: "/ledger/", label: "Ledger", icon: Receipt },
       { href: "/account/", label: "Account", icon: Contact },
+      { href: "/milestones/", label: "Milestones", icon: Map },
       { href: "/director/", label: "Director", icon: Compass },
       { href: "/fleet/reroll/", label: "Reroll", icon: Monitor },
     ],

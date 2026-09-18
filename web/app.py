@@ -38,8 +38,10 @@ import db
 import director
 import events
 import knowledge
+import milestone_roadmap
 import objectives
 import upgrades
+from fleet.account_metrics import account_metrics
 from concepts import REGISTRY
 from runtime_identity import API_VERSION, PROCESS_IDENTITY, read_frontend_identity
 from advisor import AdvisorStore
@@ -486,6 +488,74 @@ def create_app(
         if claim is not None:
             payload["claim"] = claim.snapshot()
         return payload
+
+    @app.get("/api/milestone-roadmap")
+    def milestone_roadmap_snapshot(request: Request) -> dict[str, Any]:
+        """Read one selected account's historical evidence for the game path."""
+        choice = _selected(request)
+        path = _history_path(request)
+        best_waves: dict[int, int] = {}
+        claimed_rewards: set[str] = set()
+        verified: set[str] = set()
+        if path is not None:
+            with db.reader(path) as conn:
+                best_waves = {int(row["tier"]): int(row["wave"]) for row in conn.execute(
+                    "SELECT tier, MAX(wave) AS wave FROM runs "
+                    "WHERE ended_at IS NOT NULL AND tier IS NOT NULL AND wave IS NOT NULL "
+                    "GROUP BY tier"
+                )}
+                claimed_rewards = {str(row["item"]) for row in conn.execute(
+                    "SELECT item FROM ledger WHERE kind = 'MILESTONE_CLAIM' "
+                    "AND item IS NOT NULL AND dry_run = 0"
+                )}
+                row = conn.execute(
+                    "SELECT detail FROM account_revisions ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if row is not None:
+                    revision = json.loads(row["detail"])
+                    if choice is None or revision.get("account_id") == choice.account_id:
+                        if (revision.get("lab_slots_owned") or 0) > 0:
+                            verified.add("labs.unlocked")
+                        if any(fact.get("status") in {"verified", "observed"}
+                               for fact in revision.get("cards") or []):
+                            verified.add("cards.first")
+                        if any((revision.get("modules") or {}).get(section) or []
+                               for section in ("owned", "equipped")):
+                            verified.add("modules.first")
+                        if any(fact.get("status") in {"verified", "observed"}
+                               for fact in revision.get("lab_levels") or []):
+                            verified.add("labs.first_research")
+                        for fact in revision.get("unlocks") or []:
+                            if fact.get("status") != "verified" or not fact.get("value"):
+                                continue
+                            concept = fact.get("concept_id", "")
+                            if concept.startswith("unlocks.tier."):
+                                verified.add("tier.unlock." + concept.removeprefix("unlocks.tier."))
+                            else:
+                                mapped = {
+                                    "unlocks.labs": "labs.unlocked",
+                                    "unlocks.tournaments": "tournaments.unlocked",
+                                    "unlocks.events": "events.unlocked",
+                                    "unlocks.modules": "modules.unlocked",
+                                }.get(concept)
+                                if mapped:
+                                    verified.add(mapped)
+        nodes = milestone_roadmap.project(
+            milestone_roadmap.load_catalog(), best_waves=best_waves,
+            claimed_rewards=claimed_rewards, verified=verified,
+        )
+        return {"schema_version": 1, "account_id": choice.account_id if choice else None,
+                "best_waves": best_waves, "nodes": nodes}
+
+    @app.get("/api/account-metrics")
+    def account_metrics_snapshot(request: Request) -> dict[str, Any]:
+        choice = _selected(request)
+        if choice is None or choice.kind != "worker" or _history_path(request) is None:
+            return {"account_id": None, "game_started": None, "account_age_days": None,
+                    "recent_cps": None, "lifetime_coins": None,
+                    "lifetime_coins_incomplete": False}
+        return {"account_id": choice.account_id,
+                **account_metrics(choice.db_path.parent, choice.account_id)}
 
     @app.post("/api/milestones/claim")
     def claim_milestones() -> dict[str, Any]:

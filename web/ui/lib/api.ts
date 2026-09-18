@@ -22,6 +22,8 @@ import type {
 import { checkRuntimeCompatibility } from "./runtimeCompatibility";
 import { accountScope } from "./accountScope";
 import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup, RerollSnapshot, RerollJournal } from "./fleet";
+import type { MilestoneRoadmap } from "./milestoneRoadmap";
+import type { AccountMetrics } from "./accountMetrics";
 
 /** An HTTP failure that kept its status code.
  *
@@ -65,6 +67,8 @@ export type AccountChoice = { key: string; account_id: string | null; instance: 
   kind: "worker" | "unattributed"; running: boolean; dashboard_url: string | null };
 export type AccountCatalog = { accounts: AccountChoice[]; active: string | null };
 export const fetchAccounts = () => getJson<AccountCatalog>("/api/accounts", { cache: "no-store" });
+export const fetchMilestoneRoadmap = () => getJson<MilestoneRoadmap>("/api/milestone-roadmap", { cache: "no-store" });
+export const fetchAccountMetrics = () => getJson<AccountMetrics>("/api/account-metrics", { cache: "no-store" });
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
 export const fetchReroll = () => getJson<RerollSnapshot>("/api/fleet/reroll", { cache: "no-store" }, false);
 export const setRerollConcurrency = (limit: number) =>
