@@ -11,7 +11,7 @@ from urllib.request import urlopen
 
 import db as bot_db
 import upgrades
-from fleet.reroll_lifetime import read_lifetime
+from fleet.account_metrics import account_metrics
 
 
 def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
@@ -61,10 +61,13 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                 result["observed_at"] = rows[0]["ended_at"]
         except (OSError, sqlite3.Error):
             pass
-        lifetime = read_lifetime(Path(worker_root), account_id)
-        if lifetime is not None:
-            result["lifetime_coins"] = lifetime["lifetime_coins"]
-            result["lifetime_coins_incomplete"] = lifetime["coins_incomplete"]
+        account = account_metrics(Path(worker_root), account_id)
+        if account["lifetime_coins"] is not None:
+            result["lifetime_coins"] = account["lifetime_coins"]
+            result["lifetime_coins_incomplete"] = account["lifetime_coins_incomplete"]
+            result["game_started"] = account["game_started"]
+            result["account_age_days"] = account["account_age_days"]
+            result["recent_cps"] = account["recent_cps"]
     if running:
         try:
             base = f"http://127.0.0.1:{web_port}"

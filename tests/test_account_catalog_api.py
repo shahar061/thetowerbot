@@ -64,6 +64,64 @@ def test_catalog_scopes_history_and_keeps_legacy_unattributed(tmp_path: Path) ->
     assert client.get("/api/frame.jpg?scope=worker:Tiramisu64_18").status_code == 409
 
 
+def test_milestone_roadmap_reads_only_selected_account_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "fleet"
+    first = _worker(root, "Tiramisu64_20", "ACCOUNT20")
+    second = _worker(root, "Tiramisu64_21", "ACCOUNT21")
+    for path, account_id, wave in ((first, "ACCOUNT20", 65), (second, "ACCOUNT21", 12)):
+        db.bind_account(path, account_id)
+        conn = db.connect(path)
+        db.start_run(conn, 1, 1.0)
+        db.finish_run(conn, 1, started_at=1.0, ended_at=2.0, wave=wave,
+                      coins=0, tier=1, abandoned=False, scan_count=1, tap_count=0)
+        conn.close()
+    conn = db.connect(first)
+    conn.execute("INSERT INTO ledger(ts, kind, item, dry_run) VALUES (3, 'MILESTONE_CLAIM', 'Unlock Lab', 0)")
+    conn.execute("INSERT INTO account_revisions(detail) VALUES (?)", (json.dumps({
+        "account_id": "ACCOUNT20", "lab_slots_owned": 1,
+        "unlocks": [{"concept_id": "unlocks.tier.2", "value": True, "status": "verified"}],
+    }),))
+    conn.commit()
+    conn.close()
+    fleet = type("Fleet", (), {"root": root})()
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=fleet))
+    first_data = client.get("/api/milestone-roadmap", headers={
+        "x-account-scope": "worker:Tiramisu64_20"}).json()
+    second_data = client.get("/api/milestone-roadmap", headers={
+        "x-account-scope": "worker:Tiramisu64_21"}).json()
+    by_id = lambda data: {node["id"]: node for node in data["nodes"]}
+    assert first_data["account_id"] == "ACCOUNT20"
+    assert by_id(first_data)["labs.unlocked"]["status"] == "verified"
+    assert by_id(first_data)["tier.unlock.2"]["status"] == "verified"
+    assert by_id(first_data)["tournaments.unlocked"]["status"] == "claimable"
+    assert by_id(second_data)["labs.unlocked"]["status"] == "in_progress"
+    assert client.get("/api/milestone-roadmap", headers={
+        "x-account-scope": "worker:missing"}).status_code == 404
+
+
+def test_account_metrics_are_bound_to_selected_worker(tmp_path: Path) -> None:
+    root = tmp_path / "fleet"
+    first = _worker(root, "Tiramisu64_20", "ACCOUNT20")
+    second = _worker(root, "Tiramisu64_21", "ACCOUNT21")
+    for path, account_id in ((first, "ACCOUNT20"), (second, "ACCOUNT21")):
+        db.bind_account(path, account_id)
+    (first.parent / "reroll-lifetime.json").write_text(json.dumps({
+        "account_id": "ACCOUNT20", "lifetime_coins": 1000, "observed_at": 10,
+        "game_started": "2026-08-29", "recent_coins_per_hour": 720,
+    }))
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=type("Fleet", (), {"root": root})()))
+    first_metrics = client.get("/api/account-metrics", headers={
+        "x-account-scope": "worker:Tiramisu64_20"}).json()
+    second_metrics = client.get("/api/account-metrics", headers={
+        "x-account-scope": "worker:Tiramisu64_21"}).json()
+    assert first_metrics["account_id"] == "ACCOUNT20"
+    assert first_metrics["game_started"] == "2026-08-29"
+    assert first_metrics["recent_cps"] == .2
+    assert second_metrics["recent_cps"] is None
+
+
 def test_duplicate_or_changed_binding_cannot_claim_account(tmp_path: Path) -> None:
     root = tmp_path / "fleet"
     first = _worker(root, "Tiramisu64_18", "ABC12345")

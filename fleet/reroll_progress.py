@@ -14,6 +14,7 @@ import ocr
 import upgrades
 from account_state import AccountState
 from fleet.reroll_journal import RerollJournal
+from fleet.account_metrics import game_started_date
 from fleet.reroll_lifetime import read_lifetime
 from fleet.reroll_planner import RerollDecision, RerollFacts, choose_next, project_next
 from policy import AutopilotPolicy, UpgradeRule
@@ -101,6 +102,15 @@ class RerollProgress:
                     and isinstance(coins.get("raw_value"), str)):
                 lifetime = ocr.parse_number(coins["raw_value"])
                 if lifetime is not None and lifetime >= 0:
+                    fields = {field.get("key"): field for field in latest.get("fields", [])}
+                    started_field = fields.get("game_started") or {}
+                    rate_field = fields.get("recent_coins_per_hour") or {}
+                    started = (game_started_date(started_field["raw_value"])
+                               if started_field.get("status") == "observed"
+                               and isinstance(started_field.get("raw_value"), str) else None)
+                    hourly = (ocr.parse_number(rate_field["raw_value"])
+                              if rate_field.get("status") == "observed"
+                              and isinstance(rate_field.get("raw_value"), str) else None)
                     stored = self.lifetime_record()
                     observed_at = latest.get("observed_at")
                     if (isinstance(observed_at, (int, float))
@@ -117,7 +127,10 @@ class RerollProgress:
                                 json.dump({"account_id": self.account_id,
                                            "lifetime_coins": lifetime,
                                            "observed_at": observed_at,
-                                           "baseline_run_id": baseline_run_id}, output)
+                                           "baseline_run_id": baseline_run_id,
+                                           **({"game_started": started} if started else {}),
+                                           **({"recent_coins_per_hour": hourly}
+                                              if hourly is not None and hourly >= 0 else {})}, output)
                                 output.write("\n")
                                 output.flush()
                                 os.fsync(output.fileno())

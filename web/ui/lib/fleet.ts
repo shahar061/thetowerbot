@@ -55,6 +55,7 @@ export type RerollMember = { name: string; endpoint: string; lease_id: string; s
   best_tier_1_wave?: number | null; battle_cash?: number | null; run_coins?: number | null;
   game_screen?: string | null; current_run_id?: number | null;
   lifetime_coins?: number | null; lifetime_coins_incomplete?: boolean;
+  game_started?: string | null; account_age_days?: number | null; recent_cps?: number | null;
   workshop_upgrades_bought?: number | null;
   reroll_plan?: RerollPlan | null;
   wallet_gems?: number | null; wallet_stones?: number | null; wallet_medals?: number | null;

@@ -109,6 +109,44 @@ def test_verified_account_readings_and_lifetime_coins_feed_decision(tmp_path: Pa
     assert restarted.decision().lifetime_coins == 1_500_000_000_250
 
 
+def test_stats_summary_persists_game_start_and_recent_coin_rate(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    class Readings:
+        def snapshot(self) -> dict:
+            return {"revision": {}, "screen_readings": {"readings": [{
+                "screen_id": "account.stats.summary", "observed_at": 10,
+                "fields": [
+                    {"key": "game_started", "status": "observed", "raw_value": "August 29 2026"},
+                    {"key": "coins_earned", "status": "observed", "raw_value": "1.5K"},
+                    {"key": "recent_coins_per_hour", "status": "observed", "raw_value": "720"},
+                ],
+            }]}}
+    progress.account_state = Readings()
+    progress.decision()
+    saved = json.loads((progress.root / "reroll-lifetime.json").read_text())
+    assert saved["game_started"] == "2026-08-29"
+    assert saved["recent_coins_per_hour"] == 720
+
+
+def test_unreadable_game_start_or_rate_does_not_create_a_fake_stat(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    class Readings:
+        def snapshot(self) -> dict:
+            return {"revision": {}, "screen_readings": {"readings": [{
+                "screen_id": "account.stats.summary", "observed_at": 10,
+                "fields": [
+                    {"key": "game_started", "status": "unreadable", "raw_value": "August 29 2026"},
+                    {"key": "coins_earned", "status": "observed", "raw_value": "1500"},
+                    {"key": "recent_coins_per_hour", "status": "unreadable", "raw_value": "720"},
+                ],
+            }]}}
+    progress.account_state = Readings()
+    progress.decision()
+    saved = json.loads((progress.root / "reroll-lifetime.json").read_text())
+    assert "game_started" not in saved
+    assert "recent_coins_per_hour" not in saved
+
+
 def test_lifetime_coins_from_another_account_are_rejected(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     (progress.root / "reroll-lifetime.json").write_text(json.dumps({

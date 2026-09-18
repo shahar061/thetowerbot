@@ -47,6 +47,19 @@ def test_saved_runs_and_verified_live_wallet(tmp_path: Path) -> None:
     assert result["workshop_upgrades_bought"] == 2
 
 
+def test_worker_overview_includes_persisted_age_and_cps(tmp_path: Path) -> None:
+    bot_db.bind_account(tmp_path / "tower_bot.db", "42")
+    (tmp_path / "reroll-lifetime.json").write_text(json.dumps({
+        "account_id": "42", "lifetime_coins": 1000, "observed_at": 10,
+        "game_started": "2026-08-29", "recent_coins_per_hour": 720,
+    }))
+    result = observed_metrics(tmp_path, account_key="worker:Air_2", account_id="42",
+                              web_port=0, running=False)
+    assert result["game_started"] == "2026-08-29"
+    assert result["recent_cps"] == .2
+    assert isinstance(result["account_age_days"], int)
+
+
 def test_visible_unlock_grants_count_once_without_claiming_a_price(tmp_path: Path) -> None:
     db = tmp_path / "tower_bot.db"
     bot_db.bind_account(db, "42")

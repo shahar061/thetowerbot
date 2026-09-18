@@ -12,7 +12,7 @@ const HISTORY = new Set(["/runs/", "/stats/", "/errors/", "/ledger/", "/account/
 export function AccountShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { accounts, selected, loading, error, choose } = useAccountSelection();
-  const independent = pathname.startsWith("/fleet/") || pathname === "/guide/" || pathname === "/archives/";
+  const independent = pathname.startsWith("/fleet/") || pathname === "/guide/" || pathname === "/archives/" || pathname === "/milestones/";
   const history = HISTORY.has(pathname);
   const remote = selected?.running && selected.dashboard_url && typeof window !== "undefined"
     && new URL(selected.dashboard_url).origin !== window.location.origin;
