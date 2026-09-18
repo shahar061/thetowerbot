@@ -61,11 +61,11 @@ def test_verified_restart_walk_returns_to_home() -> None:
             frame("home", controls={"settings": (1, 2)}),
             frame("settings", controls={"account": (3, 4)}),
             frame("settings", controls={"account": (3, 4)}),
-            frame("account", account_id="ACCOUNT-A"),
-            frame("settings"), frame("home"),
+            frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
+            frame("settings", controls={"close": (910, 490)}), frame("home"),
         ]))
     assert supervisor.verified == "ACCOUNT-A"
-    assert device.taps == [(1, 2), (3, 4), (925, 600), (905, 510)]
+    assert device.taps == [(1, 2), (3, 4), (940, 585), (910, 490)]
 
 
 def test_wrong_account_stops_before_closing_popup() -> None:
@@ -74,6 +74,15 @@ def test_wrong_account_stops_before_closing_popup() -> None:
         verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
             expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
             observe=observer([frame("account", account_id="ACCOUNT-B")]))
+    assert device.taps == []
+
+
+def test_missing_close_target_never_guesses_a_fixed_coordinate() -> None:
+    device = Device()
+    with pytest.raises(RecoveryBlocked, match="account close control unavailable"):
+        verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
+            expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
+            observe=observer([frame("account", account_id="ACCOUNT-A")]))
     assert device.taps == []
 
 
@@ -87,11 +96,11 @@ def test_restart_from_workshop_tutorial_claim() -> None:
             frame("workshop", controls={"battle_tab": (7, 8)}),
             frame("home", controls={"settings": (1, 2)}),
             frame("settings", controls={"account": (3, 4)}),
-            frame("account", account_id="ACCOUNT-A"),
-            frame("settings"), frame("home"),
+            frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
+            frame("settings", controls={"close": (910, 490)}), frame("home"),
         ]))
     assert device.taps == [(5, 6), (7, 8), (1, 2), (3, 4),
-                           (925, 600), (905, 510)]
+                           (940, 585), (910, 490)]
 
 
 def test_restart_from_finished_run_uses_observed_home() -> None:
@@ -103,8 +112,8 @@ def test_restart_from_finished_run_uses_observed_home() -> None:
             frame("game_over", controls={"home_from_game_over": (780, 1659)}),
             frame("home", controls={"settings": (1, 2)}),
             frame("settings", controls={"account": (3, 4)}),
-            frame("account", account_id="ACCOUNT-A"),
-            frame("settings"), frame("home"),
+            frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
+            frame("settings", controls={"close": (910, 490)}), frame("home"),
         ]))
     assert supervisor.verified == "ACCOUNT-A"
     assert device.taps[0] == (780, 1659)
@@ -120,11 +129,11 @@ def test_restart_waits_for_battle_without_tapping_it() -> None:
             frame("game_over", controls={"home_from_game_over": (780, 1659)}),
             frame("home", controls={"settings": (1, 2)}),
             frame("settings", controls={"account": (3, 4)}),
-            frame("account", account_id="ACCOUNT-A"),
-            frame("settings"), frame("home"),
+            frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
+            frame("settings", controls={"close": (910, 490)}), frame("home"),
         ]))
     assert supervisor.verified == "ACCOUNT-A"
-    assert device.taps == [(780, 1659), (1, 2), (3, 4), (925, 600), (905, 510)]
+    assert device.taps == [(780, 1659), (1, 2), (3, 4), (940, 585), (910, 490)]
 
 
 def test_ambiguous_home_control_never_taps() -> None:

@@ -216,6 +216,14 @@ def test_an_unknown_category_and_a_wrong_resolution_are_both_refused() -> None:
     assert autopilot.battle_tab_point(np.zeros((h, w // 2, 3), dtype=np.uint8), 'ATTACK') is None
 
 
+def test_native_1920_battle_tabs_follow_the_bottom_of_the_frame() -> None:
+    import autopilot
+    import cv2
+
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures' / 'in_run_defense_1920.png'))
+    assert autopilot.battle_tab_point(frame, 'DEFENSE') == (540, 1870)
+
+
 def test_a_blank_tab_bar_is_refused() -> None:
     """No visible cell borders is not evidence of three cells."""
     import autopilot

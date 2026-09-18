@@ -1,0 +1,122 @@
+[
+  {
+    "text": "v29.0.3",
+    "confidence": 0.9686314633914402,
+    "rect": [
+      883,
+      49,
+      121,
+      34
+    ]
+  },
+  {
+    "text": "THE TOWER",
+    "confidence": 0.9586828947067261,
+    "rect": [
+      352,
+      331,
+      380,
+      53
+    ]
+  },
+  {
+    "text": "This game uses 3rd party analytics",
+    "confidence": 0.9859566039898816,
+    "rect": [
+      188,
+      485,
+      703,
+      52
+    ]
+  },
+  {
+    "text": "and advertising services",
+    "confidence": 0.9923296595613161,
+    "rect": [
+      291,
+      539,
+      495,
+      41
+    ]
+  },
+  {
+    "text": "Please refer to all privacy policies",
+    "confidence": 0.9926377087831497,
+    "rect": [
+      201,
+      618,
+      678,
+      46
+    ]
+  },
+  {
+    "text": "before continuing",
+    "confidence": 0.9997772258870742,
+    "rect": [
+      359,
+      667,
+      361,
+      49
+    ]
+  },
+  {
+    "text": "EULA",
+    "confidence": 0.9980404376983643,
+    "rect": [
+      472,
+      853,
+      105,
+      39
+    ]
+  },
+  {
+    "text": "Privacy Policy",
+    "confidence": 0.9923070328576225,
+    "rect": [
+      384,
+      1008,
+      277,
+      48
+    ]
+  },
+  {
+    "text": "By tapping \"I Agree,\" you confirm you've",
+    "confidence": 0.9663784548640251,
+    "rect": [
+      146,
+      1221,
+      790,
+      43
+    ]
+  },
+  {
+    "text": "read through both documents and",
+    "confidence": 0.9981465032023769,
+    "rect": [
+      197,
+      1270,
+      684,
+      41
+    ]
+  },
+  {
+    "text": "agree to all terms and policies",
+    "confidence": 0.9886859213152239,
+    "rect": [
+      235,
+      1319,
+      607,
+      47
+    ]
+  },
+  {
+    "text": "I Agree",
+    "confidence": 0.9761129532541547,
+    "rect": [
+      452,
+      1499,
+      158,
+      52
+    ]
+  }
+]

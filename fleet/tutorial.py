@@ -6,6 +6,7 @@ import math
 
 from config import Rect
 from device import Image
+from geometry import anchored_y, supported_frame
 from ocr import TextBox
 
 
@@ -20,10 +21,13 @@ _MARKERS = (
 
 def workshop_coin_claim(frame: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] | None:
     """Return the measured Claim center only when the whole grant is readable."""
-    if frame.shape[:2] != (2400, 1080):
+    height, width = frame.shape[:2]
+    if not supported_frame(width, height):
         return None
     matched: list[TextBox] = []
     for label, bounds in _MARKERS:
+        bounds = Rect(bounds.x, anchored_y(bounds.y, height, 'center'),
+                      bounds.w, bounds.h)
         found = tuple(box for box in boxes if box.text.strip() == label
                       and math.isfinite(box.confidence) and box.confidence >= .9
                       and box.rect.w > 0 and box.rect.h > 0

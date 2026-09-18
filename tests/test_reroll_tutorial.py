@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
+import cv2
+import json
+from pathlib import Path
 
 from config import Rect
 from fleet.tutorial import workshop_coin_claim
@@ -24,6 +27,16 @@ def _boxes() -> tuple[TextBox, ...]:
 def test_measured_workshop_coin_grant_claim() -> None:
     frame = np.zeros((2400, 1080, 3), dtype=np.uint8)
     assert workshop_coin_claim(frame, _boxes()) == (541, 1565)
+
+
+def test_bluestacks_native_coin_grant_uses_observed_claim() -> None:
+    root = Path(__file__).parent / "fixtures"
+    frame = cv2.imread(str(root / "workshop_coin_grant_bluestacks_1920.png"))
+    rows = json.loads((root / "ocr" /
+                       "workshop_coin_grant_bluestacks_1920.json").read_text())
+    boxes = tuple(TextBox(row["text"], row["confidence"], Rect(*row["rect"]))
+                  for row in rows)
+    assert workshop_coin_claim(frame, boxes) == (541, 1326)
 
 
 def test_unmeasured_or_ambiguous_claim_is_held() -> None:

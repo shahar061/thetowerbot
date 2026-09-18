@@ -64,6 +64,51 @@ def test_summary_preserves_raw_unknown_and_missing_values() -> None:
     assert parse('stats_summary', tuple(reversed(recorded('stats_summary')))) == result
 
 
+def test_bluestacks_native_settings_exposes_stats_on_its_frame() -> None:
+    import account_screens
+    observed = (
+        ocr.TextBox('SETTINGS', .99, config.Rect(408, 251, 263, 43)),
+        ocr.TextBox('Stats', .99, config.Rect(663, 586, 114, 45)),
+        ocr.TextBox('v29.0.3', .99, config.Rect(819, 1671, 129, 34)),
+    )
+    native = np.zeros((1920, 1080, 3), dtype=np.uint8)
+    reading = account_screens.parse_frame(native, observed, now=123.)
+    assert reading is not None and reading.screen_id == 'account.settings'
+    assert reading.frame_height == 1920
+    target = account_screens.control_targets(reading.screen_id, observed, frame_height=1920)['stats']
+    assert target.point == (720, 608)
+
+
+def test_bluestacks_native_stats_summary_reads_lifetime_values() -> None:
+    reading = parse('stats_summary_bluestacks_1920')
+    assert reading is not None and reading.screen_id == 'account.stats.summary'
+    assert reading.frame_height == 1920
+    fields = {field.key: field for field in reading.fields}
+    assert fields['coins_earned'].raw_value == '1.38K'
+    assert fields['workshop_upgrades'].raw_value == '10'
+
+
+def test_bluestacks_native_stats_scan_reads_the_live_capture() -> None:
+    import account_screens
+
+    readings = account_screens.ScreenReadings()
+    assert readings.scan(frame('stats_summary_bluestacks_1920'))
+    assert readings.snapshot()['current_screen_id'] == 'account.stats.summary'
+
+
+def test_bluestacks_tier_rows_stay_blocked_until_measured() -> None:
+    import account_screens
+
+    observed = (
+        ocr.TextBox('STATS', .99, config.Rect(455, 246, 170, 48)),
+        ocr.TextBox('Wave', .99, config.Rect(370, 360, 110, 42)),
+        ocr.TextBox('Coins', .99, config.Rect(580, 360, 110, 42)),
+        ocr.TextBox('Cells', .99, config.Rect(790, 360, 110, 42)),
+    )
+    assert account_screens.parse_frame(np.zeros((1920, 1080, 3), dtype=np.uint8),
+                                       observed, now=123.) is None
+
+
 def test_tiers_match_each_column_without_filling_missing_cells() -> None:
     result = parse('stats_tiers')
     assert result.screen_id == 'account.stats.tiers'
@@ -466,13 +511,25 @@ def test_a_missing_or_ambiguous_template_is_never_tapped() -> None:
                           'settings_control').status == 'ambiguous'
     assert locate_control(any_frame('menu_main'), np.full((40, 40, 3), 7, dtype=np.uint8),
                           'settings_control').status == 'absent'
-    # A template larger than the frame, and a frame that is not the one every
-    # coordinate in this repo was measured at: both unusable, never a tap.
+    # A template larger than the frame and an unmeasured frame are both
+    # unusable, never a tap.
     assert locate_control(blank, np.zeros((2500, 40, 3), dtype=np.uint8),
                           'settings_control').status == 'unusable'
     assert locate_control(np.zeros((1200, 540, 3), dtype=np.uint8),
                           np.zeros((40, 40, 3), dtype=np.uint8),
                           'settings_control').status == 'unusable'
+
+
+def test_settings_close_is_located_from_the_recorded_frame() -> None:
+    from account_collection import CLOSE_TEMPLATE, locate_control
+    from vision import TemplateCache
+
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures' / 'account_screens'
+                           / 'settings_redacted.png'))
+    template = TemplateCache(config.TEMPLATE_DIR).get(CLOSE_TEMPLATE)
+    target = locate_control(frame, template, 'close')
+    assert target.status == 'located'
+    assert target.point == (904, 508)
 
 
 def test_an_unexamined_frame_is_never_read_as_a_clear_main_menu(

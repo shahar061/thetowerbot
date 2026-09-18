@@ -69,7 +69,7 @@ def verify_restart_account(
             break
         control = _CONTROLS.get(frame.screen)
         if control is not None:
-            if (set(frame.controls) != {control} or not frame.digest
+            if (set(frame.controls) not in ({control}, {control, "close"}) or not frame.digest
                     or not frame.evidence_ref or not math.isfinite(frame.observed_at)
                     or frame.observed_at > clock() or clock() - frame.observed_at > 5):
                 raise RecoveryBlocked("account navigation evidence unavailable")
@@ -90,9 +90,11 @@ def verify_restart_account(
                                   account_id=account.account_id) is not RecoveryState.READY):
         raise RecoveryBlocked("account recovery evidence blocked")
 
-    # The measured close controls are the same ones used by the qualified
-    # first-launch worker probe. Observe each resulting panel before the next.
-    device.click(925, 600)
+    # Resolve each close control from the observed frame. The nested dialogs
+    # move with the emulator height, so the 2400-height points are not safe.
+    if set(account.controls) not in ({"close"}, {"new_account", "close"}):
+        raise RecoveryBlocked("account close control unavailable")
+    device.click(*account.controls["close"])
     for _ in range(6):
         frame = observe(device)
         if frame.conflict_dialog:
@@ -104,7 +106,9 @@ def verify_restart_account(
         sleep(.5)
     else:
         raise RecoveryBlocked("account dialog close timed out")
-    device.click(905, 510)
+    if set(frame.controls) not in ({"close"}, {"account", "close"}):
+        raise RecoveryBlocked("settings close control unavailable")
+    device.click(*frame.controls["close"])
     for _ in range(6):
         frame = observe(device)
         if frame.conflict_dialog:

@@ -1,0 +1,132 @@
+[
+  {
+    "text": "5",
+    "confidence": 0.9973975419998169,
+    "rect": [
+      72,
+      29,
+      55,
+      45
+    ]
+  },
+  {
+    "text": "WORKSHOP",
+    "confidence": 0.9928419217467308,
+    "rect": [
+      31,
+      112,
+      297,
+      42
+    ]
+  },
+  {
+    "text": "A",
+    "confidence": 0.995468258857727,
+    "rect": [
+      52,
+      266,
+      33,
+      38
+    ]
+  },
+  {
+    "text": "WORKSHOP",
+    "confidence": 0.9946870133280754,
+    "rect": [
+      372,
+      273,
+      338,
+      46
+    ]
+  },
+  {
+    "text": "Spend coins to permanently increase",
+    "confidence": 0.9791667784963335,
+    "rect": [
+      158,
+      607,
+      770,
+      46
+    ]
+  },
+  {
+    "text": "the starting level of each upgrade,",
+    "confidence": 0.9936084491865975,
+    "rect": [
+      181,
+      658,
+      714,
+      51
+    ]
+  },
+  {
+    "text": "without increasing the upgrade cost",
+    "confidence": 0.9877827678407941,
+    "rect": [
+      162,
+      714,
+      760,
+      52
+    ]
+  },
+  {
+    "text": "Unlock new upgrades for each",
+    "confidence": 0.9759992829390934,
+    "rect": [
+      222,
+      791,
+      638,
+      55
+    ]
+  },
+  {
+    "text": "category.",
+    "confidence": 0.9997683829731412,
+    "rect": [
+      440,
+      849,
+      201,
+      53
+    ]
+  },
+  {
+    "text": "Here are some additional coins to get",
+    "confidence": 0.9908439468693089,
+    "rect": [
+      151,
+      950,
+      781,
+      50
+    ]
+  },
+  {
+    "text": "you started",
+    "confidence": 0.9979553547772494,
+    "rect": [
+      417,
+      1009,
+      245,
+      48
+    ]
+  },
+  {
+    "text": "50",
+    "confidence": 0.9996756315231323,
+    "rect": [
+      530,
+      1112,
+      77,
+      56
+    ]
+  },
+  {
+    "text": "CLAIM",
+    "confidence": 0.9986327528953552,
+    "rect": [
+      472,
+      1306,
+      139,
+      41
+    ]
+  }
+]

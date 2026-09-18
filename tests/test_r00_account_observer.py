@@ -22,6 +22,7 @@ from fleet.account_observer import (parse_account_popup, parse_google_play_profi
                                     StagingAccountObserver)
 import vision
 import config
+import game_over
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "r00" / "account_before_ocr.json"
@@ -50,6 +51,19 @@ def test_first_launch_consent_exposes_only_i_agree() -> None:
     assert reading is not None
     assert reading.screen == "tower_consent"
     assert reading.controls == {"i_agree": (531, 1764)}
+
+
+def test_bluestacks_native_first_launch_consent_uses_the_observed_button() -> None:
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" /
+                           "tower_consent_bluestacks_1920.png"))
+    rows = json.loads((Path(__file__).parent / "fixtures" / "ocr" /
+                       "tower_consent_bluestacks_1920.json").read_text())
+    observed = tuple(TextBox(row["text"], row["confidence"], Rect(*row["rect"]))
+                     for row in rows)
+    reading = parse_tower_consent(frame, observed, observed_at=101.,
+                                  app_version="29.0.3", evidence_ref="capture://air22")
+    assert reading is not None
+    assert reading.controls == {"i_agree": (531, 1525)}
 
 
 @pytest.mark.parametrize("removed", ["THETOWER", "EULA", "Privacy Policy", "I Agree"])
@@ -161,6 +175,27 @@ def test_game_stats_new_layout_exposes_home() -> None:
     assert reading.controls == {"home_from_game_over": (780, 1659)}
 
 
+def test_bluestacks_native_game_over_reads_result_and_home() -> None:
+    fixture_root = Path(__file__).parent / "fixtures"
+    frame = cv2.imread(str(fixture_root / "game_over_bluestacks_1920.png"))
+    rows = json.loads((fixture_root / "ocr" /
+                       "game_over_bluestacks_1920.json").read_text())
+    observed = tuple(TextBox(row["text"], row["confidence"], Rect(*row["rect"]))
+                     for row in rows)
+    result = game_over.parse_frame(frame, observed, now=101.)
+    assert result is not None
+    assert (result.frame_width, result.frame_height) == (1080, 1920)
+    fields = {field.key: field for field in result.fields}
+    assert fields["wave"].raw_value == "2"
+    assert fields["coins_earned"].raw_value == "5"
+    home = parse_game_stats_home(
+        frame, observed, vision.TemplateCache(config.TEMPLATE_DIR),
+        observed_at=101., app_version="29.0.3", evidence_ref="capture://air22",
+    )
+    assert home is not None
+    assert home.controls == {"home_from_game_over": (781, 1468)}
+
+
 def parse(observed: tuple[TextBox, ...] | None = None, *, shape: tuple[int, int, int] = (2400, 1080, 3)):
     return parse_account_popup(np.zeros(shape, dtype=np.uint8), boxes() if observed is None else observed,
                                observed_at=101., app_version="29.0.2", evidence_ref="capture://before")
@@ -173,6 +208,18 @@ def test_native_account_popup_reads_id_and_only_new_account_control() -> None:
     assert reading.account_id == "AAAAAAAAAAAAAAAA"
     assert reading.popup_title == "ACCOUNT" and reading.id_label == "ID:"
     assert reading.controls == {"new_account": (541, 1759)}
+
+
+def test_bluestacks_native_account_popup_uses_centered_dialog_bounds() -> None:
+    observed = (
+        TextBox("ACCOUNT", .99, Rect(398, 344, 282, 47)),
+        TextBox("ID: AAAAAAAAAAAAAAAA", .99, Rect(318, 455, 395, 30)),
+        TextBox("New Account", .99, Rect(400, 1498, 283, 43)),
+    )
+    reading = parse(observed, shape=(1920, 1080, 3))
+    assert reading is not None
+    assert reading.account_id == "AAAAAAAAAAAAAAAA"
+    assert reading.controls == {"new_account": (541, 1519)}
 
 
 def test_redacted_before_and_after_account_captures_have_distinct_ids() -> None:
@@ -222,12 +269,35 @@ def test_recorded_settings_locates_account_without_other_controls() -> None:
     assert set(reading.controls) == {"account"}
 
 
+def test_bluestacks_native_settings_locates_account() -> None:
+    observed = (
+        TextBox("SETTINGS", .99, Rect(408, 251, 263, 43)),
+        TextBox("Account", .99, Rect(281, 569, 161, 35)),
+        TextBox("v29.0.3", .99, Rect(819, 1671, 129, 34)),
+    )
+    reading = parse_settings(np.zeros((1920, 1080, 3), dtype=np.uint8), observed,
+                             observed_at=101., app_version="29.0.3",
+                             evidence_ref="capture://bluestacks-settings")
+    assert reading is not None
+    assert reading.controls == {"account": (361, 586)}
+
+
 def test_recorded_home_locates_settings_without_account_popup() -> None:
     frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "menu_main.png"))
     reading = parse_home(frame, (), vision.TemplateCache(config.TEMPLATE_DIR),
                          observed_at=101., app_version="29.0.2", evidence_ref="capture://home")
     assert reading is not None and reading.screen == "home"
     assert set(reading.controls) == {"settings"}
+
+
+def test_bluestacks_native_home_locates_settings_on_its_own_frame() -> None:
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "menu_main_bluestacks_1920.png"))
+    reading = parse_home(frame, (), vision.TemplateCache(config.TEMPLATE_DIR),
+                         observed_at=101., app_version="29.0.3",
+                         evidence_ref="capture://bluestacks-home")
+    assert reading is not None
+    x, y = reading.controls["settings"]
+    assert 900 < x < 1080 and 250 < y < 400
 
 
 def test_popup_never_counts_as_home_or_settings() -> None:
@@ -272,6 +342,29 @@ def test_live_observer_identifies_battle_without_exposing_controls(
                                      allowed_versions=frozenset({"29.0.2"}))(device)
     assert reading.screen == "battle"
     assert reading.controls == {}
+
+
+def test_live_observer_identifies_native_bluestacks_workshop(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ocr
+    root = Path(__file__).parent / "fixtures"
+    frame = cv2.imread(str(root / "menu_workshop_attack_1920.png"))
+    rows = json.loads((root / "ocr" / "menu_workshop_attack_1920.json").read_text())
+    observed = tuple(TextBox(row["text"], row["confidence"], Rect(*row["rect"]))
+                     for row in rows)
+    monkeypatch.setattr(ocr, "read", lambda *_, **__: observed)
+    device = SimpleNamespace(
+        serial="127.0.0.1:5775",
+        app_current=lambda: SimpleNamespace(package="com.TechTreeGames.TheTower"),
+        app_info=lambda _: SimpleNamespace(version_name="29.0.3"),
+        screenshot=lambda **_: PILImage.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)),
+    )
+    reading = StagingAccountObserver(
+        tmp_path, endpoint=device.serial, allowed_versions=frozenset({"29.0.3"}),
+    )(device)
+    assert reading.screen == "workshop"
+    assert 50 <= reading.controls["battle_tab"][0] <= 180
+    assert 1750 <= reading.controls["battle_tab"][1] <= 1900
 
 
 def test_live_observer_recognizes_only_the_measured_google_play_profile(

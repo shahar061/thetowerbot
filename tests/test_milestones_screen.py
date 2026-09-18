@@ -39,6 +39,17 @@ def test_a_claimable_ladder_offers_claim_all_at_its_measured_rect() -> None:
     assert reading.claim_all == (420, 255, 246, 53)
 
 
+def test_native_1920_ladder_uses_its_own_footer_position() -> None:
+    """The title and Claim All stay put while the footer moves up 480 px."""
+    reading = milestones_screen.parse_frame(
+        frame('menu_milestones_claimable_1920'),
+        boxes('menu_milestones_claimable_1920'))
+    assert reading is not None
+    assert reading.screen_id == 'milestones.ladder'
+    assert reading.tier == 1
+    assert reading.claim_all == (421, 256, 245, 51)
+
+
 def test_a_claimed_ladder_offers_nothing_and_that_ends_the_walk() -> None:
     """The terminal condition. `Claim All` is GONE one tap later, while the
     premium 50 COINS still glows - which is why the loop is keyed on this and
@@ -67,6 +78,22 @@ def test_the_modal_names_its_own_reward_and_currency() -> None:
     assert reading.screen_id == 'milestones.reward_modal'
     assert reading.reward_text == '25 COINS'
     assert (reading.currency, reading.amount) == ('coins', 25)
+
+
+def test_multi_reward_modal_locates_next_and_claim_at_both_heights() -> None:
+    cases = (
+        ('menu_milestones_reward_next_1920', 'next', 1, 2, (447, 1622, 186, 59)),
+        ('menu_milestones_reward_next_2400', 'next', 1, 2, (444, 1860, 191, 63)),
+        ('menu_milestones_reward_claim_1920', 'claim', 2, 2, (433, 1621, 214, 61)),
+        ('menu_milestones_reward_claim_2400', 'claim', 2, 2, (432, 1860, 217, 62)),
+    )
+    for name, action, index, total, rect in cases:
+        reading = milestones_screen.parse_frame(frame(name), boxes(name))
+        assert reading is not None, name
+        assert reading.screen_id == 'milestones.reward_modal'
+        assert (reading.modal_action, reading.modal_index, reading.modal_total) == (
+            action, index, total)
+        assert reading.modal_control == rect
 
 
 def test_the_reward_regex_reads_the_unspaced_spelling_too() -> None:
