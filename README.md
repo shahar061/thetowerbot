@@ -919,6 +919,54 @@ Reaching `--max-runs`, or stopping the bot from the dashboard, stops only the
 bot — the dashboard keeps serving, with a **Start** button ready to run
 another one.
 
+### Telegram status digests
+
+Both views above need you to be at the machine. The dashboard binds loopback
+and nothing else in the process talks outward, so away from the host "is it
+still running?" has no answer short of a VPN and an SSH client. A Telegram
+digest closes that: one outbound message on a timer, hourly by default.
+
+Set two environment variables and it turns itself on:
+
+```bash
+export TELEGRAM_BOT_TOKEN='123456:AA...'   # from @BotFather
+export TELEGRAM_CHAT_ID='987654321'        # from @userinfobot
+./run.sh
+```
+
+There is no `--telegram` flag to forget beside them: both set means on,
+either missing means off. `--telegram-interval 900` or
+`TELEGRAM_SUMMARY_SECONDS=900` changes the pace; `--no-telegram` suppresses
+the digests without unsetting anything. The first one is sent immediately at
+startup rather than an interval later — it doubles as the "bot just came up"
+signal, and it is how you find out you pasted the chat id wrong without
+waiting an hour to do it.
+
+Each digest is plain text:
+
+```
+The Tower bot - running, up 3h 15m
+Screen: BATTLE
+Scans: 5,412
+Wallet: $1,284,330
+Run #42: 15m in
+Runs completed: 3
+Taps: buy_upgrade 91, retry 3
+Skips: unaffordable 40
+Last error: none
+```
+
+**It is one-way, and structurally so.** There is no `getUpdates` loop and no
+command parser anywhere in `telegram_report.py`, so nothing typed into the
+chat has a path into the bot — a leaked token grants "send messages to this
+chat" and nothing else. That is also why this works from behind NAT with no
+port forwarded and no public URL: the bot only ever makes outbound requests.
+
+The digests stopping is itself the signal that the bot is gone, so a failed
+send is logged and counted but never raises — the timer keeps its next
+appointment. Tokens are scrubbed from those log lines: `urllib` puts the
+request URL in its exceptions, and the token sits in that path.
+
 ## Where the data goes
 
 Events are written to SQLite (`tower_bot.db` by default, `--db` to move it,
