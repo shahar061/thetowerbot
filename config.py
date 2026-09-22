@@ -554,6 +554,21 @@ SSE_HEARTBEAT_SECONDS: float = 15.0
 # sooner anyway.
 FRAME_POLL_SECONDS: float = 0.25
 
+# --- Telegram status digests ----------------------------------------------
+# How often the one-way status digest goes out. An hour is the default
+# because this answers "is it still running?", not "what is it doing right
+# now" - the dashboard already answers the second one, better, for anyone
+# who can reach it. See telegram_report.py.
+TELEGRAM_SUMMARY_SECONDS: float = 3600.0
+# Short on purpose. A digest that cannot be sent is dropped and retried at
+# the next interval, so there is nothing to gain by holding a socket open:
+# the next attempt is already scheduled, and a long timeout only delays the
+# log line that says the network is down.
+TELEGRAM_TIMEOUT_SECONDS: float = 10.0
+# SECURITY: the bot token and chat id are read from the environment
+# (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID), never from here. This file is
+# committed; a token in it would be a token in the git history forever.
+
 # --- Web dashboard --------------------------------------------------------
 # SECURITY: loopback only, and there is no auth. The dashboard serves
 # screenshots of a live session and the full event history of this machine.

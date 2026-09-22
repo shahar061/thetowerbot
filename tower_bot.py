@@ -87,6 +87,7 @@ from sinks.state import BotState, StateSink
 from sinks.store import StoreSink
 from sinks.tui import TuiSink
 from strategy import MIN_INTERVAL, ControlError, Strategy, StrategyStore
+from telegram_report import TelegramConfig, TelegramReporter
 
 logger = logging.getLogger("tower_bot")
 
@@ -1351,6 +1352,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="dashboard bind address - loopback by default, and there is no auth",
     )
     parser.add_argument("--web-port", type=int, default=config.WEB_PORT)
+    parser.add_argument(
+        "--telegram-interval", type=float, default=None,
+        help="seconds between Telegram status digests "
+             "(default: $TELEGRAM_SUMMARY_SECONDS, else "
+             f"{config.TELEGRAM_SUMMARY_SECONDS:.0f})",
+    )
+    parser.add_argument(
+        "--no-telegram", action="store_true",
+        help="suppress Telegram digests even when the environment configures them",
+    )
     parser.add_argument("--worker-id", default=None, help="fleet worker identity")
     parser.add_argument("--lease-id", default=None, help="fleet lease identity")
     parser.add_argument("--attempt-id", default=None, help="fleet attempt identity")
@@ -2022,6 +2033,16 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
 
     bus = events.EventBus(start_seq=seed_seq)
     state = BotState()
+    # Resolved before the sink list is built because it decides one of the
+    # entries: the digests read BotState, and BotState is only fed when
+    # something below appends a StateSink. --once is excluded outright - a
+    # single scan has no "still running" to report on, and a digest for it
+    # would arrive after the process had already exited.
+    telegram_settings = (
+        None
+        if args.once or args.no_telegram
+        else TelegramConfig.from_env(interval=args.telegram_interval)
+    )
     sinks: list[events.Sink] = [TuiSink(state=state) if args.tui else LogSink()]
     if runtime is not None and args.reroll_pool is not None and not args.tui:
         from fleet.reroll_journal import RerollJournal
@@ -2031,7 +2052,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                                   runtime.worker_id)]
     if args.store:
         sinks.append(StoreSink(db_path))
-    if args.web and not args.tui:
+    if (args.web or telegram_settings is not None) and not args.tui:
         # Under --tui the panel's sink already feeds the shared state.
         sinks.append(StateSink(state))
     sse = SseSink() if args.web else None
@@ -2059,6 +2080,10 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
             print(f"Dashboard on {where} - no bot running, press Start")
         else:
             print(f"Dashboard on {where}")
+
+    # Bound before the try so the finally can close it whether or not the
+    # block below got far enough to start it.
+    reporter: TelegramReporter | None = None
 
     # Everything from start() onwards is inside the try: anything raising
     # between starting the consumer threads and the loop would otherwise
@@ -2112,6 +2137,18 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
         shopping_session = build_shopping(
             bus, vision.TemplateCache(config.TEMPLATE_DIR), db_path=db_path,
         )
+
+        if telegram_settings is not None:
+            # Started here rather than beside the sinks because it reports
+            # `paused`, and Controls does not exist until the strategy has
+            # loaded. Its first digest goes out immediately, which is also
+            # the "bot just came up" signal.
+            reporter = TelegramReporter(state, telegram_settings, controls=controls)
+            reporter.start()
+            logger.info(
+                "Telegram digests every %.0fs to chat %s",
+                telegram_settings.interval, telegram_settings.chat_id,
+            )
 
         if args.once:
             # A single scan never settles the debounced tracker (it needs
@@ -2213,6 +2250,11 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
             # the two never actually disagree.
             bot.run_forever(max_runs=args.max_runs)
     finally:
+        # Before the sinks: the reporter reads BotState, and a digest
+        # rendered while the consumer threads are being torn down would
+        # describe a half-stopped bot on its way out.
+        if reporter is not None:
+            reporter.close()
         for sink in sinks:
             sink.close()
     return 0
