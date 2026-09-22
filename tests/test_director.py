@@ -477,6 +477,109 @@ def test_a_done_objectives_observed_is_true_and_a_blocked_ones_predicate_is_neve
     assert blocked_candidate.observed is not True
 
 
+# -- propagated value ----------------------------------------------------
+def chain_graph() -> tuple[objectives.Objective, ...]:
+    """Three links and a distraction, the shape the whole feature exists for.
+
+    `enabler` (10) gates `gate` (9) gates `goal` (12) - the same arithmetic
+    as the turtle build's "unlock defense upgrades -> unlock thorns ->
+    thorns", which `fleet/reroll_planner.py:_PREREQUISITES` already encodes.
+    `distraction` (11) is worth more than `enabler` on its own and nothing
+    depends on it.
+
+    Every predicate answers False - known, not done - so `classify` reads
+    `enabler` and `distraction` ready and the other two blocked, and the
+    only thing left to decide the order is the value.
+    """
+    def make(oid: str, value: float, requires: tuple[str, ...]) -> objectives.Objective:
+        return objectives.Objective(
+            id=oid, requires=requires, grants=(), satisfied_by=lambda _r: False,
+            actions=(objectives.Action(executor="test.noop"),), value=value,
+            risk="reversible", knowledge_refs=(), concept_ids=())
+
+    return (make("goal", 12., ("gate",)), make("gate", 9., ("enabler",)),
+            make("enabler", 10., ()), make("distraction", 11., ()))
+
+
+def chain_plan() -> director.Plan:
+    return director.plan(
+        revision(), knowledge=knowledge.KNOWLEDGE, graph=chain_graph(),
+        rates=CurrencyRates(1000., 1, 3, "test"), strategy=strategy())
+
+
+def test_a_cheap_enabler_outranks_the_distraction_it_is_worth_less_than() -> None:
+    """The defect this phase exists to fix, as a test.
+
+    On declared value alone `distraction` (11) beats `enabler` (10) and the
+    account never buys the unlock that would make `goal` (12) reachable at
+    all - `goal` is blocked, so it can never be `top`, and the chain is
+    never started, forever. Ranked on the PROPAGATED value the enabler is
+    worth 10 + 0.6 * (9 + 0.6 * 12) = 19.72 and leads.
+
+    FAILING-FIRST: against a `plan()` that still fed `objective.value` to
+    `score`/`Candidate.value`, this asserts "distraction" and passes.
+    """
+    result = chain_plan()
+    assert result.top is not None
+    assert result.top.objective_id == "enabler"
+    assert result.top.value == pytest.approx(19.72)
+
+
+def test_a_blocked_objective_is_never_top_however_much_value_it_holds() -> None:
+    """Propagation fixes the numerator, never the gate.
+
+    `goal` carries the largest declared value in the graph and `gate`
+    inherits 16.2 - more than any ready candidate's own declared number -
+    and both are still blocked on a prerequisite nobody has satisfied.
+    `top` stays `ranked[0] if ready and unheld`, so neither can be
+    recommended: a plan that told an operator to buy something the game
+    will not sell them is worse than one that tells them to buy the unlock.
+    """
+    result = chain_plan()
+    by_objective = {c.objective_id: c for c in result.candidates}
+    assert by_objective["gate"].value == pytest.approx(16.2)
+    assert by_objective["gate"].value > by_objective["distraction"].value
+    assert by_objective["gate"].status == "blocked"
+    assert result.top is not None and result.top.status == "ready"
+    assert [c.objective_id for c in result.candidates[:2]] == ["enabler", "distraction"]
+
+
+def test_a_candidate_ranked_on_a_chain_says_what_the_chain_is() -> None:
+    """"Score 19.72" is not an explanation; "which leads to goal" is.
+
+    The chain is carried on the candidate (`path`) AND rendered into the
+    sentence a human reads, because a propagated number that cannot be
+    traced back to the objective it was inherited from is exactly the
+    unexplained rank this feature was supposed to replace.
+    """
+    top = chain_plan().top
+    assert top is not None
+    assert top.path == ("enabler", "gate", "goal")
+    assert "which leads to goal" in top.why
+    assert "enabler -> gate -> goal" in top.why
+
+
+def test_an_objective_that_unlocks_nothing_claims_no_chain() -> None:
+    """A one-element path is the honest answer for a leaf, and it must not
+    produce a sentence: 33 of the authored graph's 42 rows would otherwise
+    carry "which leads to itself"."""
+    by_objective = {c.objective_id: c for c in chain_plan().candidates}
+    assert by_objective["distraction"].path == ("distraction",)
+    assert "which leads to" not in by_objective["distraction"].why
+    assert director.chain_clause(("distraction",)) is None
+
+
+def test_the_plan_payload_carries_the_chain_for_the_page_that_renders_it() -> None:
+    """`as_payload` is what `web/app.py` serves. A chain computed and then
+    dropped on the way out leaves the dashboard showing a rank it cannot
+    explain - the same discard `_plan_reason` was caught making with the
+    census."""
+    payload = director.as_payload(chain_plan(), knowledge=knowledge.KNOWLEDGE)
+    top = payload["top"]
+    assert isinstance(top, dict)
+    assert top["path"] == ["enabler", "gate", "goal"]
+
+
 def test_director_module_imports_nothing_that_touches_a_device() -> None:
     """Enforced, not trusted: an allowlist over director.py's own import
     statements (not its transitive closure), the same discipline
@@ -494,7 +597,8 @@ def test_director_module_imports_nothing_that_touches_a_device() -> None:
             imported.add(node.module.split(".")[0])
 
     allowed = {"__future__", "math", "dataclasses", "knowledge", "objectives",
-               "account_state", "affordability_horizon", "progression", "strategy"}
+               "account_state", "affordability_horizon", "progression", "strategy",
+               "value_propagation"}
     assert imported <= allowed, imported - allowed
     forbidden = {"device", "shopping", "transactions", "time", "os", "socket",
                  "ultimate_weapons", "cards", "ocr", "screen_discovery", "db",

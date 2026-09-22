@@ -21,10 +21,20 @@ def worker(tmp_path: Path, account_id: str = "ACCOUNT-A") -> RerollProgress:
 
 
 def test_single_planned_row_uses_existing_shopping_executor(tmp_path: Path) -> None:
+    """One row, whichever row the planner picked.
+
+    The expected row was `("Damage", "ATTACK")`, the head of the planner's
+    old `weight / (1 + purchases)` rotation. The planner now ranks on
+    propagated value, so an untouched account leads with the unlock the
+    thorns chain hangs off - see tests/test_reroll_planner.py. What this
+    test is actually about, one armed row carrying the planner's pick, is
+    unchanged.
+    """
     progress = worker(tmp_path)
     base = Strategy.from_config().shopping
     policy = progress.shopping_policy(base)
-    assert [(row.name, row.category) for row in policy.workshop] == [("Damage", "ATTACK")]
+    assert [(row.name, row.category) for row in policy.workshop] == [
+        ("Unlock Defense Upgrades", "DEFENSE")]
     assert policy.enabled == base.enabled and policy.armed == base.armed
     record = json.loads((progress.root / "reroll-plan.json").read_text())
     assert record["account_id"] == "ACCOUNT-A"
@@ -45,15 +55,31 @@ def test_reroll_unlock_rule_is_armed_even_if_saved_strategy_disabled_unlocks(tmp
 
 
 def test_only_confirmed_ledger_purchase_advances_plan(tmp_path: Path) -> None:
+    """An unproven debit is not a purchase, so it must not move the plan.
+
+    Was one insert of an unproven and a bought Damage, asserting the plan
+    had moved on by exactly one row (`attack_speed`). A milestone is met or
+    not rather than divided by a purchase count, so counting one Damage or
+    two now gives the same answer and that assertion no longer separates the
+    two cases at all. The rows are inserted one at a time instead, against
+    the row the planner actually recommends, which puts the unproven debit
+    and the confirmed one on either side of a visible change of plan.
+    """
     progress = worker(tmp_path)
     path = progress.root / "tower_bot.db"
-    with db.connect(path) as connection:
-        for verdict in ("unproven", "bought"):
+    planned = progress.decision().upgrade_id
+
+    def buy(verdict: str) -> None:
+        with db.connect(path) as connection:
             connection.execute(
                 "INSERT INTO ledger(ts,kind,item,category,currency,dry_run,detail) "
-                "VALUES (1,'WORKSHOP_BUY','Damage','ATTACK','coins',0,?)",
+                "VALUES (1,'WORKSHOP_BUY','Unlock Defense Upgrades','DEFENSE','coins',0,?)",
                 (json.dumps({"verdict": verdict}),))
-    assert progress.decision().upgrade_id == "attack_speed"
+
+    buy("unproven")
+    assert progress.decision().upgrade_id == planned
+    buy("bought")
+    assert progress.decision().upgrade_id != planned
 
 
 def test_visible_granted_rows_advance_unlock_after_unproven_debit(tmp_path: Path) -> None:
@@ -75,11 +101,15 @@ def test_visible_granted_rows_advance_unlock_after_unproven_debit(tmp_path: Path
 
 def test_price_and_wallet_are_fresh_and_specific_to_planned_item(tmp_path: Path) -> None:
     progress = worker(tmp_path)
+    # "damage" was the planned row when this was written; it is now
+    # "unlock_defense_upgrades" (see test_single_planned_row_uses_existing_
+    # shopping_executor). "attack_speed" is still the unplanned row whose
+    # price must be ignored.
     progress.observe_price("attack_speed", 100, 10)
     assert progress.decision().state == "observe_price"
-    progress.observe_price("damage", 80, 120)
+    progress.observe_price("unlock_defense_upgrades", 80, 120)
     assert progress.decision().state == "save_coins"
-    progress.observe_price("damage", 130, 120)
+    progress.observe_price("unlock_defense_upgrades", 130, 120)
     assert progress.decision().state == "buy"
 
 
@@ -157,7 +187,9 @@ def test_lifetime_coins_from_another_account_are_rejected(tmp_path: Path) -> Non
 
 def test_stale_price_cannot_authorize_purchase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     progress = worker(tmp_path)
-    progress.observe_price("damage", 1000, 50)
+    # The planned row, which moved from "damage" - see
+    # test_single_planned_row_uses_existing_shopping_executor.
+    progress.observe_price("unlock_defense_upgrades", 1000, 50)
     assert progress.decision().state == "buy"
     import fleet.reroll_progress as module
     now = module.time.time()

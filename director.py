@@ -91,6 +91,63 @@ can never become ``top`` - for reasons the graph itself does not encode:
    what WOULD gate the action, not to gate the action itself - this module
    arms nothing.
 
+Value is propagated; readiness is not
+---------------------------------------
+The numerator of ``score`` is ``value_propagation.effective_values(graph)``
+- the objective's own declared value PLUS a discounted share of the best
+thing it makes reachable - not the flat ``Objective.value``. Without that,
+this module could not walk a chain at all: "unlock defense upgrades" is
+worth 10 on its own next to a "defense absolute" worth 16, so the cheap
+enabler that gates the whole turtle build ranked below the thing it gates,
+forever, while the thing it gates stayed ``blocked`` and could never be
+``top``. Nothing bought the unlock, so nothing ever unblocked the goal. See
+``value_propagation.py``'s own docstring for the arithmetic and for why the
+fold is ``max`` rather than ``sum``.
+
+What propagation deliberately does NOT do is change readiness. ``top`` is
+still ``ranked[0] if ready and unheld`` and ``status`` is still
+``classify()``'s answer verbatim, so a blocked objective that now carries a
+large effective value is still blocked and still cannot be recommended -
+propagation fixes the numerator, never the gate. The visible effect is that
+its ENABLER outranks its competition, which is the whole point:
+``Candidate.path`` carries ``chain_to``'s argmax walk so the plan can say
+"unlock defense upgrades, which leads to thorns" instead of publishing a
+number that silently went up.
+
+``Candidate.value`` therefore holds the EFFECTIVE value, not the declared
+one. The declared number stays on the graph (``objectives.Objective.value``),
+where a human wrote it and can audit it; this module reports the derived one
+because that is the number it actually ranked with, and a dashboard showing
+a rank it cannot reproduce from the fields next to it is worse than one
+showing no number at all.
+
+A knowledge gap this wiring does NOT close
+--------------------------------------------
+``workshop_objectives`` emits objectives with an EMPTY ``knowledge_refs``
+(honestly: a build's provenance is ``builds.v1.json``'s ``build_sources``,
+not a wiki fact - see that module's "Knowledge citations" section). So hold
+reason 3 below - "an unverified citation behind a real spend" - cannot see
+that a generated Workshop objective rests on a build whose own
+``rule_verified`` is ``False``, and every such objective is unheld today.
+That is left deliberately open rather than papered over here, because the
+only shapes available to close it in THIS module are both worse than the
+gap. Holding on a build's ``rule_verified`` would require ``plan()`` to be
+handed the ``builds.Build`` the graph came from, and since every build in
+the committed pack is ``rule_verified=False``, the result would be that
+every priced Workshop objective is held, ``top`` is ``None`` forever and the
+decision layer answers ``needs_operator`` on every call - recommending
+nothing at all, which is exactly what ``objectives.py`` declined to do when
+it ruled that knowledge informs graph SHAPE, not predicate truth. Matching
+on the ``workshop.`` id prefix here would be the "a future author has to
+remember" shape this module has already rejected twice (see
+``_permanently_unresolvable_reason``). The fix belongs upstream, on the
+graph: a generated objective should carry its provenance in a field
+``_held_reasons`` can read - either a build-pack citation resolvable through
+a pack this module is already handed, or a declared flag alongside
+``never_satisfiable``. ``tests/test_decision.py`` pins today's behaviour
+(a priced generated objective is NOT held) so that closing the gap is a
+visible, failing-test change rather than a silent one.
+
 Purity
 ------
 No I/O, no clock, no device, no database RUNS when ``plan()`` is called -
@@ -120,6 +177,7 @@ from dataclasses import dataclass
 
 import knowledge
 import objectives
+import value_propagation
 from account_state import AccountRevision
 from affordability_horizon import hours_to_afford
 from progression import CurrencyRates
@@ -164,13 +222,33 @@ class Candidate:
     held objective still reports what its score WOULD be, so a human can
     see what unblocking or clearing the hold would buy.
 
-    `value` mirrors `Objective.value` and exists on the candidate (not just
-    reachable through the graph) so `rank` can use it directly as a
-    tiebreak for the common case where `score` is `None` for both
-    candidates being compared - see `rank`'s own docstring for why that
-    case is the common one, not the rare one. Defaults to `0.0` for the
-    synthetic candidates this module's own test suite constructs directly
-    (bypassing `plan()`, which always supplies the real objective's value).
+    `value` is the EFFECTIVE value
+    (`value_propagation.effective_values`) - the objective's own declared
+    number plus a discounted share of the best thing it unlocks - not
+    `Objective.value`. It exists on the candidate (not just reachable
+    through the graph) so `rank` can use it directly as a tiebreak for the
+    common case where `score` is `None` for both candidates being compared
+    - see `rank`'s own docstring for why that case is the common one, not
+    the rare one - and because it is the number this module actually
+    ranked with: a reader who cannot reproduce the order from the fields
+    in front of them has been handed a ranking they must take on trust.
+    The declared number is still on the graph, unmodified, which is the
+    point of keeping the two apart (see `value_propagation`'s
+    `effective_values`, which returns a dict rather than re-valued
+    objectives). Defaults to `0.0` for the synthetic candidates this
+    module's own test suite constructs directly (bypassing `plan()`).
+
+    `path` is `value_propagation.chain_to`'s walk from this objective
+    through the best-dependent edge at each step - the chain that JUSTIFIES
+    the effective value, read off the same traversal that produced it, so
+    the explanation cannot disagree with the number. `(objective_id,)` -
+    length one - means nothing depends on this objective and it inherited
+    nothing; anything longer is the sentence `_why` renders ("unlock
+    defense upgrades, which leads to thorns"). Defaults to `()` rather
+    than to the one-element tuple, because a synthetic candidate built
+    directly in a test has no graph behind it and claiming a one-step
+    chain for it would be inventing a fact about a graph that was never
+    consulted.
 
     `observed` is the tri-state `objective.satisfied_by(revision)` result
     that decided `status` - not re-derived from `status`, which collapses
@@ -186,6 +264,20 @@ class Candidate:
     done yet" reads very differently from "ready, but we have never
     actually looked" - so it is carried here, alongside `status`, rather
     than folded into it.
+
+    `preconditions` is every `Action.precondition` this objective's actions
+    declare, verbatim and in order. It is carried because a `Plan` is all
+    `decision.py` is given, and a gate stated only on the graph is a gate
+    the decision layer cannot see: `workshop_objectives` deliberately
+    writes a real game prerequisite THERE - rather than into `requires` -
+    when the build weights no objective for it (turtle's `cash_bonus`
+    needs Unlock Cash Bonuses, which the opening build buys a stage
+    earlier), precisely because a dangling `requires` id would pin the
+    objective to `blocked` forever. Dropping the string here would turn
+    "the gate is stated where a human can read it" into "the gate is
+    stated nowhere a consumer can reach", which is the silent no-op that
+    arrangement exists to avoid. Empty for every objective in the authored
+    graph today.
     """
 
     objective_id: str
@@ -200,6 +292,8 @@ class Candidate:
     knowledge_refs: tuple[str, ...]
     value: float = 0.0
     observed: bool | None = None
+    path: tuple[str, ...] = ()
+    preconditions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -418,10 +512,56 @@ def _held_reasons(objective: objectives.Objective, pack: knowledge.Pack,
     return tuple(reasons)
 
 
+def plain_name(objective_id: str) -> str:
+    """An objective id as a person would say it out loud.
+
+    Public, and called from `decision.py`, so that the plan's sentence and
+    the decision's sentence name the same objective the same way. Two
+    private copies would drift the day one of them learned about a new id
+    shape, and a human comparing "Top pick: ..." against "Buy ..." would be
+    reading two different nouns for one thing.
+
+    The last dotted segment, underscores opened out:
+    `workshop.unlock_defense_upgrades` -> "unlock defense upgrades". A last
+    segment that does not START with a letter is not a name at all but an
+    index (`tier.unlock.2`, `uw.slot.1`), and "2" is not something a person
+    can act on - so the whole id is used there instead. The id itself is
+    always printed alongside this, never replaced by it: this is a reading
+    aid, and a reading aid that hid the checkable identifier would cost a
+    reader the ability to find the objective in the graph.
+    """
+    tail = objective_id.rsplit(".", 1)[-1]
+    if not tail or not tail[0].isalpha():
+        return objective_id.replace("_", " ")
+    return tail.replace("_", " ")
+
+
+def chain_clause(path: tuple[str, ...]) -> str | None:
+    """The sentence a propagated value owes the reader, or None if it owes none.
+
+    `None` for a path of one (or of none): nothing depends on the
+    objective, it inherited nothing, and its rank is its own declared value
+    - there is no chain to explain, and a sentence claiming one would be
+    noise on most of the authored graph's rows.
+
+    Both renderings are present on purpose. The plain one - "unlock defense
+    upgrades, which leads to thorns" - is what a human acts on; the arrow
+    chain of full ids is what the same human checks against the graph when
+    the recommendation looks wrong. Dropping the second would leave a claim
+    about a chain with no way to audit it, which is the failure
+    `value_propagation` built `chain_to` out of the argmax edges to avoid;
+    dropping the first would leave an id soup nobody reads.
+    """
+    if len(path) < 2:
+        return None
+    return (f"Ranked on what it leads to: {plain_name(path[0])}, which leads "
+            f"to {plain_name(path[-1])} ({' -> '.join(path)}).")
+
+
 def _why(objective_id: str, status: objectives.Status, blocked_by: tuple[str, ...],
          held_by: tuple[str, ...], price: int | float | None, currency: str | None,
          hours: float | None, scored: float | None, rates: CurrencyRates,
-         observed: bool | None) -> str:
+         observed: bool | None, path: tuple[str, ...] = ()) -> str:
     """A sentence a human reads - never just a score.
 
     `observed is None` on a "ready" objective means `satisfied_by(revision)`
@@ -437,6 +577,15 @@ def _why(objective_id: str, status: objectives.Status, blocked_by: tuple[str, ..
     (the prerequisite, not this objective's own predicate, is what is
     unresolved), and "done" means the predicate returned `True`, never
     `None`.
+
+    `path` closes the loop between the score and the reason for it. Once
+    the numerator is a PROPAGATED value (see this module's docstring), a
+    cheap enabler can outrank a much more valuable objective and the
+    sentence explaining it would otherwise read "costs 500 coins (score
+    3.9)" with no hint of where 3.9 came from - a number that silently went
+    up, which is precisely what a human cannot check. The chain clause is
+    last, immediately after the score it explains, and is omitted entirely
+    for an objective that inherited nothing.
     """
     parts: list[str] = []
 
@@ -480,6 +629,10 @@ def _why(objective_id: str, status: objectives.Status, blocked_by: tuple[str, ..
         parts.append(f"Costs {price} {currency}; about {hours:.2f}h to afford.")
     else:
         parts.append(f"Costs {price} {currency}; about {hours:.2f}h to afford (score {scored:.3f}).")
+
+    chain = chain_clause(path)
+    if chain is not None:
+        parts.append(chain)
 
     return " ".join(parts)
 
@@ -554,9 +707,18 @@ def plan(revision: AccountRevision, *, knowledge: knowledge.Pack,
     docstring for how `held_by` decides what would gate an action without
     ever gating it here. `observed_at` is `revision.created_at`: the only
     notion of "now" this function is allowed, since it takes no clock.
+
+    Ranks on `value_propagation.effective_values(graph)` rather than on the
+    flat `Objective.value` - see this module's docstring - and carries
+    `chain_to`'s walk on each candidate so the ranking can explain itself.
+    The signature is unchanged: propagation is derived from the `graph`
+    argument this function already takes, so `web/app.py`'s call site and
+    the `Plan` it renders need no edit at all.
     """
     statuses = objectives.classify(graph, revision)
     done = frozenset(oid for oid, s in statuses.items() if s == "done")
+    # One call, one traversal, for the whole graph - not one per candidate.
+    effective = value_propagation.effective_values(graph)
 
     candidates: list[Candidate] = []
     for objective in graph:
@@ -579,11 +741,26 @@ def plan(revision: AccountRevision, *, knowledge: knowledge.Pack,
         balance = _balance(revision, currency)
         rate = _rate_for(currency, rates)
         hours = hours_to_afford(price, balance, rate)
-        scored = score(objective.value, hours)
+        # The propagated value, never `objective.value` - the whole reason
+        # this module imports value_propagation. Indexed rather than
+        # `.get`: `effective_values` is documented to key exactly the ids
+        # in `graph`, so a KeyError here would mean that contract broke,
+        # and a default would hide it by ranking the objective at zero.
+        value = effective[objective.id]
+        scored = score(value, hours)
+        # Re-solves the graph per candidate. At the sizes this module ranks
+        # (42 authored objectives, 7-12 generated per build) that is far
+        # below the cost of `classify()`'s own per-objective predicate
+        # calls, and the alternative - caching `_solve`'s memo out here -
+        # would put a second copy of value_propagation's traversal state in
+        # a consumer, which is the drift `_Propagation` exists to prevent.
+        path = value_propagation.chain_to(graph, objective.id)
+        preconditions = tuple(action.precondition for action in objective.actions
+                              if action.precondition is not None)
 
         held_by = _held_reasons(objective, knowledge, strategy, price)
         why = _why(objective.id, status, blocked_by, held_by, price, currency,
-                   hours, scored, rates, observed)
+                   hours, scored, rates, observed, path)
 
         candidates.append(Candidate(
             objective_id=objective.id,
@@ -596,8 +773,10 @@ def plan(revision: AccountRevision, *, knowledge: knowledge.Pack,
             held_by=held_by,
             why=why,
             knowledge_refs=objective.knowledge_refs,
-            value=objective.value,
+            value=value,
             observed=observed,
+            path=path,
+            preconditions=preconditions,
         ))
 
     ranked = rank(tuple(candidates))
@@ -678,6 +857,15 @@ def _candidate_payload(candidate: Candidate, knowledge: knowledge.Pack) -> dict[
         "blocked_by": list(candidate.blocked_by),
         "held_by": list(candidate.held_by),
         "why": candidate.why,
+        # Additive, and a list of plain strings - the chain that justifies
+        # `score`. A client that has never heard of it renders exactly what
+        # it rendered before; one that has can show a reader why a cheap
+        # unlock is at the top of their page.
+        "path": list(candidate.path),
+        # Also additive. A gate the graph states but does not enforce (see
+        # `Candidate.preconditions`) is exactly the thing a human reading a
+        # recommendation to spend needs in front of them.
+        "preconditions": list(candidate.preconditions),
         "knowledge_refs": [_knowledge_ref_payload(ref, knowledge) for ref in candidate.knowledge_refs],
     }
 
