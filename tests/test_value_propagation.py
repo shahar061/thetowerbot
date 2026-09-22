@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import pytest
 
+import builds
 import objectives
 import value_propagation
-from fleet.reroll_planner import _PREREQUISITES, _TURTLE
 from value_propagation import DEFAULT_DISCOUNT, chain_to, effective_values
 
 
@@ -372,19 +372,28 @@ def test_equal_valued_dependents_break_the_tie_on_id_not_graph_order() -> None:
 # -- the real chain this feature exists for --------------------------------
 
 def _turtle_graph() -> tuple[objectives.Objective, ...]:
-    """The live turtle build as an objective graph: `fleet.reroll_planner`'s
-    own weights and prerequisites, read from that module rather than copied,
-    so a future edit to either one is felt here.
+    """The live turtle build as an objective graph: the committed pack's own
+    weights and prerequisites, read from `builds` rather than copied, so a
+    future edit to either one is felt here.
+
+    These numbers used to be read off `fleet.reroll_planner._TURTLE` and
+    `._PREREQUISITES`, which is where they lived before the pack existed.
+    That module now sources them from here, so reading them from the planner
+    would be reading this same data through one more hop; the assertions
+    below are unchanged and still run against the only surviving copy.
 
     Two of the prerequisites it declares (`unlock_cash_bonuses`,
     `unlock_coin_bonuses`) are not themselves weighted turtle upgrades, so
     they are exactly the "id with no matching objective" case - ignored as
     non-edges, which is how a real slice of a real plan arrives.
     """
+    turtle = builds.by_id("turtle")
+    assert turtle is not None
+    prerequisites = builds.prerequisites()
     return tuple(
         _objective(upgrade_id, float(weight),
-                   requires=(_PREREQUISITES[upgrade_id],) if upgrade_id in _PREREQUISITES else ())
-        for upgrade_id, weight in _TURTLE
+                   requires=(prerequisites[upgrade_id],) if upgrade_id in prerequisites else ())
+        for upgrade_id, weight in turtle.weights
     )
 
 

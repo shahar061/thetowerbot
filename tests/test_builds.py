@@ -1,11 +1,25 @@
 """The port of fleet/reroll_planner.py's weights into knowledge/builds.v1.json.
 
-The load-bearing tests here are the ones that compare the pack against
-`fleet.reroll_planner`'s own module constants. Everything else checks that a
-malformed pack fails loudly; those comparisons check that the faithful pack
-says exactly what the planner already says, which is the only evidence that
-the copy is a port rather than a rewrite. They are expected to fail the day
-somebody edits one side without the other - that is the point of them.
+These tests were written while the port had two sides: `_OPENING`,
+`_TURTLE`, `_PREREQUISITES`, `_TARGETS` and `_FOCUS` still stood in
+`fleet/reroll_planner.py`, and the comparisons below read them from that
+module so that editing either side without the other failed here.
+
+That second side is deliberately gone: the planner is now an adapter over
+this pack and holds no numbers at all, which is the whole point of the
+phase - one copy, in the committed file. The comparisons are kept, re-aimed
+at the two things that can still disagree: what `knowledge/builds.v1.json`
+says on disk, and what `builds.REGISTRY` serves after loading it. That is a
+weaker claim than the one they made before, and it is the strongest one
+still available - the planner's tables survive only in git history, at the
+revision `build_sources` pins (`fc3e883`), and a test that shelled out to
+`git show` to recover them would be pinning a commit rather than a
+behaviour. The behaviour that the pack reproduces the planner's ordering is
+pinned instead by `tests/test_reroll_planner.py`, which runs the adapter,
+and by `tests/test_value_propagation.py`, which builds the real turtle graph
+out of this pack.
+
+Everything else here checks that a malformed pack fails loudly.
 """
 
 from __future__ import annotations
@@ -18,7 +32,6 @@ import pytest
 import builds
 import strategy
 import upgrades
-from fleet import reroll_planner
 
 
 def _payload() -> dict:
@@ -47,16 +60,19 @@ def test_an_unknown_build_id_resolves_to_none_rather_than_raising() -> None:
     assert builds.by_id("no_such_build") is None
 
 
-def test_the_opening_weights_match_the_reroll_planner_exactly() -> None:
-    """The regression that proves the port is faithful, order included."""
-    assert builds.by_id("opening").weights == tuple(
-        (upgrade_id, float(weight)) for upgrade_id, weight in reroll_planner._OPENING
-    )
+@pytest.mark.parametrize("build_id", ["opening", "turtle"])
+def test_the_loaded_weights_match_the_committed_file_exactly(build_id: str) -> None:
+    """The regression that proves the load is faithful, order included.
 
-
-def test_the_turtle_weights_match_the_reroll_planner_exactly() -> None:
-    assert builds.by_id("turtle").weights == tuple(
-        (upgrade_id, float(weight)) for upgrade_id, weight in reroll_planner._TURTLE
+    Was a comparison against `reroll_planner._OPENING` / `._TURTLE`; see the
+    module docstring for where that side went. The pairs are compared as
+    written rather than through a dict, because the ORDER of these rows
+    breaks ties between equal effective weights and a loader that sorted
+    would change what the bot buys while every value-level assertion passed.
+    """
+    assert builds.by_id(build_id).weights == tuple(
+        (upgrade_id, float(weight))
+        for upgrade_id, weight in _a_build(_payload(), build_id)["weights"]
     )
 
 
@@ -71,8 +87,14 @@ def test_weight_order_is_preserved_and_is_not_alphabetical_or_sorted_by_weight()
     assert weights != sorted(weights, reverse=True)
 
 
-def test_the_prerequisite_map_matches_the_reroll_planner_exactly() -> None:
-    assert dict(builds.prerequisites()) == dict(reroll_planner._PREREQUISITES)
+def test_the_prerequisite_map_matches_the_committed_file_exactly() -> None:
+    """Was a comparison against `reroll_planner._PREREQUISITES`; the map the
+    planner declared is now this one, read through `builds.prerequisites()`
+    by `workshop_objectives`. `defense_percent -> unlock_defense_upgrades`
+    is still here, unlike the dead `defense_percent` TARGET below: the
+    unlock graph is a fact about the game whether or not a build weights the
+    row, and it is shared rather than held per build for that reason."""
+    assert dict(builds.prerequisites()) == dict(_payload()["prerequisites"]["requires"])
 
 
 def test_the_prerequisite_map_is_shared_rather_than_held_per_build() -> None:
@@ -89,18 +111,35 @@ def test_the_prerequisite_map_cannot_be_mutated_through_the_public_accessor() ->
         builds.prerequisites()["thorns"] = "damage"
 
 
-def test_every_build_target_comes_from_the_reroll_planners_targets() -> None:
+def test_every_build_target_matches_the_committed_file_exactly() -> None:
+    """Was `reroll_planner._TARGETS[upgrade_id] == target`.
+
+    The second assertion is the surviving half of that comparison and the
+    more interesting one: the planner's `_TARGETS` also carried
+    `defense_percent: 50.0`, which was DEAD - `defense_percent` is weighted
+    by neither build, and the old ranking loop consulted `_TARGETS` only for
+    ids already in the candidate list, so it was never once evaluated. It
+    was left out of the port on purpose, `builds.Build._validate` now
+    rejects a target for an unweighted upgrade outright, and this pins that
+    nobody reintroduces it under either rule.
+    """
     for build in builds.REGISTRY.builds:
-        for upgrade_id, target in build.targets.items():
-            assert reroll_planner._TARGETS[upgrade_id] == target
+        assert dict(build.targets) == _a_build(_payload(), build.id)["targets"]
+        assert "defense_percent" not in build.targets
 
 
-def test_focus_strings_match_the_reroll_planners_focus_text() -> None:
+def test_focus_strings_match_the_committed_file_and_cover_every_weighted_row() -> None:
+    """Was a lookup into `reroll_planner._FOCUS`, one line per weighted row.
+
+    The coverage half of that assertion is kept explicitly: `_FOCUS` was a
+    single map the two builds shared, so every weighted id necessarily had a
+    line, and a per-build `focus` map could silently lose one -
+    `project_next` would then publish "Advance the reroll account" to the
+    dashboard instead of the sentence a human wrote.
+    """
     for build in builds.REGISTRY.builds:
-        assert dict(build.focus) == {
-            upgrade_id: reroll_planner._FOCUS[upgrade_id]
-            for upgrade_id in build.upgrade_ids
-        }
+        assert dict(build.focus) == _a_build(_payload(), build.id)["focus"]
+        assert set(build.focus) == set(build.upgrade_ids)
 
 
 def test_every_upgrade_id_in_the_pack_resolves_in_the_upgrade_catalog() -> None:
