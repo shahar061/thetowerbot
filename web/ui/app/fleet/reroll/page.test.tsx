@@ -2,14 +2,21 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
 import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, startReroll } from "@/lib/api";
+import type { RerollMember, RerollPlan } from "@/lib/fleet";
 
 const choose = vi.fn();
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
 vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
 
-const members = [
+// Named separately so a test that extends the plan keeps its full type -
+// spreading `members[0].reroll_plan` inferred it as optional and lost it.
+const plan: RerollPlan = { account_id: "100", stage: "opening", goal: "Reach Tier 1 Wave 20",
+  state: "buy", item: "Damage", price: 10, wallet_coins: 25, lifetime_coins: null,
+  reason: "Damage is affordable.", observed_at: 1 };
+
+const members: RerollMember[] = [
   { name: "Air_1", endpoint: "127.0.0.1:5555", lease_id: "a", state: "running", account_id: "100", wave: 42, tier: 1, battle_cash: 0,
-    reroll_plan: { account_id: "100", stage: "opening", goal: "Reach Tier 1 Wave 20", state: "buy", item: "Damage", price: 10, wallet_coins: 25, lifetime_coins: null, reason: "Damage is affordable.", observed_at: 1 } },
+    reroll_plan: plan },
   { name: "Air_2", endpoint: "127.0.0.1:5556", lease_id: "b", state: "needs_choice", account_id: "200", uw_result: "Golden Tower offered" },
 ];
 
@@ -87,7 +94,7 @@ test("running workers have distinct accounts, unknown metrics, and labelled jour
 
 test("worker shows ten ordered Workshop buys including defense unlocks", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [{
-    ...members[0], reroll_plan: { ...members[0].reroll_plan,
+    ...members[0], reroll_plan: { ...plan,
       next_purchases: Array.from({ length: 10 }, (_, index) => ({
         account_id: "100", position: index + 1,
         upgrade_id: index === 0 ? "unlock_defense_upgrades" : "defense_absolute",
@@ -111,4 +118,65 @@ test("start failure is visible and four workers warn about resources", async () 
   expect(await screen.findByRole("alert")).toHaveTextContent("supervisor unavailable");
   fireEvent.change(screen.getByLabelText("Concurrent workers"), { target: { value: "4" } });
   expect(screen.getByText(/Four concurrent emulators/)).toBeInTheDocument();
+});
+
+test("a device that has stopped for a person sorts first and can be isolated", async () => {
+  // The pool is sent running-first; the page must not show it that way. On a
+  // second monitor the card that needs a human is the only card that matters,
+  // and it was previously wherever the supervisor happened to list it.
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members });
+  render(<RerollPage />);
+
+  await screen.findByText("Needs your choice");
+  const names = () => screen.getAllByRole("heading", { level: 3 }).map(node => node.textContent);
+  expect(names()).toEqual(["Air_2", "Air_1"]);
+
+  fireEvent.click(screen.getByRole("button", { name: /Needs you/ }));
+  expect(names()).toEqual(["Air_2"]);
+  expect(screen.getByRole("button", { name: /Needs you/ })).toHaveAttribute("aria-pressed", "true");
+
+  fireEvent.click(screen.getByRole("button", { name: /^Running/ }));
+  expect(names()).toEqual(["Air_1"]);
+});
+
+test("an unrecognised worker state counts as something to look at", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [
+    { ...members[0], name: "Air_9", state: "warp_core_breach", reroll_plan: null },
+  ] });
+  render(<RerollPage />);
+
+  expect(await screen.findByText("warp core breach")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Needs you 1" })).toBeInTheDocument();
+});
+
+test("the plan says how many coins are missing, not just the two numbers", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [
+    { ...members[0], reroll_plan: { ...plan, state: "save_coins", price: 100, wallet_coins: 25 } },
+  ] });
+  render(<RerollPage />);
+
+  expect(await screen.findByText("75 short")).toBeInTheDocument();
+  expect(screen.getByText(/Workshop coins: 25/)).toBeInTheDocument();
+});
+
+test("an unread price leaves the affordability bar unknown rather than empty", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [
+    { ...members[0], reroll_plan: { ...plan, state: "observe_price", price: null } },
+  ] });
+  render(<RerollPage />);
+
+  expect(await screen.findByText("not read yet")).toBeInTheDocument();
+  // An empty bar would read as "no coins"; the account has 25 of them.
+  expect(screen.getByRole("progressbar", { name: /Coins toward Damage on Air_1/ }))
+    .toHaveAttribute("aria-valuetext", "not read yet");
+});
+
+test("the ladder reports the distance left to the operator hand-off", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [
+    { ...members[0], best_tier_1_wave: 42 },
+  ] });
+  render(<RerollPage />);
+
+  expect(await screen.findByText("Reach Tier 1 Wave 60")).toBeInTheDocument();
+  expect(screen.getByText("T1 W42 · 18 to go")).toBeInTheDocument();
 });

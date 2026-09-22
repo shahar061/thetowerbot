@@ -1,27 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
+import { Meter, Pips } from "@/components/Meter";
+import { StatTile } from "@/components/StatTile";
+import { Button } from "@/components/ui/button";
 import { useAccountSelection } from "@/lib/AccountSelection";
 import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, setRerollConcurrency, startReroll } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
 import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
-import { SharedWorkshopLedger, WorkerBattlePurchases } from "./Purchases";
+import { LADDER, attentionRank, deviceColor, standingFor } from "@/lib/rerollState";
+import { cn } from "@/lib/utils";
+import { DeviceCard } from "./DeviceCard";
+import { SharedWorkshopLedger } from "./Purchases";
 import { RerollCard } from "./RerollCard";
-import { accountAge, coinsPerSecond } from "@/lib/accountMetrics";
-
-const journalColors = ["#2563eb", "#b45309", "#7c3aed", "#047857", "#be185d", "#0e7490"];
-
-function stableColor(name: string): string {
-  let hash = 0;
-  for (const char of name) hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
-  return journalColors[hash % journalColors.length];
-}
-
-function display(value: string | number | null | undefined): string {
-  return value === null || value === undefined || value === "" ? "—" : String(value);
-}
 
 function observed(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return "—";
@@ -30,7 +23,7 @@ function observed(value: string | number | null | undefined): string {
 }
 
 function stateLabel(value: string): string {
-  return value.replaceAll("_", " ");
+  return standingFor(value).label;
 }
 
 function Journal({ entries, worker, onWorker }: { entries: RerollJournalEntry[]; worker: string; onWorker: (name: string) => void }) {
@@ -42,19 +35,46 @@ function Journal({ entries, worker, onWorker }: { entries: RerollJournalEntry[];
     && (diagnostics || entry.kind !== "diagnostic"))
     .sort((a, b) => new Date(typeof a.at === "number" ? a.at * 1000 : a.at).getTime()
       - new Date(typeof b.at === "number" ? b.at * 1000 : b.at).getTime() || a.sequence - b.sequence);
-  return <RerollCard title="Shared journal">
-    <div className="flex flex-wrap gap-3 text-sm">
-      <label>Emulator <select aria-label="Journal emulator" value={worker} onChange={event => onWorker(event.target.value)} className="ml-1 rounded border bg-background p-1"><option value="all">All</option>{names.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
-      <label>Severity <select aria-label="Journal severity" value={level} onChange={event => setLevel(event.target.value)} className="ml-1 rounded border bg-background p-1"><option value="all">All</option>{["info", "warning", "error"].map(item => <option key={item} value={item}>{item}</option>)}</select></label>
-      <label className="flex items-center gap-1"><input type="checkbox" checked={diagnostics} onChange={event => setDiagnostics(event.target.checked)} /> Diagnostics</label>
+  const severities = { info: 0, warning: 0, error: 0 } as Record<string, number>;
+  for (const entry of entries) if (entry.kind !== "diagnostic") severities[entry.level] = (severities[entry.level] ?? 0) + 1;
+
+  return <RerollCard
+    title="Shared journal"
+    action={<div className="flex items-center gap-2 font-mono text-[10px]">
+      {/* The severity census is the panel's headline: an error the filter is
+          currently hiding has to be visible from the collapsed header. */}
+      {severities.error ? <span className="rounded bg-danger-surface px-1.5 py-0.5 text-danger">{severities.error} error</span> : null}
+      {severities.warning ? <span className="rounded bg-warn-surface px-1.5 py-0.5 text-warn">{severities.warning} warning</span> : null}
+      <span className="text-faint-foreground">{visible.length} shown</span>
+    </div>}
+  >
+    <div className="flex flex-wrap items-center gap-3 text-sm">
+      <label className="flex items-center gap-1.5 text-muted-foreground">Emulator <select aria-label="Journal emulator" value={worker} onChange={event => onWorker(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-foreground"><option value="all">All</option>{names.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
+      <label className="flex items-center gap-1.5 text-muted-foreground">Severity <select aria-label="Journal severity" value={level} onChange={event => setLevel(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-foreground"><option value="all">All</option>{["info", "warning", "error"].map(item => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label className="flex items-center gap-1.5 text-muted-foreground"><input type="checkbox" checked={diagnostics} onChange={event => setDiagnostics(event.target.checked)} /> Diagnostics</label>
     </div>
-    {visible.length ? <ol className="mt-3 max-h-96 min-w-0 space-y-2 overflow-y-auto text-sm">{visible.map(entry => <li key={entry.sequence} className="min-w-0 break-words rounded border p-2 [overflow-wrap:anywhere]">
-      <time className="mr-2 text-muted-foreground">{observed(entry.at)}</time>
-      <span className="mr-2 font-semibold" style={{ color: entry.color || stableColor(entry.instance) }}>[{entry.instance}]</span>
-      <span className="mr-2 text-muted-foreground">{entry.level} · {entry.kind}</span>{entry.message}
-    </li>)}</ol> : <p className="mt-3 text-sm text-muted-foreground">No journal entries match these filters.</p>}
+    {visible.length ? <ol className="max-h-96 min-w-0 space-y-1 overflow-y-auto">{visible.map(entry => <li
+      key={entry.sequence}
+      className={cn("grid min-w-0 grid-cols-[auto_1fr] gap-x-2.5 rounded-md border-l-2 bg-well/60 px-2.5 py-1.5 text-sm",
+        entry.level === "error" ? "border-l-danger" : entry.level === "warning" ? "border-l-warn" : "border-l-border-strong")}
+    >
+      <time className="font-mono text-[11px] leading-5 text-faint-foreground">{observed(entry.at)}</time>
+      <div className="min-w-0 break-words [overflow-wrap:anywhere]">
+        <span className="mr-2 font-semibold" style={{ color: entry.color || deviceColor(entry.instance) }}>[{entry.instance}]</span>
+        <span className={cn("mr-2 font-mono text-[10px] uppercase",
+          entry.level === "error" ? "text-danger" : entry.level === "warning" ? "text-warn" : "text-faint-foreground")}>{entry.level}</span>
+        <span className="mr-2 font-mono text-[10px] text-faint-foreground">{entry.kind}</span>
+        {entry.message}
+      </div>
+    </li>)}</ol> : <p className="text-sm text-muted-foreground">No journal entries match these filters.</p>}
   </RerollCard>;
 }
+
+/** The pool's four filters, and what each one is for. "Needs you" is the
+ *  reason this row exists at all: on a pool of eight emulators the one card
+ *  that has stopped and is waiting for a human is otherwise three screens
+ *  down, indistinguishable from the seven that are fine. */
+type Filter = "all" | "attention" | "live" | "idle";
 
 export default function RerollPage() {
   const [pool, setPool] = useState<RerollSnapshot | null>(null);
@@ -67,6 +87,7 @@ export default function RerollPage() {
   const [limit, setLimit] = useState(2);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [filter, setFilter] = useState<Filter>("all");
   const { accounts, choose } = useAccountSelection();
 
   const refresh = useCallback(async () => {
@@ -106,66 +127,173 @@ export default function RerollPage() {
     finally { setBusy(false); }
   };
   const add = () => void act(async () => { setPool(await addRerollMembers(selected)); setSelected([]); setPicker(false); });
-  const members = pool?.members ?? [];
-  const counts = {
-    running: members.filter(member => member.state === "running").length,
-    choice: members.filter(member => member.state === "needs_choice").length,
-    replace: members.filter(member => member.state === "replace_manually").length,
-    blocked: members.filter(member => !["ready", "start_required", "paused", "running", "starting", "stopping", "capacity_wait", "needs_choice", "replace_manually"].includes(member.state)).length,
-  };
+  const members = useMemo(() => pool?.members ?? [], [pool]);
+
+  // One pass over the pool, classified through the shared vocabulary rather
+  // than by re-listing state strings here. The old page kept its own inline
+  // allow-list of "normal" states, which meant every state added on the
+  // Python side silently landed in the "blocked" bucket with no label.
+  const census = useMemo(() => {
+    const counts = { total: members.length, live: 0, attention: 0, transit: 0, idle: 0 };
+    for (const member of members) {
+      const standing = standingFor(member.state);
+      if (standing.needsYou) counts.attention += 1;
+      else if (standing.tone === "live") counts.live += 1;
+      else if (standing.transient) counts.transit += 1;
+      else counts.idle += 1;
+    }
+    return counts;
+  }, [members]);
+
+  const shown = useMemo(() => {
+    const matches = (member: RerollMember) => {
+      const standing = standingFor(member.state);
+      if (filter === "attention") return standing.needsYou;
+      if (filter === "live") return standing.tone === "live";
+      if (filter === "idle") return !standing.needsYou && standing.tone !== "live";
+      return true;
+    };
+    return members.filter(matches).sort((a, b) =>
+      attentionRank(a.state) - attentionRank(b.state) || a.name.localeCompare(b.name));
+  }, [members, filter]);
+
   const accountFor = (member: RerollMember) => accounts.find(account => account.running && account.instance === member.name && account.account_id);
 
+  const pressure = pool?.pressure;
+  const slots: ("running" | "starting" | "free")[] = pressure
+    ? [
+      ...Array<"running">(Math.min(pressure.running, pressure.limit)).fill("running"),
+      ...Array<"starting">(Math.max(0, Math.min(pressure.starting, pressure.limit - pressure.running))).fill("starting"),
+      ...Array<"free">(Math.max(0, pressure.limit - pressure.running - pressure.starting)).fill("free"),
+    ]
+    : [];
+
+  const FILTERS: { id: Filter; label: string; count: number; tone: string }[] = [
+    { id: "all", label: "All", count: census.total, tone: "text-foreground" },
+    { id: "attention", label: "Needs you", count: census.attention, tone: "text-warn" },
+    { id: "live", label: "Running", count: census.live, tone: "text-live" },
+    { id: "idle", label: "Idle", count: census.idle + census.transit, tone: "text-muted-foreground" },
+  ];
+
   return <div className="mx-auto flex max-w-7xl flex-col gap-4">
-    <PageHeader title="Reroll" meta="Fleet · manually prepared emulators" action={<Link href="/fleet/history/" className="text-sm text-primary underline">Provisioning history</Link>} />
-    <p className="max-w-3xl text-sm text-muted-foreground">Prepare a separate emulator with Tower installed and unopened, then add it to this pool. Start all launches up to the concurrent worker limit; any others stay paused. Remove a worker before preparing its replacement.</p>
-    {error && <p role="alert" className="rounded border border-danger p-3 text-sm text-danger">{error}</p>}
-    <RerollCard title="Pool overview" tone="live">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{Object.entries(counts).map(([key, count]) => <div key={key} className="rounded border p-3"><strong className="block text-xl">{count}</strong><span className="text-sm capitalize">{key === "choice" ? "Needs choice" : key === "replace" ? "Replace manually" : key}</span></div>)}</div>
-      {pool?.pressure && <p className="mt-3 text-sm text-muted-foreground">Worker slots: {pool.pressure.running} running, {pool.pressure.starting} in transition or review, {pool.pressure.available} available of {pool.pressure.limit}.</p>}
-      <div className="mt-3 flex flex-wrap gap-2">
-        <button className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" onClick={() => setPicker(true)}>Add emulators</button>
-        <button className="rounded border px-3 py-2 text-sm disabled:opacity-50" disabled={busy || !members.length} onClick={() => void act(() => startReroll())}>Start all</button>
-        <button className="rounded border px-3 py-2 text-sm disabled:opacity-50" disabled={busy || !members.length} onClick={() => void act(() => pauseReroll())}>Pause all</button>
+    <PageHeader
+      title="Reroll"
+      meta={census.total ? `${census.total} ${census.total === 1 ? "device" : "devices"} · ${census.live} running` : "Fleet · manually prepared emulators"}
+      action={<Link href="/fleet/history/" className="text-sm text-primary underline">Provisioning history</Link>}
+    />
+    {error && <p role="alert" className="rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">{error}</p>}
+
+    <RerollCard title="Pool overview" tone={census.attention ? "warn" : census.live ? "live" : undefined}>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <StatTile label="Devices" value={census.total} />
+        <StatTile label="Running" value={census.live} tone={census.live ? "live" : "none"} />
+        <StatTile label="Needs you" value={census.attention} tone={census.attention ? "warn" : "none"}
+          sub={census.attention ? "stopped until you act" : "nothing waiting"} subTone={census.attention ? "warn" : "none"} />
+        <StatTile label="Idle or moving" value={census.idle + census.transit}
+          sub={census.transit ? `${census.transit} in transition` : undefined} />
       </div>
-      <div className="mt-3 flex flex-wrap items-end gap-2 text-sm"><label className="flex flex-col gap-1">Concurrent workers <select aria-label="Concurrent workers" value={limit} onChange={event => setLimit(Number(event.target.value))} className="rounded border bg-background p-2">{[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}</select></label><button disabled={busy || limit === (pool?.concurrency_limit ?? 2)} onClick={() => void act(() => setRerollConcurrency(limit))} className="rounded border px-3 py-2 disabled:opacity-50">Save limit</button></div>
-      {limit === 4 && <p role="status" className="mt-2 text-sm text-amber-700">Four concurrent emulators can strain memory and slow other apps. Start with two, then increase the limit while watching macOS memory pressure.</p>}
-      {!members.length && <p className="mt-4 text-sm text-muted-foreground">No emulators in the pool. Add emulators prepared with Tower installed and unopened.</p>}
-      {picker && <div className="mt-4 rounded border p-3 text-sm"><h2 className="font-semibold">Add emulators</h2>
+
+      {/* Worker slots, as slots. "3 running, 1 starting, 0 available of 4"
+          was a sentence a reader had to parse; the pips are the same fact
+          countable in peripheral vision. */}
+      {pressure && <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-well/60 p-2.5">
+        <Pips states={slots} label={`${pressure.running} of ${pressure.limit} worker slots running`} />
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {pressure.running} running · {pressure.starting} in transition or review · {pressure.available} available of {pressure.limit}
+        </span>
+      </div>}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={() => setPicker(true)}>Add emulators</Button>
+        <Button variant="outline" disabled={busy || !members.length} onClick={() => void act(() => startReroll())}>Start all</Button>
+        <Button variant="outline" disabled={busy || !members.length} onClick={() => void act(() => pauseReroll())}>Pause all</Button>
+        <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
+          Concurrent workers
+          <select aria-label="Concurrent workers" value={limit} onChange={event => setLimit(Number(event.target.value))} className="rounded-md border bg-background px-2 py-1 text-foreground">
+            {[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
+        <Button variant="outline" disabled={busy || limit === (pool?.concurrency_limit ?? 2)} onClick={() => void act(() => setRerollConcurrency(limit))}>Save limit</Button>
+      </div>
+      {limit === 4 && <p role="status" className="rounded-lg border border-warn/40 bg-warn-surface p-2.5 text-sm text-warn">Four concurrent emulators can strain memory and slow other apps. Start with two, then increase the limit while watching macOS memory pressure.</p>}
+
+      {!members.length && <p className="text-sm text-muted-foreground">No emulators in the pool. Add emulators prepared with Tower installed and unopened.</p>}
+
+      {picker && <div className="rounded-lg border border-border p-3 text-sm"><h3 className="font-semibold">Add emulators</h3>
+        <p className="mt-1 text-xs text-muted-foreground">Prepare each emulator with Tower installed and unopened before adding it.</p>
         {!pool?.candidates.length && <p className="mt-2">No host emulators available.</p>}
         <div className="mt-2 space-y-2">{pool?.candidates.map(candidate => {
           const eligible = candidate.state === "ready" || candidate.state === "start_required";
-          return <label key={candidate.name} className="flex items-start gap-2 rounded border p-2"><input type="checkbox" disabled={!eligible || busy} checked={selected.includes(candidate.name)} onChange={event => setSelected(current => event.target.checked ? [...current, candidate.name] : current.filter(name => name !== candidate.name))} /><span><strong>{candidate.name}</strong> · {candidate.endpoint} · {stateLabel(candidate.state)}{!eligible && <span className="block text-danger">Unavailable: {stateLabel(candidate.state)}</span>}</span></label>;
+          return <label key={candidate.name} className={cn("flex items-start gap-2 rounded-lg border p-2", eligible ? "border-border" : "border-border bg-muted/40 opacity-70")}><input type="checkbox" disabled={!eligible || busy} checked={selected.includes(candidate.name)} onChange={event => setSelected(current => event.target.checked ? [...current, candidate.name] : current.filter(name => name !== candidate.name))} className="mt-0.5" /><span><strong>{candidate.name}</strong> <span className="font-mono text-xs text-faint-foreground">{candidate.endpoint}</span> · {stateLabel(candidate.state)}{!eligible && <span className="block text-danger">Unavailable: {candidate.state.replaceAll("_", " ")}</span>}</span></label>;
         })}</div>
-        <div className="mt-3 flex gap-2"><button className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy || !selected.length} onClick={add}>Add selected</button><button className="rounded border px-3 py-2" onClick={() => { setPicker(false); setSelected([]); }}>Cancel</button></div>
+        <div className="mt-3 flex gap-2"><Button disabled={busy || !selected.length} onClick={add}>Add selected</Button><Button variant="outline" onClick={() => { setPicker(false); setSelected([]); }}>Cancel</Button></div>
       </div>}
     </RerollCard>
+
+    {!!members.length && <RerollCard
+      title="Devices"
+      action={<div className="flex flex-wrap gap-1">{FILTERS.map(option => (
+        <button
+          key={option.id}
+          type="button"
+          aria-pressed={filter === option.id}
+          onClick={() => setFilter(option.id)}
+          className={cn(
+            "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+            filter === option.id
+              ? "border-primary bg-primary/12 text-foreground"
+              : "border-border text-muted-foreground hover:bg-muted",
+          )}
+        >
+          {option.label} <span className={cn("font-mono", option.count ? option.tone : "text-faint-foreground")}>{option.count}</span>
+        </button>
+      ))}</div>}
+    >
+      {/* items-start: a stretched grid row gave a short card (a worker still
+          starting, with no plan yet) the height of the tall one beside it,
+          which read as a card with something missing rather than a card with
+          little to say. */}
+      {shown.length ? <div className="grid items-start gap-3 lg:grid-cols-2">{shown.map(member => {
+        const account = accountFor(member);
+        return <DeviceCard
+          key={member.name}
+          member={member}
+          accountKey={member.account_key}
+          accountId={account?.account_id ?? member.account_id}
+          collapsed={!!collapsed[member.name]}
+          onToggle={() => setCollapsed(current => ({ ...current, [member.name]: !current[member.name] }))}
+          onStart={() => void act(() => startReroll(member.name))}
+          onPause={() => void act(() => pauseReroll(member.name))}
+          onRemove={() => void act(() => removeRerollMember(member.name))}
+          onJournal={() => setJournalWorker(member.name)}
+          onOpenAccount={account ? () => choose(account.key) : undefined}
+          busy={busy}
+        />;
+      })}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
+    </RerollCard>}
+
     <RerollCard title="Reroll strategy">
-      <p className="text-sm text-muted-foreground">Each worker uses its own verified runs and purchases to choose the next Workshop upgrade. It checks the observed price and coin balance before spending.</p>
-      <p className="text-sm text-muted-foreground">The first buys establish basic attack, then unlock Defense Absolute and Thorns for early survival. Cash and coin income follow. Battle buying prioritizes unlocked Defense Absolute and Thorns, and skips anything still locked.</p>
-      <ol className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
-        <li className="rounded border p-3"><strong>1. Survive the opening waves</strong><p className="mt-1 text-muted-foreground">Buy basic attack, then unlock and strengthen Defense Absolute and Thorns.</p></li>
-        <li className="rounded border p-3"><strong>2. Reach Tier 1 Wave 60</strong><p className="mt-1 text-muted-foreground">Keep defense ahead of enemy damage and add cash and coin income.</p></li>
-        <li className="rounded border p-3"><strong>3. Review the first Ultimate Weapon</strong><p className="mt-1 text-muted-foreground">Earn stones, then choose Golden Tower or Black Hole yourself. If neither is offered, replace that emulator manually.</p></li>
+      <p className="text-sm text-muted-foreground">Each worker uses its own verified runs and purchases to choose the next Workshop upgrade. It checks the observed price and coin balance before spending. The first buys establish basic attack, then unlock Defense Absolute and Thorns for early survival; cash and coin income follow.</p>
+      {/* The same three rungs every device card draws its progress against,
+          so the ladder on a card and the ladder in the explanation cannot
+          drift apart - they are one array in lib/rerollState.ts. */}
+      <ol className="grid gap-2 sm:grid-cols-3">
+        {LADDER.map((step, index) => (
+          <li key={step.id} className="relative overflow-hidden rounded-lg border border-border bg-well/40 p-3">
+            <div className="flex items-center gap-2">
+              <span className="flex size-5 items-center justify-center rounded-full bg-primary/15 font-mono text-[10px] font-bold text-primary">{index + 1}</span>
+              <strong className="text-[13px]">{step.title}</strong>
+              {step.target ? <span className="ml-auto font-mono text-[10px] text-faint-foreground">to W{step.target}</span> : null}
+            </div>
+            <p className="mt-1.5 text-xs font-medium">{step.goal}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{step.blurb}</p>
+            <Meter label={`${step.title} rung`} value={1} max={1} tone={index === 2 ? "warn" : "primary"} className="mt-2.5 h-1" />
+          </li>
+        ))}
       </ol>
-      <p className="mt-3 text-sm text-muted-foreground">Each worker card shows ten projected Workshop buys. Only the first is executable; every buy still needs a fresh price, balance, and screen check. The order updates after confirmed progress.</p>
+      <p className="text-sm text-muted-foreground">Each device card shows ten projected Workshop buys. Only the first is executable; every buy still needs a fresh price, balance and screen check. The order updates after confirmed progress.</p>
     </RerollCard>
-    {!!members.length && <RerollCard title="Workers"><div className="grid gap-3 lg:grid-cols-2">{members.map(member => {
-      const account = accountFor(member);
-      return <article key={member.name} className="min-w-0 rounded border p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">{member.name}</h2><p className="text-muted-foreground">{stateLabel(member.state)} · {member.endpoint}</p></div><div className="flex items-center gap-3">{account && <Link href="/" onClick={() => choose(account.key)} className="text-primary underline">Open account {account.account_id}</Link>}<button aria-label={`${collapsed[member.name] ? "Expand" : "Collapse"} ${member.name}`} aria-expanded={!collapsed[member.name]} aria-controls={`worker-${member.name}`} onClick={() => setCollapsed(current => ({ ...current, [member.name]: !current[member.name] }))} className="rounded border px-2 py-1 text-lg leading-none">{collapsed[member.name] ? "⌄" : "⌃"}</button></div></div>
-        <div id={`worker-${member.name}`} hidden={!!collapsed[member.name]}>
-        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">{([
-          ["Verified account ID", member.account_id ?? account?.account_id], ["Game screen", member.game_screen], ["Milestone", member.milestone], ["Latest completed tier / wave", member.tier != null && member.wave != null ? `${member.tier} / ${member.wave}` : null], ["Run duration (s)", member.run_duration_seconds], ["Best Tier 1 wave", member.best_tier_1_wave], ["Battle cash", member.battle_cash], ["Run coins", member.run_coins], ["Lifetime coins", member.lifetime_coins], ["Account age", accountAge(member.account_age_days ?? null)], ["Recent CPS", coinsPerSecond(member.recent_cps ?? null)], ["Workshop upgrades bought", member.workshop_upgrades_bought], ["Wallet gems", member.wallet_gems], ["Wallet stones", member.wallet_stones], ["Wallet medals", member.wallet_medals], ["UW result", member.uw_result], ["Last observation", observed(member.observed_at)],
-        ] as const).map(([label, value]) => <div key={label}><dt className="text-muted-foreground">{label}</dt><dd className="font-medium">{display(value)}</dd></div>)}</dl>
-        {member.lifetime_coins_incomplete && <p className="mt-2 text-xs text-muted-foreground">Lifetime coins await an unreadable run result; showing the last verified baseline.</p>}
-        {member.reroll_plan && <div className="mt-3 rounded border p-3"><h3 className="font-semibold">Next Workshop decision</h3><p>{member.reroll_plan.goal} · {member.reroll_plan.item ?? "Operator review"} · {stateLabel(member.reroll_plan.state)}</p><p className="mt-1 text-muted-foreground">{member.reroll_plan.reason}</p><p className="mt-1 text-muted-foreground">Workshop coins: {display(member.reroll_plan.wallet_coins)} · Price: {display(member.reroll_plan.price)} · Lifetime coins: {display(member.reroll_plan.lifetime_coins)}</p>
-          {!!member.reroll_plan.next_purchases?.length && <div className="mt-4 border-t pt-3"><h4 className="font-semibold">Next 10 Workshop buys</h4><p className="mt-1 text-xs text-muted-foreground">Projected order; future prices and balances will be checked before each buy.</p><ol aria-label={`Next 10 Workshop buys for ${member.name}`} className="mt-2 grid gap-1.5 sm:grid-cols-2">{member.reroll_plan.next_purchases.map(step => <li key={step.position} className="flex gap-2 rounded border p-2"><span className="font-mono text-muted-foreground">{step.position}.</span><span><span className="font-medium">{step.item}</span>{step.unlock && <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">Unlock</span>}<span className="block text-xs text-muted-foreground">{step.category} · {step.focus}</span></span></li>)}</ol></div>}
-        </div>}
-        {!member.reroll_plan && member.state === "running" && <p className="mt-3 text-muted-foreground">Workshop plan updates when this worker reaches the main menu.</p>}
-        <WorkerBattlePurchases accountKey={member.account_key} />
-        <details className="mt-3"><summary className="cursor-pointer font-medium">Details and controls</summary><div className="mt-2 space-y-2"><p>Recent runs: {member.recent_runs?.join(", ") || "—"}</p><p>Evidence: {display(member.evidence)}</p><p>Error: {display(member.error)}</p><div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => void act(() => startReroll(member.name))} className="rounded border px-2 py-1">Start</button><button disabled={busy} onClick={() => void act(() => pauseReroll(member.name))} className="rounded border px-2 py-1">Pause</button><button disabled={busy} onClick={() => void act(() => removeRerollMember(member.name))} className="rounded border px-2 py-1">Remove from pool</button><button onClick={() => setJournalWorker(member.name)} className="rounded border px-2 py-1">Show journal</button></div></div></details>
-        </div>
-      </article>;
-    })}</div></RerollCard>}
+
     {!!members.length && <SharedWorkshopLedger members={members} />}
     {journalError && <p role="status" className="text-sm text-muted-foreground">Shared journal unavailable: {journalError}</p>}
     {!journalError && <Journal entries={entries} worker={journalWorker} onWorker={setJournalWorker} />}

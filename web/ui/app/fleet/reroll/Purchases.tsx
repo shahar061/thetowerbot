@@ -2,9 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { RunPurchases } from "@/components/RunPurchases";
+import { cn } from "@/lib/utils";
 import { fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases } from "@/lib/api";
 import type { LedgerLine, RunPurchasePayload, RunRow } from "@/lib/types";
 import type { RerollMember } from "@/lib/fleet";
+import { Button } from "@/components/ui/button";
+import { deviceColor } from "@/lib/rerollState";
 import { RerollCard } from "./RerollCard";
 
 type Page = { lines: LedgerLine[]; next: number | null; error?: string };
@@ -52,18 +55,40 @@ export function SharedWorkshopLedger({ members }: { members: RerollMember[] }) {
     .filter(line => line.detail?.verdict === "bought" || line.detail?.verdict === "free")
     .map(line => ({ member, line }))).sort((a, b) => b.line.ts - a.line.ts || b.line.id - a.line.id);
   return <RerollCard title="Shared Workshop ledger">
-    <p className="mt-1 text-sm text-muted-foreground">Confirmed upgrades bought by pool accounts. Load older records for each emulator to see its full history.</p>
-    {sources.map(member => <div key={member.name} className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-      <span className="font-semibold">[{member.name}]</span>
-      <span>{pages[member.account_key!]?.lines.filter(line => line.detail?.verdict === "bought" || line.detail?.verdict === "free").length ?? 0} loaded</span>
-      {pages[member.account_key!]?.next != null && <button className="rounded border px-2 py-1" onClick={() => loadOlder(member.account_key!)}>Load older for {member.name}</button>}
-      {pages[member.account_key!]?.error && <span role="status" className="text-danger">{pages[member.account_key!].error}</span>}
-    </div>)}
-    {rows.length ? <ol className="mt-3 max-h-80 space-y-2 overflow-y-auto text-sm">{rows.map(({ member, line }) => <li key={`${member.account_key}:${line.id}`} className="flex flex-wrap gap-x-2 rounded border p-2">
-      <time className="text-muted-foreground">{new Date(line.ts * 1000).toLocaleString()}</time>
-      <strong>[{member.name}]</strong><span>{line.item ?? "Unknown upgrade"}</span>
-      <span className="text-muted-foreground">{line.category ?? ""} · {line.price == null ? "price unread" : `${line.price.toLocaleString()} coins`}</span>
-    </li>)}</ol> : <p className="mt-3 text-sm text-muted-foreground">No confirmed Workshop purchases recorded for these accounts yet.</p>}
+    <p className="text-sm text-muted-foreground">Confirmed upgrades bought by pool accounts, newest first. Each emulator loads 100 records at a time; load older to see further back.</p>
+
+    {/* Per-device loading state, not a per-device total. This list is
+        paginated, so any sum here would be the sum of whatever happens to be
+        loaded - a number that moves when you press "load older" is worse
+        than no number. The device's own card carries the real count. */}
+    <div className="flex flex-wrap gap-2">{sources.map(member => {
+      const page = pages[member.account_key!];
+      const loaded = page?.lines.filter(line => line.detail?.verdict === "bought" || line.detail?.verdict === "free").length ?? 0;
+      return <div key={member.name} className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs">
+        <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: deviceColor(member.name) }} aria-hidden="true" />
+        <span className="font-medium">{member.name}</span>
+        <span className="font-mono text-faint-foreground">{loaded} loaded</span>
+        {page?.next != null && <Button size="xs" variant="outline" onClick={() => loadOlder(member.account_key!)}>Load older for {member.name}</Button>}
+        {page?.error && <span role="status" className="text-danger">{page.error}</span>}
+      </div>;
+    })}</div>
+
+    {rows.length ? <ol className="max-h-80 space-y-1 overflow-y-auto">{rows.map(({ member, line }) => <li
+      key={`${member.account_key}:${line.id}`}
+      className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-2.5 rounded-md bg-well/60 px-2.5 py-1.5 text-sm"
+    >
+      <time className="font-mono text-[11px] text-faint-foreground">{new Date(line.ts * 1000).toLocaleTimeString()}</time>
+      <span className="min-w-0 truncate">
+        <span className="mr-2 font-medium" style={{ color: deviceColor(member.name) }}>{member.name}</span>
+        {line.item ?? "Unknown upgrade"}
+        {line.category ? <span className="ml-2 font-mono text-[10px] uppercase text-faint-foreground">{line.category}</span> : null}
+      </span>
+      {/* An unread price is its own outcome, not a zero: the buy was
+          confirmed, the row's number was not legible on the frame. */}
+      <span className={cn("font-mono text-xs", line.price == null ? "text-warn" : "text-muted-foreground")}>
+        {line.price == null ? "price unread" : `${line.price.toLocaleString()} coins`}
+      </span>
+    </li>)}</ol> : <p className="text-sm text-muted-foreground">No confirmed Workshop purchases recorded for these accounts yet.</p>}
   </RerollCard>;
 }
 
@@ -85,7 +110,7 @@ export function WorkerBattlePurchases({ accountKey }: { accountKey: string | nul
     const timer = window.setInterval(refresh, 10000);
     return () => { active = false; window.clearInterval(timer); };
   }, [accountKey]);
-  return <div className="mt-3 rounded border p-3"><h3 className="font-semibold">In-battle upgrades</h3>
+  return <div className="rounded-lg border border-border p-3"><h4 className="font-heading text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">In-battle upgrades</h4>
     {error ? <p role="status" className="text-danger">Purchase history unavailable: {error}</p>
       : run ? <><p className="my-2 text-xs text-muted-foreground">Run #{run.id} · {run.ended_at == null ? "live" : "completed"}</p><RunPurchases data={purchases} startedAt={run.started_at} /></>
       : <p className="mt-2 text-muted-foreground">No run recorded yet.</p>}

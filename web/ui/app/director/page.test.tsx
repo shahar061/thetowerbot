@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe as group, expect, it, vi } from "vitest";
 import DirectorPage from "./page";
 
@@ -109,5 +109,56 @@ group("DirectorPage", () => {
 
     await screen.findByText("labs.unlocked is ready to attempt.");
     expect(screen.getByText(/CENSUS_AND_INCOME_TOKEN/)).toBeDefined();
+  });
+  it("isolates the held objectives without losing their place in the ranking", async () => {
+    fetchDirector.mockResolvedValue(payload({
+      candidates: [
+        candidate({ objective_id: "a.ready" }),
+        candidate({ objective_id: "b.blocked", status: "blocked", blocked_by: ["a.ready"] }),
+        candidate({ objective_id: "c.held", held_by: ["waiting on a person"] }),
+      ],
+    }));
+    render(<DirectorPage />);
+
+    await screen.findByText("a.ready");
+    fireEvent.click(screen.getByRole("button", { name: /^Held/ }));
+
+    expect(screen.queryByText("a.ready")).toBeNull();
+    expect(screen.getByText("c.held")).toBeDefined();
+    // The list is "top five plus every held candidate", so a hold's rank is
+    // not its position in this list and must survive being filtered to it.
+    expect(screen.getAllByRole("listitem")[0].textContent).toMatch(/^3c\.held/);
+  });
+
+  it("reorders by measured horizon without treating unmeasured as imminent", async () => {
+    fetchDirector.mockResolvedValue(payload({
+      candidates: [
+        candidate({ objective_id: "a.unknown", hours_to_afford: { kind: "unknown" } }),
+        candidate({ objective_id: "b.never", hours_to_afford: { kind: "infinite" } }),
+        candidate({ objective_id: "c.soon", hours_to_afford: { kind: "hours", hours: 1.5 } }),
+      ],
+    }));
+    render(<DirectorPage />);
+
+    await screen.findByText("a.unknown");
+    fireEvent.click(screen.getByRole("button", { name: "sort by rank" }));
+
+    const order = screen.getAllByRole("listitem").map((node) => node.textContent ?? "");
+    expect(order[0]).toContain("c.soon");
+    // "unknown" is not a short wait and "never (measured)" is the longest
+    // one there is; both belong after every real number.
+    expect(order[1]).toContain("a.unknown");
+    expect(order[2]).toContain("b.never");
+  });
+
+  it("says a filter is empty rather than claiming there is nothing to rank", async () => {
+    fetchDirector.mockResolvedValue(payload({ candidates: [candidate({ objective_id: "a.ready" })] }));
+    render(<DirectorPage />);
+
+    await screen.findByText("a.ready");
+    fireEvent.click(screen.getByRole("button", { name: /^Held/ }));
+
+    expect(screen.getByText("No objective matches this filter.")).toBeDefined();
+    expect(screen.queryByText("Nothing to rank yet.")).toBeNull();
   });
 });
