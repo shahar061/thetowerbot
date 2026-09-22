@@ -168,6 +168,21 @@
   --chart-4: light-dark(#eda100, #c98500);
   --chart-5: light-dark(#e87ba4, #d55181);
 
+  /* One hue per currency the ledger can carry, read by CurrencyGlyph.
+     PLACEHOLDERS: tune these to the in-game icons. They only reinforce the
+     glyph's shape, which is what actually identifies a currency - partly for
+     colour-blind readers, and partly because a gold coin sits right beside
+     --warn and a green gem would read as --live's "gain". */
+  --currency-coins:   light-dark(oklch(0.74 0.15 88),  oklch(0.82 0.15 88));
+  --currency-gems:    light-dark(oklch(0.60 0.14 215), oklch(0.74 0.13 215));
+  --currency-stones:  light-dark(oklch(0.58 0.05 255), oklch(0.72 0.05 255));
+  --currency-medals:  light-dark(oklch(0.62 0.13 45),  oklch(0.74 0.12 45));
+  --currency-cells:   light-dark(oklch(0.62 0.11 180), oklch(0.76 0.10 180));
+  --currency-keys:    light-dark(oklch(0.58 0.17 335), oklch(0.72 0.15 335));
+  --currency-shards:  light-dark(oklch(0.60 0.17 22),  oklch(0.72 0.15 22));
+  --currency-tickets: light-dark(oklch(0.66 0.12 118), oklch(0.80 0.12 118));
+  --currency-bits:    light-dark(oklch(0.56 0.15 262), oklch(0.72 0.13 262));
+
   /* The nav rail is the one recessed plane, so it reads as chrome rather than
      as another card. */
   --sidebar: var(--rail);

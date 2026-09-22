@@ -383,7 +383,15 @@ export interface LedgerLine {
 
 export interface LedgerPayload {
   lines: LedgerLine[];
-  balances: { coins: number | null; gems: number | null };
+  /** The latest known balance per currency. null is ambiguous on its own -
+   *  "not read yet" for a currency in `balanced`, "never tracked" for any
+   *  other - so read it together with `balanced`. */
+  balances: Record<string, number | null>;
+  /** Every currency the history holds, sorted. Optional only so a payload
+   *  from before the route reported it still renders. */
+  currencies?: string[];
+  /** The currencies the ledger writer keeps a running balance for. */
+  balanced?: string[];
   rehearsals: number;
   next: number | null;
 }

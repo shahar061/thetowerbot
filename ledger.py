@@ -32,6 +32,14 @@ import events
 COINS = "coins"
 GEMS = "gems"
 
+# The currencies the writer keeps a running balance for. Anything else that
+# reaches the ledger - stones paid by a milestone, say - is stored with
+# balance_after NULL on every line. The page has to be able to tell that
+# apart from a balance that simply has not been read yet: "not tracked" and
+# "unknown" are different answers, and showing either as an empty wallet
+# would be a third, wrong one.
+BALANCED_CURRENCIES: tuple[str, ...] = (COINS, GEMS)
+
 # Every kind a line can carry. The last six are RESERVED - the parts of the
 # economy the bot cannot see (labs and lab slots, card slots, modules,
 # relics, ultimate weapons) plus hand-entered lines. They are named here so
@@ -372,7 +380,7 @@ class LedgerWriter:
         if version != self._data_version:
             # Recovery writes synchronously, even if its queued event is lost.
             self._known = db.last_balances(self._conn)
-            for currency in (COINS, GEMS):
+            for currency in BALANCED_CURRENCIES:
                 row = self._conn.execute(
                     "SELECT balance_after FROM ledger WHERE currency = ? AND dry_run = 0 "
                     "ORDER BY id DESC LIMIT 1", (currency,),

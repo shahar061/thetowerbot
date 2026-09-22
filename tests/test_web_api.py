@@ -470,6 +470,28 @@ def test_the_ledger_route_returns_lines_newest_first_with_balances(harness) -> N
     assert body["rehearsals"] == 0
 
 
+def test_the_ledger_route_reports_every_currency_the_history_holds(harness) -> None:
+    """Stones are stored today, from a milestone's generic currency field,
+    and a route that only ever answered for coins and gems left the page no
+    way to show or filter them."""
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.insert_ledger(conn, a_ledger_line(1))
+    db.insert_ledger(conn, a_ledger_line(
+        2, kind="MILESTONE_CLAIM", item="Tier 2 Wave 50", category=None,
+        currency="stones", delta=10, price=None, balance_after=None, observed=None,
+    ))
+    conn.close()
+
+    body = client.get("/api/ledger").json()
+
+    assert body["currencies"] == ["coins", "stones"]
+    assert body["balances"] == {"coins": 1695, "gems": None, "stones": None}
+    # Stones' None means "never tracked", coins' would mean "not read yet" -
+    # and this is how the page tells the two apart.
+    assert body["balanced"] == ["coins", "gems"]
+
+
 def test_the_ledger_route_hides_rehearsals_but_counts_them(harness) -> None:
     client, _, _, _, db_path, _ = harness
     conn = db.connect(db_path)
@@ -512,5 +534,6 @@ def test_the_ledger_route_answers_no_store_with_an_empty_ledger(harness) -> None
 
     assert body == {
         "lines": [], "balances": {"coins": None, "gems": None},
+        "currencies": [], "balanced": ["coins", "gems"],
         "rehearsals": 0, "next": None,
     }
