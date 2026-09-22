@@ -312,3 +312,74 @@ def test_a_strategy_naming_an_unknown_build_is_rejected() -> None:
     with pytest.raises(strategy.ControlError) as caught:
         strategy.Strategy.from_config("mine").merged({"build": "sniper"})
     assert caught.value.field == "build"
+
+
+# --- the port's fidelity, pinned as literals ------------------------------
+#
+# These tables are transcribed from fleet/reroll_planner.py as it stood at
+# 0d202ee, the last revision before phase 6 deleted _OPENING, _TURTLE,
+# _PREREQUISITES and _TARGETS in favour of this pack.
+#
+# They exist because deleting those constants removed the only independent
+# statement of what the bot buys. Comparing the loaded REGISTRY against the
+# committed JSON checks the LOADER, not the port: both sides move together
+# the moment anyone edits the file, so that pair would stay green through an
+# edit that silently changed the first purchase on every reroll account.
+#
+# Written out by hand, from git, on purpose. A test that shelled out to
+# `git show` would pin a commit rather than a behaviour, and would start
+# failing for reasons that have nothing to do with the numbers.
+_PLANNER_OPENING = (
+    ("damage", 12.), ("attack_speed", 11.),
+    ("unlock_defense_upgrades", 10.5), ("defense_absolute", 16.),
+    ("unlock_thorns", 9.), ("thorns", 12.),
+    ("unlock_cash_bonuses", 6.), ("cash_bonus", 5.),
+    ("unlock_coin_bonuses", 5.), ("coins_per_kill_bonus", 5.),
+    ("coins_per_wave", 3.), ("health", 3.),
+)
+_PLANNER_TURTLE = (
+    ("unlock_defense_upgrades", 10.), ("defense_absolute", 16.),
+    ("unlock_thorns", 9.), ("thorns", 12.),
+    ("cash_bonus", 5.), ("coins_per_kill_bonus", 5.), ("health", 3.),
+)
+_PLANNER_PREREQUISITES = {
+    "defense_absolute": "unlock_defense_upgrades",
+    "unlock_thorns": "unlock_defense_upgrades",
+    "thorns": "unlock_thorns",
+    "cash_bonus": "unlock_cash_bonuses",
+    "unlock_coin_bonuses": "unlock_cash_bonuses",
+    "coins_per_kill_bonus": "unlock_coin_bonuses",
+    "coins_per_wave": "unlock_coin_bonuses",
+    "defense_percent": "unlock_defense_upgrades",
+}
+
+
+@pytest.mark.parametrize("build_id,expected", [
+    ("opening", _PLANNER_OPENING),
+    ("turtle", _PLANNER_TURTLE),
+])
+def test_the_pack_still_carries_the_planners_weights_in_its_original_order(
+    build_id: str, expected: tuple[tuple[str, float], ...],
+) -> None:
+    """Order is asserted, not just membership: the ranking breaks ties on
+    declaration order, so a reordered pack changes what the bot buys while
+    every set-comparison stays green."""
+    build = builds.by_id(build_id)
+    assert build is not None
+    assert tuple((row, float(weight)) for row, weight in build.weights) == expected
+
+
+def test_the_pack_still_carries_the_planners_prerequisite_map() -> None:
+    assert dict(builds.prerequisites()) == _PLANNER_PREREQUISITES
+
+
+def test_only_the_live_target_was_carried_over() -> None:
+    """_TARGETS held thorns 51 and defense_percent 50. The second was dead:
+    defense_percent is weighted by neither build, and the old choose_next
+    read _TARGETS only for ids already in its candidate list, so that cap
+    was never once evaluated. Carrying it would have re-advertised a limit
+    that acts on nothing."""
+    for build_id in ("opening", "turtle"):
+        build = builds.by_id(build_id)
+        assert build is not None
+        assert dict(build.targets) == {"thorns": 51.}
