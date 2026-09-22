@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "pack_version": "2026-09-05.1",
+  "note": "Named build recipes: an ordered upgrade preference list, nothing more. A build is a progression PREFERENCE, never purchase permission - whatever ranks first here still has to clear the account, screen, row, balance, price and transaction checks the buyer already runs. The weights, targets, focus strings and the prerequisite map below were lifted verbatim out of fleet/reroll_planner.py, which has been driving real reroll accounts; they are recorded here so more than one caller can name a build instead of each re-deriving one. schema_version and pack_version are NOT this pack's own idea: knowledge.py loads knowledge/ by globbing *.v1.json and refuses the union unless every file agrees on both, so this file has to carry the same values as hazards/milestones/priorities/tiers or `import knowledge` fails outright. For the same reason the provenance array below is called build_sources and not sources: knowledge.py merges every file's `sources` into one array whose entries must all resolve to a file in the (untracked) wiki corpus, and a source pointing at a .py file in this repo would break tests/test_knowledge.py the moment that corpus is extracted. One entry of fleet/reroll_planner.py:_TARGETS is deliberately absent: defense_percent (50.0) is a target for an upgrade neither build weights, so under the planner's own logic (it only consults _TARGETS for an id already in the candidate list) it has never once been read. Carrying it here as a build target would invent a cap that does not act on anything; it stays in the prerequisite map below, where it is real game structure.",
+  "build_sources": [
+    {
+      "id": "legacy-reroll-planner",
+      "file": "fleet/reroll_planner.py",
+      "sha256": "35484dedbc0cfaa6f333535e3b5c2d601323d6b49fb5b84a5333a620b9848b04",
+      "captured_at": "2026-09-22",
+      "revision": "fc3e883",
+      "content_scope": "existing_execution_weights"
+    }
+  ],
+  "prerequisites": {
+    "note": "How the game is wired, NOT how any one build is played. Every build shares this map because it describes the Workshop's own unlock graph - Thorns cannot be bought before Unlock Thorns exists, on any build, under any strategy - so it is deliberately not a per-build field: duplicating it per build would invite two builds to disagree about the game itself. Ported verbatim from fleet/reroll_planner.py:_PREREQUISITES.",
+    "source_refs": [
+      "legacy-reroll-planner"
+    ],
+    "source_url": null,
+    "validity": {
+      "status": "unknown",
+      "game_version_min": null,
+      "game_version_max": null
+    },
+    "definition_verified": true,
+    "rule_verified": false,
+    "requires": {
+      "defense_absolute": "unlock_defense_upgrades",
+      "unlock_thorns": "unlock_defense_upgrades",
+      "thorns": "unlock_thorns",
+      "cash_bonus": "unlock_cash_bonuses",
+      "unlock_coin_bonuses": "unlock_cash_bonuses",
+      "coins_per_kill_bonus": "unlock_coin_bonuses",
+      "coins_per_wave": "unlock_coin_bonuses",
+      "defense_percent": "unlock_defense_upgrades"
+    }
+  },
+  "builds": [
+    {
+      "id": "opening",
+      "name": "Opening",
+      "note": "The first stage of a fresh reroll account: basic attack while the defense unlocks are still locked, then the defense spine, then income. Verbatim from fleet/reroll_planner.py:_OPENING, which selects it below Tier 1 Wave 20.",
+      "weights": [
+        ["damage", 12],
+        ["attack_speed", 11],
+        ["unlock_defense_upgrades", 10.5],
+        ["defense_absolute", 16],
+        ["unlock_thorns", 9],
+        ["thorns", 12],
+        ["unlock_cash_bonuses", 6],
+        ["cash_bonus", 5],
+        ["unlock_coin_bonuses", 5],
+        ["coins_per_kill_bonus", 5],
+        ["coins_per_wave", 3],
+        ["health", 3]
+      ],
+      "targets": {
+        "thorns": 51.0
+      },
+      "focus": {
+        "damage": "Basic attack while defense unlocks are still locked",
+        "attack_speed": "Basic attack while defense unlocks are still locked",
+        "unlock_defense_upgrades": "Unlock Defense Absolute for early survival",
+        "defense_absolute": "Absorb more hits in the turtle build",
+        "unlock_thorns": "Unlock the turtle build's damage source",
+        "thorns": "Kill enemies that reach the tower",
+        "health": "Add a small survival buffer",
+        "unlock_cash_bonuses": "Unlock income for in-battle defense buys",
+        "cash_bonus": "Earn more cash for in-battle defense buys",
+        "unlock_coin_bonuses": "Unlock coin income for permanent upgrades",
+        "coins_per_kill_bonus": "Earn more coins for permanent defense",
+        "coins_per_wave": "Earn more coins for permanent defense"
+      },
+      "source_refs": [
+        "legacy-reroll-planner"
+      ],
+      "source_url": null,
+      "validity": {
+        "status": "unknown",
+        "game_version_min": null,
+        "game_version_max": null
+      },
+      "definition_verified": true,
+      "rule_verified": false
+    },
+    {
+      "id": "turtle",
+      "name": "Turtle",
+      "note": "The second stage: drop raw attack entirely and let Thorns do the killing while Defense Absolute absorbs the hits. Verbatim from fleet/reroll_planner.py:_TURTLE, which selects it from Tier 1 Wave 20 upward. It is a strict subset of the opening list minus damage, attack_speed, unlock_cash_bonuses, unlock_coin_bonuses and coins_per_wave, and unlock_defense_upgrades is weighted 10 here against the opening's 10.5 - that half point is the only weight that differs between the two, and it is preserved rather than tidied because it changes the order this build ranks in.",
+      "weights": [
+        ["unlock_defense_upgrades", 10],
+        ["defense_absolute", 16],
+        ["unlock_thorns", 9],
+        ["thorns", 12],
+        ["cash_bonus", 5],
+        ["coins_per_kill_bonus", 5],
+        ["health", 3]
+      ],
+      "targets": {
+        "thorns": 51.0
+      },
+      "focus": {
+        "unlock_defense_upgrades": "Unlock Defense Absolute for early survival",
+        "defense_absolute": "Absorb more hits in the turtle build",
+        "unlock_thorns": "Unlock the turtle build's damage source",
+        "thorns": "Kill enemies that reach the tower",
+        "cash_bonus": "Earn more cash for in-battle defense buys",
+        "coins_per_kill_bonus": "Earn more coins for permanent defense",
+        "health": "Add a small survival buffer"
+      },
+      "source_refs": [
+        "legacy-reroll-planner"
+      ],
+      "source_url": null,
+      "validity": {
+        "status": "unknown",
+        "game_version_min": null,
+        "game_version_max": null
+      },
+      "definition_verified": true,
+      "rule_verified": false
+    }
+  ]
+}

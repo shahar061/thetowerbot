@@ -11,8 +11,9 @@ there: it touches the filesystem, and a value object should not do I/O to
 know whether it is well formed. Template validation lives in the validated()
 method instead, so that a disk-I/O check runs only when explicitly requested.
 
-Imports config, the pure autopilot policy and the standard library. The scan
-loop depends on this module, so this module must not depend on the web layer.
+Imports config, the pure autopilot policy, the committed build pack and the
+standard library. The scan loop depends on this module, so this module must
+not depend on the web layer.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import builds
 import config
 from policy import AutopilotPolicy, PolicyError
 
@@ -58,6 +60,7 @@ PATCHABLE_FIELDS = (
     "timing_jitter",
     "tap_delay",
     "target_speed",
+    "build",
 )
 
 # Longest a cooldown may be. Zero is legal - it means "no cooldown" - but a
@@ -135,11 +138,12 @@ _STRATEGY_TYPES: dict[str, tuple[type, ...]] = {
     "auto_navigate": (bool,),
     "max_runs": (int,),
     "target_speed": (int, float),
+    "build": (str,),
 }
 
 # Fields whose declared type includes None, so None is not a type error.
 _OPTIONAL = frozenset({"max_runs", "target_speed", "target", "coin_budget",
-                       "coin_budget_pct"})
+                       "coin_budget_pct", "build"})
 
 
 def _has_type(value: Any, types: tuple[type, ...]) -> bool:
@@ -607,6 +611,16 @@ class Strategy:
     # this existed loads and behaves identically.
     claims: Claims = Claims()
 
+    # Which committed recipe in knowledge/builds.v1.json ranks the next
+    # purchase, or None to name no build at all. None rather than a default
+    # build id: naming one here would silently change what every strategy
+    # file written before this existed says it wants, and "this profile has
+    # not chosen a build" is a different answer from "this profile chose the
+    # opening build". Only the id is stored - the weights live in the pack,
+    # so a build that is retuned there does not need every saved profile
+    # rewritten.
+    build: str | None = None
+
     def __post_init__(self) -> None:
         # Normalise before validating: from_dict will hand in a list, and the
         # loop must never be given something a caller could append to.
@@ -653,6 +667,14 @@ class Strategy:
             raise ControlError(
                 "target_speed",
                 f"target_speed must be null or one of {list(config.TARGET_SPEEDS)}",
+            )
+        if self.build is not None and builds.by_id(self.build) is None:
+            # Membership against the committed pack, not a free string: a
+            # build id nothing resolves is a policy that ranks nothing, and
+            # the bot would sit there buying nothing while the profile
+            # claimed to have a plan. Fail where the value is set instead.
+            raise ControlError(
+                "build", f"build must be null or one of {list(builds.ids())}"
             )
 
     @classmethod
@@ -707,6 +729,7 @@ class Strategy:
             "timing_jitter": self.timing_jitter,
             "tap_delay": self.tap_delay,
             "target_speed": self.target_speed,
+            "build": self.build,
             "shopping": self.shopping.to_dict(),
             "autopilot": self.autopilot.to_dict(),
             "claims": self.claims.to_dict(),
