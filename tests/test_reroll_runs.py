@@ -164,3 +164,141 @@ def test_run_numbers_from_maps_every_member_and_tolerates_a_missing_file(tmp_pat
     assert run_numbers_from(tmp_path / "reroll-runs.json") == {"A_1": [1], "A_2": [1, 2]}
     (tmp_path / "reroll-runs.json").write_text("garbage")
     assert run_numbers_from(tmp_path / "reroll-runs.json") == {}
+
+
+from fleet.reroll_retirement import RetireError
+
+
+def _files(root: Path) -> tuple[bytes, ...]:
+    return tuple((root / name).read_bytes() for name in ("reroll-runs.json",)
+                 if (root / name).exists())
+
+
+@pytest.mark.parametrize("keep, add, code", [
+    (["Tiramisu64_99"], [], "keep_not_in_active_run"),
+    ([], [], "run_would_be_empty"),
+    ([], ["Tiramisu64_18"], "instance_retired"),
+    ([], ["Tiramisu64_30"], "tower_already_opened"),
+])
+def test_validation_codes_change_nothing(tmp_path: Path, keep, add, code) -> None:
+    _registration(tmp_path, "Tiramisu64_18", 1.0)
+    pool = FakePool(["Tiramisu64_20"])
+    runs = make(tmp_path, pool)
+    runs.active()
+    before, members = _files(tmp_path), pool.members()
+    with pytest.raises(ValueError, match=code):
+        runs.start_new(keep, add)
+    assert _files(tmp_path) == before and pool.members() == members
+
+
+def test_start_new_closes_old_run_retires_the_rest_and_opens_the_next(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
+    runs = make(tmp_path, pool)
+    runs.active()
+
+    outcome = runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
+
+    assert outcome["number"] == 2
+    assert [item["name"] for item in pool.members()] == ["Tiramisu64_20", "Tiramisu64_22"]
+    old, new = sorted(json.loads((tmp_path / "reroll-runs.json").read_text())["runs"],
+                      key=lambda run: run["number"])
+    assert old["status"] == "closed" and old["closed_at"] == "2026-09-23T09:00:00Z"
+    assert [(item["name"], item["reason"], item["endpoint"]) for item in old["retired"]] == [
+        ("Tiramisu64_21", "new_run", "127.0.0.1:21")]
+    assert (new["name"], new["status"], new["members"]) == (
+        "Reroll #2", "active", ["Tiramisu64_20", "Tiramisu64_22"])
+
+
+def test_retired_emulator_cannot_come_back_by_keep_or_add(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_21", "Tiramisu64_22"})
+    runs = make(tmp_path, pool)
+    runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
+    with pytest.raises(ValueError, match="instance_retired"):
+        runs.start_new(["Tiramisu64_20"], ["Tiramisu64_21"])
+    with pytest.raises(ValueError, match="keep_not_in_active_run"):
+        runs.start_new(["Tiramisu64_21"], [])
+    with pytest.raises(ValueError, match="instance_retired"):
+        runs.add_members(["Tiramisu64_21"])
+
+
+def test_failed_retirement_is_carried_over_and_flagged(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
+
+    def retire(member):
+        raise RetireError("identity_changed")
+
+    runs = make(tmp_path, pool, retire=retire)
+    outcome = runs.start_new([], ["Tiramisu64_22"])
+    active = runs.active()
+    assert active["members"] == ["Tiramisu64_20", "Tiramisu64_21", "Tiramisu64_22"]
+    assert runs.retire_failures() == {"Tiramisu64_20": "identity_changed",
+                                      "Tiramisu64_21": "identity_changed"}
+    assert {"name": "Tiramisu64_20", "error": "identity_changed"} in outcome["results"]
+
+
+def test_start_new_without_active_run_needs_no_keep(tmp_path: Path) -> None:
+    pool = FakePool([], fresh={"Tiramisu64_22"})
+    runs = make(tmp_path, pool)
+    assert runs.start_new([], ["Tiramisu64_22"])["number"] == 1
+    assert runs.active()["members"] == ["Tiramisu64_22"]
+
+
+def test_retire_member_mid_run_and_failure_flag(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
+    calls = {"fail": True}
+
+    def retire(member):
+        if calls["fail"]:
+            raise RetireError("identity_changed")
+        pool.remove(member["name"])
+        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
+
+    runs = make(tmp_path, pool, retire=retire)
+    with pytest.raises(RetireError):
+        runs.retire_member("Tiramisu64_21")
+    assert runs.retire_failures() == {"Tiramisu64_21": "identity_changed"}
+
+    calls["fail"] = False
+    runs.retire_member("Tiramisu64_21")
+    assert runs.retire_failures() == {}
+    assert runs.active()["retired"][0]["reason"] == "manual"
+    with pytest.raises(ValueError, match="instance_not_in_active_run"):
+        runs.retire_member("Tiramisu64_21")
+
+
+def test_add_members_extends_active_run(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20"], fresh={"Tiramisu64_22"})
+    runs = make(tmp_path, pool)
+    runs.add_members(["Tiramisu64_22"])
+    assert runs.active()["members"] == ["Tiramisu64_20", "Tiramisu64_22"]
+    assert runs.active()["number"] == 1
+
+
+def test_retry_stop_uses_stored_endpoint_after_pool_exit(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
+    stops: list[tuple] = []
+    attempts = {"n": 0}
+
+    def retire(member):
+        pool.remove(member["name"])
+        return {"name": member["name"], "worker": "stopped", "instance": "stop_failed",
+                "error": "window stuck"}
+
+    def stop_instance(*args):
+        attempts["n"] += 1
+        stops.append(args)
+        if attempts["n"] == 1:
+            raise RuntimeError("still stuck")
+
+    runs = make(tmp_path, pool, retire=retire, stop_instance=stop_instance)
+    runs.retire_member("Tiramisu64_21")
+    assert runs.stop_failures() == [{"name": "Tiramisu64_21", "error": "window stuck"}]
+
+    with pytest.raises(ValueError, match="instance_stop_failed"):
+        runs.retry_stop("Tiramisu64_21")
+    assert runs.stop_failures() == [{"name": "Tiramisu64_21", "error": "still stuck"}]
+    runs.retry_stop("Tiramisu64_21")
+    assert runs.stop_failures() == []
+    assert stops[-1] == ("Tiramisu64_21", "127.0.0.1:21", "lease-Tiramisu64_21")
+    with pytest.raises(ValueError, match="no_stop_failure"):
+        runs.retry_stop("Tiramisu64_21")
