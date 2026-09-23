@@ -154,6 +154,17 @@ def test_existing_registration_restarts_opened_tower_without_enrollment(tmp_path
     assert spawned[-1][spawned[-1].index("--attempt-id") + 1] == "saved-attempt"
 
 
+def test_opened_tower_without_registration_asks_enroll_to_resume(tmp_path: Path) -> None:
+    make, spawned, live, _ = _harness(tmp_path)
+    supervisor = make()
+    member = supervisor.pool_snapshot()["members"][0]
+    member["state"] = "tower_already_opened"
+    enrolled = []
+    original = supervisor.enroll
+    supervisor.enroll = lambda *args: enrolled.append(args[0]["name"]) or original(*args)
+    assert supervisor.start(member["name"])["state"] == "running"
+    assert enrolled == [member["name"]]
+
 def test_opened_tower_rejects_registration_with_changed_attempt(tmp_path: Path) -> None:
     import json
     from fleet.identity import Attempt, IdentityEvidence

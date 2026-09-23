@@ -72,7 +72,8 @@ def wait_for_tower_ready(
                 phrase in frame.conflict_dialog.lower() for phrase in (
                     "new session detected", "cloud session different than local session",
                 )) else "ambiguous dialog")
-        if frame.screen in {"home", "google_play_profile"}:
+        # The link-account prompt dims a ready Home; Home is still underneath.
+        if frame.screen in {"home", "google_play_profile", "link_account_prompt"}:
             return
         if frame.screen != "unknown":
             raise ValueError("unexpected Tower startup screen")
@@ -122,7 +123,7 @@ def complete_first_launch_onboarding(
                 before_action("home_from_game_over", frame)
             device.click(*frame.controls["home_from_game_over"])
             left_game_over = True
-        elif frame.screen == "home":
+        elif frame.screen in {"home", "link_account_prompt"}:
             if not agreed or not left_game_over:
                 raise ValueError("first-launch consent or tutorial unverified")
             return

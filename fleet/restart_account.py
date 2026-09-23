@@ -17,6 +17,7 @@ _CONTROLS = {
     "google_play_profile": "dismiss_google_play_profile",
     "workshop_tutorial_claim": "claim",
     "workshop": "battle_tab",
+    "link_account_prompt": "close",
 }
 _NEXT_SCREEN = {
     "home": "settings",
@@ -25,7 +26,14 @@ _NEXT_SCREEN = {
     "google_play_profile": "home",
     "workshop_tutorial_claim": "workshop",
     "workshop": "home",
+    "link_account_prompt": "home",
 }
+# Prompts the game may raise over any screen, including mid-transition.
+_INTERRUPTIONS = {"link_account_prompt"}
+# A tap the game ignored (e.g. one that landed while a prompt was opening)
+# leaves the screen unchanged; re-tap from a fresh frame after this long.
+_RETAP_AFTER_SECONDS = 2.
+_MAX_RETAPS = 2
 
 
 def verify_restart_account(
@@ -44,9 +52,11 @@ def verify_restart_account(
         raise RecoveryBlocked("registered account identity unavailable")
     account: AccountFrame | None = None
     awaiting: tuple[str, str] | None = None
+    tapped_at = 0.
+    retaps = 0
     battle_deadline = clock() + 180
     navigation_steps = 0
-    while navigation_steps < 12:
+    while navigation_steps < 20:
         frame = observe(device)
         if frame.conflict_dialog:
             raise RecoveryBlocked("session conflict during account verification")
@@ -58,12 +68,22 @@ def verify_restart_account(
         navigation_steps += 1
         if awaiting is not None:
             previous, destination = awaiting
-            if frame.screen in {previous, "unknown"}:
+            stuck = frame.screen == previous and clock() - tapped_at >= _RETAP_AFTER_SECONDS
+            if frame.screen in _INTERRUPTIONS and frame.screen != previous:
+                awaiting = None
+            elif stuck and retaps < _MAX_RETAPS:
+                retaps += 1
+                awaiting = None
+            elif stuck:
+                raise RecoveryBlocked("account navigation tap had no effect")
+            elif frame.screen in {previous, "unknown"}:
                 sleep(.5)
                 continue
-            if frame.screen != destination:
+            elif frame.screen != destination:
                 raise RecoveryBlocked("account navigation transition unavailable")
-            awaiting = None
+            else:
+                retaps = 0
+                awaiting = None
         if frame.screen == "account":
             account = frame
             break
@@ -74,6 +94,7 @@ def verify_restart_account(
                     or frame.observed_at > clock() or clock() - frame.observed_at > 5):
                 raise RecoveryBlocked("account navigation evidence unavailable")
             device.click(*frame.controls[control])
+            tapped_at = clock()
             awaiting = (frame.screen, _NEXT_SCREEN[frame.screen])
         elif frame.screen != "unknown":
             raise RecoveryBlocked("account navigation screen unavailable")
