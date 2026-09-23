@@ -177,7 +177,7 @@ export const STONES_WAVE = 60;
  *  The third rung is not a build: it is the hand-off at wave 60. */
 export const LADDER = [
   { id: "opening", title: "Opening", goal: "Reach Tier 1 Wave 20", target: 20,
-    blurb: "Buy basic attack, then unlock and strengthen Defense Absolute and Thorns." },
+    blurb: "Buy attack paced by Coins/Wave, then Coins/Wave, then unlock Thorns." },
   { id: "turtle", title: "Turtle", goal: "Reach Tier 1 Wave 60", target: STONES_WAVE,
     blurb: "Keep defense ahead of enemy damage and add cash and coin income." },
   { id: "stones", title: "Ultimate Weapon", goal: "You pick the first Ultimate Weapon", target: null,

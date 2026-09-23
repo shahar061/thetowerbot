@@ -95,8 +95,9 @@ pipeline has no such term, and two committed decisions replace it:
 
 * `value_propagation` gives an enabler a discounted share of the best thing
   it leads to, so `unlock_defense_upgrades` (10.5 on its own, 20.22 once it
-  inherits from the thorns chain) now outranks `damage` (12) and is bought
-  FIRST rather than third.
+  inherits from the thorns chain) would outrank the old `damage` (12). The
+  opening build is now weighted as a strict priority instead - see its note
+  in `knowledge/builds.v1.json` - and paces attack with `level_caps`.
 * a milestone is either met or not, so a weighted row is bought until its
   milestone is met and then dropped, rather than revisited forever.
 
@@ -114,7 +115,10 @@ and never during a decision.
 
 from __future__ import annotations
 
+import hashlib
+import random
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Mapping
 
 import build_selection
@@ -130,6 +134,19 @@ from strategy import Strategy
 from workshop_objectives import ID_PREFIX
 
 
+# The draw: instead of always taking the top-ranked ready upgrade, pick one
+# of the top DRAW_POOL with probability value**sharpness / sum(value**sharpness).
+# At 6, a fresh opening account (Damage 100, Attack Speed 90, Unlock Cash
+# Bonuses 81.6) keeps the top pick ~55% of the time, takes the runner-up
+# ~29% and the third ~16%. It varies accounts without undoing the priority:
+# blocked rows and rows past their cap are never in the pool, and an
+# attack row that is drawn early simply reaches its allowance sooner.
+# Seeded by account and verified purchase count, so a decision can be
+# replayed and stays the same between the unpriced and priced calls.
+DRAW_SHARPNESS = 6.
+DRAW_POOL = 3
+
+
 @dataclass(frozen=True)
 class RerollFacts:
     account_id: str
@@ -140,6 +157,8 @@ class RerollFacts:
     lifetime_coins: int | None = None
     prices: Mapping[str, int] = field(default_factory=dict)
     spend_fraction: float | None = None
+    # None ranks deterministically: always the top pick.
+    draw_sharpness: float | None = DRAW_SHARPNESS
 
 
 @dataclass(frozen=True)
@@ -366,6 +385,52 @@ def _as_int_price(price: int | float | None) -> int | None:
     return int(price) if float(price).is_integer() else int(price) + 1
 
 
+def _with_level_caps(build: builds.Build, purchases: Mapping[str, int]) -> builds.Build:
+    """`build` with each level cap turned into a target for this call.
+
+    A cap is counted in verified purchases, and a capped row is not in
+    `build.targets`, so `_stats` already writes it as its purchase count -
+    the coordinate the cap is stated in. The allowance moves with every
+    purchase it counts, which is why it is recomputed per call rather than
+    stored.
+    """
+    if not build.level_caps:
+        return build
+    return replace(build, targets=MappingProxyType({
+        **build.targets,
+        **{row: cap.allowance(purchases) for row, cap in build.level_caps.items()},
+    }))
+
+
+def _draw(plan: director.Plan, facts: RerollFacts) -> tuple[director.Plan, str]:
+    """Replace `plan.top` with a weighted draw from the top ready candidates.
+
+    Returns the plan and a sentence for the reason, empty when the draw kept
+    the top pick. See DRAW_SHARPNESS.
+    """
+    sharpness = facts.draw_sharpness
+    if sharpness is None or plan.top is None:
+        return plan, ""
+    pool = [c for c in plan.candidates
+            if c.status == "ready" and not c.held_by][:DRAW_POOL]
+    odds = [c.value ** sharpness for c in pool]
+    seed = f"{facts.account_id}:{sum(facts.purchases.values())}"
+    roll = random.Random(hashlib.sha256(seed.encode()).digest()).random() * sum(odds)
+    picked = pool[-1]
+    for candidate, weight in zip(pool, odds):
+        roll -= weight
+        if roll < 0:
+            picked = candidate
+            break
+    if picked is plan.top:
+        return plan, ""
+    share = odds[pool.index(picked)] / sum(odds)
+    top = upgrades.by_id(_upgrade_id(plan.top.objective_id) or "")
+    top_name = top.name if top is not None else plan.top.objective_id
+    return (replace(plan, top=picked),
+            f" This was drawn at {share:.0%} odds over the top pick, {top_name}.")
+
+
 def choose_next(facts: RerollFacts) -> RerollDecision:
     """The one next move for this reroll account, with its reasoning attached.
 
@@ -381,6 +446,8 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
     """
     if not facts.account_id:
         raise ValueError("reroll account identity required")
+    if facts.draw_sharpness is not None and facts.draw_sharpness <= 0:
+        raise ValueError(f"draw sharpness must be > 0, got {facts.draw_sharpness}")
     if facts.best_tier_1_wave is not None and facts.best_tier_1_wave >= STONES_WAVE:
         # Reroll policy, not planning, and so it runs before a build is
         # chosen: the account's next move is a one-way Ultimate Weapon pick,
@@ -394,11 +461,13 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
     build = _build_for(facts)
     targeted = frozenset(build.targets)
     graph = workshop_objectives.workshop_objectives(
-        build, _revision(facts, targeted=targeted, anchored=True),
+        _with_level_caps(build, facts.purchases),
+        _revision(facts, targeted=targeted, anchored=True),
         prices=facts.prices)
     plan = director.plan(
         _revision(facts, targeted=targeted), knowledge=knowledge.KNOWLEDGE,
         graph=graph, rates=_NO_MEASURED_INCOME, strategy=_NO_PRE_APPROVALS)
+    plan, drawn = _draw(plan, facts)
     outcome = decision_module.decide(plan, wallet=facts.wallet_coins,
                                      spend_fraction=facts.spend_fraction)
 
@@ -419,7 +488,7 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
         facts.account_id, build.id, _GOALS.get(build.id, _DEFAULT_GOAL),
         outcome.state, upgrade.id, upgrade.name, upgrade.category, price,
         facts.wallet_coins, facts.lifetime_coins,
-        outcome.reason + _price_share(price, facts.lifetime_coins))
+        outcome.reason + drawn + _price_share(price, facts.lifetime_coins))
 
 
 def project_next(facts: RerollFacts, *, limit: int = 10) -> tuple[PlannedPurchase, ...]:

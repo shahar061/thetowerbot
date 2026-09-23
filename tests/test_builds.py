@@ -81,7 +81,7 @@ def test_weight_order_is_preserved_and_is_not_alphabetical_or_sorted_by_weight()
     weight, so a loader that sorted would change what the bot buys while every
     value-level assertion still passed."""
     ids = builds.by_id("opening").upgrade_ids
-    assert ids[:3] == ("damage", "attack_speed", "unlock_defense_upgrades")
+    assert ids[:3] == ("damage", "attack_speed", "unlock_cash_bonuses")
     assert list(ids) != sorted(ids)
     weights = [w for _, w in builds.by_id("opening").weights]
     assert weights != sorted(weights, reverse=True)
@@ -329,13 +329,18 @@ def test_a_strategy_naming_an_unknown_build_is_rejected() -> None:
 # Written out by hand, from git, on purpose. A test that shelled out to
 # `git show` would pin a commit rather than a behaviour, and would start
 # failing for reasons that have nothing to do with the numbers.
+# The opening is no longer the legacy planner's: it is a strict priority -
+# Damage > Attack Speed > Coins/Wave (with its unlocks) > the Thorns chain
+# with two levels of Defense Absolute - with each group spaced far enough
+# apart that value_propagation's 0.6 credit to an unlock cannot reorder them
+# (unlock_cash_bonuses inherits to 81.6, below attack_speed's 90; the whole
+# thorns chain tops out at unlock_thorns' 44, below coins_per_wave's 60).
 _PLANNER_OPENING = (
-    ("damage", 12.), ("attack_speed", 11.),
-    ("unlock_defense_upgrades", 10.5), ("defense_absolute", 16.),
-    ("unlock_thorns", 9.), ("thorns", 12.),
-    ("unlock_cash_bonuses", 6.), ("cash_bonus", 5.),
-    ("unlock_coin_bonuses", 5.), ("coins_per_kill_bonus", 5.),
-    ("coins_per_wave", 3.), ("health", 3.),
+    ("damage", 100.), ("attack_speed", 90.),
+    ("unlock_cash_bonuses", 30.), ("unlock_coin_bonuses", 50.),
+    ("coins_per_wave", 60.),
+    ("unlock_defense_upgrades", 10.), ("unlock_thorns", 20.),
+    ("defense_absolute", 42.), ("thorns", 40.),
 )
 _PLANNER_TURTLE = (
     ("unlock_defense_upgrades", 10.), ("defense_absolute", 16.),
@@ -383,3 +388,39 @@ def test_only_the_live_target_was_carried_over() -> None:
         build = builds.by_id(build_id)
         assert build is not None
         assert dict(build.targets) == {"thorns": 51.}
+
+
+def test_the_opening_paces_attack_against_coins_per_wave() -> None:
+    build = builds.by_id("opening")
+    assert build is not None
+    caps = build.level_caps
+    assert set(caps) == {"damage", "attack_speed", "coins_per_wave", "defense_absolute"}
+    assert caps["damage"].allowance({}) == 2
+    assert caps["damage"].allowance({"coins_per_wave": 3}) == 5
+    assert caps["attack_speed"].allowance({"coins_per_wave": 1, "damage": 9}) == 3
+    assert caps["coins_per_wave"].allowance({"coins_per_wave": 99}) == 3
+    assert caps["defense_absolute"].allowance({}) == 2
+
+
+def test_a_build_without_level_caps_loads_with_none() -> None:
+    build = builds.by_id("turtle")
+    assert build is not None
+    assert dict(build.level_caps) == {}
+
+
+@pytest.mark.parametrize("cap,match", [
+    ({"health": {"base": 2}}, "unweighted"),
+    ({"thorns": {"base": 2}}, "also targets"),
+    ({"unlock_thorns": {"base": 1}}, "unlock"),
+    ({"damage": {"base": -1}}, "base"),
+    ({"damage": {"base": 1, "ratio": -1, "per": ["coins_per_wave"]}}, "ratio"),
+    ({"damage": {"base": 1, "ratio": 1}}, "per"),
+    ({"damage": {"base": 1, "ratio": 1, "per": ["not_an_upgrade"]}}, "unknown"),
+    ({"damage": {"base": 1, "ratio": 1, "per": ["damage"]}}, "itself"),
+    ({"damage": {"base": 1, "bogus": 1}}, "fields"),
+])
+def test_a_malformed_level_cap_fails_validation(cap: dict, match: str) -> None:
+    payload = _payload()
+    _a_build(payload)["level_caps"] = cap
+    with pytest.raises(ValueError, match=match):
+        builds.BuildPack.from_payload(payload)
