@@ -103,34 +103,65 @@ class RerollPool:
                 current.append({**item, "state": state})
             return {"candidates": candidates, "members": current}
 
-    def add(self, names: list[str]) -> dict[str, list[dict[str, str]]]:
+    def members(self) -> list[dict[str, str]]:
         with self._lock:
-            if (not names or len(set(names)) != len(names)
-                    or any(not isinstance(name, str)
-                           or re.fullmatch(r"[A-Za-z0-9_]+", name) is None for name in names)):
-                raise RerollPoolError("invalid_pool_members")
-            rows = {row.name: row for row in self._rows()}
-            members = self._members()
-            existing = {item["name"] for item in members}
-            for name in names:
-                row = rows.get(name)
-                if row is None:
-                    raise RerollPoolError("instance_not_installed")
-                if name in existing:
-                    raise RerollPoolError("instance_already_in_pool")
-                state = self._state(row)
-                if state not in {"ready", "start_required"}:
-                    raise RerollPoolError(state)
-                members.append({"name": row.name, "endpoint": row.endpoint,
-                                "lease_id": row.lease_id})
-            self._save(members)
-            return self.snapshot()
+            return [dict(item) for item in self._members()]
 
-    def remove(self, name: str) -> dict[str, list[dict[str, str]]]:
+    def member(self, name: str) -> dict[str, str] | None:
+        return next((item for item in self.members() if item["name"] == name), None)
+
+    def _new_entries(self, names: list[str], existing: set[str]) -> list[dict[str, str]]:
+        if (not names or len(set(names)) != len(names)
+                or any(not isinstance(name, str)
+                       or re.fullmatch(r"[A-Za-z0-9_]+", name) is None for name in names)):
+            raise RerollPoolError("invalid_pool_members")
+        rows = {row.name: row for row in self._rows()}
+        entries = []
+        for name in names:
+            row = rows.get(name)
+            if row is None:
+                raise RerollPoolError("instance_not_installed")
+            if name in existing:
+                raise RerollPoolError("instance_already_in_pool")
+            state = self._state(row)
+            if state not in {"ready", "start_required"}:
+                raise RerollPoolError(state)
+            entries.append({"name": row.name, "endpoint": row.endpoint,
+                            "lease_id": row.lease_id})
+        return entries
+
+    def validate_add(self, names: list[str]) -> None:
+        with self._lock:
+            self._new_entries(names, {item["name"] for item in self._members()})
+
+    def add(self, names: list[str]) -> None:
+        with self._lock:
+            members = self._members()
+            members.extend(self._new_entries(names, {item["name"] for item in members}))
+            self._save(members)
+
+    def replace(self, keep: list[str], add: list[str]) -> None:
+        """Rewrite membership as ``keep`` (entries unchanged) followed by ``add``.
+
+        Returns ``None``: the pool file is saved first, and the caller must not
+        lose that saved state to a later host-inventory read failing (a
+        trailing ``snapshot()`` re-reads the host, which can fail after the
+        write already landed).
+        """
+        with self._lock:
+            by_name = {item["name"]: item for item in self._members()}
+            if len(set(keep)) != len(keep) or any(name not in by_name for name in keep):
+                raise RerollPoolError("instance_not_in_pool")
+            new = self._new_entries(add, set(by_name)) if add else []
+            if not keep and not new:
+                raise RerollPoolError("run_would_be_empty")
+            self._save([by_name[name] for name in keep] + new)
+
+    def remove(self, name: str) -> None:
+        """Remove ``name`` from the pool and save. Returns ``None`` -- see ``replace``."""
         with self._lock:
             members = self._members()
             retained = [item for item in members if item["name"] != name]
             if len(retained) == len(members):
                 raise RerollPoolError("instance_not_in_pool")
             self._save(retained)
-            return self.snapshot()

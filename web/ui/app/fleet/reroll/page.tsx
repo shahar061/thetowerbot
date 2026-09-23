@@ -7,12 +7,14 @@ import { Meter, Pips } from "@/components/Meter";
 import { StatTile } from "@/components/StatTile";
 import { Button } from "@/components/ui/button";
 import { useAccountSelection } from "@/lib/AccountSelection";
-import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, setRerollConcurrency, startReroll } from "@/lib/api";
+import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, retireRerollMember, setRerollConcurrency, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
 import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
 import { LADDER, attentionRank, deviceColor, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { DeviceCard } from "./DeviceCard";
+import { NewRerollDialog } from "./NewRerollDialog";
+import { PastRerolls } from "./PastRerolls";
 import { SharedWorkshopLedger } from "./Purchases";
 import { RerollCard } from "./RerollCard";
 
@@ -88,6 +90,8 @@ export default function RerollPage() {
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState<Filter>("all");
+  const [dialog, setDialog] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
   const { accounts, choose } = useAccountSelection();
 
   const refresh = useCallback(async () => {
@@ -127,7 +131,15 @@ export default function RerollPage() {
     finally { setBusy(false); }
   };
   const add = () => void act(async () => { setPool(await addRerollMembers(selected)); setSelected([]); setPicker(false); });
+  const confirmNew = (value: { keep: string[]; add: string[] }) => void (async () => {
+    setBusy(true); setDialogError(null);
+    try { setPool(await startNewReroll(value)); setDialog(false); await refresh(); }
+    catch (failure) { setDialogError((failure as Error).message); }
+    finally { setBusy(false); }
+  })();
   const members = useMemo(() => pool?.members ?? [], [pool]);
+  const run = pool?.run ?? null;
+  const operating = pool?.operation?.state === "running";
 
   // One pass over the pool, classified through the shared vocabulary rather
   // than by re-listing state strings here. The old page kept its own inline
@@ -178,10 +190,20 @@ export default function RerollPage() {
   return <div className="mx-auto flex max-w-7xl flex-col gap-4">
     <PageHeader
       title="Reroll"
-      meta={census.total ? `${census.total} ${census.total === 1 ? "device" : "devices"} · ${census.live} running` : "Fleet · manually prepared emulators"}
+      meta={run ? `${run.name} · started ${new Date(run.started_at).toLocaleDateString()} · ${census.total} ${census.total === 1 ? "emulator" : "emulators"}` : "No active reroll"}
       action={<Link href="/fleet/history/" className="text-sm text-primary underline">Provisioning history</Link>}
     />
     {error && <p role="alert" className="rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">{error}</p>}
+    {pool?.operation && pool.operation.state !== "done" && <p role="status" aria-label="Reroll operation"
+      className={cn("rounded-lg border p-3 text-sm", pool.operation.state === "failed" ? "border-danger bg-danger-surface text-danger" : "border-warn/40 bg-warn-surface text-warn")}>
+      {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}` :
+        pool.operation.kind === "new_run" ? "Starting a new reroll… retiring emulators and shutting them down"
+          : `Retiring ${pool.operation.target}…`}
+    </p>}
+    {pool?.stop_failures?.map(item => <p key={item.name} role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">
+      {item.name} was retired but its emulator is still running.
+      <Button size="xs" variant="outline" aria-label={`Shut down ${item.name}`} disabled={busy || operating} onClick={() => void act(() => stopRerollInstance(item.name))}>Shut down</Button>
+    </p>)}
 
     <RerollCard title="Pool overview" tone={census.attention ? "warn" : census.live ? "live" : undefined}>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -204,9 +226,12 @@ export default function RerollPage() {
       </div>}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => setPicker(true)}>Add emulators</Button>
-        <Button variant="outline" disabled={busy || !members.length} onClick={() => void act(() => startReroll())}>Start all</Button>
-        <Button variant="outline" disabled={busy || !members.length} onClick={() => void act(() => pauseReroll())}>Pause all</Button>
+        {run
+          ? <><Button variant="outline" disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>New reroll</Button>
+              <Button disabled={operating} onClick={() => setPicker(true)}>Add emulators</Button></>
+          : <Button disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>Start a reroll</Button>}
+        <Button variant="outline" disabled={busy || !members.length || operating} onClick={() => void act(() => startReroll())}>Start all</Button>
+        <Button variant="outline" disabled={busy || !members.length || operating} onClick={() => void act(() => pauseReroll())}>Pause all</Button>
         <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
           Concurrent workers
           <select aria-label="Concurrent workers" value={limit} onChange={event => setLimit(Number(event.target.value))} className="rounded-md border bg-background px-2 py-1 text-foreground">
@@ -217,7 +242,7 @@ export default function RerollPage() {
       </div>
       {limit === 4 && <p role="status" className="rounded-lg border border-warn/40 bg-warn-surface p-2.5 text-sm text-warn">Four concurrent emulators can strain memory and slow other apps. Start with two, then increase the limit while watching macOS memory pressure.</p>}
 
-      {!members.length && <p className="text-sm text-muted-foreground">No emulators in the pool. Add emulators prepared with Tower installed and unopened.</p>}
+      {!members.length && <p className="text-sm text-muted-foreground">{run ? "No emulators in this reroll." : "No active reroll. Start one with emulators prepared with Tower installed and unopened."}</p>}
 
       {picker && <div className="rounded-lg border border-border p-3 text-sm"><h3 className="font-semibold">Add emulators</h3>
         <p className="mt-1 text-xs text-muted-foreground">Prepare each emulator with Tower installed and unopened before adding it.</p>
@@ -264,10 +289,10 @@ export default function RerollPage() {
           onToggle={() => setCollapsed(current => ({ ...current, [member.name]: !current[member.name] }))}
           onStart={() => void act(() => startReroll(member.name))}
           onPause={() => void act(() => pauseReroll(member.name))}
-          onRemove={() => void act(() => removeRerollMember(member.name))}
+          onRetire={() => void act(() => retireRerollMember(member.name))}
           onJournal={() => setJournalWorker(member.name)}
           onOpenAccount={account ? () => choose(account.key) : undefined}
-          busy={busy}
+          busy={busy || operating}
         />;
       })}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
     </RerollCard>}
@@ -295,6 +320,9 @@ export default function RerollPage() {
     </RerollCard>
 
     {!!members.length && <SharedWorkshopLedger members={members} />}
+    <PastRerolls refreshKey={run?.number} />
+    <NewRerollDialog open={dialog} onClose={() => setDialog(false)} run={run} members={members}
+      candidates={pool?.candidates ?? []} busy={busy} error={dialogError} onConfirm={confirmNew} />
     {journalError && <p role="status" className="text-sm text-muted-foreground">Shared journal unavailable: {journalError}</p>}
     {!journalError && <Journal entries={entries} worker={journalWorker} onWorker={setJournalWorker} />}
   </div>;

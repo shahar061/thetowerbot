@@ -58,6 +58,10 @@ def _terminate(pid: int) -> None:
     os.kill(pid, 15)
 
 
+def _force_kill(pid: int) -> None:
+    os.kill(pid, 9)
+
+
 class RerollSupervisor:
     """Start only exact pool members and retain evidence before controlling a PID.
 
@@ -72,6 +76,7 @@ class RerollSupervisor:
                  spawn: Callable[[Sequence[str]], int] = _spawn,
                  process_identity: Callable[[int], Sequence[str] | None] = _process_identity,
                  terminate: Callable[[int], None] = _terminate,
+                 force_kill: Callable[[int], None] = _force_kill,
                  max_concurrent_workers: int = 2,
                  start_stagger_seconds: float = 0.5) -> None:
         if not 1 <= max_concurrent_workers <= 4 or start_stagger_seconds < 0:
@@ -87,6 +92,7 @@ class RerollSupervisor:
         self.spawn = spawn
         self.process_identity = process_identity
         self.terminate = terminate
+        self.force_kill = force_kill
         self.state_root = self.root / "reroll-processes"
         self._enroll_lock = Lock()
 
@@ -354,6 +360,29 @@ class RerollSupervisor:
                 if tuple(self.process_identity(pid) or ()) != tuple(record["args"]):
                     return {"name": name, "state": "identity_changed", "pid": pid}
                 self.terminate(pid)
+                record["state"] = "stopping"
+                self._save(name, record)
+                return self._status(name, member)
+            except Exception as exc:
+                return {"name": name, "state": "failed", "error": str(exc)}
+
+    def kill(self, name: str) -> Status:
+        """SIGKILL a worker that ignored SIGTERM, after re-proving its identity."""
+        members = self._members()
+        if name not in members:
+            return {"name": name, "state": "failed", "error": "instance_not_in_pool"}
+        member = members[name]
+        with self._locked(name):
+            try:
+                current = self._status(name, member)
+                if current["state"] not in {"running", "stopping"}:
+                    return current
+                record = self._read(name)
+                assert record is not None
+                pid = record["pid"]
+                if tuple(self.process_identity(pid) or ()) != tuple(record["args"]):
+                    return {"name": name, "state": "identity_changed", "pid": pid}
+                self.force_kill(pid)
                 record["state"] = "stopping"
                 self._save(name, record)
                 return self._status(name, member)

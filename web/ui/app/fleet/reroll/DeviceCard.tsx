@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { Meter } from "@/components/Meter";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/dialog";
 import { accountAge, coinsPerSecond } from "@/lib/accountMetrics";
 import type { RerollMember } from "@/lib/fleet";
 import { LADDER, ladderProgress, STONES_WAVE, standingFor } from "@/lib/rerollState";
@@ -145,7 +147,7 @@ export function DeviceCard({
   onToggle,
   onStart,
   onPause,
-  onRemove,
+  onRetire,
   onJournal,
   onOpenAccount,
   busy,
@@ -157,14 +159,15 @@ export function DeviceCard({
   onToggle: () => void;
   onStart: () => void;
   onPause: () => void;
-  onRemove: () => void;
+  onRetire: () => void;
   onJournal: () => void;
   onOpenAccount?: () => void;
   busy: boolean;
 }) {
-  const standing = standingFor(member.state);
+  const standing = standingFor(member.retire_state ?? member.state);
   const age = freshness(member.observed_at);
   const region = `worker-${member.name}`;
+  const [confirming, setConfirming] = useState(false);
 
   return (
     <article
@@ -318,11 +321,17 @@ export function DeviceCard({
               <Button size="xs" variant="outline" disabled={busy} onClick={onStart}>Start</Button>
               <Button size="xs" variant="outline" disabled={busy} onClick={onPause}>Pause</Button>
               <Button size="xs" variant="outline" onClick={onJournal}>Show journal</Button>
-              <Button size="xs" variant="destructive" disabled={busy} onClick={onRemove}>Remove from pool</Button>
+              <Button size="xs" variant="destructive" disabled={busy} onClick={() => setConfirming(true)}>Retire</Button>
+              {member.retire_state === "retire_failed" && <span className="text-danger">Retire failed: {member.retire_error}</span>}
             </div>
           </div>
         </details>
       </div>
+      <ConfirmDialog open={confirming} onOpenChange={setConfirming} tone="warn" title={`Retire ${member.name}?`}
+        footer={<><Button variant="outline" onClick={() => setConfirming(false)}>Cancel</Button>
+          <Button variant="destructive" onClick={() => { setConfirming(false); onRetire(); }}>Retire {member.name}</Button></>}>
+        <p>It stops playing permanently and its emulator shuts down. Its data stays in Archives.</p>
+      </ConfirmDialog>
     </article>
   );
 }

@@ -66,7 +66,7 @@ const STANDINGS: Record<string, DeviceStanding> = {
   },
   replace_manually: {
     tone: "error", label: "Replace manually", needsYou: true, transient: false,
-    hint: "This account cannot be carried further. Prepare a replacement emulator, then remove this one from the pool.",
+    hint: "This account cannot be carried further. Retire this emulator, then add a freshly prepared one.",
   },
   unverified: {
     tone: "warn", label: "Unverified", needsYou: true, transient: false,
@@ -107,6 +107,14 @@ const STANDINGS: Record<string, DeviceStanding> = {
   instance_not_in_pool: {
     tone: "warn", label: "Not in the pool", needsYou: true, transient: false,
     hint: "The supervisor was asked about an emulator the pool does not hold.",
+  },
+  retired: {
+    tone: "idle", label: "Retired", needsYou: false, transient: false,
+    hint: "This emulator played in an earlier reroll. Its account stays in Archives and it cannot play again.",
+  },
+  retire_failed: {
+    tone: "error", label: "Retire failed", needsYou: true, transient: false,
+    hint: "The worker could not be proven stopped, so the emulator is still in play. Check the journal, then retry Retire.",
   },
 };
 

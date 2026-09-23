@@ -248,3 +248,53 @@ def test_pause_all_stops_running_peer_while_another_enrolls(tmp_path: Path) -> N
         release.set()
         starting.join(2)
         pausing.join(2)
+
+
+def _stubborn(root: Path):
+    """A worker that ignores SIGTERM until it is force-killed."""
+    members = [{"name": "Tiramisu64_20", "endpoint": "127.0.0.1:5755", "lease_id": "a", "state": "ready"}]
+    live: dict[int, tuple] = {}
+    forced: list[int] = []
+
+    def enroll(member, runtime, attempt):
+        return {"state": "registered", "instance": member["name"], "endpoint": member["endpoint"],
+                "lease_id": member["lease_id"], "account_id": member["name"],
+                "job_id": attempt.attempt_id, "binding": str(runtime.root / "binding.json"),
+                "web_port": runtime.web_port}
+
+    def spawn(args):
+        live[5000] = tuple(args)
+        return 5000
+
+    def force_kill(pid):
+        forced.append(pid)
+        live.pop(pid, None)
+
+    supervisor = RerollSupervisor(root, pool_snapshot=lambda: {"members": members}, enroll=enroll,
+                                  spawn=spawn, process_identity=live.get, terminate=lambda pid: None,
+                                  force_kill=force_kill, start_stagger_seconds=0)
+    return supervisor, live, forced
+
+
+def test_kill_force_stops_a_worker_that_ignored_sigterm(tmp_path: Path) -> None:
+    supervisor, _, forced = _stubborn(tmp_path)
+    supervisor.start("Tiramisu64_20")
+    assert supervisor.pause("Tiramisu64_20")["state"] == "stopping"
+
+    assert supervisor.kill("Tiramisu64_20")["state"] == "paused"
+    assert forced == [5000]
+
+
+def test_kill_refuses_a_pid_whose_identity_changed(tmp_path: Path) -> None:
+    supervisor, live, forced = _stubborn(tmp_path)
+    supervisor.start("Tiramisu64_20")
+    live[5000] = ("someone", "else")
+
+    assert supervisor.kill("Tiramisu64_20")["state"] == "identity_changed"
+    assert forced == []
+
+
+def test_kill_is_a_no_op_for_a_paused_worker(tmp_path: Path) -> None:
+    supervisor, _, forced = _stubborn(tmp_path)
+    assert supervisor.kill("Tiramisu64_20")["state"] == "paused"
+    assert forced == []
