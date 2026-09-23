@@ -193,12 +193,12 @@ def test_the_fit_score_ranks_by_weighted_progress_not_by_row_count() -> None:
 
 def test_the_fit_score_is_normalised_by_the_builds_own_total_weight() -> None:
     """A fraction of what this build asks for, not a sum of weights. Raw sums
-    would rank by build SIZE: opening weights twelve rows totalling 97.5 and
+    would rank by build SIZE: opening weights nine rows totalling 442 and
     turtle seven totalling 60, so the same three purchases are a fifth of one
     build and half the other - and a single margin could not mean the same
-    thing for both."""
+    thing for both. (Opening does not weight health, so it scores 42 + 40.)"""
     account = bought("defense_absolute", "thorns", "health")
-    assert fit_score(builds.by_id("opening"), account) == pytest.approx(31 / OPENING_TOTAL)
+    assert fit_score(builds.by_id("opening"), account) == pytest.approx(82 / OPENING_TOTAL)
     assert fit_score(builds.by_id("turtle"), account) == pytest.approx(31 / TURTLE_TOTAL)
     assert 0. <= fit_score(builds.by_id("opening"), account) <= 1.
 
@@ -225,7 +225,7 @@ def test_a_live_shaped_revision_scores_off_workshop_stats_alone() -> None:
                                     fact("stats.health", 100.),
                                     fact("stats.thorns", 12.)))
     assert fit_score(builds.by_id("opening"), live) == pytest.approx(
-        (12 + 11 + 3 + 12) / OPENING_TOTAL)
+        (100 + 90 + 40) / OPENING_TOTAL)
     assert fit_score(builds.by_id("turtle"), live) == pytest.approx(
         (3 + 12) / TURTLE_TOTAL)
 
@@ -333,11 +333,11 @@ def test_an_exactly_tying_challenger_leaves_the_incumbent_in_place(
     assert (tie.build_id, tie.chosen_by) == ("turtle", "incumbent"), (
         "even a zero margin needs a strict lead to move")
     # A challenger exactly ON the margin, to the last bit: 31 of turtle's 60
-    # against 31 of opening's 97.5. `>` rather than `>=` is the difference
+    # against 82 of opening's 442. `>` rather than `>=` is the difference
     # between this and a displacement, and it is a one-character edit.
     edge = select_build(bought("defense_absolute", "thorns", "health"),
                         incumbent="opening", best_tier_1_wave=40,
-                        margin=31 / TURTLE_TOTAL - 31 / OPENING_TOTAL)
+                        margin=31 / TURTLE_TOTAL - 82 / OPENING_TOTAL)
     assert (edge.build_id, edge.chosen_by) == ("opening", "incumbent")
 
 

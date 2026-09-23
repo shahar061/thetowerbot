@@ -40,37 +40,37 @@
     {
       "id": "opening",
       "name": "Opening",
-      "note": "The first stage of a fresh reroll account: basic attack while the defense unlocks are still locked, then the defense spine, then income. Verbatim from fleet/reroll_planner.py:_OPENING, which selects it below Tier 1 Wave 20.",
+      "note": "The first stage of a fresh reroll account, selected below Tier 1 Wave 20. A strict priority: Damage > Attack Speed > Coins/Wave (with the two coin unlocks) > the Thorns chain with two levels of Defense Absolute. The groups are spaced so value_propagation's 0.6 credit to an unlock cannot reorder them: unlock_cash_bonuses inherits to 81.6, below attack_speed's 90, and the thorns chain tops out at unlock_thorns' 44, below coins_per_wave's 60. level_caps paces attack against income - each attack row may reach 2 + 1 level per Coins/Wave level - and stops Coins/Wave at 3 and Defense Absolute at 2, so the Thorns chain is reached within the first ~2,100 coins. Coins/Wave rather than Coins/Kill because the wiki's beginner guide puts per-wave income first and Coins/Kill after wave 100; the numbers are the operator's call, not a measurement.",
       "weights": [
-        ["damage", 12],
-        ["attack_speed", 11],
-        ["unlock_defense_upgrades", 10.5],
-        ["defense_absolute", 16],
-        ["unlock_thorns", 9],
-        ["thorns", 12],
-        ["unlock_cash_bonuses", 6],
-        ["cash_bonus", 5],
-        ["unlock_coin_bonuses", 5],
-        ["coins_per_kill_bonus", 5],
-        ["coins_per_wave", 3],
-        ["health", 3]
+        ["damage", 100],
+        ["attack_speed", 90],
+        ["unlock_cash_bonuses", 30],
+        ["unlock_coin_bonuses", 50],
+        ["coins_per_wave", 60],
+        ["unlock_defense_upgrades", 10],
+        ["unlock_thorns", 20],
+        ["defense_absolute", 42],
+        ["thorns", 40]
       ],
       "targets": {
         "thorns": 51.0
       },
+      "level_caps": {
+        "damage": {"base": 2, "ratio": 1, "per": ["coins_per_wave"]},
+        "attack_speed": {"base": 2, "ratio": 1, "per": ["coins_per_wave"]},
+        "coins_per_wave": {"base": 3},
+        "defense_absolute": {"base": 2}
+      },
       "focus": {
-        "damage": "Basic attack while defense unlocks are still locked",
-        "attack_speed": "Basic attack while defense unlocks are still locked",
-        "unlock_defense_upgrades": "Unlock Defense Absolute for early survival",
-        "defense_absolute": "Absorb more hits in the turtle build",
+        "damage": "Basic attack, one more level per Coins/Wave level",
+        "attack_speed": "Basic attack, one more level per Coins/Wave level",
+        "unlock_cash_bonuses": "Unlock the road to per-wave coin income",
+        "unlock_coin_bonuses": "Unlock per-wave coin income",
+        "coins_per_wave": "Earn more coins every wave",
+        "unlock_defense_upgrades": "Unlock Defense Absolute and the road to Thorns",
         "unlock_thorns": "Unlock the turtle build's damage source",
-        "thorns": "Kill enemies that reach the tower",
-        "health": "Add a small survival buffer",
-        "unlock_cash_bonuses": "Unlock income for in-battle defense buys",
-        "cash_bonus": "Earn more cash for in-battle defense buys",
-        "unlock_coin_bonuses": "Unlock coin income for permanent upgrades",
-        "coins_per_kill_bonus": "Earn more coins for permanent defense",
-        "coins_per_wave": "Earn more coins for permanent defense"
+        "defense_absolute": "Survive the hits Thorns needs to land",
+        "thorns": "Kill enemies that reach the tower"
       },
       "source_refs": [
         "legacy-reroll-planner"

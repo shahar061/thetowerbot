@@ -58,6 +58,8 @@ _TOP_LEVEL = {"schema_version", "pack_version", "note", "build_sources",
 _BUILD_FIELDS = {"id", "name", "note", "weights", "targets", "focus",
                  "source_refs", "source_url", "validity",
                  "definition_verified", "rule_verified"}
+_OPTIONAL_BUILD_FIELDS = {"level_caps"}
+_LEVEL_CAP_FIELDS = {"base", "ratio", "per"}
 _PREREQUISITE_FIELDS = {"note", "source_refs", "source_url", "validity",
                         "definition_verified", "rule_verified", "requires"}
 _VALIDITY_STATUSES = ("known", "unknown")
@@ -94,6 +96,14 @@ def _text(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{what} must be a nonempty string")
     return value
+
+
+def _level_cap(upgrade_id: str, raw: Mapping[str, Any]) -> LevelCap:
+    if not set(raw) <= _LEVEL_CAP_FIELDS or "base" not in raw:
+        raise ValueError(f"level cap on {upgrade_id!r} has fields {sorted(raw)}; "
+                         f"expected base and optionally ratio, per")
+    return LevelCap(_number(raw["base"]), _number(raw.get("ratio", 0)),
+                    tuple(raw.get("per", ())))
 
 
 def _known_upgrade(upgrade_id: Any, where: str) -> str:
@@ -211,6 +221,38 @@ class Prerequisites:
 
 
 @dataclass(frozen=True)
+class LevelCap:
+    """Stop buying a row once its purchased LEVEL reaches
+    `base + ratio * (levels of the rows in per)`.
+
+    Counted in purchases, not displayed values - the opposite coordinate to
+    `Build.targets` - because what it expresses is a spending proportion
+    ("one more Damage per Coins/Wave level"), and a displayed value does not
+    move in whole steps. So only a caller that counts verified purchases can
+    honour it; today that is `fleet/reroll_planner.py`.
+    """
+
+    base: float
+    ratio: float = 0.
+    per: tuple[str, ...] = ()
+
+    def allowance(self, levels: Mapping[str, int]) -> float:
+        return self.base + self.ratio * sum(levels.get(row, 0) for row in self.per)
+
+    def _validate(self, where: str, capped: str) -> None:
+        if self.base < 0:
+            raise ValueError(f"{where} base is {self.base}, must be >= 0")
+        if self.ratio < 0:
+            raise ValueError(f"{where} ratio is {self.ratio}, must be >= 0")
+        if self.ratio and not self.per:
+            raise ValueError(f"{where} has a ratio but no per rows to count")
+        for row in self.per:
+            _known_upgrade(row, f"{where} per")
+            if row == capped:
+                raise ValueError(f"{where} counts itself")
+
+
+@dataclass(frozen=True)
 class Build:
     """One named recipe: an ordered preference list over upgrade ids.
 
@@ -241,6 +283,8 @@ class Build:
     # first is true and the second is not. See the module docstring.
     definition_verified: bool
     rule_verified: bool
+    # Optional in the file; see LevelCap.
+    level_caps: Mapping[str, LevelCap] = MappingProxyType({})
 
     @property
     def upgrade_ids(self) -> tuple[str, ...]:
@@ -282,6 +326,18 @@ class Build:
                 raise ValueError(f"build {self.id!r} targets unweighted {upgrade_id!r}")
             if target <= 0:
                 raise ValueError(f"build {self.id!r} targets {upgrade_id!r} at {target}, must be > 0")
+        for upgrade_id, cap in self.level_caps.items():
+            where = f"build {self.id!r} level cap on {upgrade_id!r}"
+            _known_upgrade(upgrade_id, f"build {self.id!r} level_caps")
+            if upgrade_id not in seen:
+                raise ValueError(f"build {self.id!r} caps unweighted {upgrade_id!r}")
+            if upgrade_id in self.targets:
+                # Two stopping rules in two coordinates, and nothing to say
+                # which wins.
+                raise ValueError(f"{where}: the build also targets it")
+            if upgrades.by_id(upgrade_id).unlock:
+                raise ValueError(f"{where}: an unlock is bought once and has no levels")
+            cap._validate(where, upgrade_id)
         for upgrade_id, focus in self.focus.items():
             _known_upgrade(upgrade_id, f"build {self.id!r} focus")
             if upgrade_id not in seen:
@@ -336,10 +392,13 @@ class BuildPack:
             parsed: list[Build] = []
             for item in raw["builds"]:
                 fields = dict(item)
-                if set(fields) != _BUILD_FIELDS:
+                if not _BUILD_FIELDS <= set(fields) <= _BUILD_FIELDS | _OPTIONAL_BUILD_FIELDS:
                     raise ValueError(
                         f"unexpected fields on build {fields.get('id')!r}: "
                         f"{sorted(set(fields) ^ _BUILD_FIELDS)}")
+                if "level_caps" in fields:
+                    fields["level_caps"] = MappingProxyType(
+                        {k: _level_cap(k, v) for k, v in fields["level_caps"].items()})
                 fields["validity"] = Validity(**fields["validity"])
                 fields["source_refs"] = tuple(fields["source_refs"])
                 fields["weights"] = tuple(_weight_pair(p) for p in fields["weights"])

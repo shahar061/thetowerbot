@@ -321,7 +321,7 @@ export default function RerollPage() {
     </RerollCard>}
 
     <RerollCard title="Reroll strategy">
-      <p className="text-sm text-muted-foreground">Each worker uses its own verified runs and purchases to choose the next Workshop upgrade. It checks the observed price and coin balance before spending. The first buys establish basic attack, then unlock Defense Absolute and Thorns for early survival; cash and coin income follow.</p>
+      <p className="text-sm text-muted-foreground">Each worker uses its own verified runs and purchases to choose the next Workshop upgrade. It checks the observed price and coin balance before spending. Below wave 20 it buys Damage and Attack Speed first, one more level of each per Coins/Wave level, then Coins/Wave up to 3, then the Thorns chain with two levels of Defense Absolute. It usually takes the top pick, but sometimes draws the next one down, so accounts differ a little.</p>
       {/* The same three rungs every device card draws its progress against,
           so the ladder on a card and the ladder in the explanation cannot
           drift apart - they are one array in lib/rerollState.ts. */}
