@@ -199,3 +199,17 @@ def test_local_running_worker_is_default_even_when_remote_sorts_first(
     client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
                                    db_path=local, fleet=fleet, runner=runner))
     assert client.get("/api/accounts").json()["active"] == "worker:Tiramisu64_19"
+
+
+def test_catalog_tags_each_worker_with_its_reroll_numbers(tmp_path: Path) -> None:
+    _worker(tmp_path, "Tiramisu64_20", "acct20")
+    _worker(tmp_path, "Tiramisu64_21", "acct21")
+    (tmp_path / "reroll-runs.json").write_text(json.dumps({"runs": [
+        {"number": 1, "members": ["Tiramisu64_20"]},
+        {"number": 2, "members": ["Tiramisu64_20", "Tiramisu64_21"]}]}))
+    fleet = type("Fleet", (), {"root": tmp_path})()
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=fleet))
+    numbers = {item["instance"]: item["run_numbers"]
+               for item in client.get("/api/accounts?local_only=true").json()["accounts"]}
+    assert numbers == {"Tiramisu64_20": [1, 2], "Tiramisu64_21": [2]}

@@ -48,6 +48,7 @@ from runtime_identity import API_VERSION, PROCESS_IDENTITY, read_frontend_identi
 from advisor import AdvisorStore
 from web.advisor import advisor_router
 from web.account_catalog import AccountChoice, account_choices
+from fleet.reroll_runs import run_numbers_from
 from autopilot import AutopilotState
 from policy import PRESETS, preset_rules
 from progression import compare_tiers, rates as progression_rates
@@ -258,6 +259,12 @@ class RerollAddRequest(BaseModel):
     names: list[str]
 
 
+class RerollNewRunRequest(BaseModel):
+    keep: list[str] = []
+    add: list[str] = []
+    name: str | None = None
+
+
 class RerollConcurrencyRequest(BaseModel):
     limit: int
 
@@ -311,11 +318,14 @@ def create_app(
     app = FastAPI(title="The Tower bot")
     accounts = account_state or getattr(runner, "account_state", None) or AccountState()
 
-    def _choices() -> list[AccountChoice]:
+    def _fleet_root() -> Path | None:
         root = getattr(fleet, "root", None)
         if root is None and db_path is not None and (db_path.parent / "fleet-registration.json").exists():
             root = db_path.parent.parent.parent
-        return account_choices(Path(root) if root is not None else None, db_path)
+        return Path(root) if root is not None else None
+
+    def _choices() -> list[AccountChoice]:
+        return account_choices(_fleet_root(), db_path)
 
     def _running_account(choice: AccountChoice) -> bool:
         if (choice.kind != "worker" or db_path is None or runner is None
@@ -378,7 +388,11 @@ def create_app(
             remote = {choice.key for choice, running in zip(choices, pool.map(remote_running, choices))
                       if running}
         running = local | remote
-        return {"accounts": [choice.payload(running=choice.key in running) for choice in choices],
+        root = _fleet_root()
+        numbers = run_numbers_from(root / "reroll-runs.json") if root is not None else {}
+        return {"accounts": [{**choice.payload(running=choice.key in running),
+                              "run_numbers": numbers.get(choice.instance or "", [])}
+                             for choice in choices],
                 "active": (next(iter(local), None)
                            or next((choice.key for choice in choices if choice.key in remote), None))}
 
@@ -1414,6 +1428,42 @@ def create_app(
             raise HTTPException(status_code=503, detail="reroll_journal_unavailable")
         try:
             return fleet.reroll_journal(cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/runs")
+    def fleet_reroll_new_run(body: RerollNewRunRequest) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_new_run", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_new_run(body.keep, body.add, body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/fleet/reroll/runs")
+    def fleet_reroll_runs() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_runs", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_runs()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/members/{name}/retire")
+    def fleet_reroll_retire_member(name: str) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_retire", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_retire(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/members/{name}/stop-instance")
+    def fleet_reroll_stop_instance(name: str) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_stop_instance", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_stop_instance(name)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

@@ -311,3 +311,48 @@ def test_remove_now_retires_and_stop_retry_is_synchronous(tmp_path: Path) -> Non
     service.reroll_stop_instance("Tiramisu64_18")
     assert ("retry_stop", "Tiramisu64_18") in runs.calls
     assert service.reroll_runs() == {"runs": [{"number": 2}, {"number": 1}]}
+
+
+def test_reroll_run_routes_are_reachable_and_map_errors() -> None:
+    class Pool:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def reroll_new_run(self, keep, add, name=None):
+            self.calls.append(("new", keep, add, name))
+            if keep == ["bad"]:
+                raise ValueError("keep_not_in_active_run")
+            return {"members": [], "run": {"number": 3}}
+
+        def reroll_runs(self):
+            return {"runs": [{"number": 1}]}
+
+        def reroll_retire(self, name):
+            self.calls.append(("retire", name))
+            return {"members": []}
+
+        def reroll_stop_instance(self, name):
+            self.calls.append(("stop", name))
+            return {"members": []}
+
+    pool = Pool()
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=pool))
+    assert client.post("/api/fleet/reroll/runs", json={"keep": ["A_1"], "add": ["A_2"]}).json()[
+        "run"] == {"number": 3}
+    denied = client.post("/api/fleet/reroll/runs", json={"keep": ["bad"], "add": []})
+    assert (denied.status_code, denied.json()["detail"]) == (409, "keep_not_in_active_run")
+    assert client.get("/api/fleet/reroll/runs").json() == {"runs": [{"number": 1}]}
+    assert client.post("/api/fleet/reroll/members/A_1/retire").status_code == 200
+    assert client.post("/api/fleet/reroll/members/A_1/stop-instance").status_code == 200
+    assert pool.calls == [("new", ["A_1"], ["A_2"], None), ("new", ["bad"], [], None),
+                          ("retire", "A_1"), ("stop", "A_1")]
+
+
+def test_reroll_run_routes_are_503_without_the_capability() -> None:
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=SimpleNamespace()))
+    assert client.post("/api/fleet/reroll/runs", json={"keep": [], "add": []}).status_code == 503
+    assert client.get("/api/fleet/reroll/runs").status_code == 503
+    assert client.post("/api/fleet/reroll/members/A_1/retire").status_code == 503
+    assert client.post("/api/fleet/reroll/members/A_1/stop-instance").status_code == 503
