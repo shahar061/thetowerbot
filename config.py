@@ -119,6 +119,12 @@ ACTIONS: tuple[Action, ...] = (
 # so 0.8 has a wide margin in both directions.
 ANCHOR_THRESHOLD: float = 0.8
 
+# Screen and page anchors are matched coarse-then-fine (spec P4): greyscale
+# at half size over the whole frame, then full-resolution BGR in a window of
+# the template's size plus this margin (full-resolution px) around the coarse
+# hit. The fine score and location are what callers get.
+ANCHOR_FINE_MARGIN: int = 8
+
 # A transition is only declared after this many consecutive identical
 # readings. Capture lands inside the death modal's fade animation (the same
 # region measures 0.74 mid-fade and 0.28 fully dimmed), and without debounce
