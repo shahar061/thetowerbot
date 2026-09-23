@@ -993,6 +993,92 @@ def test_lifecycle_start_uses_only_the_exact_named_stopped_row() -> None:
     assert manager.presses == [("Start", (840, 310))]
 
 
+def test_lifecycle_start_reobserves_row_when_manager_window_changed_before_press() -> None:
+    inventory = LifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
+    rejected: list[str] = []
+
+    class MovingManager(FakeManager):
+        def press(self, window_id: int, point: tuple[int, int], expected_label: str) -> None:
+            if not rejected:
+                rejected.append(expected_label)
+                raise HostCapabilityError("manager window changed")
+            super().press(window_id, point, expected_label)
+
+    manager = MovingManager([
+        ("Tiramisu64_4", (100, 300)), ("Start", (800, 300)),
+    ], on_press=lambda label: (
+        setattr(inventory, "running", True),
+        setattr(manager, "labels", [("Tiramisu64_4", (100, 300)), ("Stop", (800, 300))]),
+    ) if label == "Start" else None)
+
+    lifecycle_driver(manager, inventory, lambda _endpoint: inventory.running).start(
+        "Tiramisu64_4")
+
+    assert rejected == ["Start"]
+    assert manager.presses == [("Start", (840, 310))]
+
+
+def test_lifecycle_start_reobserves_when_manager_window_changes_during_capture() -> None:
+    inventory = LifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
+    moves: list[int] = []
+
+    class MovingCaptureManager(FakeManager):
+        def capture(self) -> ManagerFrame:
+            if not moves:
+                moves.append(1)
+                raise HostCapabilityError("manager window changed: id,x,y,w,h 41,0,0,9,9 -> 41,0,0,9,10")
+            return super().capture()
+
+    manager = MovingCaptureManager([
+        ("Tiramisu64_4", (100, 300)), ("Start", (800, 300)),
+    ], on_press=lambda label: (
+        setattr(inventory, "running", True),
+        setattr(manager, "labels", [("Tiramisu64_4", (100, 300)), ("Stop", (800, 300))]),
+    ) if label == "Start" else None)
+
+    lifecycle_driver(manager, inventory, lambda _endpoint: inventory.running).start(
+        "Tiramisu64_4")
+
+    assert moves == [1]
+    assert manager.presses == [("Start", (840, 310))]
+
+
+def test_swift_bridge_keeps_the_observed_window_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.CalledProcessError(1, "swift", stderr=(
+            "BlueStacks manager unavailable: manager window changed: "
+            "id,x,y,w,h 41,0.0,38.0,900.0,600.0 -> 41,0.0,38.0,900.0,640.0\n"))
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(subprocess, "run", refuse)
+
+    with pytest.raises(HostCapabilityError) as raised:
+        _SwiftManagerBridge()._run("capture")
+
+    assert str(raised.value) == ("manager window changed: "
+                                 "id,x,y,w,h 41,0.0,38.0,900.0,600.0 -> 41,0.0,38.0,900.0,640.0")
+
+
+def test_lifecycle_start_gives_up_when_manager_window_keeps_changing() -> None:
+    inventory = LifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
+    attempts: list[str] = []
+
+    class UnsettledManager(FakeManager):
+        def press(self, window_id: int, point: tuple[int, int], expected_label: str) -> None:
+            attempts.append(expected_label)
+            raise HostCapabilityError("manager window changed")
+
+    manager = UnsettledManager([("Tiramisu64_4", (100, 300)), ("Start", (800, 300))])
+
+    with pytest.raises(HostCapabilityError, match="manager window changed"):
+        lifecycle_driver(manager, inventory, lambda _endpoint: inventory.running).start(
+            "Tiramisu64_4")
+
+    assert attempts == ["Start"] * (BlueStacksAirDriver._PRESS_RETRIES + 1)
+
+
 def test_lifecycle_refuses_an_unchanged_process_state_after_press() -> None:
     inventory = LifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
     manager = FakeManager([

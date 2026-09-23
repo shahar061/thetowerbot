@@ -123,7 +123,9 @@ func verify(_ current: WindowInfo, _ args: ArraySlice<String>) {
           [x, y, width, height].allSatisfy(\.isFinite), width > 0, height > 0,
           x == current.x, y == current.y,
           width == current.width, height == current.height else {
-        fail("manager window changed")
+        let observed = args.joined(separator: ",")
+        let now = "\(current.id),\(current.x),\(current.y),\(current.width),\(current.height)"
+        fail("manager window changed: id,x,y,w,h \(observed) -> \(now)")
     }
 }
 
