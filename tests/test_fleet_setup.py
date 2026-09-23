@@ -199,6 +199,7 @@ class _Runs:
         self.calls: list[tuple] = []
         self.release = Event()
         self.release.set()
+        self.busy = False
         self.run = {"number": 2, "name": "Reroll #2", "started_at": "2026-09-23T09:00:00Z",
                     "status": "active", "members": ["Tiramisu64_20"]}
 
@@ -306,6 +307,18 @@ def test_second_new_run_while_one_is_running_is_rejected(tmp_path: Path) -> None
     runs.release.set()
     _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
     assert sum(call[0] == "start_new" for call in runs.calls) == 1
+
+
+def test_stop_instance_retry_is_blocked_while_a_new_run_is_in_progress(tmp_path: Path) -> None:
+    runs = _Runs()
+    service = _service_with_runs(tmp_path, runs)
+    runs.release.clear()
+    service.reroll_new_run([], ["Tiramisu64_22"], None)
+    with pytest.raises(ValueError, match="reroll_start_in_progress"):
+        service.reroll_stop_instance("Tiramisu64_18")
+    assert not any(call[0] == "retry_stop" for call in runs.calls)
+    runs.release.set()
+    _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
 
 
 def test_remove_now_retires_and_stop_retry_is_synchronous(tmp_path: Path) -> None:

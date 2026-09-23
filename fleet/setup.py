@@ -398,7 +398,8 @@ class FleetSetupService:
 
         runs = self._runs()
         with self._reroll_dispatch_lock:
-            if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
+            if runs.busy or (self._reroll_start_thread is not None
+                             and self._reroll_start_thread.is_alive()):
                 raise ValueError("reroll_start_in_progress")
         runs.validate_new(keep, add)
 
@@ -416,12 +417,16 @@ class FleetSetupService:
     def reroll_retire(self, name: str) -> dict[str, Any]:
         runs = self._runs()
         with self._reroll_dispatch_lock:
-            if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
+            if runs.busy or (self._reroll_start_thread is not None
+                             and self._reroll_start_thread.is_alive()):
                 raise ValueError("reroll_start_in_progress")
         runs.validate_retire(name)
         return self._reroll_background("retire", name, lambda: runs.retire_member(name))
 
     def reroll_stop_instance(self, name: str) -> dict[str, Any]:
+        with self._reroll_dispatch_lock:
+            if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
+                raise ValueError("reroll_start_in_progress")
         self._runs().retry_stop(name)
         return self.reroll_snapshot()
 
