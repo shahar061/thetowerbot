@@ -335,6 +335,10 @@ class DeviceSupervisor:
                 or self._pending_digest is not None or self._last_digest is None
                 or self._last_observed_at is None
                 or self.clock() - self._last_observed_at > 5):
+            if (self._state is RecoveryState.READY and self._last_observed_at is not None
+                    and self.clock() - self._last_observed_at > 5):
+                logger.warning("%s refused: its frame is %.1fs old (limit 5s)",
+                               description, self.clock() - self._last_observed_at)
             raise RecoveryPreflightBlocked(self._reason)
         self._pending_digest = self._last_digest
         self._pending_since = self.clock()

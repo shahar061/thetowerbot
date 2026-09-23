@@ -179,6 +179,20 @@ def test_stale_frame_after_action_stays_blocked_without_duplicate_tap(tmp_path: 
     assert device.taps == [(1, 2)]
 
 
+def test_a_tap_on_an_expired_frame_is_refused_and_logs_the_frame_age(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    clock = Clock()
+    device = Device()
+    sut = supervisor(tmp_path / "supervisor.json", clock, [device])
+    sut.recover()
+    assert observed(sut, clock, "before") is RecoveryState.READY
+    clock.now += 6.5  # e.g. a slow OCR pass between capture and tap
+    with caplog.at_level("WARNING", logger="supervisor"), pytest.raises(RuntimeError):
+        sut.tap(1, 2)
+    assert device.taps == []
+    assert "tap (1, 2) refused: its frame is 6.5s old" in caplog.text
+
+
 def test_an_input_that_changes_nothing_is_released_after_the_no_effect_timeout(
         tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     # A tap on an already-selected tab, or a scroll of a panel with nothing
