@@ -324,3 +324,39 @@ def number_in(boxes: tuple[TextBox, ...], rect: Rect) -> int | None:
 def _centre_in(rect: Rect, box: Rect) -> bool:
     cx, cy = box.x + box.w // 2, box.y + box.h // 2
     return rect.x <= cx < rect.x + rect.w and rect.y <= cy < rect.y + rect.h
+
+
+class FrameReads:
+    """One scan's OCR of one frame, shared by every reader in run_once.
+
+    `full()` reads the whole frame at most once per scan and remembers the
+    result - or the exception, which it re-raises to every later caller, so
+    a strict reader still sees the failure (spec invariant 3). It calls this
+    module's `read`, so a test that replaces ocr.read replaces it here too.
+
+    `digest` is the frame's SHA-256, computed once: the supervisor,
+    perception.parse_frame and the autopilot each used to hash it again.
+    """
+
+    def __init__(self, screen: Image) -> None:
+        self.screen = screen
+        self._digest: str | None = None
+        self._full: tuple[TextBox, ...] | None = None
+        self._full_error: Exception | None = None
+
+    @property
+    def digest(self) -> str:
+        if self._digest is None:
+            self._digest = hashlib.sha256(self.screen.tobytes()).hexdigest()
+        return self._digest
+
+    def full(self) -> tuple[TextBox, ...]:
+        if self._full_error is not None:
+            raise self._full_error
+        if self._full is None:
+            try:
+                self._full = read(self.screen, strict=True)
+            except Exception as error:
+                self._full_error = error
+                raise
+        return self._full
