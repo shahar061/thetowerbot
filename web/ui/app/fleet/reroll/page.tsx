@@ -6,8 +6,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { Meter, Pips } from "@/components/Meter";
 import { StatTile } from "@/components/StatTile";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/dialog";
 import { useAccountSelection } from "@/lib/AccountSelection";
-import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, setRerollConcurrency, startNewReroll, startReroll } from "@/lib/api";
+import { addRerollMembers, fetchReroll, fetchRerollJournal, hideRerollMembers, pauseReroll, removeRerollMember, restoreRerollMembers, setRerollConcurrency, startNewReroll, startReroll } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
 import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
 import { LADDER, attentionRank, deviceColor, failureHint, standingFor } from "@/lib/rerollState";
@@ -72,11 +73,12 @@ function Journal({ entries, worker, onWorker }: { entries: RerollJournalEntry[];
   </RerollCard>;
 }
 
-/** The pool's four filters, and what each one is for. "Needs you" is the
+/** The pool's filters, and what each one is for. "Needs you" is the
  *  reason this row exists at all: on a pool of eight emulators the one card
  *  that has stopped and is waiting for a human is otherwise three screens
- *  down, indistinguishable from the seven that are fine. */
-type Filter = "all" | "attention" | "live" | "idle";
+ *  down, indistinguishable from the seven that are fine. "Hidden" holds the
+ *  cards deleted from the list, and appears only while there are some. */
+type Filter = "all" | "attention" | "live" | "idle" | "hidden";
 
 export default function RerollPage() {
   const [pool, setPool] = useState<RerollSnapshot | null>(null);
@@ -90,6 +92,7 @@ export default function RerollPage() {
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState<Filter>("all");
+  const [confirmingBulk, setConfirmingBulk] = useState(false);
   const [dialog, setDialog] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const { accounts, choose } = useAccountSelection();
@@ -137,9 +140,13 @@ export default function RerollPage() {
     catch (failure) { setDialogError((failure as Error).message); }
     finally { setBusy(false); }
   })();
-  // Emulators whose retire failed are left off the dashboard: they carry no
-  // run data and repeated identical error cards buried the live workers.
-  const members = useMemo(() => (pool?.members ?? []).filter(member => member.state !== "retire_failed"), [pool]);
+  // Deleting a card only hides it: Start all / Pause all still cover every
+  // member, so those (and the empty state) go by allMembers.
+  const allMembers = useMemo(() => pool?.members ?? [], [pool]);
+  const members = useMemo(() => allMembers.filter(member => !member.hidden), [allMembers]);
+  const hiddenMembers = useMemo(() => allMembers.filter(member => member.hidden), [allMembers]);
+  // Restoring the last hidden card removes the Hidden chip it was chosen from.
+  const view: Filter = filter === "hidden" && !hiddenMembers.length ? "all" : filter;
   const run = pool?.run ?? null;
   const operating = pool?.operation?.state === "running";
 
@@ -162,14 +169,17 @@ export default function RerollPage() {
   const shown = useMemo(() => {
     const matches = (member: RerollMember) => {
       const standing = standingFor(member.state);
-      if (filter === "attention") return standing.needsYou;
-      if (filter === "live") return standing.tone === "live";
-      if (filter === "idle") return !standing.needsYou && standing.tone !== "live";
+      if (view === "attention") return standing.needsYou;
+      if (view === "live") return standing.tone === "live";
+      if (view === "idle") return !standing.needsYou && standing.tone !== "live";
       return true;
     };
-    return members.filter(matches).sort((a, b) =>
+    return (view === "hidden" ? hiddenMembers : members.filter(matches)).sort((a, b) =>
       attentionRank(a.state) - attentionRank(b.state) || a.name.localeCompare(b.name));
-  }, [members, filter]);
+  }, [members, hiddenMembers, view]);
+  const bulk = () => void act(() => view === "hidden"
+    ? restoreRerollMembers(shown.map(member => member.name))
+    : hideRerollMembers(shown.map(member => member.name)));
 
   const accountFor = (member: RerollMember) => accounts.find(account => account.running && account.instance === member.name && account.account_id);
 
@@ -187,12 +197,13 @@ export default function RerollPage() {
     { id: "attention", label: "Needs you", count: census.attention, tone: "text-warn" },
     { id: "live", label: "Running", count: census.live, tone: "text-live" },
     { id: "idle", label: "Idle", count: census.idle + census.transit, tone: "text-muted-foreground" },
+    ...(hiddenMembers.length ? [{ id: "hidden" as const, label: "Hidden", count: hiddenMembers.length, tone: "text-muted-foreground" }] : []),
   ];
 
   return <div className="mx-auto flex max-w-7xl flex-col gap-4">
     <PageHeader
       title="Reroll"
-      meta={run ? `${run.name} · started ${new Date(run.started_at).toLocaleDateString()} · ${census.total} ${census.total === 1 ? "emulator" : "emulators"}` : "No active reroll"}
+      meta={run ? `${run.name} · started ${new Date(run.started_at).toLocaleDateString()} · ${census.total} ${census.total === 1 ? "emulator" : "emulators"}${hiddenMembers.length ? ` · ${hiddenMembers.length} hidden` : ""}` : "No active reroll"}
       action={<Link href="/fleet/history/" className="text-sm text-primary underline">Provisioning history</Link>}
     />
     {error && <p role="alert" className="rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">{error}</p>}
@@ -229,8 +240,8 @@ export default function RerollPage() {
           ? <><Button variant="outline" disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>New reroll</Button>
               <Button disabled={operating} onClick={() => setPicker(true)}>Add emulators</Button></>
           : <Button disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>Start a reroll</Button>}
-        <Button variant="outline" disabled={busy || !members.length || operating} onClick={() => void act(() => startReroll())}>Start all</Button>
-        <Button variant="outline" disabled={busy || !members.length || operating} onClick={() => void act(() => pauseReroll())}>Pause all</Button>
+        <Button variant="outline" disabled={busy || !allMembers.length || operating} onClick={() => void act(() => startReroll())}>Start all</Button>
+        <Button variant="outline" disabled={busy || !allMembers.length || operating} onClick={() => void act(() => pauseReroll())}>Pause all</Button>
         <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
           Concurrent workers
           <select aria-label="Concurrent workers" value={limit} onChange={event => setLimit(Number(event.target.value))} className="rounded-md border bg-background px-2 py-1 text-foreground">
@@ -241,7 +252,7 @@ export default function RerollPage() {
       </div>
       {limit === 4 && <p role="status" className="rounded-lg border border-warn/40 bg-warn-surface p-2.5 text-sm text-warn">Four concurrent emulators can strain memory and slow other apps. Start with two, then increase the limit while watching macOS memory pressure.</p>}
 
-      {!members.length && <p className="text-sm text-muted-foreground">{run ? "No emulators in this reroll." : "No active reroll. Start one with emulators prepared with Tower installed and unopened."}</p>}
+      {!allMembers.length && <p className="text-sm text-muted-foreground">{run ? "No emulators in this reroll." : "No active reroll. Start one with emulators prepared with Tower installed and unopened."}</p>}
 
       {picker && <div className="rounded-lg border border-border p-3 text-sm"><h3 className="font-semibold">Add emulators</h3>
         <p className="mt-1 text-xs text-muted-foreground">Prepare each emulator with Tower installed and unopened before adding it.</p>
@@ -254,24 +265,29 @@ export default function RerollPage() {
       </div>}
     </RerollCard>
 
-    {!!members.length && <RerollCard
+    {!!allMembers.length && <RerollCard
       title="Devices"
-      action={<div className="flex flex-wrap gap-1">{FILTERS.map(option => (
+      action={<div className="flex flex-wrap items-center gap-1">{FILTERS.map(option => (
         <button
           key={option.id}
           type="button"
-          aria-pressed={filter === option.id}
+          aria-pressed={view === option.id}
           onClick={() => setFilter(option.id)}
           className={cn(
             "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
-            filter === option.id
+            view === option.id
               ? "border-primary bg-primary/12 text-foreground"
               : "border-border text-muted-foreground hover:bg-muted",
           )}
         >
           {option.label} <span className={cn("font-mono", option.count ? option.tone : "text-faint-foreground")}>{option.count}</span>
         </button>
-      ))}</div>}
+      ))}
+        <Button size="xs" variant="outline" className="ml-1" disabled={busy || operating || !shown.length}
+          onClick={() => view === "hidden" ? bulk() : setConfirmingBulk(true)}>
+          {view === "hidden" ? "Restore all" : "Delete all"}
+        </Button>
+      </div>}
     >
       {/* items-start: a stretched grid row gave a short card (a worker still
           starting, with no plan yet) the height of the tall one beside it,
@@ -289,11 +305,18 @@ export default function RerollPage() {
           onStart={() => void act(() => startReroll(member.name))}
           onPause={() => void act(() => pauseReroll(member.name))}
           onRemove={() => void act(() => removeRerollMember(member.name))}
+          onHide={() => void act(() => (member.hidden ? restoreRerollMembers : hideRerollMembers)([member.name]))}
           onJournal={() => setJournalWorker(member.name)}
           onOpenAccount={account ? () => choose(account.key) : undefined}
           busy={busy || operating}
         />;
       })}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
+      <ConfirmDialog open={confirmingBulk} onOpenChange={setConfirmingBulk}
+        title={`Delete ${shown.length} ${shown.length === 1 ? "device" : "devices"} from the list?`}
+        footer={<><Button variant="outline" onClick={() => setConfirmingBulk(false)}>Cancel</Button>
+          <Button onClick={() => { setConfirmingBulk(false); bulk(); }}>Delete {shown.length}</Button></>}>
+        <p>Only the cards go. Their workers and emulators keep running, and Start all and Pause all still include them. Bring them back from the Hidden filter.</p>
+      </ConfirmDialog>
     </RerollCard>}
 
     <RerollCard title="Reroll strategy">

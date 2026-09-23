@@ -439,3 +439,51 @@ def test_new_run_checks_additions_before_stopping_anyone(tmp_path: Path) -> None
     assert released == []
     assert runs.active()["number"] == 1
     assert not runs.busy
+
+
+def test_hidden_members_are_recorded_on_the_active_run_and_can_be_restored(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21", "Tiramisu64_22"])
+    runs = make(tmp_path, pool)
+    runs.set_hidden(["Tiramisu64_21", "Tiramisu64_22", "Tiramisu64_21"], True)
+    assert runs.hidden_names() == {"Tiramisu64_21", "Tiramisu64_22"}
+    assert runs.active()["hidden"] == ["Tiramisu64_21", "Tiramisu64_22"]
+    runs.set_hidden(["Tiramisu64_22"], False)
+    assert runs.hidden_names() == {"Tiramisu64_21"}
+    # Hiding is only about the dashboard: the pool and the run keep the member.
+    assert pool.member("Tiramisu64_21") is not None
+    assert "Tiramisu64_21" in runs._live(runs.active())
+
+
+def test_hiding_needs_a_live_member_of_the_active_run(tmp_path: Path) -> None:
+    runs = make(tmp_path, FakePool([]))
+    with pytest.raises(RerollRunsError, match="no_active_run"):
+        runs.set_hidden(["Tiramisu64_20"], True)
+    pool = FakePool(["Tiramisu64_20"])
+    runs = make(tmp_path / "with-run", pool)
+    with pytest.raises(RerollRunsError, match="instance_not_in_active_run"):
+        runs.set_hidden(["Tiramisu64_99"], True)
+    assert runs.hidden_names() == set()
+
+
+def test_a_new_run_starts_with_nothing_hidden(tmp_path: Path) -> None:
+    runs = make(tmp_path, FakePool(["Tiramisu64_20", "Tiramisu64_21"]))
+    runs.set_hidden(["Tiramisu64_20"], True)
+    runs.start_new(["Tiramisu64_20"], [])
+    assert runs.hidden_names() == set()
+
+
+def test_adding_a_removed_emulator_back_unhides_it(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_21"})
+    runs = make(tmp_path, pool)
+    runs.set_hidden(["Tiramisu64_21"], True)
+    runs.remove_member("Tiramisu64_21")
+    runs.add_members(["Tiramisu64_21"])
+    assert runs.hidden_names() == set()
+
+
+def test_runs_file_without_hidden_key_still_loads(tmp_path: Path) -> None:
+    runs = make(tmp_path, FakePool(["Tiramisu64_20"]))
+    state = runs._load()
+    state["runs"][0].pop("hidden", None)
+    runs._save(state)
+    assert runs.hidden_names() == set()

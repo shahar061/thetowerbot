@@ -63,6 +63,8 @@ export type RerollMember = { name: string; endpoint: string; lease_id: string; s
   evidence?: string | null; recent_runs?: string[] | null;
   /** Set when a new reroll couldn't prove this bot stopped, so it was kept. */
   leave_error?: string | null;
+  /** Deleted from the dashboard's device list; its worker still runs. */
+  hidden?: boolean;
 };
 export type RerollRun = { number: number; name: string; status: "active" | "closed";
   started_at: string; closed_at?: string | null };

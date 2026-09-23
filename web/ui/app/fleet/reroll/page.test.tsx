@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
-import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, listRerolls, removeRerollMember, startNewReroll, startReroll } from "@/lib/api";
+import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, hideRerollMembers, listRerolls, removeRerollMember, restoreRerollMembers, startNewReroll, startReroll } from "@/lib/api";
 import type { RerollMember, RerollPlan } from "@/lib/fleet";
 
 const choose = vi.fn();
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
-vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
+vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), hideRerollMembers: vi.fn(), restoreRerollMembers: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
 
 // Named separately so a test that extends the plan keeps its full type -
 // spreading `members[0].reroll_plan` inferred it as optional and lost it.
@@ -271,14 +271,43 @@ test("past rerolls list closed runs with links to their archives", async () => {
   expect(screen.getByRole("link", { name: "Reroll #1" })).toHaveAttribute("href", "/archives/?run=1");
 });
 
-test("emulators whose retire failed are left off the dashboard", async () => {
-  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [
-    members[0],
-    { name: "Air_9", endpoint: "127.0.0.1:5599", lease_id: "z", state: "retire_failed", retire_state: "retire_failed", retire_error: "worker not proven stopped" },
-  ] });
+test("a hidden device is left off the list but stays under Start all", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0], { ...members[1], hidden: true }], run });
   render(<RerollPage />);
   expect(await screen.findByRole("button", { name: "Collapse Air_1" })).toBeInTheDocument();
-  expect(screen.queryByText("Air_9")).not.toBeInTheDocument();
-  expect(screen.queryByText("Retire failed")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Collapse Air_2" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /^All/ })).toHaveTextContent("1");
+  expect(screen.getByRole("button", { name: "Start all" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: /^Hidden/ }));
+  expect(await screen.findByRole("button", { name: "Collapse Air_2" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Restore Air_2" }));
+  await waitFor(() => expect(restoreRerollMembers).toHaveBeenCalledWith(["Air_2"]));
+});
+
+test("delete removes one card from the list without asking", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Delete Air_1 from the list" }));
+  await waitFor(() => expect(hideRerollMembers).toHaveBeenCalledWith(["Air_1"]));
+  expect(removeRerollMember).not.toHaveBeenCalled();
+});
+
+test("delete all asks first and deletes only the cards the filter shows", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: /^Running/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete all" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "Delete 1 device from the list?" });
+  expect(dialog).toHaveTextContent(/keep running/);
+  expect(hideRerollMembers).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Delete 1" }));
+  await waitFor(() => expect(hideRerollMembers).toHaveBeenCalledWith(["Air_1"]));
+});
+
+test("restore all brings back every hidden card", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: members.map(member => ({ ...member, hidden: true })), run });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: /^Hidden/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Restore all" }));
+  await waitFor(() => expect(vi.mocked(restoreRerollMembers).mock.calls[0]?.[0].toSorted()).toEqual(["Air_1", "Air_2"]));
 });
