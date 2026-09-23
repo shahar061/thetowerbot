@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 import cv2
 import numpy as np
@@ -853,6 +853,9 @@ class BlueStacksAirDriver:
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
 
+    _PRESS_RETRIES: ClassVar[int] = 2
+    _PRESS_RETRY_SETTLE_SECONDS: ClassVar[float] = .5
+
     def _capability_scope(self) -> QualificationScope | None:
         """Attest each advertised write capability from fresh host evidence."""
         scope = self.qualification_scope()
@@ -1117,11 +1120,19 @@ class BlueStacksAirDriver:
         if self.timeout < 0 or self.poll_interval <= 0:
             raise ValueError("bounded lifecycle settings required")
         activate = getattr(self.manager, "activate", None)
-        if callable(activate):
-            activate()
-        digest, before, control = self._prepress_evidence(name, action=action,
-                                                           before_state=before_state)
-        self.manager.press(control.window_id, control.point, action)
+        for attempt in range(self._PRESS_RETRIES + 1):
+            if callable(activate):
+                activate()
+            digest, before, control = self._prepress_evidence(name, action=action,
+                                                               before_state=before_state)
+            try:
+                self.manager.press(control.window_id, control.point, action)
+                break
+            except HostCapabilityError as exc:
+                # Raised only by the pre-click revalidation, so nothing was pressed yet.
+                if str(exc) != "manager window changed" or attempt == self._PRESS_RETRIES:
+                    raise
+                self.sleep(self._PRESS_RETRY_SETTLE_SECONDS)
         self._wait_for(name, digest=digest, endpoint=before.endpoint,
                        lease=before.lease_id, state=after_state)
 

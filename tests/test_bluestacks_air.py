@@ -993,6 +993,49 @@ def test_lifecycle_start_uses_only_the_exact_named_stopped_row() -> None:
     assert manager.presses == [("Start", (840, 310))]
 
 
+def test_lifecycle_start_reobserves_row_when_manager_window_changed_before_press() -> None:
+    inventory = LifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
+    rejected: list[str] = []
+
+    class MovingManager(FakeManager):
+        def press(self, window_id: int, point: tuple[int, int], expected_label: str) -> None:
+            if not rejected:
+                rejected.append(expected_label)
+                raise HostCapabilityError("manager window changed")
+            super().press(window_id, point, expected_label)
+
+    manager = MovingManager([
+        ("Tiramisu64_4", (100, 300)), ("Start", (800, 300)),
+    ], on_press=lambda label: (
+        setattr(inventory, "running", True),
+        setattr(manager, "labels", [("Tiramisu64_4", (100, 300)), ("Stop", (800, 300))]),
+    ) if label == "Start" else None)
+
+    lifecycle_driver(manager, inventory, lambda _endpoint: inventory.running).start(
+        "Tiramisu64_4")
+
+    assert rejected == ["Start"]
+    assert manager.presses == [("Start", (840, 310))]
+
+
+def test_lifecycle_start_gives_up_when_manager_window_keeps_changing() -> None:
+    inventory = LifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
+    attempts: list[str] = []
+
+    class UnsettledManager(FakeManager):
+        def press(self, window_id: int, point: tuple[int, int], expected_label: str) -> None:
+            attempts.append(expected_label)
+            raise HostCapabilityError("manager window changed")
+
+    manager = UnsettledManager([("Tiramisu64_4", (100, 300)), ("Start", (800, 300))])
+
+    with pytest.raises(HostCapabilityError, match="manager window changed"):
+        lifecycle_driver(manager, inventory, lambda _endpoint: inventory.running).start(
+            "Tiramisu64_4")
+
+    assert attempts == ["Start"] * (BlueStacksAirDriver._PRESS_RETRIES + 1)
+
+
 def test_lifecycle_refuses_an_unchanged_process_state_after_press() -> None:
     inventory = LifecycleInventory("Tiramisu64_4", "127.0.0.1:5595", running=False)
     manager = FakeManager([
