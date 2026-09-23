@@ -87,6 +87,34 @@ def test_reroll_collects_stats_once_from_a_clear_main_menu(
     assert bot.collection.active
 
 
+
+@pytest.mark.parametrize("worthwhile", [True, False])
+def test_reroll_game_over_only_goes_home_when_the_target_may_be_affordable(
+    worthwhile: bool,
+) -> None:
+    from tests.conftest import _shopping_bot
+    import screens
+
+    class Progress:
+        def workshop_worthwhile(self):
+            return worthwhile
+
+        def stats_due(self):
+            return False
+
+    bot = _shopping_bot(
+        "game_over", state=screens.ScreenState.GAME_OVER,
+        policy=Shopping(enabled=True, workshop=(ShoppingRule("Damage", "ATTACK"),)),
+        auto_navigate=True)
+    bot.runs.completed = 1
+    bot.reroll_progress = Progress()
+    asked: list[bool] = []
+    navigate = bot.navigator.maybe_navigate
+    bot.navigator.maybe_navigate = lambda *args, **kwargs: (
+        asked.append(kwargs["go_home"]), navigate(*args, **kwargs))[1]
+    bot.run_once()
+    assert asked == [worthwhile]
+
 # -- Claim cadence in the loop ---------------------------------------------
 def test_a_due_claim_is_armed_from_the_main_menu(bot_on_main_menu: Callable[..., TowerBot]) -> None:
     """The same frame shopping.begin() reserves, and only when it declined.

@@ -249,3 +249,71 @@ def test_the_worker_variant_file_reaches_the_planner(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     (progress.root / "reroll-variant.json").write_text('{"variant": "income_first"}')
     assert "(Income first)" in progress.decision().reason
+
+
+def end_run(progress: RerollProgress, run_id: int, coins: int | None) -> None:
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        db.finish_run(connection, run_id, started_at=run_id, ended_at=run_id + 0.5,
+                          wave=5, coins=coins, tier=1, abandoned=False,
+                          scan_count=0, tap_count=0)
+
+
+def test_workshop_visit_is_worthwhile_until_a_price_is_known(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert progress.workshop_worthwhile()
+
+
+def test_unaffordable_target_skips_visits_until_run_coins_cover_it(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    end_run(progress, 1, 10)
+    progress.observe_price("damage", 80, 120)
+    assert not progress.workshop_worthwhile()
+    base = Strategy.from_config().shopping
+    assert not progress.shopping_policy(base).enabled
+    end_run(progress, 2, 25)
+    assert not progress.workshop_worthwhile()
+    end_run(progress, 3, None)
+    end_run(progress, 4, 15)
+    assert progress.workshop_worthwhile()
+    assert progress.shopping_policy(base).workshop
+
+
+def test_cached_target_survives_a_restart(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
+    assert not restarted.workshop_worthwhile()
+
+
+def test_cached_target_is_ignored_for_another_account(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    record = json.loads((progress.root / "workshop-target.json").read_text())
+    record["account_id"] = "ACCOUNT-B"
+    (progress.root / "workshop-target.json").write_text(json.dumps(record))
+    assert progress.workshop_worthwhile()
+
+
+def test_changed_plan_or_unread_price_forces_a_visit(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", None, 120)
+    assert progress.workshop_worthwhile()
+    progress.observe_price("damage", 80, None)
+    assert progress.workshop_worthwhile()
+    progress.observe_price("damage", 80, 120)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        connection.execute(
+            "INSERT INTO ledger(ts,kind,item,category,currency,dry_run,detail) "
+            "VALUES (1,'WORKSHOP_BUY','Damage','ATTACK','coins',0,?)",
+            (json.dumps({"verdict": "bought"}),))
+    assert progress.workshop_worthwhile()
+
+
+def test_estimate_is_rechecked_every_few_runs(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", 0, 10_000)
+    for run_id in range(1, 10):
+        end_run(progress, run_id, 1)
+    assert not progress.workshop_worthwhile()
+    end_run(progress, 10, 1)
+    assert progress.workshop_worthwhile()
