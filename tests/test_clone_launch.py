@@ -164,3 +164,32 @@ def test_first_launch_can_continue_after_recorded_consent() -> None:
     )
     assert actions == ["dismiss_google_play_profile", "home_from_game_over"]
     assert device.actions == [(176, 2289), (780, 1708)]
+
+
+def test_first_launch_waits_through_first_run_shown_as_battle() -> None:
+    device = Device([])
+    frames = iter([
+        SimpleNamespace(screen="tower_consent", conflict_dialog=None,
+                        controls={"i_agree": (531, 1764)}),
+        SimpleNamespace(screen="unknown", conflict_dialog=None, controls={}),
+        SimpleNamespace(screen="google_play_profile", conflict_dialog=None,
+                        controls={"dismiss_google_play_profile": (176, 2289)}),
+        SimpleNamespace(screen="battle", conflict_dialog=None, controls={}),
+        SimpleNamespace(screen="battle", conflict_dialog=None, controls={}),
+        SimpleNamespace(screen="game_over", conflict_dialog=None,
+                        controls={"home_from_game_over": (780, 1708)}),
+        SimpleNamespace(screen="home", conflict_dialog=None, controls={"settings": (1020, 230)}),
+    ])
+    complete_first_launch_onboarding(device, lambda _: next(frames), sleep=lambda _: None)
+    assert device.actions == [(531, 1764), (176, 2289), (780, 1708)]
+
+
+def test_first_launch_refuses_battle_before_consent() -> None:
+    device = Device([])
+    with pytest.raises(ValueError, match="unexpected first-launch screen"):
+        complete_first_launch_onboarding(
+            device,
+            lambda _: SimpleNamespace(screen="battle", conflict_dialog=None, controls={}),
+            sleep=lambda _: None,
+        )
+    assert device.actions == []

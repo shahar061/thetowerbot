@@ -126,6 +126,8 @@ def complete_first_launch_onboarding(
             if not agreed or not left_game_over:
                 raise ValueError("first-launch consent or tutorial unverified")
             return
+        elif frame.screen == "battle" and agreed and not left_game_over:
+            pass  # the first run, when read as in-run rather than unknown
         elif frame.screen != "unknown":
             raise ValueError("unexpected first-launch screen")
         sleep(1.)
