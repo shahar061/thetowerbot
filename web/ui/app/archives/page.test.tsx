@@ -17,3 +17,14 @@ test("filters archived accounts by reroll, starting from the ?run= link", () => 
   expect(screen.getByText("Tower account 111")).toBeInTheDocument();
   expect(screen.getByText("A_1 · registered worker · bot not running · Reroll #1")).toBeInTheDocument();
 });
+
+test("keeps the filter visible and clickable when a stale run link matches nothing", () => {
+  window.history.replaceState(null, "", "/archives/?run=7");
+  render(<ArchivesPage />);
+  const combobox = screen.getByRole("combobox", { name: "Reroll" });
+  expect(combobox).toHaveValue("7");
+  expect(screen.getByText("Reroll #7")).toBeInTheDocument();
+  expect(screen.getByText("No archived accounts in Reroll #7")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Show all archives" }));
+  expect(screen.getByText("Tower account 111")).toBeInTheDocument();
+});
