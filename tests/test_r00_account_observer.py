@@ -19,6 +19,7 @@ from fleet.account_observer import (parse_account_popup, parse_google_play_profi
                                     parse_new_account_warning,
                                     parse_game_stats_home,
                                     parse_settings, parse_home,
+                                    parse_link_account_prompt,
                                     StagingAccountObserver)
 import vision
 import config
@@ -428,3 +429,22 @@ def test_live_observer_marks_conflict_and_exposes_no_tap(tmp_path: Path,
                                      allowed_versions=frozenset({"29.0.2"}))(device)
     assert reading.conflict_dialog == "new session detected"
     assert reading.controls == {}
+
+
+def test_link_account_prompt_exposes_only_its_close_over_a_dimmed_home() -> None:
+    fixtures = Path(__file__).parent / "fixtures"
+    frame = cv2.imread(str(fixtures / "link_account_prompt.png"))
+    observed = tuple(TextBox(row["text"], row["confidence"], Rect(*row["rect"])) for row in
+                     json.loads((fixtures / "ocr" / "link_account_prompt.json").read_text()))
+    cache = vision.TemplateCache(config.TEMPLATE_DIR)
+    reading = parse_link_account_prompt(frame, observed, cache, observed_at=101.,
+                                        app_version="29.0.3", evidence_ref="capture://air37")
+    assert reading is not None
+    assert reading.screen == "link_account_prompt"
+    assert reading.controls == {"close": (881, 770)}
+    # Home still matches through the dim, which is why the prompt is read first.
+    assert parse_home(frame, observed, cache, observed_at=101., app_version="29.0.3",
+                      evidence_ref="capture://air37") is not None
+    assert parse_link_account_prompt(
+        frame, tuple(box for box in observed if box.text != "TAKE ME THERE"), cache,
+        observed_at=101., app_version="29.0.3", evidence_ref="capture://air37") is None

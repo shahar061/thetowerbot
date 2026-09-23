@@ -144,3 +144,57 @@ def test_ambiguous_home_control_never_taps() -> None:
             observe=observer([frame("home", controls={"settings": (1, 2),
                                                    "battle": (3, 4)})]))
     assert device.taps == []
+
+
+class SteppingClock:
+    """Advance time only when the walk sleeps, like a real wait would."""
+
+    def __init__(self) -> None:
+        self.now = 101.
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def account_rows() -> list[AccountFrame]:
+    return [frame("settings", controls={"account": (3, 4)}),
+            frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
+            frame("settings", controls={"close": (910, 490)}), frame("home")]
+
+
+def test_link_account_prompt_over_home_is_closed_mid_transition() -> None:
+    device = Device()
+    clock = SteppingClock()
+    verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
+        expected_account="ACCOUNT-A", clock=clock, sleep=clock.sleep,
+        observe=observer([
+            frame("game_over", controls={"home_from_game_over": (7, 8)}),
+            frame("link_account_prompt", controls={"close": (881, 770)}),
+            frame("home", controls={"settings": (1, 2)}),
+            *account_rows(),
+        ]))
+    assert device.taps == [(7, 8), (881, 770), (1, 2), (3, 4), (940, 585), (910, 490)]
+
+
+def test_ignored_settings_tap_is_retried_from_a_fresh_frame() -> None:
+    device = Device()
+    clock = SteppingClock()
+    home = frame("home", controls={"settings": (1, 2)})
+    verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
+        expected_account="ACCOUNT-A", clock=clock, sleep=clock.sleep,
+        observe=observer([home, home, home, home, home, home, *account_rows()]))
+    assert device.taps == [(1, 2), (1, 2), (3, 4), (940, 585), (910, 490)]
+
+
+def test_settings_tap_that_never_takes_effect_stops_after_bounded_retaps() -> None:
+    device = Device()
+    clock = SteppingClock()
+    home = frame("home", controls={"settings": (1, 2)})
+    with pytest.raises(RecoveryBlocked, match="tap had no effect"):
+        verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
+            expected_account="ACCOUNT-A", clock=clock, sleep=clock.sleep,
+            observe=observer([home] * 20))
+    assert device.taps == [(1, 2)] * 3

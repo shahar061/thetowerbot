@@ -117,9 +117,11 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
                 raise ValueError("session_conflict")
             if shot.screen == "account":
                 return shot
-            if navigate and shot.screen in {"home", "settings", "google_play_profile"}:
+            if navigate and shot.screen in {"home", "settings", "google_play_profile",
+                                            "link_account_prompt"}:
                 control = ("settings" if shot.screen == "home" else
                            "account" if shot.screen == "settings" else
+                           "close" if shot.screen == "link_account_prompt" else
                            "dismiss_google_play_profile")
                 allowed = ({control}, {control, "close"}) if shot.screen == "settings" else ({control},)
                 if set(shot.controls) not in allowed or clock() - shot.observed_at > 5:

@@ -150,6 +150,44 @@ def parse_new_account_warning(
     )
 
 
+def _compact(text: str) -> str:
+    return re.sub(r"[^A-Z]", "", text.upper())
+
+
+def parse_link_account_prompt(
+    frame: Image, boxes: tuple[TextBox, ...], cache: vision.TemplateCache, *,
+    observed_at: float, app_version: str, evidence_ref: str,
+) -> AccountFrame | None:
+    """Expose only the X of the "Don't lose your account!" link-for-gems prompt.
+
+    The prompt dims the main menu without hiding it, so it must be read before
+    Home: the Settings icon behind it still matches, and a tap there only
+    dismisses the prompt.
+    """
+    if (not supported_frame(frame.shape[1], frame.shape[0]) or not app_version
+            or not evidence_ref or not math.isfinite(observed_at)):
+        return None
+    titles = tuple(box for box in boxes if _compact(box.text) == "DONTLOSEYOUR" and _trusted(box))
+    offers = tuple(box for box in boxes if _compact(box.text) == "TAKEMETHERE" and _trusted(box))
+    if len(titles) != 1 or len(offers) != 1:
+        return None
+    title = titles[0].rect
+    close = account_collection.locate_control(
+        frame, cache.get(account_collection.CLOSE_TEMPLATE), "close",
+    )
+    # The X sits on the prompt's top-right corner, level with the title.
+    if (close.status != "located" or close.point is None
+            or close.point[0] <= title.x + title.w
+            or not title.y - 120 <= close.point[1] <= title.y + title.h):
+        return None
+    return AccountFrame(
+        screen="link_account_prompt", account_id=None, app_version=app_version,
+        digest=hashlib.sha256(frame.tobytes()).hexdigest(),
+        observed_at=observed_at, evidence_ref=evidence_ref,
+        controls={"close": close.point},
+        popup_title="Don't lose your account!",
+    )
+
 def parse_google_play_profile(
     frame: Image, boxes: tuple[TextBox, ...], *, observed_at: float,
     app_version: str, evidence_ref: str,
@@ -366,6 +404,11 @@ class StagingAccountObserver:
             return AccountFrame("unknown", None, version,
                                 hashlib.sha256(frame.tobytes()).hexdigest(),
                                 observed_at, evidence_ref, {}, "ambiguous confirmation")
+        link_prompt = parse_link_account_prompt(frame, boxes, self.cache,
+                                                observed_at=observed_at, app_version=version,
+                                                evidence_ref=evidence_ref)
+        if link_prompt is not None:
+            return link_prompt
         for reading in (
             parse_account_popup(frame, boxes, observed_at=observed_at,
                                 app_version=version, evidence_ref=evidence_ref),

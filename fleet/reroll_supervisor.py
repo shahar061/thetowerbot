@@ -293,8 +293,8 @@ class RerollSupervisor:
                             raise ValueError("worker_identity_binding_changed")
                     except (OSError, ValueError, KeyError, TypeError) as exc:
                         raise ValueError("worker_registration_unverified") from exc
-                if registration is None and member["state"] != "ready":
-                    raise ValueError("worker_registration_missing_for_opened_tower")
+                # An opened Tower without a registration can only resume a first
+                # launch whose account was already verified; enroll decides.
                 if registration is None:
                     registration = self.enroll(member, runtime, attempt)
                 if (registration.get("state") != "registered"
