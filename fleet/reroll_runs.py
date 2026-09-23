@@ -268,6 +268,9 @@ class RerollRuns:
             self.validate_new(keep, add)
             self.busy = True
         try:
+            # Prove additions (a stopped one is booted) before retiring anyone:
+            # retirement can't be undone, so a rejected addition must fail first.
+            proven = self.pool.prove(add) if add else set()
             active = self._active_of(self._load(repair=False))
             leaving = [item for item in (self._live(active) if active else []) if item not in keep]
             with ThreadPoolExecutor(max_workers=max(1, min(4, len(leaving)))) as workers:
@@ -286,7 +289,7 @@ class RerollRuns:
                 carried = list(keep) + [item for item in leaving
                                         if item in failed and self.pool.member(item) is not None]
                 try:
-                    self.pool.replace(carried, add)
+                    self.pool.replace(carried, add, proven)
                 except ValueError:
                     self._save(state)   # retirements stay recorded; the old run stays active
                     raise

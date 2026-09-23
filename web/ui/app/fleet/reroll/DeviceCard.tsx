@@ -166,7 +166,7 @@ export function DeviceCard({
   onOpenAccount?: () => void;
   busy: boolean;
 }) {
-  const standing = standingFor(member.retire_state ?? member.state);
+  const standing = standingFor(member.retire_state ?? member.state, member.error);
   const age = freshness(member.observed_at);
   const region = `worker-${member.name}`;
   const [confirming, setConfirming] = useState<"retire" | "remove" | null>(null);

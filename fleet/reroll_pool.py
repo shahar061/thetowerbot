@@ -21,10 +21,15 @@ class RerollPool:
     def __init__(self, root: Path, *, inventory: Callable[[], list[HostInstance]],
                  package_state: Callable[[str], str],
                  protected_names: Callable[[], set[str]],
+                 probe_stopped: Callable[[HostInstance], str],
                  registered: Callable[[HostInstance], bool] | None = None) -> None:
+        """``probe_stopped`` boots a stopped emulator, returns its ``package_state``
+        and shuts it down again. A stopped emulator's Tower state can't be read
+        otherwise, and a clone of a played emulator looks the same as a fresh one."""
         self.path = Path(root) / "reroll-pool.json"
         self.inventory = inventory
         self.package_state = package_state
+        self.probe_stopped = probe_stopped
         self.protected_names = protected_names
         self.registered = registered or (lambda row: False)
         self._lock = RLock()
@@ -110,12 +115,36 @@ class RerollPool:
     def member(self, name: str) -> dict[str, str] | None:
         return next((item for item in self.members() if item["name"] == name), None)
 
-    def _new_entries(self, names: list[str], existing: set[str]) -> list[dict[str, str]]:
+    def _probe(self, names: list[str], rows: dict[str, HostInstance]) -> set[str]:
+        """Prove each stopped addition's Tower is unopened. Runs outside the lock:
+        a boot takes minutes and snapshots must stay responsive meanwhile."""
+        proven = set()
+        for name in names:
+            row = rows[name]
+            if self._state(row) != "start_required":
+                continue
+            try:
+                state = self.probe_stopped(row)
+            except Exception as exc:
+                raise RerollPoolError(f"tower_state_unavailable: {name}: {exc}") from exc
+            code = {"installed_unopened": "ready", "opened": "tower_already_opened",
+                    "not_installed": "tower_not_installed"}.get(state, "tower_state_unavailable")
+            if code != "ready":
+                raise RerollPoolError(f"{code}: {name}")
+            proven.add(name)
+        return proven
+
+    def _new_entries(self, names: list[str], existing: set[str],
+                     proven: set[str] | None = None,
+                     rows: dict[str, HostInstance] | None = None) -> list[dict[str, str]]:
+        """``proven`` is None for a dry-run validation; when committing, every
+        stopped addition must be in it."""
         if (not names or len(set(names)) != len(names)
                 or any(not isinstance(name, str)
                        or re.fullmatch(r"[A-Za-z0-9_]+", name) is None for name in names)):
             raise RerollPoolError("invalid_pool_members")
-        rows = {row.name: row for row in self._rows()}
+        if rows is None:
+            rows = {row.name: row for row in self._rows()}
         entries = []
         for name in names:
             row = rows.get(name)
@@ -126,6 +155,8 @@ class RerollPool:
             state = self._state(row)
             if state not in {"ready", "start_required"}:
                 raise RerollPoolError(state)
+            if state == "start_required" and proven is not None and name not in proven:
+                raise RerollPoolError(f"tower_state_unverified: {name}")
             entries.append({"name": row.name, "endpoint": row.endpoint,
                             "lease_id": row.lease_id})
         return entries
@@ -134,13 +165,27 @@ class RerollPool:
         with self._lock:
             self._new_entries(names, {item["name"] for item in self._members()})
 
+    def _checked_additions(self, names: list[str]) -> tuple[set[str], dict[str, HostInstance]]:
+        """Validate, then probe stopped additions -- one inventory read for both."""
+        rows = {row.name: row for row in self._rows()}
+        with self._lock:
+            self._new_entries(names, {item["name"] for item in self._members()}, rows=rows)
+        return self._probe(names, rows), rows
+
+    def prove(self, names: list[str]) -> set[str]:
+        """Validate and probe ``names`` now; pass the result to ``replace`` later."""
+        return self._checked_additions(names)[0]
+
     def add(self, names: list[str]) -> None:
+        proven, rows = self._checked_additions(names)
         with self._lock:
             members = self._members()
-            members.extend(self._new_entries(names, {item["name"] for item in members}))
+            members.extend(self._new_entries(names, {item["name"] for item in members},
+                                             proven, rows))
             self._save(members)
 
-    def replace(self, keep: list[str], add: list[str]) -> None:
+    def replace(self, keep: list[str], add: list[str],
+                proven: set[str] | None = None) -> None:
         """Rewrite membership as ``keep`` (entries unchanged) followed by ``add``.
 
         Returns ``None``: the pool file is saved first, and the caller must not
@@ -148,11 +193,15 @@ class RerollPool:
         trailing ``snapshot()`` re-reads the host, which can fail after the
         write already landed).
         """
+        if proven is not None:
+            rows = None
+        else:
+            proven, rows = self._checked_additions(add) if add else (set(), {})
         with self._lock:
             by_name = {item["name"]: item for item in self._members()}
             if len(set(keep)) != len(keep) or any(name not in by_name for name in keep):
                 raise RerollPoolError("instance_not_in_pool")
-            new = self._new_entries(add, set(by_name)) if add else []
+            new = self._new_entries(add, set(by_name), proven, rows) if add else []
             if not keep and not new:
                 raise RerollPoolError("run_would_be_empty")
             self._save([by_name[name] for name in keep] + new)

@@ -298,3 +298,23 @@ def test_kill_is_a_no_op_for_a_paused_worker(tmp_path: Path) -> None:
     supervisor, _, forced = _stubborn(tmp_path)
     assert supervisor.kill("Tiramisu64_20")["state"] == "paused"
     assert forced == []
+
+
+def test_boot_wait_runs_after_the_gui_lock_is_released(tmp_path: Path) -> None:
+    make, spawned, _, _ = _harness(tmp_path)
+    supervisor = make()
+    member = supervisor.pool_snapshot()["members"][0]
+    member["state"] = "start_required"
+    events = []
+    def start_instance(selected):
+        events.append("start")
+    def wait_booted(selected):
+        # Holding the GUI lock through a multi-minute boot would queue every other start.
+        assert supervisor._enroll_lock.acquire(blocking=False)
+        supervisor._enroll_lock.release()
+        events.append("booted")
+        member["state"] = "ready"
+    supervisor.start_instance = start_instance
+    supervisor.wait_booted = wait_booted
+    assert supervisor.start(member["name"])["state"] == "running"
+    assert events == ["start", "booted"]

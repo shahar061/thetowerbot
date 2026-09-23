@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { LADDER, attentionRank, decisionFor, ladderProgress, standingFor, STONES_WAVE } from "./rerollState";
+import { LADDER, attentionRank, decisionFor, failureHint, ladderProgress, standingFor, STONES_WAVE } from "./rerollState";
 
 test("a state this build has never heard of is surfaced, not greyed out", () => {
   const unknown = standingFor("warp_core_breach");
@@ -61,4 +61,28 @@ test("the five decision states keep their separate remedies", () => {
 test("retirement states are labelled and ask for a person only when retiring failed", () => {
   expect(standingFor("retired")).toMatchObject({ label: "Retired", needsYou: false });
   expect(standingFor("retire_failed")).toMatchObject({ label: "Retire failed", needsYou: true, tone: "error" });
+});
+
+test("a start failure explains its own error instead of blaming a worker that never ran", () => {
+  const opened = standingFor("failed", "worker_registration_missing_for_opened_tower");
+  expect(opened.label).toBe("Failed to start");
+  expect(opened.hint).toMatch(/already opened/);
+  expect(opened.hint).not.toMatch(/worker exited/);
+  expect(standingFor("failed", "tower_state_unavailable").hint).toMatch(/still booting/);
+  // Codes can carry a detail suffix; the code alone picks the explanation.
+  expect(standingFor("failed", "tower_already_opened: Tiramisu64_23").hint).toMatch(/already opened/);
+});
+
+test("an unrecognised start failure still says the worker never started", () => {
+  const unknown = standingFor("failed", "something_new");
+  expect(unknown.hint).toMatch(/couldn't be started/);
+  expect(standingFor("failed").hint).toBe(unknown.hint);
+  // Other states ignore the error string.
+  expect(standingFor("paused", "tower_state_unavailable").hint).toBe(standingFor("paused").hint);
+});
+
+test("failureHint explains known codes and stays silent on unknown ones", () => {
+  expect(failureHint("tower_already_opened: Air_2")).toMatch(/already opened/);
+  expect(failureHint("mystery")).toBeNull();
+  expect(failureHint(null)).toBeNull();
 });

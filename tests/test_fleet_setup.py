@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from fleet.setup import FleetSetupStore, FleetSetupError, FleetSetupService
+from fleet.setup import FleetSetupStore, FleetSetupError, FleetSetupService, wait_for_android_boot
 from fleet.dashboard import FleetRequestError
 from web.app import create_app
 from events import EventBus
@@ -236,6 +236,9 @@ class _Runs:
         self.calls.append(("retire_member", name))
         return {"name": name, "worker": "stopped", "instance": "stopped"}
 
+    def add_members(self, names):
+        self.calls.append(("add_members", names))
+
     def validate_remove(self, name):
         self.calls.append(("validate_remove", name))
 
@@ -250,7 +253,7 @@ class _Runs:
 def _service_with_runs(tmp_path: Path, runs: _Runs) -> FleetSetupService:
     service = FleetSetupService(tmp_path / "fleet", qualification_root=tmp_path)
     service._reroll_runs = runs
-    service._reroll_pool = SimpleNamespace(snapshot=lambda: {
+    service._reroll_pool = SimpleNamespace(validate_add=lambda names: None, snapshot=lambda: {
         "candidates": [{"name": "Tiramisu64_18", "endpoint": "e", "state": "start_required"},
                        {"name": "Tiramisu64_22", "endpoint": "f", "state": "ready"}],
         "members": [{"name": "Tiramisu64_20", "endpoint": "g", "lease_id": "a", "state": "ready"}]})
@@ -425,3 +428,38 @@ def test_stop_instance_closure_serialises_gui_driving(tmp_path: Path, monkeypatc
         thread.join()
 
     assert counters["max_active"] == 1
+
+
+def test_wait_for_android_boot_polls_until_boot_completes() -> None:
+    answers = ["", "0", "1"]
+    now = {"t": 0.0}
+
+    class Device:
+        def shell(self, command: str) -> str:
+            assert command == "getprop sys.boot_completed"
+            answer = answers.pop(0)
+            if answer == "":
+                raise ConnectionError("adb not ready")
+            return answer + "\n"
+
+    wait_for_android_boot(Device, timeout=10, poll=2, clock=lambda: now["t"],
+                          sleep=lambda seconds: now.__setitem__("t", now["t"] + seconds))
+    assert answers == [] and now["t"] == 4
+
+
+def test_wait_for_android_boot_gives_up_at_the_deadline() -> None:
+    now = {"t": 0.0}
+    device = SimpleNamespace(shell=lambda command: "0")
+    with pytest.raises(TimeoutError, match="android_boot_not_completed"):
+        wait_for_android_boot(lambda: device, timeout=5, poll=2, clock=lambda: now["t"],
+                              sleep=lambda seconds: now.__setitem__("t", now["t"] + seconds))
+
+
+def test_add_runs_in_the_background_because_it_may_boot_emulators(tmp_path: Path) -> None:
+    runs = _Runs()
+    service = _service_with_runs(tmp_path, runs)
+    snapshot = service.reroll_add(["Tiramisu64_22"])
+    assert snapshot["operation"]["kind"] == "add"
+    assert snapshot["operation"]["target"] == "Tiramisu64_22"
+    _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
+    assert ("add_members", ["Tiramisu64_22"]) in runs.calls

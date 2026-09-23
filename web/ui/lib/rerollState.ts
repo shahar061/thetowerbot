@@ -80,9 +80,11 @@ const STANDINGS: Record<string, DeviceStanding> = {
     tone: "error", label: "Interrupted", needsYou: true, transient: false,
     hint: "The worker stopped without finishing. Check the journal before restarting it.",
   },
+  // Only the supervisor's start path writes "failed": the worker process never
+  // launched. A worker that launched and then exited reads as "stopped".
   failed: {
-    tone: "error", label: "Failed", needsYou: true, transient: false,
-    hint: "The worker exited with an error. The error line and the journal say why.",
+    tone: "error", label: "Failed to start", needsYou: true, transient: false,
+    hint: "The worker couldn't be started. The error below says why; the journal has the details.",
   },
   tower_already_opened: {
     tone: "error", label: "Tower already opened", needsYou: true, transient: false,
@@ -118,6 +120,26 @@ const STANDINGS: Record<string, DeviceStanding> = {
   },
 };
 
+const OPENED_TOWER = "The Tower was already opened on this emulator, so it can't start a fresh account - it is probably a clone of one that was played. Remove it and add an emulator with The Tower installed but never opened.";
+
+/** Error codes (from `fleet/reroll_supervisor.py` and `fleet/reroll_pool.py`)
+ *  a person can act on, in their words. Keyed by the code before any ": detail". */
+const FAILURE_HINTS: Record<string, string> = {
+  worker_registration_missing_for_opened_tower: OPENED_TOWER,
+  tower_already_opened: OPENED_TOWER,
+  tower_state_unavailable: "The bot couldn't read The Tower's state over adb, usually because the emulator was still booting. Start it again.",
+  tower_not_installed: "The Tower isn't installed on this emulator. Install it (without opening it), then add the emulator again.",
+  android_boot_not_completed: "The emulator started but Android didn't finish booting within 3 minutes. Start it again.",
+  protected_template: "This is the template emulator the others are cloned from. It is never played.",
+  host_identity_changed_after_start: "The emulator came back from its start with a different identity than the pool recorded. Check the journal before retrying.",
+  worker_registration_unverified: "The account registration saved for this emulator no longer matches it. Check the journal before retrying.",
+  worker_identity_binding_changed: "The account registration saved for this emulator no longer matches it. Check the journal before retrying.",
+};
+
+export function failureHint(error?: string | null): string | null {
+  return error ? FAILURE_HINTS[error.split(":")[0].trim()] ?? null : null;
+}
+
 /** The phrase the page shows for any state, including one this build predates.
  *
  *  An unknown state is deliberately treated as something to look at rather
@@ -125,7 +147,9 @@ const STANDINGS: Record<string, DeviceStanding> = {
  *  far more likely to be a new failure mode than a new happy path, and a UI
  *  that silently greys it out is the UI that hides it.
  */
-export function standingFor(state: string): DeviceStanding {
+export function standingFor(state: string, error?: string | null): DeviceStanding {
+  const hint = state === "failed" ? failureHint(error) : null;
+  if (hint) return { ...STANDINGS.failed, hint };
   return STANDINGS[state] ?? {
     tone: "warn", label: state.replaceAll("_", " "), needsYou: true, transient: false,
     hint: "This dashboard does not recognise that state. The journal is the authority on it.",

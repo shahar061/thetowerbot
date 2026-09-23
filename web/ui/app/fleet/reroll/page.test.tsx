@@ -253,6 +253,22 @@ test("a running removal shows its own progress text", async () => {
   expect(await screen.findByRole("status", { name: "Reroll operation" })).toHaveTextContent("Removing Air_1 from the reroll…");
 });
 
+test("adding shows that stopped emulators boot to be checked", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0]], run,
+    operation: { kind: "add", state: "running", started_at: "2026-09-23T09:00:00Z", target: "Air_3", results: [] } });
+  render(<RerollPage />);
+  expect(await screen.findByRole("status", { name: "Reroll operation" })).toHaveTextContent(/Adding Air_3… a stopped emulator boots first/);
+});
+
+test("a rejected add explains an already-opened Tower", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0]], run,
+    operation: { kind: "add", state: "failed", started_at: "2026-09-23T09:00:00Z", target: "Air_3", results: [], error: "tower_already_opened: Air_3" } });
+  render(<RerollPage />);
+  const banner = await screen.findByRole("status", { name: "Reroll operation" });
+  expect(banner).toHaveTextContent("Last operation failed: tower_already_opened: Air_3");
+  expect(banner).toHaveTextContent(/never opened/);
+});
+
 test("a retired emulator still running offers a shutdown retry", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [], run,
     stop_failures: [{ name: "Air_9", error: "window stuck" }] });
