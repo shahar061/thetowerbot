@@ -270,3 +270,15 @@ test("past rerolls list closed runs with links to their archives", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Expand Past rerolls" }));
   expect(screen.getByRole("link", { name: "Reroll #1" })).toHaveAttribute("href", "/archives/?run=1");
 });
+
+test("emulators whose retire failed are left off the dashboard", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [
+    members[0],
+    { name: "Air_9", endpoint: "127.0.0.1:5599", lease_id: "z", state: "retire_failed", retire_state: "retire_failed", retire_error: "worker not proven stopped" },
+  ] });
+  render(<RerollPage />);
+  expect(await screen.findByRole("button", { name: "Collapse Air_1" })).toBeInTheDocument();
+  expect(screen.queryByText("Air_9")).not.toBeInTheDocument();
+  expect(screen.queryByText("Retire failed")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^All/ })).toHaveTextContent("1");
+});

@@ -137,7 +137,9 @@ export default function RerollPage() {
     catch (failure) { setDialogError((failure as Error).message); }
     finally { setBusy(false); }
   })();
-  const members = useMemo(() => pool?.members ?? [], [pool]);
+  // Emulators whose retire failed are left off the dashboard: they carry no
+  // run data and repeated identical error cards buried the live workers.
+  const members = useMemo(() => (pool?.members ?? []).filter(member => member.state !== "retire_failed"), [pool]);
   const run = pool?.run ?? null;
   const operating = pool?.operation?.state === "running";
 
@@ -318,7 +320,7 @@ export default function RerollPage() {
 
     {!!members.length && <SharedWorkshopLedger members={members} />}
     <PastRerolls refreshKey={run?.number} />
-    <NewRerollDialog open={dialog} onClose={() => setDialog(false)} run={run} members={members}
+    <NewRerollDialog open={dialog} onClose={() => setDialog(false)} run={run} members={pool?.members ?? []}
       candidates={pool?.candidates ?? []} busy={busy} error={dialogError} onConfirm={confirmNew} />
     {journalError && <p role="status" className="text-sm text-muted-foreground">Shared journal unavailable: {journalError}</p>}
     {!journalError && <Journal entries={entries} worker={journalWorker} onWorker={setJournalWorker} />}
