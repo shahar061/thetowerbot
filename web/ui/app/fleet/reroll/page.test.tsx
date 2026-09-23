@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
-import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, listRerolls, removeRerollMember, retireRerollMember, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
+import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, listRerolls, removeRerollMember, startNewReroll, startReroll } from "@/lib/api";
 import type { RerollMember, RerollPlan } from "@/lib/fleet";
 
 const choose = vi.fn();
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
-vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), retireRerollMember: vi.fn(), startNewReroll: vi.fn(), stopRerollInstance: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
+vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
 
 // Named separately so a test that extends the plan keeps its full type -
 // spreading `members[0].reroll_plan` inferred it as optional and lost it.
@@ -195,7 +195,7 @@ test("header names the active reroll and New reroll warns before choosing", asyn
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Air_1/ }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Air_3/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Start Reroll #3 and retire 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start Reroll #3 and stop 1" }));
   await waitFor(() => expect(startNewReroll).toHaveBeenCalledWith({ keep: ["Air_1"], add: ["Air_3"] }));
 });
 
@@ -208,29 +208,22 @@ test("without an active reroll the page offers Start a reroll and skips the warn
 
 test("a running operation shows a banner and disables starting another", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run,
-    operation: { kind: "new_run", state: "running", started_at: "x", results: [{ name: "Air_2", worker: "stopped" }] },
-    stop_failures: [{ name: "Air_9", error: "window stuck" }] });
+    operation: { kind: "new_run", state: "running", started_at: "x", results: [{ name: "Air_2", worker: "stopped" }] } });
   render(<RerollPage />);
-  expect(await screen.findByRole("status", { name: "Reroll operation" })).toHaveTextContent(/Starting a new reroll/);
+  expect(await screen.findByRole("status", { name: "Reroll operation" })).toHaveTextContent(/Starting a new reroll… stopping the bots/);
   expect(screen.getByRole("button", { name: "New reroll" })).toBeDisabled();
   // The local `busy` flag clears as soon as its own request returns, but the
   // supervisor's operation can stay running for minutes - every control that
   // could start a second concurrent action must key off `operation.state`
   // too, not just the request-in-flight flag.
-  for (const button of screen.getAllByRole("button", { name: "Retire" })) expect(button).toBeDisabled();
   for (const button of screen.getAllByRole("button", { name: "Remove" })) expect(button).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Shut down Air_9" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Retire" })).not.toBeInTheDocument();
 });
 
-test("retire asks first, then calls the retire route", async () => {
-  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0]], run });
-  vi.mocked(retireRerollMember).mockResolvedValue({ candidates: [], members: [], run });
+test("a bot that couldn't be stopped when the reroll changed says so on its card", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [{ ...members[0], leave_error: "identity_changed" }], run });
   render(<RerollPage />);
-  fireEvent.click(await screen.findByRole("button", { name: "Retire" }));
-  expect(await screen.findByRole("alertdialog", { name: "Retire Air_1?" })).toBeInTheDocument();
-  expect(retireRerollMember).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Retire Air_1" }));
-  await waitFor(() => expect(retireRerollMember).toHaveBeenCalledWith("Air_1"));
+  expect(await screen.findByText("Couldn't stop this bot when the reroll changed: identity_changed")).toBeInTheDocument();
 });
 
 test("remove asks first, says it can come back, then calls the remove route", async () => {
@@ -243,7 +236,6 @@ test("remove asks first, says it can come back, then calls the remove route", as
   expect(removeRerollMember).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Remove Air_1" }));
   await waitFor(() => expect(removeRerollMember).toHaveBeenCalledWith("Air_1"));
-  expect(retireRerollMember).not.toHaveBeenCalled();
 });
 
 test("a running removal shows its own progress text", async () => {
@@ -269,21 +261,11 @@ test("a rejected add explains an already-opened Tower", async () => {
   expect(banner).toHaveTextContent(/never opened/);
 });
 
-test("a retired emulator still running offers a shutdown retry", async () => {
-  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [], run,
-    stop_failures: [{ name: "Air_9", error: "window stuck" }] });
-  vi.mocked(stopRerollInstance).mockResolvedValue({ candidates: [], members: [], run });
-  render(<RerollPage />);
-  expect(await screen.findByText(/Air_9 was retired but its emulator is still running/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Shut down Air_9" }));
-  await waitFor(() => expect(stopRerollInstance).toHaveBeenCalledWith("Air_9"));
-});
-
 test("past rerolls list closed runs with links to their archives", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run });
   vi.mocked(listRerolls).mockResolvedValue({ runs: [
-    { number: 2, name: "Reroll #2", status: "active", started_at: "2026-09-23T09:00:00Z", member_count: 2, retired_count: 0, members: ["Air_1", "Air_2"] },
-    { number: 1, name: "Reroll #1", status: "closed", started_at: "2026-09-01T09:00:00Z", closed_at: "2026-09-23T09:00:00Z", member_count: 2, retired_count: 1, members: ["Air_1", "Air_0"] }] });
+    { number: 2, name: "Reroll #2", status: "active", started_at: "2026-09-23T09:00:00Z", member_count: 2, left_count: 0, members: ["Air_1", "Air_2"] },
+    { number: 1, name: "Reroll #1", status: "closed", started_at: "2026-09-01T09:00:00Z", closed_at: "2026-09-23T09:00:00Z", member_count: 2, left_count: 1, members: ["Air_1", "Air_0"] }] });
   render(<RerollPage />);
   fireEvent.click(await screen.findByRole("button", { name: "Expand Past rerolls" }));
   expect(screen.getByRole("link", { name: "Reroll #1" })).toHaveAttribute("href", "/archives/?run=1");

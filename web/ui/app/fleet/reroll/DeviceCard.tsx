@@ -147,7 +147,6 @@ export function DeviceCard({
   onToggle,
   onStart,
   onPause,
-  onRetire,
   onRemove,
   onJournal,
   onOpenAccount,
@@ -160,16 +159,15 @@ export function DeviceCard({
   onToggle: () => void;
   onStart: () => void;
   onPause: () => void;
-  onRetire: () => void;
   onRemove: () => void;
   onJournal: () => void;
   onOpenAccount?: () => void;
   busy: boolean;
 }) {
-  const standing = standingFor(member.retire_state ?? member.state, member.error);
+  const standing = standingFor(member.state, member.error);
   const age = freshness(member.observed_at);
   const region = `worker-${member.name}`;
-  const [confirming, setConfirming] = useState<"retire" | "remove" | null>(null);
+  const [confirming, setConfirming] = useState<"remove" | null>(null);
 
   return (
     <article
@@ -324,8 +322,7 @@ export function DeviceCard({
               <Button size="xs" variant="outline" disabled={busy} onClick={onPause}>Pause</Button>
               <Button size="xs" variant="outline" onClick={onJournal}>Show journal</Button>
               <Button size="xs" variant="outline" disabled={busy} onClick={() => setConfirming("remove")}>Remove</Button>
-              <Button size="xs" variant="destructive" disabled={busy} onClick={() => setConfirming("retire")}>Retire</Button>
-              {member.retire_state === "retire_failed" && <span className="text-danger">Retire failed: {member.retire_error}</span>}
+              {member.leave_error && <span className="text-danger">Couldn&apos;t stop this bot when the reroll changed: {member.leave_error}</span>}
             </div>
           </div>
         </details>
@@ -335,11 +332,6 @@ export function DeviceCard({
         footer={<><Button variant="outline" onClick={() => setConfirming(null)}>Cancel</Button>
           <Button onClick={() => { setConfirming(null); onRemove(); }}>Remove {member.name}</Button></>}>
         <p>Its worker stops and its emulator shuts down. You can add it back later from the Add list, and it continues with the same account.</p>
-      </ConfirmDialog>
-      <ConfirmDialog open={confirming === "retire"} onOpenChange={open => setConfirming(open ? "retire" : null)} tone="warn" title={`Retire ${member.name}?`}
-        footer={<><Button variant="outline" onClick={() => setConfirming(null)}>Cancel</Button>
-          <Button variant="destructive" onClick={() => { setConfirming(null); onRetire(); }}>Retire {member.name}</Button></>}>
-        <p>It stops playing permanently and its emulator shuts down. Its data stays in Archives.</p>
       </ConfirmDialog>
     </article>
   );

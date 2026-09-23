@@ -17,12 +17,12 @@ export function PastRerolls({ refreshKey }: { refreshKey: number | undefined }) 
   return <RerollCard title="Past rerolls" defaultCollapsed>
     <table className="w-full text-left text-sm">
       <thead className="text-xs text-muted-foreground"><tr>
-        <th className="py-1">Reroll</th><th>Started</th><th>Closed</th><th>Emulators</th><th>Retired</th>
+        <th className="py-1">Reroll</th><th>Started</th><th>Closed</th><th>Emulators</th><th>Left</th>
       </tr></thead>
       <tbody>{runs.map(run => <tr key={run.number} className="border-t border-border">
         <td className="py-1.5"><Link href={`/archives/?run=${run.number}`} className="text-primary underline">{run.name}</Link>{run.status === "active" ? " · active" : ""}</td>
         <td>{day(run.started_at)}</td><td>{day(run.closed_at)}</td>
-        <td>{run.member_count}</td><td>{run.retired_count}</td>
+        <td>{run.member_count}</td><td>{run.left_count}</td>
       </tr>)}</tbody>
     </table>
   </RerollCard>;

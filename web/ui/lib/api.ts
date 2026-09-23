@@ -75,13 +75,9 @@ export const setRerollConcurrency = (limit: number) =>
   send<RerollSnapshot>("/api/fleet/reroll/concurrency", "PATCH", { limit }, "fleet");
 export const addRerollMembers = (names: string[]) =>
   send<RerollSnapshot>("/api/fleet/reroll/members", "POST", { names }, "fleet");
-export const retireRerollMember = (name: string) =>
-  send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}/retire`, "POST", undefined, "fleet");
-/** Reversible, unlike retire: the emulator shuts down and can be added back. */
+/** The emulator shuts down and can be added back. */
 export const removeRerollMember = (name: string) =>
   send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}`, "DELETE", undefined, "fleet");
-export const stopRerollInstance = (name: string) =>
-  send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}/stop-instance`, "POST", undefined, "fleet");
 export const startNewReroll = (value: { keep: string[]; add: string[]; name?: string }) =>
   send<RerollSnapshot>("/api/fleet/reroll/runs", "POST", value, "fleet");
 export const listRerolls = () =>

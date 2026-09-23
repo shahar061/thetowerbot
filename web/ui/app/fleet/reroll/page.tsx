@@ -7,7 +7,7 @@ import { Meter, Pips } from "@/components/Meter";
 import { StatTile } from "@/components/StatTile";
 import { Button } from "@/components/ui/button";
 import { useAccountSelection } from "@/lib/AccountSelection";
-import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, retireRerollMember, setRerollConcurrency, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
+import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, setRerollConcurrency, startNewReroll, startReroll } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
 import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
 import { LADDER, attentionRank, deviceColor, failureHint, standingFor } from "@/lib/rerollState";
@@ -197,15 +197,10 @@ export default function RerollPage() {
     {pool?.operation && pool.operation.state !== "done" && <p role="status" aria-label="Reroll operation"
       className={cn("rounded-lg border p-3 text-sm", pool.operation.state === "failed" ? "border-danger bg-danger-surface text-danger" : "border-warn/40 bg-warn-surface text-warn")}>
       {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}${failureHint(pool.operation.error) ? ` - ${failureHint(pool.operation.error)}` : ""}` :
-        pool.operation.kind === "new_run" ? "Starting a new reroll… retiring emulators and shutting them down"
+        pool.operation.kind === "new_run" ? "Starting a new reroll… stopping the bots on emulators not kept"
           : pool.operation.kind === "remove" ? `Removing ${pool.operation.target} from the reroll…`
-          : pool.operation.kind === "add" ? `Adding ${pool.operation.target ?? "emulators"}… a stopped emulator boots first to check The Tower has never been opened`
-          : `Retiring ${pool.operation.target}…`}
+          : `Adding ${pool.operation.target ?? "emulators"}… a stopped emulator boots first to check The Tower has never been opened`}
     </p>}
-    {pool?.stop_failures?.map(item => <p key={item.name} role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">
-      {item.name} was retired but its emulator is still running.
-      <Button size="xs" variant="outline" aria-label={`Shut down ${item.name}`} disabled={busy || operating} onClick={() => void act(() => stopRerollInstance(item.name))}>Shut down</Button>
-    </p>)}
 
     <RerollCard title="Pool overview" tone={census.attention ? "warn" : census.live ? "live" : undefined}>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -291,7 +286,6 @@ export default function RerollPage() {
           onToggle={() => setCollapsed(current => ({ ...current, [member.name]: !current[member.name] }))}
           onStart={() => void act(() => startReroll(member.name))}
           onPause={() => void act(() => pauseReroll(member.name))}
-          onRetire={() => void act(() => retireRerollMember(member.name))}
           onRemove={() => void act(() => removeRerollMember(member.name))}
           onJournal={() => setJournalWorker(member.name)}
           onOpenAccount={account ? () => choose(account.key) : undefined}

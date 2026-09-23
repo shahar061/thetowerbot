@@ -7,7 +7,7 @@ import {
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
   fetchFleet, requestFleetProvision,
   fetchAccountWorkshopPurchases, fetchAccountRuns, fetchAccountRunPurchases,
-  startNewReroll, listRerolls, retireRerollMember, stopRerollInstance,
+  startNewReroll, listRerolls,
 } from "./api";
 import type { Strategy } from "./types";
 import { setAccountScope } from "./accountScope";
@@ -136,14 +136,6 @@ describe("fleet routes", () => {
     expect(lastCall()[0]).toBe("/api/fleet/reroll/runs");
     expect(lastCall()[1].method).toBe("POST");
     expect(JSON.parse(lastCall()[1].body as string)).toEqual({ keep: ["Air_1"], add: ["Air_3"] });
-  });
-  it("retires one emulator and retries a shutdown by exact name", async () => {
-    allowFleetWrite();
-    await retireRerollMember("Air 1");
-    expect(lastCall()[0]).toBe("/api/fleet/reroll/members/Air%201/retire");
-    allowFleetWrite();
-    await stopRerollInstance("Air_1");
-    expect(lastCall()[0]).toBe("/api/fleet/reroll/members/Air_1/stop-instance");
   });
   it("lists past rerolls", async () => {
     await listRerolls();

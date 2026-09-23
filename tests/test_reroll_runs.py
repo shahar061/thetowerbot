@@ -1,4 +1,4 @@
-"""Numbered reroll runs group pool members and never readmit a retired emulator."""
+"""Numbered reroll runs group pool members; leaving a run only stops the bot."""
 
 from __future__ import annotations
 
@@ -64,15 +64,12 @@ def _registration(root: Path, name: str, registered_at: float) -> None:
     (worker / "fleet-registration.json").write_text(json.dumps({"registered_at": registered_at}))
 
 
-def make(root: Path, pool: FakePool, *, retire=None, remove=None,
-         stop_instance=None) -> RerollRuns:
-    def default_retire(member):
-        pool.remove(member["name"])
-        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
-    return RerollRuns(root, pool=pool, retire=retire or default_retire,
+def make(root: Path, pool: FakePool, *, release=None, remove=None) -> RerollRuns:
+    return RerollRuns(root, pool=pool,
+                      release=release or (lambda member: {"name": member["name"],
+                                                          "worker": "stopped"}),
                       remove=remove or (lambda member: {"name": member["name"],
                                                         "worker": "stopped", "instance": "stopped"}),
-                      stop_instance=stop_instance or (lambda *args: None),
                       clock=lambda: "2026-09-23T09:00:00Z")
 
 
@@ -94,11 +91,15 @@ def test_migration_with_empty_pool_has_no_active_run(tmp_path: Path) -> None:
     assert runs.summaries() == []
 
 
-def test_migration_blocks_legacy_registered_workers(tmp_path: Path) -> None:
+def test_migration_records_legacy_workers_without_blocking_them(tmp_path: Path) -> None:
     _registration(tmp_path, "Tiramisu64_18", 1.0)
     _registration(tmp_path, "Tiramisu64_20", 2.0)
-    runs = make(tmp_path, FakePool(["Tiramisu64_20"]))
-    assert runs.retired_names() == {"Tiramisu64_18"}
+    runs = make(tmp_path, FakePool(["Tiramisu64_20"], fresh={"Tiramisu64_18"}))
+    runs.active()
+    state = json.loads((tmp_path / "reroll-runs.json").read_text())
+    assert state["retired_before_runs"] == ["Tiramisu64_18"]
+    runs.add_members(["Tiramisu64_18"])
+    assert runs.active()["members"] == ["Tiramisu64_20", "Tiramisu64_18"]
 
 
 def test_repair_adds_pool_members_missing_from_active_run(tmp_path: Path) -> None:
@@ -109,15 +110,13 @@ def test_repair_adds_pool_members_missing_from_active_run(tmp_path: Path) -> Non
     assert runs.active()["members"] == ["Tiramisu64_20", "Tiramisu64_21"]
 
 
-def test_repair_records_members_that_left_the_pool_as_recovered(tmp_path: Path) -> None:
+def test_repair_records_members_that_left_the_pool_as_removed(tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
     runs = make(tmp_path, pool)
     runs.active()
     pool.remove("Tiramisu64_21")
     active = runs.active()
-    assert [(item["name"], item["reason"], item["instance"]) for item in active["retired"]] == [
-        ("Tiramisu64_21", "recovered", "unknown")]
-    assert "Tiramisu64_21" in runs.retired_names()
+    assert active["removed"] == ["Tiramisu64_21"] and active["retired"] == []
 
 
 def test_repair_opens_a_run_for_a_pool_without_one(tmp_path: Path) -> None:
@@ -134,9 +133,9 @@ def test_repair_is_skipped_while_an_operation_is_in_progress(tmp_path: Path) -> 
     runs.active()
     runs.busy = True
     pool.remove("Tiramisu64_21")
-    assert runs.active()["retired"] == []
+    assert runs.active()["removed"] == []
     runs.busy = False
-    assert runs.active()["retired"][0]["name"] == "Tiramisu64_21"
+    assert runs.active()["removed"] == ["Tiramisu64_21"]
 
 
 def test_unreadable_runs_file_is_an_explicit_error(tmp_path: Path) -> None:
@@ -187,7 +186,6 @@ def _files(root: Path) -> tuple[bytes, ...]:
 @pytest.mark.parametrize("keep, add, code", [
     (["Tiramisu64_99"], [], "keep_not_in_active_run"),
     ([], [], "run_would_be_empty"),
-    ([], ["Tiramisu64_18"], "instance_retired"),
     ([], ["Tiramisu64_30"], "tower_already_opened"),
 ])
 def test_validation_codes_change_nothing(tmp_path: Path, keep, add, code) -> None:
@@ -201,9 +199,15 @@ def test_validation_codes_change_nothing(tmp_path: Path, keep, add, code) -> Non
     assert _files(tmp_path) == before and pool.members() == members
 
 
-def test_start_new_closes_old_run_retires_the_rest_and_opens_the_next(tmp_path: Path) -> None:
+def test_start_new_closes_old_run_stops_the_rest_and_opens_the_next(tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
-    runs = make(tmp_path, pool)
+    released: list[str] = []
+
+    def release(member):
+        released.append(member["name"])
+        return {"name": member["name"], "worker": "stopped"}
+
+    runs = make(tmp_path, pool, release=release)
     runs.active()
 
     outcome = runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
@@ -213,35 +217,34 @@ def test_start_new_closes_old_run_retires_the_rest_and_opens_the_next(tmp_path: 
     old, new = sorted(json.loads((tmp_path / "reroll-runs.json").read_text())["runs"],
                       key=lambda run: run["number"])
     assert old["status"] == "closed" and old["closed_at"] == "2026-09-23T09:00:00Z"
-    assert [(item["name"], item["reason"], item["endpoint"]) for item in old["retired"]] == [
-        ("Tiramisu64_21", "new_run", "127.0.0.1:21")]
+    assert released == ["Tiramisu64_21"]
+    assert old["removed"] == ["Tiramisu64_21"] and old["retired"] == []
+    assert outcome["results"] == [{"name": "Tiramisu64_21", "worker": "stopped"}]
     assert (new["name"], new["status"], new["members"]) == (
         "Reroll #2", "active", ["Tiramisu64_20", "Tiramisu64_22"])
 
 
-def test_retired_emulator_cannot_come_back_by_keep_or_add(tmp_path: Path) -> None:
+def test_an_emulator_that_left_a_run_can_be_added_back(tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_21", "Tiramisu64_22"})
     runs = make(tmp_path, pool)
     runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
-    with pytest.raises(ValueError, match="instance_retired"):
-        runs.start_new(["Tiramisu64_20"], ["Tiramisu64_21"])
     with pytest.raises(ValueError, match="keep_not_in_active_run"):
         runs.start_new(["Tiramisu64_21"], [])
-    with pytest.raises(ValueError, match="instance_retired"):
-        runs.add_members(["Tiramisu64_21"])
+    runs.add_members(["Tiramisu64_21"])
+    assert runs.active()["members"] == ["Tiramisu64_20", "Tiramisu64_22", "Tiramisu64_21"]
 
 
-def test_failed_retirement_is_carried_over_and_flagged(tmp_path: Path) -> None:
+def test_a_bot_that_would_not_stop_is_carried_over_and_flagged(tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
 
-    def retire(member):
+    def release(member):
         raise RetireError("identity_changed")
 
-    runs = make(tmp_path, pool, retire=retire)
+    runs = make(tmp_path, pool, release=release)
     outcome = runs.start_new([], ["Tiramisu64_22"])
     active = runs.active()
     assert active["members"] == ["Tiramisu64_20", "Tiramisu64_21", "Tiramisu64_22"]
-    assert runs.retire_failures() == {"Tiramisu64_20": "identity_changed",
+    assert runs.leave_failures() == {"Tiramisu64_20": "identity_changed",
                                       "Tiramisu64_21": "identity_changed"}
     assert {"name": "Tiramisu64_20", "error": "identity_changed"} in outcome["results"]
 
@@ -253,29 +256,6 @@ def test_start_new_without_active_run_needs_no_keep(tmp_path: Path) -> None:
     assert runs.active()["members"] == ["Tiramisu64_22"]
 
 
-def test_retire_member_mid_run_and_failure_flag(tmp_path: Path) -> None:
-    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
-    calls = {"fail": True}
-
-    def retire(member):
-        if calls["fail"]:
-            raise RetireError("identity_changed")
-        pool.remove(member["name"])
-        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
-
-    runs = make(tmp_path, pool, retire=retire)
-    with pytest.raises(RetireError):
-        runs.retire_member("Tiramisu64_21")
-    assert runs.retire_failures() == {"Tiramisu64_21": "identity_changed"}
-
-    calls["fail"] = False
-    runs.retire_member("Tiramisu64_21")
-    assert runs.retire_failures() == {}
-    assert runs.active()["retired"][0]["reason"] == "manual"
-    with pytest.raises(ValueError, match="instance_not_in_active_run"):
-        runs.retire_member("Tiramisu64_21")
-
-
 def test_add_members_extends_active_run(tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20"], fresh={"Tiramisu64_22"})
     runs = make(tmp_path, pool)
@@ -284,80 +264,32 @@ def test_add_members_extends_active_run(tmp_path: Path) -> None:
     assert runs.active()["number"] == 1
 
 
-def test_retry_stop_uses_stored_endpoint_after_pool_exit(tmp_path: Path) -> None:
-    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
-    stops: list[tuple] = []
-    attempts = {"n": 0}
-
-    def retire(member):
-        pool.remove(member["name"])
-        return {"name": member["name"], "worker": "stopped", "instance": "stop_failed",
-                "error": "window stuck"}
-
-    def stop_instance(*args):
-        attempts["n"] += 1
-        stops.append(args)
-        if attempts["n"] == 1:
-            raise RuntimeError("still stuck")
-
-    runs = make(tmp_path, pool, retire=retire, stop_instance=stop_instance)
-    runs.retire_member("Tiramisu64_21")
-    assert runs.stop_failures() == [{"name": "Tiramisu64_21", "error": "window stuck"}]
-
-    with pytest.raises(ValueError, match="instance_stop_failed"):
-        runs.retry_stop("Tiramisu64_21")
-    assert runs.stop_failures() == [{"name": "Tiramisu64_21", "error": "still stuck"}]
-    runs.retry_stop("Tiramisu64_21")
-    assert runs.stop_failures() == []
-    assert stops[-1] == ("Tiramisu64_21", "127.0.0.1:21", "lease-Tiramisu64_21")
-    with pytest.raises(ValueError, match="no_stop_failure"):
-        runs.retry_stop("Tiramisu64_21")
-
-
-def test_start_new_carries_unexpected_retire_exceptions_as_failures(tmp_path: Path) -> None:
+def test_start_new_carries_unexpected_release_exceptions_as_failures(tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
 
-    def retire(member):
+    def release(member):
         raise RuntimeError("boom")
 
-    runs = make(tmp_path, pool, retire=retire)
+    runs = make(tmp_path, pool, release=release)
     outcome = runs.start_new([], ["Tiramisu64_22"])
     active = runs.active()
     assert active["members"] == ["Tiramisu64_20", "Tiramisu64_21", "Tiramisu64_22"]
-    assert runs.retire_failures() == {"Tiramisu64_20": "boom", "Tiramisu64_21": "boom"}
+    assert runs.leave_failures() == {"Tiramisu64_20": "boom", "Tiramisu64_21": "boom"}
     assert {"name": "Tiramisu64_20", "error": "boom"} in outcome["results"]
 
 
-def test_start_new_records_a_partial_retirement_as_unknown(tmp_path: Path) -> None:
+def test_start_new_drops_a_member_that_left_the_pool_while_its_bot_stopped(
+        tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
 
-    def retire(member):
+    def release(member):
         pool.remove(member["name"])
         raise RuntimeError("stopped but unconfirmed")
 
-    runs = make(tmp_path, pool, retire=retire)
-    outcome = runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
-    old = next(run for run in json.loads((tmp_path / "reroll-runs.json").read_text())["runs"]
-              if run["number"] == 1)
-    assert [(item["name"], item["instance"]) for item in old["retired"]] == [
-        ("Tiramisu64_21", "unknown")]
-    assert runs.retire_failures() == {}
-    assert {"name": "Tiramisu64_21", "instance": "unknown", "error": "stopped but unconfirmed"} in (
-        outcome["results"])
-
-
-def test_retire_member_survives_unexpected_retire_exceptions(tmp_path: Path) -> None:
-    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
-
-    def retire(member):
-        pool.remove(member["name"])
-        raise RuntimeError("stopped but unconfirmed")
-
-    runs = make(tmp_path, pool, retire=retire)
-    result = runs.retire_member("Tiramisu64_21")
-    assert result["instance"] == "unknown"
-    assert runs.active()["retired"][0]["instance"] == "unknown"
-    assert runs.retire_failures() == {}
+    runs = make(tmp_path, pool, release=release)
+    runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
+    assert runs.active()["members"] == ["Tiramisu64_20", "Tiramisu64_22"]
+    assert runs.leave_failures() == {}
 
 
 def test_busy_guard_blocks_overlapping_mutations(tmp_path: Path) -> None:
@@ -370,53 +302,51 @@ def test_busy_guard_blocks_overlapping_mutations(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="reroll_start_in_progress"):
         runs.start_new(["Tiramisu64_20"], [])
     with pytest.raises(ValueError, match="reroll_start_in_progress"):
-        runs.retire_member("Tiramisu64_20")
+        runs.remove_member("Tiramisu64_20")
     with pytest.raises(ValueError, match="reroll_start_in_progress"):
         runs.add_members(["Tiramisu64_22"])
-    with pytest.raises(ValueError, match="reroll_start_in_progress"):
-        runs.retry_stop("Tiramisu64_20")
     runs.busy = False
 
     assert _files(tmp_path) == before and pool.members() == members
 
 
-def test_start_new_drops_a_leaving_member_missing_from_the_pool_by_the_time_it_retires(
+def test_start_new_drops_a_leaving_member_missing_from_the_pool_by_the_time_it_stops(
         tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
     runs = make(tmp_path, pool)
     runs.active()
 
-    real_try_retire = runs._try_retire
+    real_try_release = runs._try_release
 
-    def fake_try_retire(name: str):
+    def fake_try_release(name: str):
         if name == "Tiramisu64_21":
-            pool.remove("Tiramisu64_21")   # gone from the pool before we got to retire it
+            pool.remove("Tiramisu64_21")   # gone from the pool before we got to stop it
             return None, {"name": name, "error": "instance_not_in_pool"}
-        return real_try_retire(name)
+        return real_try_release(name)
 
-    runs._try_retire = fake_try_retire
+    runs._try_release = fake_try_release
     outcome = runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
 
     assert outcome["number"] == 2
     assert [item["name"] for item in pool.members()] == ["Tiramisu64_20", "Tiramisu64_22"]
 
 
-def test_start_new_keeps_retire_failed_flags_for_members_still_kept(tmp_path: Path) -> None:
-    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
+def test_start_new_keeps_leave_failure_flags_for_members_still_kept(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"],
+                    fresh={"Tiramisu64_22", "Tiramisu64_23"})
 
-    def retire(member):
+    def release(member):
         if member["name"] == "Tiramisu64_20":
             raise RetireError("identity_changed")
-        pool.remove(member["name"])
-        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
+        return {"name": member["name"], "worker": "stopped"}
 
-    runs = make(tmp_path, pool, retire=retire)
-    with pytest.raises(RetireError):
-        runs.retire_member("Tiramisu64_20")
-    assert runs.retire_failures() == {"Tiramisu64_20": "identity_changed"}
+    runs = make(tmp_path, pool, release=release)
+    runs.start_new([], ["Tiramisu64_22"])
+    assert runs.leave_failures() == {"Tiramisu64_20": "identity_changed"}
 
-    runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
-    assert runs.retire_failures() == {"Tiramisu64_20": "identity_changed"}
+    runs.start_new(["Tiramisu64_20"], ["Tiramisu64_23"])
+    assert runs.leave_failures() == {"Tiramisu64_20": "identity_changed"}
+    assert runs.active()["members"] == ["Tiramisu64_20", "Tiramisu64_23"]
 
 
 def test_removed_emulator_leaves_the_run_without_being_retired(tmp_path: Path) -> None:
@@ -424,7 +354,6 @@ def test_removed_emulator_leaves_the_run_without_being_retired(tmp_path: Path) -
     runs = make(tmp_path, pool)
     runs.remove_member("Tiramisu64_21")
     assert pool.member("Tiramisu64_21") is None
-    assert "Tiramisu64_21" not in runs.retired_names()
     active = runs.active()   # re-loads, so repair must not record it as "recovered"
     assert active["retired"] == [] and active["removed"] == ["Tiramisu64_21"]
     with pytest.raises(ValueError, match="instance_not_in_active_run"):
@@ -442,21 +371,20 @@ def test_removed_emulator_can_be_added_back_to_the_same_run(tmp_path: Path) -> N
     assert pool.member("Tiramisu64_21") is not None
 
 
-def test_new_run_neither_retires_nor_keeps_a_removed_emulator(tmp_path: Path) -> None:
+def test_new_run_neither_stops_nor_keeps_a_removed_emulator(tmp_path: Path) -> None:
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
-    retired: list[str] = []
+    released: list[str] = []
 
-    def retire(member):
-        retired.append(member["name"])
-        pool.remove(member["name"])
-        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
+    def release(member):
+        released.append(member["name"])
+        return {"name": member["name"], "worker": "stopped"}
 
-    runs = make(tmp_path, pool, retire=retire)
+    runs = make(tmp_path, pool, release=release)
     runs.remove_member("Tiramisu64_21")
     with pytest.raises(ValueError, match="keep_not_in_active_run"):
         runs.validate_new(["Tiramisu64_21"], [])
     runs.start_new(["Tiramisu64_20"], [])
-    assert retired == []
+    assert released == []
     assert runs.active()["members"] == ["Tiramisu64_20"]
 
 
@@ -495,21 +423,19 @@ def test_runs_file_without_removed_key_still_loads(tmp_path: Path) -> None:
     assert runs.active()["members"] == ["Tiramisu64_20"]
 
 
-def test_new_run_checks_additions_before_retiring_anyone(tmp_path: Path) -> None:
-    # Retirement is permanent; a rejected addition must not leave the old run
-    # half-retired with no new run to show for it.
+def test_new_run_checks_additions_before_stopping_anyone(tmp_path: Path) -> None:
+    # A rejected addition must leave the old run playing, with no bot stopped.
     pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_23"})
     pool.opened = {"Tiramisu64_23"}
-    retired: list[str] = []
+    released: list[str] = []
 
-    def retire(member):
-        retired.append(member["name"])
-        pool.remove(member["name"])
-        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
+    def release(member):
+        released.append(member["name"])
+        return {"name": member["name"], "worker": "stopped"}
 
-    runs = make(tmp_path, pool, retire=retire)
+    runs = make(tmp_path, pool, release=release)
     with pytest.raises(RerollPoolError, match="tower_already_opened: Tiramisu64_23"):
         runs.start_new(["Tiramisu64_20"], ["Tiramisu64_23"])
-    assert retired == []
+    assert released == []
     assert runs.active()["number"] == 1
     assert not runs.busy

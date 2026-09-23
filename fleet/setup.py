@@ -220,7 +220,7 @@ class FleetSetupService:
         if self._reroll_runs is None:
             from fleet.manual_air_worker import ManualAirWorker
             from fleet.reroll_journal import RerollJournal
-            from fleet.reroll_retirement import remove_from_run, retire
+            from fleet.reroll_retirement import remove_from_run, stop_bot
             from fleet.reroll_runs import RerollRuns
 
             pool = self._manual_pool()
@@ -236,11 +236,11 @@ class FleetSetupService:
                 with supervisor._enroll_lock:
                     ManualAirWorker(name, endpoint, lease_id, inventory=inventory).stop(name)
 
+            self._reroll_stop_instance = stop_instance
             self._reroll_runs = RerollRuns(
-                self.root, pool=pool, stop_instance=stop_instance,
-                retire=lambda member: retire(
-                    member, supervisor=supervisor, remove_from_pool=pool.remove,
-                    stop_instance=stop_instance, instance_state=instance_state,
+                self.root, pool=pool,
+                release=lambda member: stop_bot(
+                    member, supervisor=supervisor, instance_state=instance_state,
                     journal=RerollJournal(self.root)),
                 remove=lambda member: remove_from_run(
                     member, supervisor=supervisor, stop_instance=stop_instance,
@@ -277,16 +277,10 @@ class FleetSetupService:
         active = runs.active()
         snapshot["run"] = None if active is None else {
             key: active[key] for key in ("number", "name", "started_at", "status")}
-        retired = runs.retired_names()
-        for candidate in snapshot["candidates"]:
-            if candidate["name"] in retired:
-                candidate["state"] = "retired"
-        failures = runs.retire_failures()
+        failures = runs.leave_failures()
         for member in snapshot["members"]:
             if member["name"] in failures:
-                member["retire_state"] = "retire_failed"
-                member["retire_error"] = failures[member["name"]]
-        snapshot["stop_failures"] = runs.stop_failures()
+                member["leave_error"] = failures[member["name"]]
         snapshot["operation"] = (None if self._reroll_operation is None
                                  else {**self._reroll_operation,
                                        "results": list(self._reroll_operation["results"])})
@@ -299,8 +293,6 @@ class FleetSetupService:
             if runs.busy or (self._reroll_start_thread is not None
                              and self._reroll_start_thread.is_alive()):
                 raise ValueError("reroll_start_in_progress")
-        if any(name in runs.retired_names() for name in names):
-            raise ValueError("instance_retired")
         self._manual_pool().validate_add(names)
 
         def operation() -> dict[str, Any]:
@@ -310,7 +302,7 @@ class FleetSetupService:
         return self._reroll_background("add", names[0] if len(names) == 1 else None, operation)
 
     def reroll_remove(self, name: str) -> dict[str, Any]:
-        """Take ``name`` out of the reroll without retiring it; it can be added back."""
+        """Take ``name`` out of the reroll and shut it down; it can be added back."""
         runs = self._runs()
         with self._reroll_dispatch_lock:
             if runs.busy or (self._reroll_start_thread is not None
@@ -482,30 +474,14 @@ class FleetSetupService:
 
         def operation() -> dict[str, Any]:
             outcome = runs.start_new(keep, add, name)
-            retired = sum(1 for result in outcome["results"] if "error" not in result)
+            stopped = sum(1 for result in outcome["results"] if "error" not in result)
             RerollJournal(self.root).append(
                 instance="Fleet", level="info", kind="run_started",
                 message=f"Reroll #{outcome['number']} started: kept {len(keep)}, "
-                        f"added {len(add)}, retired {retired}")
+                        f"added {len(add)}, stopped {stopped}")
             return outcome
 
         return self._reroll_background("new_run", None, operation)
-
-    def reroll_retire(self, name: str) -> dict[str, Any]:
-        runs = self._runs()
-        with self._reroll_dispatch_lock:
-            if runs.busy or (self._reroll_start_thread is not None
-                             and self._reroll_start_thread.is_alive()):
-                raise ValueError("reroll_start_in_progress")
-        runs.validate_retire(name)
-        return self._reroll_background("retire", name, lambda: runs.retire_member(name))
-
-    def reroll_stop_instance(self, name: str) -> dict[str, Any]:
-        with self._reroll_dispatch_lock:
-            if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
-                raise ValueError("reroll_start_in_progress")
-        self._runs().retry_stop(name)
-        return self.reroll_snapshot()
 
     def reroll_runs(self) -> dict[str, Any]:
         return {"runs": self._runs().summaries()}

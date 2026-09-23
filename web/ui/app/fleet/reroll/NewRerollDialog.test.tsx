@@ -10,7 +10,7 @@ const members: RerollMember[] = [
 ];
 const candidates: RerollCandidate[] = [
   { name: "Air_3", endpoint: "e3", state: "ready" },
-  { name: "Air_4", endpoint: "e4", state: "retired" },
+  { name: "Air_4", endpoint: "e4", state: "tower_already_opened" },
 ];
 
 function renderDialog(overrides: Partial<Parameters<typeof NewRerollDialog>[0]> = {}) {
@@ -24,7 +24,7 @@ test("warns first that the previous reroll closes for good and stays viewable", 
   const props = renderDialog();
   expect(await screen.findByRole("alertdialog", { name: "Close Reroll #2?" })).toBeInTheDocument();
   expect(screen.getByText(/closes Reroll #2 for good/)).toBeInTheDocument();
-  expect(screen.getByText(/can't be played again/)).toBeInTheDocument();
+  expect(screen.getByText(/emulators stay on, and you can add them back later/)).toBeInTheDocument();
   expect(screen.getByText(/view their data/)).toBeInTheDocument();
   expect(screen.queryByRole("checkbox")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -32,17 +32,17 @@ test("warns first that the previous reroll closes for good and stays viewable", 
   expect(props.onConfirm).not.toHaveBeenCalled();
 });
 
-test("selection step counts keep, add and retire and confirms the exact choice", async () => {
+test("selection step counts keep, add and stop and confirms the exact choice", async () => {
   const props = renderDialog();
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(screen.getByRole("button", { name: "Start Reroll #3 and retire 2" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start Reroll #3 and stop 2" })).toBeDisabled();
 
   fireEvent.click(screen.getByRole("checkbox", { name: /Air_1/ }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Air_3/ }));
   expect(screen.getByRole("checkbox", { name: /Air_4/ })).toBeDisabled();
-  expect(screen.getByText((_, node) => node?.tagName === "P" && node.textContent === "Keep 1 · Add 1 · Retire 1")).toBeInTheDocument();
+  expect(screen.getByText((_, node) => node?.tagName === "P" && node.textContent === "Keep 1 · Add 1 · Stop 1")).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole("button", { name: "Start Reroll #3 and retire 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start Reroll #3 and stop 1" }));
   expect(props.onConfirm).toHaveBeenCalledWith({ keep: ["Air_1"], add: ["Air_3"] });
 });
 
@@ -63,21 +63,21 @@ test("a selection that goes stale after a poll is dropped from the summary, the 
   fireEvent.click(screen.getByRole("checkbox", { name: /Air_3/ }));
 
   const staleCandidates: RerollCandidate[] = [
-    { name: "Air_3", endpoint: "e3", state: "retired" },
-    { name: "Air_4", endpoint: "e4", state: "retired" },
+    { name: "Air_3", endpoint: "e3", state: "tower_already_opened" },
+    { name: "Air_4", endpoint: "e4", state: "tower_already_opened" },
   ];
   rerender(<NewRerollDialog {...props} candidates={staleCandidates} />);
 
-  expect(screen.getByText((_, node) => node?.tagName === "P" && node.textContent === "Keep 1 · Add 0 · Retire 1")).toBeInTheDocument();
-  const confirmButton = screen.getByRole("button", { name: "Start Reroll #3 and retire 1" });
+  expect(screen.getByText((_, node) => node?.tagName === "P" && node.textContent === "Keep 1 · Add 0 · Stop 1")).toBeInTheDocument();
+  const confirmButton = screen.getByRole("button", { name: "Start Reroll #3 and stop 1" });
   fireEvent.click(confirmButton);
   expect(props.onConfirm).toHaveBeenCalledWith({ keep: ["Air_1"], add: [] });
 });
 
 test("a server refusal is shown inside the dialog", async () => {
-  renderDialog({ error: "instance_retired" });
+  renderDialog({ error: "tower_already_opened" });
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(screen.getByRole("alert")).toHaveTextContent("instance retired");
+  expect(screen.getByRole("alert")).toHaveTextContent("tower already opened");
 });
 
 test("the first reroll skips the warning and has no keep list", async () => {
