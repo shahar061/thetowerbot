@@ -394,12 +394,24 @@ class FleetSetupService:
 
     def reroll_new_run(self, keep: list[str], add: list[str],
                        name: str | None = None) -> dict[str, Any]:
+        from fleet.reroll_journal import RerollJournal
+
         runs = self._runs()
         with self._reroll_dispatch_lock:
             if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
                 raise ValueError("reroll_start_in_progress")
         runs.validate_new(keep, add)
-        return self._reroll_background("new_run", None, lambda: runs.start_new(keep, add, name))
+
+        def operation() -> dict[str, Any]:
+            outcome = runs.start_new(keep, add, name)
+            retired = sum(1 for result in outcome["results"] if "error" not in result)
+            RerollJournal(self.root).append(
+                instance="Fleet", level="info", kind="run_started",
+                message=f"Reroll #{outcome['number']} started: kept {len(keep)}, "
+                        f"added {len(add)}, retired {retired}")
+            return outcome
+
+        return self._reroll_background("new_run", None, operation)
 
     def reroll_retire(self, name: str) -> dict[str, Any]:
         runs = self._runs()

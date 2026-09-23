@@ -197,7 +197,7 @@ export default function RerollPage() {
     {pool?.operation && pool.operation.state !== "done" && <p role="status" aria-label="Reroll operation"
       className={cn("rounded-lg border p-3 text-sm", pool.operation.state === "failed" ? "border-danger bg-danger-surface text-danger" : "border-warn/40 bg-warn-surface text-warn")}>
       {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}` :
-        pool.operation.kind === "new_run" ? `Starting a new reroll… ${pool.operation.results.length} emulator(s) retired so far`
+        pool.operation.kind === "new_run" ? "Starting a new reroll… retiring emulators and shutting them down"
           : `Retiring ${pool.operation.target}…`}
     </p>}
     {pool?.stop_failures?.map(item => <p key={item.name} role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">

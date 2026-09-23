@@ -287,6 +287,11 @@ def test_new_run_validates_synchronously_then_runs_in_background(tmp_path: Path)
     _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
     assert service.reroll_snapshot()["operation"]["results"][0]["name"] == "Tiramisu64_19"
     assert ("start_new", ["Tiramisu64_20"], ["Tiramisu64_22"], None) in runs.calls
+    from fleet.reroll_journal import RerollJournal
+    entries = RerollJournal(service.root).list_entries()
+    assert any(entry["kind"] == "run_started"
+               and entry["message"] == "Reroll #3 started: kept 1, added 1, retired 1"
+               for entry in entries)
 
 
 def test_second_new_run_while_one_is_running_is_rejected(tmp_path: Path) -> None:
