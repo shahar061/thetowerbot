@@ -8,12 +8,16 @@ degrade the bot, never stop the scan loop - the same rule digits.py follows.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
+
+import numpy as np
 
 import config
 from config import Rect
@@ -33,6 +37,59 @@ _engine: Any | None = None
 # share a process, and the library makes no thread-safety promise worth
 # betting a purchase on.
 _lock = threading.Lock()
+
+# Both caches key on exact pixel bytes, so a hit is the engine's own answer
+# for that input - never a guess from a similar-looking one. Guarded by _lock.
+#
+# Frames: one tick hands the same frame to several full-frame readers (the
+# supervisor, the shared missions/milestones read, the autopilot), each ~1s.
+# Each entry holds the engine that produced it, so a swapped engine misses.
+_frame_results: OrderedDict[bytes, tuple[Any, Any]] = OrderedDict()
+# Crops: recognition is ~60% of a read, and mid-run 65% of the text boxes on
+# a frame are byte-identical to ones read 2s earlier (labels, static values).
+_crop_results: OrderedDict[bytes, Any] = OrderedDict()
+
+
+def _digest(image: Image) -> bytes:
+    array = np.ascontiguousarray(image)
+    return hashlib.blake2b(
+        memoryview(array).cast("B"), digest_size=16,
+        salt=repr((array.shape, array.dtype.str)).encode()[:16],
+    ).digest()
+
+
+def _remember(cache: OrderedDict[bytes, Any], key: bytes, value: Any, limit: int) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    if len(cache) > limit:
+        cache.popitem(last=False)
+
+
+def _cache_recognition(engine: Any) -> None:
+    """Wrap the engine's recognizer so crops it has read before are not re-run.
+
+    RapidOCR batches crops sorted by width, so an uncached crop's result can
+    shift slightly with its batch-mates; a cached one keeps its first answer.
+    """
+    recognize = getattr(engine, "text_rec", None)
+    if recognize is None:
+        return
+
+    def cached(crops: list[Image], return_word_box: bool = False) -> tuple[list[Any], float]:
+        if return_word_box:
+            return recognize(crops, return_word_box)
+        keys = [_digest(crop) for crop in crops]
+        known = {key: _crop_results[key] for key in keys if key in _crop_results}
+        misses = [i for i, key in enumerate(keys) if key not in known]
+        elapsed = 0.0
+        if misses:
+            fresh, elapsed = recognize([crops[i] for i in misses], return_word_box)
+            known.update((keys[i], result) for i, result in zip(misses, fresh))
+        for key, result in known.items():
+            _remember(_crop_results, key, result, config.OCR_CROP_CACHE)
+        return [known[key] for key in keys], elapsed
+
+    engine.text_rec = cached
 
 
 @dataclass(frozen=True)
@@ -55,8 +112,12 @@ def _engine_or_none() -> Any | None:
         try:
             from rapidocr_onnxruntime import RapidOCR
 
+            # use_cls off: the angle classifier looks for upside-down text,
+            # which game UI never has. Measured on a 2400x1080 frame: same
+            # 24 boxes, 918ms -> 698ms.
             _engine = RapidOCR(intra_op_num_threads=config.OCR_THREADS,
-                               inter_op_num_threads=1)
+                               inter_op_num_threads=1, use_cls=False)
+            _cache_recognition(_engine)
         except Exception:
             _engine = _FAILED
             logger.exception("could not build the OCR engine; not trying again")
@@ -83,7 +144,13 @@ def read(screen: Image | None, *, strict: bool = False,
                 raise RuntimeError('OCR engine unavailable')
             return ()
         try:
-            result, _elapsed = engine(screen)
+            key = _digest(screen)
+            cached_engine, result = _frame_results.get(key, (None, None))
+            if cached_engine is engine:
+                _frame_results.move_to_end(key)
+            else:
+                result, _elapsed = engine(screen)
+                _remember(_frame_results, key, (engine, result), config.OCR_FRAME_CACHE)
         except Exception:
             logger.exception("OCR failed on a %s frame", getattr(screen, "shape", "?"))
             if strict:

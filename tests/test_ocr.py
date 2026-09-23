@@ -7,6 +7,7 @@ import types
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytest
 
 import config
@@ -196,3 +197,71 @@ def test_read_region_clamps_a_rect_that_hangs_off_the_edge() -> None:
     height, width = screen.shape[:2]
     hanging = config.Rect(width - 50, height - 50, 400, 400)
     ocr.read_region(screen, hanging)  # must not raise
+
+
+# --- exact-bytes caches ----------------------------------------------------
+
+
+def _fake_engine(calls: list[int]):
+    def engine(image):
+        calls.append(int(image[0, 0, 0]))
+        return [([[0, 0], [100, 0], [100, 40], [0, 40]], "READ", .99)], None
+    return engine
+
+
+def test_a_frame_read_twice_runs_the_engine_once(monkeypatch) -> None:
+    """A tick hands one frame to several readers; only the first pays."""
+    calls: list[int] = []
+    monkeypatch.setattr(ocr, "_engine_or_none", lambda engine=_fake_engine(calls): engine)
+    monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    frame = np.full((50, 50, 3), 7, np.uint8)
+
+    assert [b.text for b in ocr.read(frame)] == ["READ"]
+    assert [b.text for b in ocr.read(frame.copy())] == ["READ"]
+    assert calls == [7]
+
+    ocr.read(np.full((50, 50, 3), 8, np.uint8))
+    assert calls == [7, 8], "different pixels must reach the engine"
+
+
+def test_a_swapped_engine_does_not_serve_the_old_engines_answer(monkeypatch) -> None:
+    monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    frame = np.full((50, 50, 3), 7, np.uint8)
+    first: list[int] = []
+    second: list[int] = []
+    monkeypatch.setattr(ocr, "_engine_or_none", lambda engine=_fake_engine(first): engine)
+    ocr.read(frame)
+    monkeypatch.setattr(ocr, "_engine_or_none", lambda engine=_fake_engine(second): engine)
+    ocr.read(frame)
+    assert first == [7] and second == [7]
+
+
+def test_recognition_only_runs_on_crops_it_has_not_seen(monkeypatch) -> None:
+    monkeypatch.setattr(ocr, "_crop_results", type(ocr._crop_results)())
+    seen: list[list[int]] = []
+
+    def recognize(crops, return_word_box=False):
+        seen.append([int(c[0, 0]) for c in crops])
+        return [(f"t{int(c[0, 0])}", .99) for c in crops], 0.1
+
+    engine = types.SimpleNamespace(text_rec=recognize)
+    ocr._cache_recognition(engine)
+    crop = lambda value: np.full((8, 8), value, np.uint8)  # noqa: E731
+
+    assert engine.text_rec([crop(1), crop(2)])[0] == [("t1", .99), ("t2", .99)]
+    results, _ = engine.text_rec([crop(2), crop(3), crop(1)])
+    assert results == [("t2", .99), ("t3", .99), ("t1", .99)], "input order kept"
+    assert seen == [[1, 2], [3]]
+
+
+def test_a_batch_larger_than_the_crop_cache_still_answers_every_crop(monkeypatch) -> None:
+    """Eviction mid-call must not lose a crop this same call still returns."""
+    monkeypatch.setattr(ocr, "_crop_results", type(ocr._crop_results)())
+    monkeypatch.setattr(config, "OCR_CROP_CACHE", 2)
+    engine = types.SimpleNamespace(
+        text_rec=lambda crops, return_word_box=False: ([(str(int(c[0, 0])), 1.) for c in crops], 0.))
+    ocr._cache_recognition(engine)
+
+    results, _ = engine.text_rec([np.full((4, 4), v, np.uint8) for v in range(5)])
+    assert [text for text, _ in results] == ["0", "1", "2", "3", "4"]
+    assert len(ocr._crop_results) == 2
