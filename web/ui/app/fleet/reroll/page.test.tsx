@@ -284,24 +284,41 @@ test("a hidden device is left off the list but stays under Start all", async () 
   await waitFor(() => expect(restoreRerollMembers).toHaveBeenCalledWith(["Air_2"]));
 });
 
+test("only a device that isn't ready or running has the delete icon", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [
+    ...members, { ...members[0], name: "Air_3", endpoint: "127.0.0.1:5557", state: "ready" },
+    { ...members[0], name: "Air_4", endpoint: "127.0.0.1:5558", state: "paused" }], run });
+  render(<RerollPage />);
+  expect(await screen.findByRole("button", { name: "Delete Air_2 from the list" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Delete Air_4 from the list" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Delete Air_1 from the list" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Delete Air_3 from the list" })).not.toBeInTheDocument();
+});
+
 test("delete removes one card from the list without asking", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run });
   render(<RerollPage />);
-  fireEvent.click(await screen.findByRole("button", { name: "Delete Air_1 from the list" }));
-  await waitFor(() => expect(hideRerollMembers).toHaveBeenCalledWith(["Air_1"]));
+  fireEvent.click(await screen.findByRole("button", { name: "Delete Air_2 from the list" }));
+  await waitFor(() => expect(hideRerollMembers).toHaveBeenCalledWith(["Air_2"]));
   expect(removeRerollMember).not.toHaveBeenCalled();
 });
 
-test("delete all asks first and deletes only the cards the filter shows", async () => {
+test("delete all asks first and deletes only the shown cards that have the icon", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run });
   render(<RerollPage />);
-  fireEvent.click(await screen.findByRole("button", { name: /^Running/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Delete all" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Delete all" }));
   const dialog = await screen.findByRole("alertdialog", { name: "Delete 1 device from the list?" });
   expect(dialog).toHaveTextContent(/keep running/);
   expect(hideRerollMembers).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Delete 1" }));
-  await waitFor(() => expect(hideRerollMembers).toHaveBeenCalledWith(["Air_1"]));
+  await waitFor(() => expect(hideRerollMembers).toHaveBeenCalledWith(["Air_2"]));
+});
+
+test("delete all is off when every shown card is ready or running", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: /^Running/ }));
+  expect(screen.getByRole("button", { name: "Delete all" })).toBeDisabled();
 });
 
 test("restore all brings back every hidden card", async () => {
