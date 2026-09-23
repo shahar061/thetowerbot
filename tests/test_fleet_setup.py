@@ -356,3 +356,45 @@ def test_reroll_run_routes_are_503_without_the_capability() -> None:
     assert client.get("/api/fleet/reroll/runs").status_code == 503
     assert client.post("/api/fleet/reroll/members/A_1/retire").status_code == 503
     assert client.post("/api/fleet/reroll/members/A_1/stop-instance").status_code == 503
+
+
+def test_stop_instance_closure_serialises_gui_driving(tmp_path: Path, monkeypatch) -> None:
+    """fleet/setup.py's stop_instance closure (built in FleetSetupService._runs)
+    must serialise BlueStacks Manager GUI driving under the same lock the start
+    path uses (RerollSupervisor._enroll_lock), so a concurrent start and a
+    concurrent stop can never drive the GUI at the same time."""
+    from threading import Lock, Thread
+    import time
+
+    service = FleetSetupService(tmp_path / "fleet", qualification_root=tmp_path)
+    service._reroll_pool = SimpleNamespace()
+    service._reroll_supervisor = SimpleNamespace(_enroll_lock=Lock())
+    service._air_inventory = lambda: SimpleNamespace(instances=lambda: [])
+
+    lock = Lock()
+    counters = {"active": 0, "max_active": 0}
+
+    class FakeManualAirWorker:
+        def __init__(self, name: str, endpoint: str, lease_id: str, *, inventory) -> None:
+            self.name = name
+
+        def stop(self, name: str) -> None:
+            with lock:
+                counters["active"] += 1
+                counters["max_active"] = max(counters["max_active"], counters["active"])
+            time.sleep(0.05)
+            with lock:
+                counters["active"] -= 1
+
+    monkeypatch.setattr("fleet.manual_air_worker.ManualAirWorker", FakeManualAirWorker)
+    stop_instance = service._runs().stop_instance
+
+    threads = [Thread(target=stop_instance,
+                      args=(f"Tiramisu64_{i}", f"127.0.0.1:{5700 + i}", f"lease{i}"))
+               for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert counters["max_active"] == 1

@@ -179,7 +179,10 @@ class FleetSetupService:
                 return next((row.state for row in inventory.instances() if row.name == name), None)
 
             def stop_instance(name: str, endpoint: str, lease_id: str) -> None:
-                ManualAirWorker(name, endpoint, lease_id, inventory=inventory).stop(name)
+                # Same lock as the start path (RerollSupervisor._enroll_lock), so a
+                # start and a stop can never drive the BlueStacks Manager GUI at once.
+                with supervisor._enroll_lock:
+                    ManualAirWorker(name, endpoint, lease_id, inventory=inventory).stop(name)
 
             self._reroll_runs = RerollRuns(
                 self.root, pool=pool, stop_instance=stop_instance,
