@@ -102,11 +102,15 @@ class Observation:
 
 
 def parse_frame(
-    screen: Image, boxes: tuple[ocr.TextBox, ...], context: str, *, now: float | None = None
+    screen: Image, boxes: tuple[ocr.TextBox, ...], context: str, *, now: float | None = None,
+    digest: str | None = None,
 ) -> Observation:
+    """`digest` is the frame's SHA-256 when the caller already has it
+    (ocr.FrameReads.digest); None hashes the frame here, as before."""
     now = time.time() if now is None else now
     raw_boxes = boxes
-    evidence = dict(context=context, frame_digest=hashlib.sha256(screen.tobytes()).hexdigest(),
+    frame_digest = digest if digest is not None else hashlib.sha256(screen.tobytes()).hexdigest()
+    evidence = dict(context=context, frame_digest=frame_digest,
                     frame_width=screen.shape[1], frame_height=screen.shape[0])
     boxes = tuple(b for b in boxes if b.confidence >= .9)
     headings = [(c, b) for c in ("ATTACK", "DEFENSE", "UTILITY") for b in boxes
@@ -237,16 +241,30 @@ def _reread_values(screen: Image, observation: Observation) -> tuple[ocr.TextBox
     return tuple(found)
 
 
-def observe_frame(screen: Image, context: str, *, locale: str = 'en') -> Observation:
-    boxes = ocr.read(screen)
+def _shared_boxes(reads: ocr.FrameReads, context: str) -> tuple[ocr.TextBox, ...]:
+    """The scan's shared read, with ocr.read()'s empty-on-error rule."""
+    try:
+        return reads.full()
+    except Exception:  # noqa: BLE001 - a failed read degrades, never stops the scan
+        return ()
+
+
+def observe_frame(screen: Image, context: str, *, locale: str = 'en',
+                  reads: ocr.FrameReads | None = None) -> Observation:
+    """`reads`, when it holds THIS screen, supplies the scan's shared OCR and
+    digest; None (tests, shopping) reads the frame here, as before."""
+    if reads is not None and reads.screen is not screen:
+        reads = None
+    digest = reads.digest if reads is not None else None
+    boxes = ocr.read(screen) if reads is None else _shared_boxes(reads, context)
     discovery = screen_discovery.discover(screen, boxes, context, locale=locale)
     # Empty OCR preserves frame evidence while preventing unsupported frames
     # from promoting account facts or exposing price/tap targets.
     if not discovery.readable:
-        return parse_frame(screen, (), context)
-    observation = parse_frame(screen, boxes, context)
+        return parse_frame(screen, (), context, digest=digest)
+    observation = parse_frame(screen, boxes, context, digest=digest)
     recovered = _reread_values(screen, observation)
-    return parse_frame(screen, boxes + recovered, context) if recovered else observation
+    return parse_frame(screen, boxes + recovered, context, digest=digest) if recovered else observation
 
 
 def read_cash(

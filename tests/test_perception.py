@@ -168,3 +168,42 @@ def test_a_single_digit_value_the_frame_read_misses_is_re_read_off_a_crop() -> N
     assert rows["damage"].price == 12
     assert rows["damage"].status == "available"
     assert rows["attack_speed"].value == 1.0
+
+
+def test_parse_frame_uses_a_supplied_digest_instead_of_hashing() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
+    result = parse_frame(frame, recorded("in_run_lit"), "battle", now=100, digest="d" * 64)
+    assert result.frame_digest == "d" * 64
+
+
+def test_observe_frame_with_the_scans_reads_parses_the_same_frame() -> None:
+    from perception import observe_frame
+    from tests.parity import observation_diff
+    frame = cv2.imread(str(FIXTURES / "in_run_damage_single_digit.png"))
+    reads = ocr.FrameReads(frame)
+    shared = observe_frame(frame, "battle", reads=reads)
+    alone = observe_frame(frame, "battle")
+    assert observation_diff(alone, shared) == (set(), set())
+    assert shared.frame_digest == reads.digest == alone.frame_digest
+
+
+def test_reads_for_another_frame_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    from perception import observe_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
+    other = ocr.FrameReads(frame.copy())
+    monkeypatch.setattr(other, "full", lambda: pytest.fail("used another frame's reads"))
+    assert observe_frame(frame, "battle", reads=other).category == "ATTACK"
+
+
+def test_a_failed_shared_read_degrades_to_an_unread_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    from perception import observe_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
+    reads = ocr.FrameReads(frame)
+
+    def fail() -> tuple:
+        raise RuntimeError("OCR inference failed")
+
+    monkeypatch.setattr(reads, "full", fail)
+    result = observe_frame(frame, "battle", reads=reads)
+    assert result.category is None and result.rows == ()
