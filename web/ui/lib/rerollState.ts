@@ -148,6 +148,13 @@ export function standingFor(state: string, error?: string | null): DeviceStandin
   };
 }
 
+/** Whether a card may be deleted from the device list. A Ready or Running
+ *  device is healthy and stays; anything else (failed, paused, stopped, in
+ *  transition) can be cleared away. A hidden card can always be restored. */
+export function deletable(member: { state: string; hidden?: boolean }): boolean {
+  return !!member.hidden || (member.state !== "ready" && member.state !== "running");
+}
+
 /** Sort key: what needs a person, first; then what is alive; then the rest.
  *  A pool of eight devices is read top-down once and then glanced at, so the
  *  card that wants something has to be the card at the top. */

@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { accountAge, coinsPerSecond } from "@/lib/accountMetrics";
 import type { RerollMember } from "@/lib/fleet";
-import { LADDER, ladderProgress, STONES_WAVE, standingFor } from "@/lib/rerollState";
+import { deletable, LADDER, ladderProgress, STONES_WAVE, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { PlanStrip } from "./PlanStrip";
 import { WorkerBattlePurchases } from "./Purchases";
@@ -211,7 +211,7 @@ export function DeviceCard({
               Open account {accountId}
             </Link>
           ) : null}
-          <Button
+          {deletable(member) ? <Button
             variant="ghost"
             size="icon-sm"
             disabled={busy}
@@ -220,7 +220,7 @@ export function DeviceCard({
             onClick={onHide}
           >
             {member.hidden ? <RotateCcw aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
-          </Button>
+          </Button> : null}
           <Button
             variant="ghost"
             size="icon-sm"

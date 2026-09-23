@@ -11,7 +11,7 @@ import { useAccountSelection } from "@/lib/AccountSelection";
 import { addRerollMembers, fetchReroll, fetchRerollJournal, hideRerollMembers, pauseReroll, removeRerollMember, restoreRerollMembers, setRerollConcurrency, startNewReroll, startReroll } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
 import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
-import { LADDER, attentionRank, deviceColor, failureHint, standingFor } from "@/lib/rerollState";
+import { LADDER, attentionRank, deletable, deviceColor, failureHint, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { DeviceCard } from "./DeviceCard";
 import { NewRerollDialog } from "./NewRerollDialog";
@@ -177,9 +177,10 @@ export default function RerollPage() {
     return (view === "hidden" ? hiddenMembers : members.filter(matches)).sort((a, b) =>
       attentionRank(a.state) - attentionRank(b.state) || a.name.localeCompare(b.name));
   }, [members, hiddenMembers, view]);
-  const bulk = () => void act(() => view === "hidden"
-    ? restoreRerollMembers(shown.map(member => member.name))
-    : hideRerollMembers(shown.map(member => member.name)));
+  // Delete all takes only the cards that carry the delete icon.
+  const bulkTargets = view === "hidden" ? shown : shown.filter(deletable);
+  const bulk = () => void act(() => (view === "hidden" ? restoreRerollMembers : hideRerollMembers)(
+    bulkTargets.map(member => member.name)));
 
   const accountFor = (member: RerollMember) => accounts.find(account => account.running && account.instance === member.name && account.account_id);
 
@@ -283,7 +284,7 @@ export default function RerollPage() {
           {option.label} <span className={cn("font-mono", option.count ? option.tone : "text-faint-foreground")}>{option.count}</span>
         </button>
       ))}
-        <Button size="xs" variant="outline" className="ml-1" disabled={busy || operating || !shown.length}
+        <Button size="xs" variant="outline" className="ml-1" disabled={busy || operating || !bulkTargets.length}
           onClick={() => view === "hidden" ? bulk() : setConfirmingBulk(true)}>
           {view === "hidden" ? "Restore all" : "Delete all"}
         </Button>
@@ -312,10 +313,10 @@ export default function RerollPage() {
         />;
       })}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
       <ConfirmDialog open={confirmingBulk} onOpenChange={setConfirmingBulk}
-        title={`Delete ${shown.length} ${shown.length === 1 ? "device" : "devices"} from the list?`}
+        title={`Delete ${bulkTargets.length} ${bulkTargets.length === 1 ? "device" : "devices"} from the list?`}
         footer={<><Button variant="outline" onClick={() => setConfirmingBulk(false)}>Cancel</Button>
-          <Button onClick={() => { setConfirmingBulk(false); bulk(); }}>Delete {shown.length}</Button></>}>
-        <p>Only the cards go. Their workers and emulators keep running, and Start all and Pause all still include them. Bring them back from the Hidden filter.</p>
+          <Button onClick={() => { setConfirmingBulk(false); bulk(); }}>Delete {bulkTargets.length}</Button></>}>
+        <p>Only cards that aren&apos;t Ready or Running are deleted, and only from this list. Their workers and emulators keep running, and Start all and Pause all still include them. Bring them back from the Hidden filter.</p>
       </ConfirmDialog>
     </RerollCard>}
 
