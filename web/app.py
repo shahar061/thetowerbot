@@ -1260,8 +1260,11 @@ def create_app(
                 "rehearsals": db.count_rehearsals(conn),
                 # Only a full page can have more behind it. A short page is
                 # the end, and claiming otherwise costs the client a request
-                # that returns nothing.
-                "next": lines[-1]["id"] if len(lines) == capped else None,
+                # that returns nothing. `>=`, not `==`: ledger_page extends a
+                # full page to finish the event it ended on, so a page can hold
+                # MORE than `capped` lines - and equality would then report the
+                # history as finished while older lines still sit behind it.
+                "next": lines[-1]["id"] if len(lines) >= capped else None,
             }
 
     def _director_plan() -> director.Plan:
