@@ -406,3 +406,20 @@ def band_box_to_frame(box: TextBox, band: Rect, sx: float, sy: float) -> TextBox
     return TextBox(box.text, box.confidence, Rect(
         band.x + round(rect.x * sx), band.y + round(rect.y * sy),
         round(rect.w * sx), round(rect.h * sy)))
+
+
+def thumbnail(image: Image) -> np.ndarray:
+    """Greyscale at 1/8 size: one cell per 8x8 block, about 1 ms a frame."""
+    import cv2  # local: keeps the import cost off callers that never crop
+
+    grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    height, width = grey.shape[:2]
+    return cv2.resize(grey, (max(width // 8, 1), max(height // 8, 1)),
+                      interpolation=cv2.INTER_AREA)
+
+
+def thumbnails_match(a: np.ndarray, b: np.ndarray) -> bool:
+    """Same shape, and every cell within config.OCR_REUSE_DIFF grey levels."""
+    if a.shape != b.shape:
+        return False
+    return int(np.abs(a.astype(np.int16) - b.astype(np.int16)).max()) < config.OCR_REUSE_DIFF

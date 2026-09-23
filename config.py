@@ -785,6 +785,17 @@ BATTLE_TAB_MIN_FRACTION: float = 0.5
 BATTLE_FULL_READ_EVERY: float = 10.0
 
 
+# --- Menu OCR reuse (spec P3) ------------------------------------------------
+# A menu frame reuses the last full read when every cell of its greyscale
+# 1/8 thumbnail (one cell = the mean of an 8x8 block) is within this of the
+# stored one. Measured: distinct menu fixtures differ by at least 80, a
+# one-digit change by 31+, capture noise by ~3.
+OCR_REUSE_DIFF: int = 12
+# A stored read is never reused past this age, so a change too small to
+# cross the threshold is still picked up.
+OCR_REUSE_MAX_AGE: float = 10.0
+
+
 # --- In-battle game speed -------------------------------------------------
 # The widget sits at the bottom right of the play area: [-] x1.0 [+]. All
 # three parts are anchor-relative, like every other in-run region - the
