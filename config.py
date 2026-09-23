@@ -199,6 +199,14 @@ FLOATING_GEM_HSV_HIGH: tuple[int, int, int] = (158, 255, 255)
 # visibly larger in a battle frame. A harvested capture should confirm it.
 FLOATING_GEM_MIN_AREA: int = 250
 
+# Bosses are magenta squares inside the same hue window, and size cannot
+# rule them out: an enemy crowd can hide most of one, leaving a blob no
+# bigger than the gem. Brightness does. Measured at 1080 wide, the gem's
+# pixels have a median value of 125-128 (the HUD icon: ~144), every boss
+# blob 161-226. Without this the largest blob won, which was the boss, so
+# the claim tapped the boss and ended unconfirmed.
+FLOATING_GEM_MAX_VALUE: int = 150
+
 # How many scans a tap gets to show up in the gem counter before the claim
 # is written off as unconfirmed. Three, at a ~2s interval, is about six
 # seconds - generous for a counter that updates on the next frame, and the

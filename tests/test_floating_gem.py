@@ -28,6 +28,9 @@ import vision
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 IN_RUN = sorted(glob.glob(os.path.join(FIXTURES, "in_run*.png")))
+# A real capture with the gem on the ring AND a boss half-buried in enemies.
+WITH_GEM = "in_run_defense_1920.png"
+NO_GEM = [p for p in IN_RUN if os.path.basename(p) != WITH_GEM]
 
 
 def frame(name: str):
@@ -45,11 +48,12 @@ def paint_gem(screen, centre: tuple[int, int], radius: int = 26):
 
     Hollow, like the sprite: a white core inside a magenta glow. Drawn in
     HSV and converted, so the hue is exactly the one measured off the HUD
-    icon rather than a BGR triple guessed to look right.
+    icon rather than a BGR triple guessed to look right, and dim like the
+    live sprite (median value ~128) - a boss is what glows brighter.
     """
     x, y = centre
     swatch = np.zeros((1, 1, 3), dtype=np.uint8)
-    swatch[0, 0] = (151, 198, 200)
+    swatch[0, 0] = (151, 198, 130)
     glow = tuple(int(c) for c in cv2.cvtColor(swatch, cv2.COLOR_HSV2BGR)[0, 0])
     points = np.array(
         [[x, y - radius], [x + radius, y], [x, y + radius], [x - radius, y]]
@@ -115,7 +119,7 @@ def test_finds_a_gem_anywhere_on_the_ring():
 # -- the negative case ------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", IN_RUN, ids=[os.path.basename(p) for p in IN_RUN])
+@pytest.mark.parametrize("path", NO_GEM, ids=[os.path.basename(p) for p in NO_GEM])
 def test_finds_nothing_in_a_battle_frame_with_no_gem(path):
     # Every committed in-run capture. Two of them carry the decoys that
     # make this worth asserting: the HUD gem counter (hue 151, the same
@@ -156,3 +160,68 @@ def test_survives_a_frame_with_no_room_for_the_search_region():
     # the scan loop - the same contract digits.crop holds.
     tiny = np.zeros((80, 60, 3), dtype=np.uint8)
     assert floating_gem.find(tiny, (10, 10)) is None
+
+
+def paint_boss(screen, centre: tuple[int, int], half: int = 70):
+    """A boss: a hollow magenta square in the gem's own hue, far larger."""
+    x, y = centre
+    swatch = np.zeros((1, 1, 3), dtype=np.uint8)
+    swatch[0, 0] = (149, 230, 210)
+    magenta = tuple(int(c) for c in cv2.cvtColor(swatch, cv2.COLOR_HSV2BGR)[0, 0])
+    cv2.rectangle(screen, (x - half, y - half), (x + half, y + half), magenta, 12)
+    return screen
+
+
+def test_ignores_a_boss_wearing_the_gem_hue():
+    screen = paint_boss(frame("in_run_early.png"), (420, 760))
+    assert floating_gem.find(screen, anchor_of(screen)) is None
+
+
+def test_picks_the_gem_over_a_larger_boss_beside_it():
+    # Measured in a live battle: largest-blob-wins chose the boss, so every
+    # tap went to the boss and every claim ended unconfirmed.
+    screen = paint_boss(frame("in_run_early.png"), (420, 760))
+    paint_gem(screen, (745, 900))
+
+    sighting = floating_gem.find(screen, anchor_of(screen))
+
+    assert sighting is not None
+    assert abs(sighting.point[0] - 745) <= 4 and abs(sighting.point[1] - 900) <= 4
+
+
+def paint_boss(screen, centre: tuple[int, int], half: int = 70):
+    """A boss: a hollow square in the gem's hue, larger and far brighter."""
+    x, y = centre
+    swatch = np.zeros((1, 1, 3), dtype=np.uint8)
+    swatch[0, 0] = (149, 230, 210)
+    magenta = tuple(int(c) for c in cv2.cvtColor(swatch, cv2.COLOR_HSV2BGR)[0, 0])
+    cv2.rectangle(screen, (x - half, y - half), (x + half, y + half), magenta, 12)
+    return screen
+
+
+def test_ignores_a_boss_wearing_the_gem_hue():
+    screen = paint_boss(frame("in_run_early.png"), (420, 760))
+    assert floating_gem.find(screen, anchor_of(screen)) is None
+
+
+def test_picks_the_gem_over_a_larger_boss_beside_it():
+    # Largest-blob-wins chose the boss, so every claim tapped the boss and
+    # ended unconfirmed.
+    screen = paint_boss(frame("in_run_early.png"), (420, 760))
+    paint_gem(screen, (745, 900))
+
+    sighting = floating_gem.find(screen, anchor_of(screen))
+
+    assert sighting is not None
+    assert abs(sighting.point[0] - 745) <= 4 and abs(sighting.point[1] - 900) <= 4
+
+
+def test_finds_the_real_gem_beside_a_half_hidden_boss():
+    # Enemies cover most of this boss, so its blob is no bigger than the
+    # gem's - only brightness tells them apart.
+    screen = frame(WITH_GEM)
+
+    sighting = floating_gem.find(screen, anchor_of(screen))
+
+    assert sighting is not None
+    assert abs(sighting.point[0] - 301) <= 15 and abs(sighting.point[1] - 389) <= 15

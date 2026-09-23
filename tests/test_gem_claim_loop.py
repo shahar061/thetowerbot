@@ -21,7 +21,7 @@ def paint_gem(screen, centre=(560, 700), radius=26):
     """The sprite, in the measured glow colour. See test_floating_gem.py."""
     x, y = centre
     swatch = np.zeros((1, 1, 3), dtype=np.uint8)
-    swatch[0, 0] = (151, 198, 200)
+    swatch[0, 0] = (151, 198, 130)  # dim like the live sprite; bosses glow brighter
     glow = tuple(int(c) for c in cv2.cvtColor(swatch, cv2.COLOR_HSV2BGR)[0, 0])
     points = np.array(
         [[x, y - radius], [x + radius, y], [x, y + radius], [x - radius, y]]

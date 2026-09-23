@@ -61,17 +61,20 @@ def find(screen: Image, anchor: tuple[int, int]) -> Sighting | None:
         np.array(config.FLOATING_GEM_HSV_LOW, dtype=np.uint8),
         np.array(config.FLOATING_GEM_HSV_HIGH, dtype=np.uint8),
     )
-    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
 
     # The largest blob that is big enough to be the sprite rather than one
-    # of the particles it trails. Largest rather than first: label order is
-    # raster order, so "first" would prefer whichever particle happens to
-    # sit highest on the screen.
+    # of the particles it trails, and dim enough not to be a boss, which
+    # shares the hue but outshines the gem - see FLOATING_GEM_MAX_VALUE.
+    # Largest rather than first: label order is raster order, so "first"
+    # would prefer whichever particle happens to sit highest on the screen.
     best = -1
     best_area = 0
     for index in range(1, count):
         area = int(stats[index, cv2.CC_STAT_AREA])
         if area < config.FLOATING_GEM_MIN_AREA or area <= best_area:
+            continue
+        if np.median(hsv[..., 2][labels == index]) > config.FLOATING_GEM_MAX_VALUE:
             continue
         best, best_area = index, area
     if best < 0:
