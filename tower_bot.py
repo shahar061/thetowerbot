@@ -31,7 +31,6 @@ from account_screens import ScreenReadings
 
 import argparse
 import dataclasses
-import hashlib
 import ipaddress
 import json
 import logging
@@ -91,6 +90,22 @@ from strategy import MIN_INTERVAL, ControlError, Strategy, StrategyStore
 from telegram_report import TelegramConfig, TelegramReporter
 
 logger = logging.getLogger("tower_bot")
+
+
+def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
+    """(online_required, session_conflict) from one read of the frame."""
+    text = " ".join(box.text.lower() for box in boxes)
+    online_required = (
+        ("online" in text and ("required" in text or "connect" in text))
+        or ("internet" in text and ("required" in text or "connect" in text))
+    )
+    session_conflict = (
+        ("another device" in text and ("logged in" in text or "in use" in text))
+        or "logged in elsewhere" in text
+        or "new session detected" in text
+        or "cloud session different than local session" in text
+    )
+    return online_required, session_conflict
 
 
 # --------------------------------------------------------------------------
@@ -589,6 +604,11 @@ class TowerBot:
             self._milestones_badge = False
         return kind
 
+    def _preflight_boxes(self, reading: screens.ScreenReading,
+                         reads: ocr.FrameReads) -> tuple[ocr.TextBox, ...]:
+        """The boxes the supervisor preflight checks for recovery modals."""
+        return reads.full()
+
     def run_once(self, max_runs: int | None = None) -> bool:
         """One scan pass over the configured actions. True if anything clicked.
 
@@ -608,6 +628,9 @@ class TowerBot:
         self.refresh_screen()
 
         reading = screens.classify(self.screen, self.templates)
+        # One OCR result and one digest for this frame, shared by the
+        # preflight, the menu readers and the autopilot - see ocr.FrameReads.
+        reads = ocr.FrameReads(self.screen)
         tutorial_claim = None
         if self.supervisor is not None:
             observed_screen = reading.state.value
@@ -617,7 +640,7 @@ class TowerBot:
                 except Exception:  # noqa: BLE001 - unreadable page is no permission to act
                     observed_screen = "UNKNOWN"
             try:
-                boxes = ocr.read(self.screen, strict=True)
+                boxes = self._preflight_boxes(reading, reads)
                 if observed_screen == "UNKNOWN":
                     # Recovery preflight runs before MilestonesReadings.scan.
                     # A valid ladder or reward modal must be named here or the
@@ -630,24 +653,14 @@ class TowerBot:
                     tutorial_claim = workshop_coin_claim(self.screen, boxes)
                     if tutorial_claim is not None:
                         observed_screen = "WORKSHOP_TUTORIAL_CLAIM"
-                text = " ".join(box.text.lower() for box in boxes)
-                online_required = (
-                    ("online" in text and ("required" in text or "connect" in text))
-                    or ("internet" in text and ("required" in text or "connect" in text))
-                )
-                session_conflict = (
-                    ("another device" in text and ("logged in" in text or "in use" in text))
-                    or "logged in elsewhere" in text
-                    or "new session detected" in text
-                    or "cloud session different than local session" in text
-                )
+                online_required, session_conflict = popup_flags(boxes)
                 readable = True
             except Exception:  # noqa: BLE001 - an unreadable modal may cover an anchor
                 online_required = False
                 session_conflict = False
                 readable = False
             recovery = self.supervisor.observe(
-                frame_digest=hashlib.sha256(self.screen.tobytes()).hexdigest(),
+                frame_digest=reads.digest,
                 observed_at=getattr(self, "_screen_captured_at", time.time()),
                 screen=observed_screen,
                 account_id=self.supervisor.current_account,
@@ -753,7 +766,7 @@ class TowerBot:
         # reports its own error, which is the behaviour they had before this
         # was shared.
         try:
-            shared_boxes = ocr.read(self.screen, strict=True)
+            shared_boxes = reads.full()
         except Exception:
             shared_boxes = None
         missions_page = self.missions.scan(self.screen, boxes=shared_boxes)
@@ -1080,7 +1093,8 @@ class TowerBot:
                                                    cash=self.wallet, cooldown=settings.strategy.click_cooldown,
                                                    run_id=self.runs.current_id,
                                                    identity=self.run_identity(settings),
-                                                   elapsed=self.runs.elapsed(time.monotonic()))
+                                                   elapsed=self.runs.elapsed(time.monotonic()),
+                                                   reads=reads)
                     # The autopilot reads the panel itself, so its rows are
                     # the only description of this frame anything has. Left
                     # out, the set_boxes() below blanks the device view on
