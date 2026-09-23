@@ -51,6 +51,9 @@ from supervisor import DeviceSupervisor, GuardedDevice, RecoveryState
 
 logger = logging.getLogger(__name__)
 
+# Seconds a host-bound worker rests after exhausting reconnects before retrying.
+HOST_RECOVERY_COOLDOWN = 30.0
+
 
 class RunnerError(Exception):
     """A lifecycle request that could not be honoured.
@@ -501,6 +504,8 @@ class BotRunner:
                         expected_account=expected_account,
                         game_package=self._game_package,
                         quarantine_on_exhaustion=self._host_adapter is not None,
+                        exhaustion_cooldown=(HOST_RECOVERY_COOLDOWN
+                                             if self._host_adapter is not None else None),
                     )
                     self._supervisor.recover()
                     if self._supervisor.device is None:

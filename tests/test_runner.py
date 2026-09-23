@@ -335,6 +335,8 @@ def test_runner_binds_named_host_before_connect_and_quarantines_its_failure(tmp_
     try:
         assert made[0].kwargs["device"].serial == "127.0.0.1:5555"
         assert popup_checks == ["alpha"]
+        # A lost transport on a live host rests and retries, not quarantines.
+        assert runner._supervisor.exhaustion_cooldown is not None
     finally:
         runner.stop()
 

@@ -51,6 +51,7 @@ class DeviceSupervisor:
         sleep: Callable[[float], None] = time.sleep, max_attempts: int = 3,
         base_backoff: float = 1.0, game_package: str | None = None,
         quarantine_on_exhaustion: bool = False,
+        exhaustion_cooldown: float | None = None,
     ) -> None:
         if not endpoint or max_attempts < 1 or base_backoff < 0:
             raise ValueError("valid endpoint and bounded retry policy required")
@@ -64,6 +65,10 @@ class DeviceSupervisor:
         self.base_backoff = base_backoff
         self.game_package = game_package
         self.quarantine_on_exhaustion = quarantine_on_exhaustion
+        # A live worker's lost transport is usually transient (host sleep, an
+        # ADB server restart), so it may rest and retry instead of quarantining.
+        self.exhaustion_cooldown = exhaustion_cooldown
+        self._cooldown_until: float | None = None
         self._device: Any | None = None
         self._connected_at: float | None = None
         self._state = RecoveryState.BLOCKED
@@ -97,7 +102,11 @@ class DeviceSupervisor:
                 raise ValueError("invalid retry deadline")
             if self._pending_digest is not None and not isinstance(self._pending_digest, str):
                 raise ValueError("invalid pending action")
-            if data.get("state") == RecoveryState.QUARANTINED.value:
+            exhausted = data.get("reason") == "host_recovery_exhausted"
+            if exhausted and self.exhaustion_cooldown is not None:
+                self._state, self._reason = RecoveryState.BLOCKED, "host_recovery_exhausted"
+                self._attempts = 0
+            elif data.get("state") == RecoveryState.QUARANTINED.value:
                 self._state = RecoveryState.QUARANTINED
                 self._reason = str(data.get("reason", "quarantined"))
             else:
@@ -158,6 +167,11 @@ class DeviceSupervisor:
         """Reconnect at most max_attempts times; never adopt another serial."""
         if self._state is RecoveryState.QUARANTINED:
             return self._state
+        if self._cooldown_until is not None:
+            if self.clock() < self._cooldown_until:
+                return self._state
+            self._cooldown_until = None
+            self._attempts = 0
         if self._attempts >= self.max_attempts:
             if self.quarantine_on_exhaustion:
                 self._state, self._reason = RecoveryState.QUARANTINED, "host_recovery_exhausted"
@@ -211,7 +225,11 @@ class DeviceSupervisor:
                     return self._state
             self._save()
             return self._state
-        if self.quarantine_on_exhaustion:
+        if self.exhaustion_cooldown is not None:
+            self._reason = "host_recovery_exhausted"
+            self._cooldown_until = self.clock() + self.exhaustion_cooldown
+            self._save()
+        elif self.quarantine_on_exhaustion:
             self._state, self._reason = RecoveryState.QUARANTINED, "host_recovery_exhausted"
             self._save()
         return self._state

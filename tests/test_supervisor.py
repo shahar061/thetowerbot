@@ -324,3 +324,48 @@ def test_bot_holds_a_recovery_modal_before_any_action(
     assert bot.run_once() is False
     assert sut.status().reason == reason
     assert raw.taps == []
+
+
+def cooling_supervisor(path: Path, clock: Clock, outcomes: list[Device | Exception]) -> DeviceSupervisor:
+    def connect() -> Device:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return DeviceSupervisor(
+        path=path, endpoint="127.0.0.1:5555", connect=connect,
+        expected_account="account-a", clock=clock.time, sleep=clock.sleep,
+        max_attempts=2, base_backoff=0, quarantine_on_exhaustion=True,
+        exhaustion_cooldown=60.0,
+    )
+
+
+def test_exhaustion_with_cooldown_retries_after_the_cooldown(tmp_path: Path) -> None:
+    clock = Clock()
+    device = Device()
+    outcomes: list[Device | Exception] = [ConnectionError("adb lost"), ConnectionError("adb lost"), device]
+    sut = cooling_supervisor(tmp_path / "supervisor.json", clock, outcomes)
+    assert sut.recover() is RecoveryState.BLOCKED
+    assert sut.status().reason == "host_recovery_exhausted"
+    assert sut.recover() is RecoveryState.BLOCKED
+    assert outcomes == [device]
+    clock.now += 60.0
+    assert sut.recover() is RecoveryState.BLOCKED
+    assert sut.device is device
+    assert observed(sut, clock, "after") is RecoveryState.READY
+
+
+def test_cooldown_releases_a_persisted_exhaustion_quarantine(tmp_path: Path) -> None:
+    clock = Clock()
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "endpoint": "127.0.0.1:5555", "expected_account": "account-a",
+        "serial": "127.0.0.1:5555", "state": "quarantined",
+        "reason": "host_recovery_exhausted", "attempts": 2,
+        "next_retry_at": None, "pending_digest": None, "last_digest": None,
+    }))
+    device = Device()
+    sut = cooling_supervisor(path, clock, [device])
+    assert sut.recover() is RecoveryState.BLOCKED
+    assert sut.device is device
