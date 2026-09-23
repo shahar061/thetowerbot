@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import time
@@ -12,6 +13,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from device import EmulatorError, IdentityError, endpoint_matches
+
+logger = logging.getLogger(__name__)
+
+# An input whose frame never changes (a tap on the tab already selected, a
+# scroll of a panel with nothing below) would otherwise block forever: the
+# gate waits for a changed frame, and a static screen never sends one. Long
+# enough for any animation or load to show; purchases are still confirmed by
+# their own journal, not by this.
+NO_EFFECT_TIMEOUT = 15.0
 
 
 class RecoveryState(str, Enum):
@@ -52,6 +62,7 @@ class DeviceSupervisor:
         base_backoff: float = 1.0, game_package: str | None = None,
         quarantine_on_exhaustion: bool = False,
         exhaustion_cooldown: float | None = None,
+        no_effect_timeout: float = NO_EFFECT_TIMEOUT,
     ) -> None:
         if not endpoint or max_attempts < 1 or base_backoff < 0:
             raise ValueError("valid endpoint and bounded retry policy required")
@@ -68,6 +79,7 @@ class DeviceSupervisor:
         # A live worker's lost transport is usually transient (host sleep, an
         # ADB server restart), so it may rest and retry instead of quarantining.
         self.exhaustion_cooldown = exhaustion_cooldown
+        self.no_effect_timeout = no_effect_timeout
         self._cooldown_until: float | None = None
         self._device: Any | None = None
         self._connected_at: float | None = None
@@ -79,6 +91,8 @@ class DeviceSupervisor:
         self._last_digest: str | None = None
         self._last_observed_at: float | None = None
         self._pending_digest: str | None = None
+        self._pending_since: float | None = None
+        self._pending_action: str | None = None
         self.current_account: str | None = None
         if self.path.exists():
             self._load()
@@ -102,6 +116,13 @@ class DeviceSupervisor:
                 raise ValueError("invalid retry deadline")
             if self._pending_digest is not None and not isinstance(self._pending_digest, str):
                 raise ValueError("invalid pending action")
+            if self._pending_digest is not None:
+                since = data.get("pending_since")
+                # A checkpoint written before the timeout existed starts its clock now.
+                self._pending_since = (float(since) if isinstance(since, (int, float))
+                                       and math.isfinite(since) else self.clock())
+                action = data.get("pending_action")
+                self._pending_action = action if isinstance(action, str) else None
             exhausted = data.get("reason") == "host_recovery_exhausted"
             if exhausted and self.exhaustion_cooldown is not None:
                 self._state, self._reason = RecoveryState.BLOCKED, "host_recovery_exhausted"
@@ -129,6 +150,8 @@ class DeviceSupervisor:
             "reason": self._reason, "attempts": self._attempts,
             "next_retry_at": self._next_retry_at,
             "pending_digest": self._pending_digest,
+            "pending_since": self._pending_since,
+            "pending_action": self._pending_action,
             "last_digest": self._last_digest,
         }
         temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
@@ -260,10 +283,17 @@ class DeviceSupervisor:
             self._state, self._reason = RecoveryState.BLOCKED, "account_unverified"
         elif account_id != self.expected_account:
             self._state, self._reason = RecoveryState.QUARANTINED, "wrong_account"
-        elif self._pending_digest == frame_digest:
+        elif self._pending_digest == frame_digest and (
+                self._pending_since is None
+                or self.clock() - self._pending_since < self.no_effect_timeout):
             self._state, self._reason = RecoveryState.BLOCKED, "stale_frame"
+        elif self._pending_digest == frame_digest:
+            logger.warning("%s changed nothing on %s for %.0fs; treating it as having no effect",
+                           self._pending_action or "the last input", screen, self.no_effect_timeout)
+            self._clear_pending()
+            self._state, self._reason = RecoveryState.READY, "action_no_effect"
         else:
-            self._pending_digest = None
+            self._clear_pending()
             self._state, self._reason = RecoveryState.READY, "fresh_evidence"
         if frame_digest and math.isfinite(observed_at):
             self._last_digest = frame_digest
@@ -296,7 +326,10 @@ class DeviceSupervisor:
             self._state, self._reason = RecoveryState.BLOCKED, reason
         self._save()
 
-    def _action(self, perform: Callable[[], None]) -> None:
+    def _clear_pending(self) -> None:
+        self._pending_digest = self._pending_since = self._pending_action = None
+
+    def _action(self, perform: Callable[[], None], description: str) -> None:
         """Checkpoint one input before sending it to the verified endpoint."""
         if (self._state is not RecoveryState.READY or self._device is None
                 or self._pending_digest is not None or self._last_digest is None
@@ -304,6 +337,8 @@ class DeviceSupervisor:
                 or self.clock() - self._last_observed_at > 5):
             raise RecoveryPreflightBlocked(self._reason)
         self._pending_digest = self._last_digest
+        self._pending_since = self.clock()
+        self._pending_action = description
         self._state, self._reason = RecoveryState.BLOCKED, "action_unconfirmed"
         self._save()
         try:
@@ -314,11 +349,12 @@ class DeviceSupervisor:
 
     def tap(self, x: int, y: int) -> None:
         """Checkpoint the action before issuing exactly one ADB click."""
-        self._action(lambda: self._device.click(x, y))
+        self._action(lambda: self._device.click(x, y), f"tap ({x}, {y})")
 
     def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
         """A panel scroll has the same evidence and replay guard as a tap."""
-        self._action(lambda: self._device.swipe(x, y, x2, y2, duration))
+        self._action(lambda: self._device.swipe(x, y, x2, y2, duration),
+                     f"swipe ({x}, {y}) -> ({x2}, {y2})")
 
     @property
     def device(self) -> Any | None:

@@ -179,6 +179,73 @@ def test_stale_frame_after_action_stays_blocked_without_duplicate_tap(tmp_path: 
     assert device.taps == [(1, 2)]
 
 
+def test_an_input_that_changes_nothing_is_released_after_the_no_effect_timeout(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # A tap on an already-selected tab, or a scroll of a panel with nothing
+    # below: the frame never changes, so waiting for it to change is forever.
+    clock = Clock()
+    device = Device()
+    sut = supervisor(tmp_path / "supervisor.json", clock, [device])
+    sut.recover()
+    assert observed(sut, clock, "workshop", screen="WORKSHOP") is RecoveryState.READY
+    sut.swipe(1, 2, 3, 4, .35)
+    clock.now += 14
+    assert observed(sut, clock, "workshop", screen="WORKSHOP") is RecoveryState.BLOCKED
+    assert sut.status().reason == "stale_frame"
+    clock.now += 1
+    with caplog.at_level("WARNING", logger="supervisor"):
+        assert observed(sut, clock, "workshop", screen="WORKSHOP") is RecoveryState.READY
+    assert sut.status().reason == "action_no_effect"
+    assert not sut.status().pending_action
+    assert "swipe (1, 2) -> (3, 4)" in caplog.text
+    # Exactly one new input is authorized, and it is checkpointed like any other.
+    sut.tap(5, 6)
+    assert device.taps == [(5, 6)]
+    with pytest.raises(RuntimeError):
+        sut.tap(5, 6)
+
+
+def test_no_effect_timeout_survives_a_restart(tmp_path: Path) -> None:
+    clock = Clock()
+    path = tmp_path / "supervisor.json"
+    sut = supervisor(path, clock, [Device()])
+    sut.recover()
+    assert observed(sut, clock, "workshop", screen="WORKSHOP") is RecoveryState.READY
+    sut.tap(1, 2)
+    assert json.loads(path.read_text())["pending_action"] == "tap (1, 2)"
+    clock.now += 20
+    restarted = supervisor(path, clock, [Device()])
+    restarted.recover()
+    assert observed(restarted, clock, "workshop", screen="WORKSHOP") is RecoveryState.READY
+    assert restarted.status().reason == "action_no_effect"
+
+
+def test_a_checkpoint_from_before_the_timeout_starts_its_clock_at_load(tmp_path: Path) -> None:
+    clock = Clock()
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "endpoint": "127.0.0.1:5555", "expected_account": "account-a", "attempts": 0,
+        "state": "blocked", "reason": "stale_frame",
+        "pending_digest": "workshop", "last_digest": "workshop",
+    }), encoding="utf-8")
+    sut = supervisor(path, clock, [Device()])
+    sut.recover()
+    assert observed(sut, clock, "workshop", screen="WORKSHOP") is RecoveryState.BLOCKED
+    clock.now += 15
+    assert observed(sut, clock, "workshop", screen="WORKSHOP") is RecoveryState.READY
+
+
+def test_an_unchanged_unknown_screen_is_not_released_by_the_timeout(tmp_path: Path) -> None:
+    clock = Clock()
+    sut = supervisor(tmp_path / "supervisor.json", clock, [Device()])
+    sut.recover()
+    assert observed(sut, clock, "frame") is RecoveryState.READY
+    sut.tap(1, 2)
+    clock.now += 60
+    assert observed(sut, clock, "frame", screen="UNKNOWN") is RecoveryState.BLOCKED
+    assert sut.status().reason == "unknown_screen"
+
+
 def test_wrong_device_quarantines_even_if_frame_and_account_look_right(tmp_path: Path) -> None:
     clock = Clock()
     wrong = Device("127.0.0.1:5557")
