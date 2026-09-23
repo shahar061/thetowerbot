@@ -193,6 +193,7 @@ def test_reads_for_another_frame_are_ignored(monkeypatch: pytest.MonkeyPatch) ->
     frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
     other = ocr.FrameReads(frame.copy())
     monkeypatch.setattr(other, "full", lambda: pytest.fail("used another frame's reads"))
+    monkeypatch.setattr(other, "battle", lambda: pytest.fail("used another frame's reads"))
     assert observe_frame(frame, "battle", reads=other).category == "ATTACK"
 
 
@@ -205,6 +206,7 @@ def test_a_failed_shared_read_degrades_to_an_unread_frame(monkeypatch: pytest.Mo
         raise RuntimeError("OCR inference failed")
 
     monkeypatch.setattr(reads, "full", fail)
+    monkeypatch.setattr(reads, "battle", fail)
     result = observe_frame(frame, "battle", reads=reads)
     assert result.category is None and result.rows == ()
 

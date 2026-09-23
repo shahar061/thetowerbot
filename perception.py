@@ -253,9 +253,13 @@ def _reread_values(screen: Image, observation: Observation) -> tuple[ocr.TextBox
 
 
 def _shared_boxes(reads: ocr.FrameReads, context: str) -> tuple[ocr.TextBox, ...]:
-    """The scan's shared read, with ocr.read()'s empty-on-error rule."""
+    """The scan's shared read, with ocr.read()'s empty-on-error rule.
+
+    A battle frame is read from its two bands (spec P2); every other
+    context gets the whole frame.
+    """
     try:
-        return reads.full()
+        return reads.battle() if context == "battle" else reads.full()
     except Exception:  # noqa: BLE001 - a failed read degrades, never stops the scan
         return ()
 
