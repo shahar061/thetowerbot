@@ -15,6 +15,7 @@ import cv2
 import config
 from geometry import supported_frame
 import events
+import ocr
 import upgrades
 from device import Image, tap
 from combat_context import CombatContext, RunIdentity
@@ -292,8 +293,12 @@ class BattleAutopilot:
     def step(self, screen: Image, device: Any, policy: AutopilotPolicy, *,
              cash: int | None = None, observation: Observation | None = None,
              run_id: int | None = None, cooldown: float = .75,
-             identity: RunIdentity = RunIdentity(), elapsed: float | None = None) -> bool:
-        observation = observation or observe_frame(screen, "battle")
+             identity: RunIdentity = RunIdentity(), elapsed: float | None = None,
+             reads: ocr.FrameReads | None = None) -> bool:
+        # The scan's shared OCR and digest, when they belong to this screen.
+        if reads is not None and reads.screen is not screen:
+            reads = None
+        observation = observation or observe_frame(screen, "battle", reads=reads)
         changed_identity = self.context.rebind(identity)
         if changed_identity:
             # A confirmation or search started under another run/build cannot
@@ -306,7 +311,8 @@ class BattleAutopilot:
             with self._command_lock:
                 self._manual = None
                 self._queued = None
-        if (observation.frame_digest != hashlib.sha256(screen.tobytes()).hexdigest()
+        digest = reads.digest if reads is not None else hashlib.sha256(screen.tobytes()).hexdigest()
+        if (observation.frame_digest != digest
                 or (observation.frame_width, observation.frame_height)
                 != (screen.shape[1], screen.shape[0])):
             self.boxes = []
