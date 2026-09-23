@@ -261,6 +261,15 @@ class _ManagerBridge(Protocol):
                     modal: Mapping[str, int | float | str]) -> str: ...
 
 
+_WINDOW_CHANGED = "manager window changed"
+# A Manager re-observation that disagrees with the one before it; nothing was pressed.
+_REOBSERVABLE = (_WINDOW_CHANGED, "BlueStacks Air lifecycle manager row changed")
+
+
+def _window_changed(exc: Exception) -> bool:
+    return str(exc).startswith(_WINDOW_CHANGED)
+
+
 class _SwiftManagerBridge:
     """Mac-native implementation restricted to the manager inspect/capture/press API."""
 
@@ -276,8 +285,9 @@ class _SwiftManagerBridge:
             message = (exc.stderr or "").strip()
             if "Accessibility permission required" in message:
                 raise HostCapabilityError("macOS Accessibility permission required") from exc
-            if "manager window changed" in message:
-                raise HostCapabilityError("manager window changed") from exc
+            if _WINDOW_CHANGED in message:
+                # Keep the helper's observed -> current geometry for diagnosis.
+                raise HostCapabilityError(message[message.index(_WINDOW_CHANGED):]) from exc
             if "manager modal is not foreground" in message:
                 raise HostCapabilityError("BlueStacks Air Manager must be foreground for modal actions") from exc
             if "manager window is not foreground" in message:
@@ -520,7 +530,7 @@ class MacOSMultiInstanceManager:
             raise HostCapabilityError("manager window changed")
         metadata = self._inspect_exact_manager()
         if metadata["id"] != window_id:
-            raise HostCapabilityError("manager window changed")
+            raise HostCapabilityError(f"manager window changed: id {window_id} -> {metadata['id']}")
         try:
             self._bridge.press(metadata, point, expected_label)
         except HostCapabilityError:
@@ -543,7 +553,7 @@ class MacOSMultiInstanceManager:
                 modal = self._validated_modal(self._bridge.inspect_modal(parent), parent)
                 image = self._bridge.capture_modal(parent, modal)
             except HostCapabilityError as exc:
-                if str(exc) == "manager window changed" and attempt < self._MODAL_CAPTURE_RETRIES:
+                if _window_changed(exc) and attempt < self._MODAL_CAPTURE_RETRIES:
                     continue
                 raise
             except Exception as exc:
@@ -1121,16 +1131,17 @@ class BlueStacksAirDriver:
             raise ValueError("bounded lifecycle settings required")
         activate = getattr(self.manager, "activate", None)
         for attempt in range(self._PRESS_RETRIES + 1):
-            if callable(activate):
-                activate()
-            digest, before, control = self._prepress_evidence(name, action=action,
-                                                               before_state=before_state)
             try:
+                if callable(activate):
+                    activate()
+                digest, before, control = self._prepress_evidence(name, action=action,
+                                                                   before_state=before_state)
                 self.manager.press(control.window_id, control.point, action)
                 break
             except HostCapabilityError as exc:
-                # Raised only by the pre-click revalidation, so nothing was pressed yet.
-                if str(exc) != "manager window changed" or attempt == self._PRESS_RETRIES:
+                # Observations are read-only and the press revalidates before clicking,
+                # so a moved or re-created Manager window means nothing was pressed yet.
+                if not str(exc).startswith(_REOBSERVABLE) or attempt == self._PRESS_RETRIES:
                     raise
                 self.sleep(self._PRESS_RETRY_SETTLE_SECONDS)
         self._wait_for(name, digest=digest, endpoint=before.endpoint,
