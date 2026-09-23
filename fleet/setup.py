@@ -106,6 +106,8 @@ class FleetSetupService:
         self._reroll_pool: Any | None = None
         self._reroll_supervisor: Any | None = None
         self._reroll_start_thread: Any | None = None
+        self._reroll_runs: Any | None = None
+        self._reroll_operation: dict[str, Any] | None = None
         from threading import Lock
         self._reroll_dispatch_lock = Lock()
         if self.store.settings() is not None:
@@ -156,6 +158,37 @@ class FleetSetupService:
                 registered=registered)
         return self._reroll_pool
 
+    def _air_inventory(self) -> Any:
+        from fleet.bluestacks_air import BlueStacksAirInventory, _EXECUTABLE, live_process_rows
+        return BlueStacksAirInventory(
+            Path("/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"),
+            _EXECUTABLE, live_process_rows)
+
+    def _runs(self) -> Any:
+        if self._reroll_runs is None:
+            from fleet.manual_air_worker import ManualAirWorker
+            from fleet.reroll_journal import RerollJournal
+            from fleet.reroll_retirement import retire
+            from fleet.reroll_runs import RerollRuns
+
+            pool = self._manual_pool()
+            supervisor = self._manual_supervisor()
+            inventory = self._air_inventory()
+
+            def instance_state(name: str) -> str | None:
+                return next((row.state for row in inventory.instances() if row.name == name), None)
+
+            def stop_instance(name: str, endpoint: str, lease_id: str) -> None:
+                ManualAirWorker(name, endpoint, lease_id, inventory=inventory).stop(name)
+
+            self._reroll_runs = RerollRuns(
+                self.root, pool=pool, stop_instance=stop_instance,
+                retire=lambda member: retire(
+                    member, supervisor=supervisor, remove_from_pool=pool.remove,
+                    stop_instance=stop_instance, instance_state=instance_state,
+                    journal=RerollJournal(self.root)))
+        return self._reroll_runs
+
     def reroll_snapshot(self) -> dict[str, Any]:
         snapshot = self._manual_pool().snapshot()
         supervisor = self._manual_supervisor()
@@ -182,18 +215,31 @@ class FleetSetupService:
         snapshot["workers"] = statuses
         snapshot["pressure"] = supervisor.pressure(statuses)
         snapshot["concurrency_limit"] = supervisor.max_concurrent_workers
+        runs = self._runs()
+        active = runs.active()
+        snapshot["run"] = None if active is None else {
+            key: active[key] for key in ("number", "name", "started_at", "status")}
+        retired = runs.retired_names()
+        for candidate in snapshot["candidates"]:
+            if candidate["name"] in retired:
+                candidate["state"] = "retired"
+        failures = runs.retire_failures()
+        for member in snapshot["members"]:
+            if member["name"] in failures:
+                member["retire_state"] = "retire_failed"
+                member["retire_error"] = failures[member["name"]]
+        snapshot["stop_failures"] = runs.stop_failures()
+        snapshot["operation"] = (None if self._reroll_operation is None
+                                 else {**self._reroll_operation,
+                                       "results": list(self._reroll_operation["results"])})
         return snapshot
 
     def reroll_add(self, names: list[str]) -> dict[str, Any]:
-        self._manual_pool().add(names)
+        self._runs().add_members(names)
         return self.reroll_snapshot()
 
     def reroll_remove(self, name: str) -> dict[str, Any]:
-        status = self._manual_supervisor().reconcile().get(name)
-        if status is not None and status["state"] in {"running", "starting", "unverified", "stopping", "identity_changed"}:
-            raise ValueError("pause_worker_before_removing")
-        self._manual_pool().remove(name)
-        return self.reroll_snapshot()
+        return self.reroll_retire(name)
 
     def _manual_supervisor(self) -> Any:
         if self._reroll_supervisor is None:
@@ -310,6 +356,62 @@ class FleetSetupService:
         supervisor = self._manual_supervisor()
         return self._reroll_dispatch(
             (lambda: {name: supervisor.pause(name)}) if name else supervisor.pause_all)
+
+    def _reroll_background(self, kind: str, target: str | None,
+                           operation: Any) -> dict[str, Any]:
+        """Run one exclusive long operation and expose its progress in the snapshot."""
+        from datetime import datetime, timezone
+        from threading import Thread
+        from fleet.reroll_journal import RerollJournal
+
+        record: dict[str, Any] = {
+            "kind": kind, "state": "running", "target": target, "results": [], "error": None,
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
+            .replace("+00:00", "Z")}
+
+        def run() -> None:
+            try:
+                outcome = operation()
+                record["results"] = list(outcome.get("results", [outcome]))
+                record["state"] = "done"
+            except Exception as exc:
+                record["state"] = "failed"
+                record["error"] = str(exc)
+                RerollJournal(self.root).append(instance=target or "Fleet", level="error",
+                                                kind="operation_failed", message=str(exc))
+
+        thread = Thread(target=run, daemon=True, name=f"reroll-{kind}")
+        with self._reroll_dispatch_lock:
+            if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
+                raise ValueError("reroll_start_in_progress")
+            self._reroll_start_thread = thread
+            self._reroll_operation = record
+            thread.start()
+        return self.reroll_snapshot()
+
+    def reroll_new_run(self, keep: list[str], add: list[str],
+                       name: str | None = None) -> dict[str, Any]:
+        runs = self._runs()
+        with self._reroll_dispatch_lock:
+            if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
+                raise ValueError("reroll_start_in_progress")
+        runs.validate_new(keep, add)
+        return self._reroll_background("new_run", None, lambda: runs.start_new(keep, add, name))
+
+    def reroll_retire(self, name: str) -> dict[str, Any]:
+        runs = self._runs()
+        with self._reroll_dispatch_lock:
+            if self._reroll_start_thread is not None and self._reroll_start_thread.is_alive():
+                raise ValueError("reroll_start_in_progress")
+        runs.validate_retire(name)
+        return self._reroll_background("retire", name, lambda: runs.retire_member(name))
+
+    def reroll_stop_instance(self, name: str) -> dict[str, Any]:
+        self._runs().retry_stop(name)
+        return self.reroll_snapshot()
+
+    def reroll_runs(self) -> dict[str, Any]:
+        return {"runs": self._runs().summaries()}
 
     def reroll_journal(self, *, cursor: int | None = None,
                        instances: list[str] | None = None,

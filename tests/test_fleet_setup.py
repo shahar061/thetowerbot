@@ -190,3 +190,124 @@ def test_manual_reroll_actions_and_journal_routes() -> None:
         "entries": [], "next_cursor": 5}
     assert pool.calls == ["start:None", "start:Tiramisu64_20", "pause:None",
                           "pause:Tiramisu64_20", "limit:4"]
+
+
+class _Runs:
+    """RerollRuns stand-in: records calls, lets a test hold start_new open."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.release = Event()
+        self.release.set()
+        self.run = {"number": 2, "name": "Reroll #2", "started_at": "2026-09-23T09:00:00Z",
+                    "status": "active", "members": ["Tiramisu64_20"]}
+
+    def active(self):
+        return self.run
+
+    def retired_names(self):
+        return {"Tiramisu64_18"}
+
+    def retire_failures(self):
+        return {"Tiramisu64_20": "identity_changed"}
+
+    def stop_failures(self):
+        return [{"name": "Tiramisu64_18", "error": "window stuck"}]
+
+    def summaries(self):
+        return [{"number": 2}, {"number": 1}]
+
+    def validate_new(self, keep, add):
+        self.calls.append(("validate_new", keep, add))
+        if keep == ["bad"]:
+            raise ValueError("keep_not_in_active_run")
+
+    def start_new(self, keep, add, name=None):
+        self.release.wait(5)
+        self.calls.append(("start_new", keep, add, name))
+        return {"number": 3, "results": [{"name": "Tiramisu64_19", "worker": "stopped",
+                                          "instance": "stopped"}]}
+
+    def validate_retire(self, name):
+        self.calls.append(("validate_retire", name))
+
+    def retire_member(self, name):
+        self.calls.append(("retire_member", name))
+        return {"name": name, "worker": "stopped", "instance": "stopped"}
+
+    def retry_stop(self, name):
+        self.calls.append(("retry_stop", name))
+
+
+def _service_with_runs(tmp_path: Path, runs: _Runs) -> FleetSetupService:
+    service = FleetSetupService(tmp_path / "fleet", qualification_root=tmp_path)
+    service._reroll_runs = runs
+    service._reroll_pool = SimpleNamespace(snapshot=lambda: {
+        "candidates": [{"name": "Tiramisu64_18", "endpoint": "e", "state": "start_required"},
+                       {"name": "Tiramisu64_22", "endpoint": "f", "state": "ready"}],
+        "members": [{"name": "Tiramisu64_20", "endpoint": "g", "lease_id": "a", "state": "ready"}]})
+    service._reroll_supervisor = SimpleNamespace(
+        reconcile=lambda snapshot=None: {"Tiramisu64_20": {"name": "Tiramisu64_20", "state": "paused"}},
+        pressure=lambda statuses=None: {"running": 0, "starting": 0, "limit": 2, "available": 2},
+        max_concurrent_workers=2)
+    return service
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> None:
+    import time
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "condition never became true"
+        time.sleep(0.01)
+
+
+def test_snapshot_marks_retired_candidates(tmp_path: Path) -> None:
+    snapshot = _service_with_runs(tmp_path, _Runs()).reroll_snapshot()
+    assert {row["name"]: row["state"] for row in snapshot["candidates"]} == {
+        "Tiramisu64_18": "retired", "Tiramisu64_22": "ready"}
+    assert snapshot["run"] == {"number": 2, "name": "Reroll #2",
+                               "started_at": "2026-09-23T09:00:00Z", "status": "active"}
+    assert snapshot["stop_failures"] == [{"name": "Tiramisu64_18", "error": "window stuck"}]
+    assert snapshot["members"][0]["retire_state"] == "retire_failed"
+    assert snapshot["members"][0]["retire_error"] == "identity_changed"
+    assert snapshot["operation"] is None
+
+
+def test_new_run_validates_synchronously_then_runs_in_background(tmp_path: Path) -> None:
+    runs = _Runs()
+    service = _service_with_runs(tmp_path, runs)
+    with pytest.raises(ValueError, match="keep_not_in_active_run"):
+        service.reroll_new_run(["bad"], [], None)
+
+    runs.release.clear()
+    snapshot = service.reroll_new_run(["Tiramisu64_20"], ["Tiramisu64_22"], None)
+    assert snapshot["operation"]["kind"] == "new_run"
+    assert snapshot["operation"]["state"] == "running"
+    runs.release.set()
+    _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
+    assert service.reroll_snapshot()["operation"]["results"][0]["name"] == "Tiramisu64_19"
+    assert ("start_new", ["Tiramisu64_20"], ["Tiramisu64_22"], None) in runs.calls
+
+
+def test_second_new_run_while_one_is_running_is_rejected(tmp_path: Path) -> None:
+    runs = _Runs()
+    service = _service_with_runs(tmp_path, runs)
+    runs.release.clear()
+    service.reroll_new_run([], ["Tiramisu64_22"], None)
+    with pytest.raises(ValueError, match="reroll_start_in_progress"):
+        service.reroll_new_run([], ["Tiramisu64_22"], None)
+    with pytest.raises(ValueError, match="reroll_start_in_progress"):
+        service.reroll_retire("Tiramisu64_20")
+    runs.release.set()
+    _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
+    assert sum(call[0] == "start_new" for call in runs.calls) == 1
+
+
+def test_remove_now_retires_and_stop_retry_is_synchronous(tmp_path: Path) -> None:
+    runs = _Runs()
+    service = _service_with_runs(tmp_path, runs)
+    service.reroll_remove("Tiramisu64_20")
+    _wait_for(lambda: ("retire_member", "Tiramisu64_20") in runs.calls)
+    service.reroll_stop_instance("Tiramisu64_18")
+    assert ("retry_stop", "Tiramisu64_18") in runs.calls
+    assert service.reroll_runs() == {"runs": [{"number": 2}, {"number": 1}]}
