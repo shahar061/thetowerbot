@@ -69,7 +69,7 @@ from affordability import (
 )
 from autopilot import AutopilotState, BattleAutopilot
 from combat_context import RunIdentity, build_revision
-from perception import read_cash
+from perception import panel_visible, read_cash
 from control import Controls, Live
 from device import EmulatorError, Image, capture_screen, connect_device, tap
 from fleet.runtime import RuntimeIsolationError, WorkerRuntime, reserve_endpoint
@@ -609,6 +609,18 @@ class TowerBot:
         """The boxes the supervisor preflight checks for recovery modals."""
         return reads.full()
 
+    def _battle_panel_visible(self, reads: ocr.FrameReads) -> bool:
+        """Spec P1's safety net: does this battle frame show its upgrade panel?
+
+        False - including when the frame could not be read - means something
+        may cover it, and the menu readers run on this scan.
+        """
+        try:
+            boxes = reads.full()
+        except Exception:  # noqa: BLE001 - an unread frame is not a visible panel
+            return False
+        return panel_visible(reads.screen, boxes)
+
     def run_once(self, max_runs: int | None = None) -> bool:
         """One scan pass over the configured actions. True if anything clicked.
 
@@ -748,34 +760,43 @@ class TowerBot:
         # passive reader owns the frame before every possible action path,
         # including paused scans and an already-active shopping visit.
         screen_readings = self.account_state.screen_readings if self.account_state is not None else self._screen_readings
-        panel = screen_readings.scan(self.screen)
-        # The same passive ownership for the Daily Missions page. The bot has
-        # no verified target on it, so a tap aimed at the menu underneath
-        # would land somewhere nobody chose - it holds actions exactly as a
-        # panel does, whether or not a visit is walking.
-        # THREE full-frame readers over one frame. RapidOCR's cost here is
-        # near-fixed rather than proportional to pixels, so reading the same
-        # bytes once per reader is a second and third full price for nothing.
-        # Measured on tests/fixtures/in_run_lit.png, median of 5 after a warm
-        # tick: 347.9 ms for the three sharing this read, against 354.4 ms for
-        # the two readers that shipped before it and 611.8 ms for the same
-        # three reading independently. The third reader is free; an unshared
-        # one would have cost ~75% of a tick.
-        #
-        # On a failed read each reader falls back to its own attempt and
-        # reports its own error, which is the behaviour they had before this
-        # was shared.
-        try:
-            shared_boxes = reads.full()
-        except Exception:
-            shared_boxes = None
-        missions_page = self.missions.scan(self.screen, boxes=shared_boxes)
-        # The same passive ownership for both MILESTONES screens. This matters
-        # most for the reward modal: it is a full-screen overlay carrying a
-        # tappable CLAIM, and config.NAV_DISMISS - walked by shopping.py's
-        # OPEN_CARDS step - holds nav/claim_reward.png and nav/skip.png, both
-        # of which match it at 1.0000.
-        milestones_page = self.milestones.scan(self.screen, boxes=shared_boxes)
+        walking_before = (self.collection.active or self.visit.active
+                          or self.claim.active or self.milestones_claim.active)
+        # Spec P1: on a battle frame whose upgrade panel is readable, no
+        # account panel, missions page or milestones screen is up - they are
+        # menu overlays. MAIN_MENU, GAME_OVER and UNKNOWN keep all three,
+        # because account overlays can keep a MAIN_MENU anchor visible
+        # underneath. A covered panel (the safety net) or a walk in progress
+        # also keeps them.
+        if (reading.state is screens.ScreenState.IN_RUN and not walking_before
+                and self._battle_panel_visible(reads)):
+            # The outcome each reader gives a frame it cannot measure (its
+            # unsupported-geometry branch): no conclusion, and no hold.
+            screen_readings.observe(None)
+            self.missions.observe(None)
+            self.milestones.observe(None)
+            panel = missions_page = milestones_page = False
+        else:
+            panel = screen_readings.scan(self.screen)
+            # The same passive ownership for the Daily Missions page. The bot
+            # has no verified target on it, so a tap aimed at the menu
+            # underneath would land somewhere nobody chose - it holds actions
+            # exactly as a panel does, whether or not a visit is walking.
+            # The missions and milestones readers share the scan's one
+            # full-frame read (ocr.FrameReads). On a failed read each falls
+            # back to its own attempt and reports its own error, which is the
+            # behaviour they had before this was shared.
+            try:
+                shared_boxes = reads.full()
+            except Exception:
+                shared_boxes = None
+            missions_page = self.missions.scan(self.screen, boxes=shared_boxes)
+            # The same passive ownership for both MILESTONES screens. This
+            # matters most for the reward modal: it is a full-screen overlay
+            # carrying a tappable CLAIM, and config.NAV_DISMISS - walked by
+            # shopping.py's OPEN_CARDS step - holds nav/claim_reward.png and
+            # nav/skip.png, both of which match it at 1.0000.
+            milestones_page = self.milestones.scan(self.screen, boxes=shared_boxes)
         if (self.reroll_progress is not None and not settings.paused
                 and not panel and not missions_page and not milestones_page
                 and not self.shopping.active and not self.shopping.reconciliation_pending
