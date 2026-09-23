@@ -17,6 +17,7 @@ import pytest  # noqa: E402 - after the sys.path fix-up above
 import config  # noqa: E402 - after the sys.path fix-up above
 import digits  # noqa: E402 - after the sys.path fix-up above
 import events  # noqa: E402 - after the sys.path fix-up above
+import ocr  # noqa: E402 - after the sys.path fix-up above
 import screens  # noqa: E402 - after the sys.path fix-up above
 import vision  # noqa: E402 - after the sys.path fix-up above
 from control import Controls  # noqa: E402 - after the sys.path fix-up above
@@ -77,6 +78,16 @@ def fenced_strategy_dir(tmp_path_factory: pytest.TempPathFactory):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(config, "STRATEGY_DIR", fenced)
         yield fenced
+
+
+@pytest.fixture(autouse=True)
+def no_ocr_reuse_between_tests():
+    """ocr keeps the last menu full read at module level (spec P3). A test
+    that replaces ocr.read, or feeds the same frame different boxes, must
+    never be answered from another test's read."""
+    ocr._last_full = None
+    yield
+    ocr._last_full = None
 
 
 # --------------------------------------------------------------------------

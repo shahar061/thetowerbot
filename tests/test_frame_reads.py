@@ -125,3 +125,69 @@ def test_a_failed_band_read_is_remembered(monkeypatch: pytest.MonkeyPatch) -> No
         with pytest.raises(RuntimeError):
             reads.battle()
     assert calls == [1]
+
+
+def _full(frame, now: float, reuse: bool = True):
+    return ocr.FrameReads(frame, reuse=reuse, clock=lambda: now).full()
+
+
+def test_an_unchanged_menu_frame_reuses_the_last_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(ocr, "read", _counting_reader(calls, ("boxes",)))
+    assert _full(MENU, 100.0) == ("boxes",)
+    assert _full(MENU.copy(), 105.0) == ("boxes",)
+    assert len(calls) == 1
+
+
+def test_a_popup_pasted_over_one_region_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(ocr, "read", _counting_reader(calls))
+    _full(MENU, 100.0)
+    popup = MENU.copy()
+    popup[1000:1100, 400:600] = 255
+    _full(popup, 101.0)
+    assert len(calls) == 2
+
+
+def test_a_stored_read_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(ocr, "read", _counting_reader(calls))
+    _full(MENU, 100.0)
+    _full(MENU, 100.0 + config.OCR_REUSE_MAX_AGE)
+    assert len(calls) == 2
+
+
+def test_a_different_shape_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(ocr, "read", _counting_reader(calls))
+    _full(MENU, 100.0)
+    _full(cv2.resize(MENU, (1080, 1920)), 101.0)
+    assert len(calls) == 2
+
+
+def test_a_different_reader_never_reuses_a_stored_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review focus 1: a replaced ocr.read (another test, another engine) starts fresh."""
+    first: list[dict] = []
+    second: list[dict] = []
+    monkeypatch.setattr(ocr, "read", _counting_reader(first, ("old",)))
+    _full(MENU, 100.0)
+    monkeypatch.setattr(ocr, "read", _counting_reader(second, ("new",)))
+    assert _full(MENU, 101.0) == ("new",)
+
+
+def test_battle_frames_never_store_or_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(ocr, "read", _counting_reader(calls))
+    _full(MENU, 100.0, reuse=False)
+    _full(MENU, 101.0, reuse=False)
+    assert len(calls) == 2 and ocr._last_full is None
+
+
+def test_a_failed_read_is_not_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(screen, **kwargs):
+        raise RuntimeError("OCR inference failed")
+
+    monkeypatch.setattr(ocr, "read", fail)
+    with pytest.raises(RuntimeError):
+        _full(MENU, 100.0)
+    assert ocr._last_full is None

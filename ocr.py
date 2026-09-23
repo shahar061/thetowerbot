@@ -15,7 +15,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -326,6 +326,22 @@ def _centre_in(rect: Rect, box: Rect) -> bool:
     return rect.x <= cx < rect.x + rect.w and rect.y <= cy < rect.y + rect.h
 
 
+@dataclass(frozen=True)
+class _StoredRead:
+    """The last menu full read, with what it takes to decide on reusing it."""
+
+    thumb: np.ndarray
+    shape: tuple[int, ...]
+    boxes: tuple[TextBox, ...]
+    at: float
+    reader: Any  # the `read` function that produced it
+
+
+# Spec P3: the last full read of a MAIN_MENU/GAME_OVER/UNKNOWN frame.
+# Guarded by _lock (never held across a read).
+_last_full: _StoredRead | None = None
+
+
 class FrameReads:
     """One scan's OCR of one frame, shared by every reader in run_once.
 
@@ -338,8 +354,13 @@ class FrameReads:
     perception.parse_frame and the autopilot each used to hash it again.
     """
 
-    def __init__(self, screen: Image) -> None:
+    def __init__(self, screen: Image, *, reuse: bool = False,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        """`reuse` is for menu frames only (spec P3): full() may return the
+        last full read while the frame's thumbnail is unchanged."""
         self.screen = screen
+        self._reuse = reuse
+        self._clock = clock
         self._digest: str | None = None
         self._full: tuple[TextBox, ...] | None = None
         self._full_error: Exception | None = None
@@ -357,11 +378,35 @@ class FrameReads:
             raise self._full_error
         if self._full is None:
             try:
-                self._full = read(self.screen, strict=True)
+                self._full = self._read_full()
             except Exception as error:
                 self._full_error = error
                 raise
         return self._full
+
+    def _read_full(self) -> tuple[TextBox, ...]:
+        """The full read, or the stored one when this menu frame is unchanged.
+
+        Unchanged: same shape, every thumbnail cell within
+        config.OCR_REUSE_DIFF, the stored read younger than
+        config.OCR_REUSE_MAX_AGE, and produced by the same `read` function.
+        """
+        global _last_full
+        if not self._reuse:
+            return read(self.screen, strict=True)
+        thumb = thumbnail(self.screen)
+        now = self._clock()
+        with _lock:
+            stored = _last_full
+        if (stored is not None and stored.reader is read
+                and stored.shape == self.screen.shape
+                and now - stored.at < config.OCR_REUSE_MAX_AGE
+                and thumbnails_match(stored.thumb, thumb)):
+            return stored.boxes
+        boxes = read(self.screen, strict=True)
+        with _lock:
+            _last_full = _StoredRead(thumb, self.screen.shape, boxes, now, read)
+        return boxes
 
     def battle(self) -> tuple[TextBox, ...]:
         """Battle text from the two measured bands, in full-frame coordinates.
