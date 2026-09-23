@@ -2036,3 +2036,48 @@ def test_a_wallet_share_is_a_cap_so_a_bought_row_is_not_re_bought(
 
     assert len(device.taps) == 1
     assert "Damage" in session._exhausted
+
+
+# -- input refused by the device guard ------------------------------------
+
+def _refuse_taps(monkeypatch, refusals: int) -> list[tuple[int, int]]:
+    """Refuse the first `refusals` taps the way the guard does, then send."""
+    sent: list[tuple[int, int]] = []
+    left = [refusals]
+
+    def guarded(_device, x, y):
+        if left[0]:
+            left[0] -= 1
+            raise RecoveryPreflightBlocked("fresh_evidence")
+        sent.append((x, y))
+
+    monkeypatch.setattr(shopping_mod, "tap", guarded)
+    return sent
+
+
+def test_a_refused_tap_is_retried_on_the_next_frame(session, monkeypatch) -> None:
+    """A loaded host makes the guard refuse input on frames it thinks are
+    stale. Nothing was sent, so the visit waits instead of ending."""
+    sent = _refuse_taps(monkeypatch, 2)
+    policy = a_policy(armed=True)
+    session.begin(policy, run_count=1)
+    for _ in range(2):
+        session.advance(frame("menu_main"), FakeDevice(), policy)
+        assert session.active is True
+        assert session._taps == 0
+    session.advance(frame("menu_main"), FakeDevice(), policy)
+    assert len(sent) == 1 and session._taps == 1
+    assert session._bus.of_type("ShoppingEnded") == []
+
+
+def test_a_guard_that_keeps_refusing_still_ends_the_visit(session, monkeypatch) -> None:
+    sent = _refuse_taps(monkeypatch, 1_000)
+    policy = a_policy(armed=True)
+    session.begin(policy, run_count=1)
+    for _ in range(shopping_mod.MAX_REFUSED_STEPS):
+        session.advance(frame("menu_main"), FakeDevice(), policy)
+    assert session.active is False
+    assert sent == []
+    ended = session._bus.of_type("ShoppingEnded")
+    assert len(ended) == 1 and ended[0].aborted
+    assert "input refused" in ended[0].reason
