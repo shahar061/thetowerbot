@@ -21,6 +21,12 @@ from fleet.reroll_variants import read_variant
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
+# A skipped trip rests on an estimate - the last balance read in the workshop
+# plus the coins each run since reported. Coins from claims or ads are
+# missing from it and spends outside the workshop are not subtracted, so the
+# estimate is re-anchored by a real visit at least this often.
+RECHECK_EVERY_N_RUNS = 10
+
 
 class RerollProgress:
     """Read only this registered account and publish a bounded next action."""
@@ -36,6 +42,7 @@ class RerollProgress:
         self._spend_fraction: float | None = None
         self._battle_stage: str | None = None
         self._last_stats_attempt = 0.0
+        self._last_skip_note: str | None = None
 
     def lifetime_record(self) -> dict[str, object] | None:
         return read_lifetime(self.root, self.account_id)
@@ -168,6 +175,8 @@ class RerollProgress:
         self._publish(plan)
         if plan.item is None or plan.category is None:
             return replace(base, enabled=False, workshop=())
+        if not self.workshop_worthwhile():
+            return replace(base, enabled=False)
         return replace(base, workshop=(ShoppingRule(plan.item, plan.category),),
                        allow_unlocks=True, coin_budget_pct=None)
 
@@ -205,7 +214,65 @@ class RerollProgress:
         if upgrade_id != current.upgrade_id:
             return
         self._observed = (upgrade_id, wallet, price, time.time())
+        self._remember_target(upgrade_id, wallet, price)
         self._publish(self.decision())
+
+    def workshop_worthwhile(self) -> bool:
+        """Could the planned item be affordable yet, by the last visit's numbers?
+
+        Every visit ends with the planned row's price and the balance beside
+        it, both saved. Until the coins earned by the runs since cover the
+        gap, a trip would only read the same "unaffordable" again. Anything
+        that makes the saved numbers doubtful - none saved, another account,
+        a different planned item, too many runs since - says visit.
+        """
+        path = self.root / "workshop-target.json"
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        if (not isinstance(record, dict) or record.get("account_id") != self.account_id
+                or record.get("upgrade_id") != self.decision().upgrade_id):
+            return True
+        with db.reader(self.root / "tower_bot.db") as connection:
+            runs, earned = connection.execute(
+                "SELECT COUNT(*), COALESCE(SUM(coins),0) FROM runs "
+                "WHERE id > ? AND ended_at IS NOT NULL",
+                (record["baseline_run_id"],)).fetchone()
+        estimate = record["wallet"] + earned
+        worthwhile = runs >= RECHECK_EVERY_N_RUNS or estimate >= record["price"]
+        note = None if worthwhile else (
+            f"workshop skipped: ~{estimate} coins < {record['price']} for "
+            f"{record['upgrade_id']}")
+        if note is not None and note != self._last_skip_note:
+            RerollJournal(self.root.parent.parent).append(
+                instance=self.root.name, level="info", kind="workshop_skip", message=note)
+        self._last_skip_note = note
+        return worthwhile
+
+    def _remember_target(self, upgrade_id: str, wallet: int | None,
+                         price: int | None) -> None:
+        path = self.root / "workshop-target.json"
+        if wallet is None or price is None:
+            path.unlink(missing_ok=True)
+            return
+        with db.reader(self.root / "tower_bot.db") as connection:
+            baseline_run_id = connection.execute(
+                "SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL"
+            ).fetchone()[0]
+        temporary = path.with_name(f".workshop-target.{uuid4().hex}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8") as output:
+                json.dump({"account_id": self.account_id, "upgrade_id": upgrade_id,
+                           "wallet": wallet, "price": price,
+                           "baseline_run_id": baseline_run_id,
+                           "observed_at": time.time()}, output)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _publish(self, decision: RerollDecision) -> None:
         now = time.time()

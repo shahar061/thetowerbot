@@ -1125,7 +1125,9 @@ class TowerBot:
                 self.device,
                 now=time.monotonic(),
                 tuning=settings.strategy,
-                go_home=(self.shopping.due(shopping_policy, self.runs.completed)
+                go_home=((self.shopping.due(shopping_policy, self.runs.completed)
+                          and (self.reroll_progress is None
+                               or self.reroll_progress.workshop_worthwhile()))
                          or (state is screens.ScreenState.GAME_OVER
                              and self.reroll_progress is not None
                              and self.reroll_progress.stats_due())),
