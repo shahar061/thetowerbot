@@ -68,7 +68,7 @@ export type RerollRun = { number: number; name: string; status: "active" | "clos
 export type RerollRunSummary = RerollRun & { member_count: number; retired_count: number; members: string[] };
 export type RetireResult = { name: string; worker?: "stopped" | "killed";
   instance?: "stopped" | "already_stopped" | "stop_failed"; error?: string };
-export type RerollOperation = { kind: "new_run" | "retire"; state: "running" | "done" | "failed";
+export type RerollOperation = { kind: "new_run" | "retire" | "remove"; state: "running" | "done" | "failed";
   started_at: string; target?: string | null; results: RetireResult[]; error?: string | null };
 export type RerollSnapshot = { candidates: RerollCandidate[]; members: RerollMember[];
   concurrency_limit?: number; pressure?: { running: number; starting: number; limit: number; available: number };

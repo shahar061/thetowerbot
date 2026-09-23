@@ -236,6 +236,13 @@ class _Runs:
         self.calls.append(("retire_member", name))
         return {"name": name, "worker": "stopped", "instance": "stopped"}
 
+    def validate_remove(self, name):
+        self.calls.append(("validate_remove", name))
+
+    def remove_member(self, name):
+        self.calls.append(("remove_member", name))
+        return {"name": name, "worker": "stopped", "instance": "stopped"}
+
     def retry_stop(self, name):
         self.calls.append(("retry_stop", name))
 
@@ -321,11 +328,13 @@ def test_stop_instance_retry_is_blocked_while_a_new_run_is_in_progress(tmp_path:
     _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
 
 
-def test_remove_now_retires_and_stop_retry_is_synchronous(tmp_path: Path) -> None:
+def test_remove_is_reversible_not_a_retirement_and_stop_retry_is_synchronous(
+        tmp_path: Path) -> None:
     runs = _Runs()
     service = _service_with_runs(tmp_path, runs)
-    service.reroll_remove("Tiramisu64_20")
-    _wait_for(lambda: ("retire_member", "Tiramisu64_20") in runs.calls)
+    assert service.reroll_remove("Tiramisu64_20")["operation"]["kind"] == "remove"
+    _wait_for(lambda: ("remove_member", "Tiramisu64_20") in runs.calls)
+    assert not any(call[0] == "retire_member" for call in runs.calls)
     service.reroll_stop_instance("Tiramisu64_18")
     assert ("retry_stop", "Tiramisu64_18") in runs.calls
     assert service.reroll_runs() == {"runs": [{"number": 2}, {"number": 1}]}

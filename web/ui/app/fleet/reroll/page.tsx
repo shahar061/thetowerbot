@@ -7,7 +7,7 @@ import { Meter, Pips } from "@/components/Meter";
 import { StatTile } from "@/components/StatTile";
 import { Button } from "@/components/ui/button";
 import { useAccountSelection } from "@/lib/AccountSelection";
-import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, retireRerollMember, setRerollConcurrency, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
+import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, retireRerollMember, setRerollConcurrency, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
 import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
 import { LADDER, attentionRank, deviceColor, standingFor } from "@/lib/rerollState";
@@ -198,6 +198,7 @@ export default function RerollPage() {
       className={cn("rounded-lg border p-3 text-sm", pool.operation.state === "failed" ? "border-danger bg-danger-surface text-danger" : "border-warn/40 bg-warn-surface text-warn")}>
       {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}` :
         pool.operation.kind === "new_run" ? "Starting a new reroll… retiring emulators and shutting them down"
+          : pool.operation.kind === "remove" ? `Removing ${pool.operation.target} from the reroll…`
           : `Retiring ${pool.operation.target}…`}
     </p>}
     {pool?.stop_failures?.map(item => <p key={item.name} role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">
@@ -290,6 +291,7 @@ export default function RerollPage() {
           onStart={() => void act(() => startReroll(member.name))}
           onPause={() => void act(() => pauseReroll(member.name))}
           onRetire={() => void act(() => retireRerollMember(member.name))}
+          onRemove={() => void act(() => removeRerollMember(member.name))}
           onJournal={() => setJournalWorker(member.name)}
           onOpenAccount={account ? () => choose(account.key) : undefined}
           busy={busy || operating}

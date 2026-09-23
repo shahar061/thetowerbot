@@ -43,12 +43,14 @@ def run_numbers_from(path: Path) -> dict[str, list[int]]:
 class RerollRuns:
     def __init__(self, root: Path, *, pool: Any,
                  retire: Callable[[dict[str, str]], RetireResult],
+                 remove: Callable[[dict[str, str]], RetireResult],
                  stop_instance: Callable[[str, str, str], None],
                  clock: Callable[[], str] = _now) -> None:
         self.root = Path(root)
         self.path = self.root / "reroll-runs.json"
         self.pool = pool
         self.retire = retire
+        self.remove = remove
         self.stop_instance = stop_instance
         self.clock = clock
         self.busy = False
@@ -75,6 +77,9 @@ class RerollRuns:
         for item in run["retired"]:
             if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("instance"), str):
                 return False
+        # "removed" was added later; files written before it have no such key.
+        if not isinstance(run.get("removed", []), list) or not all(isinstance(m, str) for m in run.get("removed", [])):
+            return False
         if not isinstance(run.get("retire_failed"), dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in run["retire_failed"].items()):
             return False
         return True
@@ -100,6 +105,8 @@ class RerollRuns:
         if sum(run.get("status") == "active" for run in value["runs"]) > 1:
             raise RerollRunsError("runs_state_unreadable")
         value.setdefault("retired_before_runs", [])
+        for run in value["runs"]:
+            run.setdefault("removed", [])
         return value
 
     def _save(self, state: dict[str, Any]) -> None:
@@ -140,7 +147,7 @@ class RerollRuns:
                  name: str | None = None, retire_failed: dict[str, str] | None = None) -> dict[str, Any]:
         return {"number": number, "name": name or f"Reroll #{number}", "status": "active",
                 "started_at": started_at or self.clock(), "members": list(members),
-                "retired": [], "retire_failed": dict(retire_failed or {})}
+                "retired": [], "removed": [], "retire_failed": dict(retire_failed or {})}
 
     @staticmethod
     def _active_of(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -148,8 +155,8 @@ class RerollRuns:
 
     @staticmethod
     def _live(run: dict[str, Any]) -> list[str]:
-        retired = {item["name"] for item in run["retired"]}
-        return [name for name in run["members"] if name not in retired]
+        out = {item["name"] for item in run["retired"]} | set(run["removed"])
+        return [name for name in run["members"] if name not in out]
 
     def _repair(self, state: dict[str, Any]) -> bool:
         pool = [item["name"] for item in self.pool.members()]
@@ -164,6 +171,11 @@ class RerollRuns:
         for name in pool:
             if name not in active["members"]:
                 active["members"].append(name)
+                changed = True
+            if name in active["removed"]:
+                # The run records a removal before the pool drops the member; a
+                # member still in the pool was never removed (it's just paused).
+                active["removed"].remove(name)
                 changed = True
         for name in self._live(active):
             if name not in pool:
@@ -320,6 +332,36 @@ class RerollRuns:
         finally:
             self.busy = False
 
+    def validate_remove(self, name: str) -> None:
+        self.validate_retire(name)
+
+    def remove_member(self, name: str) -> RetireResult:
+        """Take ``name`` out of the active run so it can be added back later."""
+        with self._lock:
+            if self.busy:
+                raise RerollRunsError("reroll_start_in_progress")
+            self.validate_remove(name)
+            self.busy = True
+        try:
+            member = self.pool.member(name)
+            if member is None:
+                raise RerollRunsError("instance_not_in_pool")
+            result = self.remove(member)
+            with self._lock:
+                # Record the removal before the pool drops the member: a crash in
+                # between must not look like a member that left the pool, which
+                # _repair records as retired for good.
+                state = self._load(repair=False)
+                active = self._active_of(state)
+                assert active is not None
+                active["removed"].append(name)
+                active["retire_failed"].pop(name, None)
+                self._save(state)
+                self.pool.remove(name)
+                return result
+        finally:
+            self.busy = False
+
     def add_members(self, names: list[str]) -> None:
         with self._lock:
             if self.busy:
@@ -331,7 +373,12 @@ class RerollRuns:
                 return
             self.pool.add(names)
             state = self._load(repair=False)
-            self._active_of(state)["members"].extend(names)
+            active = self._active_of(state)
+            for name in names:
+                if name in active["removed"]:
+                    active["removed"].remove(name)
+                elif name not in active["members"]:
+                    active["members"].append(name)
             self._save(state)
 
     @staticmethod

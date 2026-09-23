@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
-import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, listRerolls, retireRerollMember, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
+import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, listRerolls, removeRerollMember, retireRerollMember, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
 import type { RerollMember, RerollPlan } from "@/lib/fleet";
 
 const choose = vi.fn();
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
-vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), retireRerollMember: vi.fn(), startNewReroll: vi.fn(), stopRerollInstance: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
+vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), retireRerollMember: vi.fn(), startNewReroll: vi.fn(), stopRerollInstance: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
 
 // Named separately so a test that extends the plan keeps its full type -
 // spreading `members[0].reroll_plan` inferred it as optional and lost it.
@@ -218,6 +218,7 @@ test("a running operation shows a banner and disables starting another", async (
   // could start a second concurrent action must key off `operation.state`
   // too, not just the request-in-flight flag.
   for (const button of screen.getAllByRole("button", { name: "Retire" })) expect(button).toBeDisabled();
+  for (const button of screen.getAllByRole("button", { name: "Remove" })) expect(button).toBeDisabled();
   expect(screen.getByRole("button", { name: "Shut down Air_9" })).toBeDisabled();
 });
 
@@ -230,6 +231,26 @@ test("retire asks first, then calls the retire route", async () => {
   expect(retireRerollMember).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Retire Air_1" }));
   await waitFor(() => expect(retireRerollMember).toHaveBeenCalledWith("Air_1"));
+});
+
+test("remove asks first, says it can come back, then calls the remove route", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0]], run });
+  vi.mocked(removeRerollMember).mockResolvedValue({ candidates: [], members: [], run });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "Remove Air_1 from the reroll?" });
+  expect(dialog).toHaveTextContent(/add it back/);
+  expect(removeRerollMember).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Remove Air_1" }));
+  await waitFor(() => expect(removeRerollMember).toHaveBeenCalledWith("Air_1"));
+  expect(retireRerollMember).not.toHaveBeenCalled();
+});
+
+test("a running removal shows its own progress text", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0]], run,
+    operation: { kind: "remove", state: "running", started_at: "2026-09-23T09:00:00Z", target: "Air_1", results: [] } });
+  render(<RerollPage />);
+  expect(await screen.findByRole("status", { name: "Reroll operation" })).toHaveTextContent("Removing Air_1 from the reroll…");
 });
 
 test("a retired emulator still running offers a shutdown retry", async () => {
