@@ -1449,24 +1449,6 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.post("/api/fleet/reroll/members/{name}/retire")
-    def fleet_reroll_retire_member(name: str) -> dict[str, Any]:
-        if fleet is None or not callable(getattr(fleet, "reroll_retire", None)):
-            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
-        try:
-            return fleet.reroll_retire(name)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    @app.post("/api/fleet/reroll/members/{name}/stop-instance")
-    def fleet_reroll_stop_instance(name: str) -> dict[str, Any]:
-        if fleet is None or not callable(getattr(fleet, "reroll_stop_instance", None)):
-            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
-        try:
-            return fleet.reroll_stop_instance(name)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
     @app.post("/api/fleet/instances/start")
     def fleet_start_instance(body: FleetStartInstanceRequest) -> dict[str, Any]:
         if fleet is None or not callable(getattr(fleet, "start_instance", None)):

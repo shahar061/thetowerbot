@@ -1,4 +1,8 @@
-"""Numbered reroll runs over the pool. The pool says who plays; runs say which reroll."""
+"""Numbered reroll runs over the pool. The pool says who plays; runs say which reroll.
+
+Emulators leave a run with their bot stopped and can always be added back.
+``retired`` entries and ``retired_before_runs`` are read only for history.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,7 @@ from threading import RLock
 from typing import Any, Callable
 from uuid import uuid4
 
-from fleet.reroll_retirement import RetireError, RetireResult
+from fleet.reroll_retirement import RetireResult
 
 
 class RerollRunsError(ValueError):
@@ -42,16 +46,14 @@ def run_numbers_from(path: Path) -> dict[str, list[int]]:
 
 class RerollRuns:
     def __init__(self, root: Path, *, pool: Any,
-                 retire: Callable[[dict[str, str]], RetireResult],
+                 release: Callable[[dict[str, str]], RetireResult],
                  remove: Callable[[dict[str, str]], RetireResult],
-                 stop_instance: Callable[[str, str, str], None],
                  clock: Callable[[], str] = _now) -> None:
         self.root = Path(root)
         self.path = self.root / "reroll-runs.json"
         self.pool = pool
-        self.retire = retire
+        self.release = release
         self.remove = remove
-        self.stop_instance = stop_instance
         self.clock = clock
         self.busy = False
         self._lock = RLock()
@@ -179,9 +181,8 @@ class RerollRuns:
                 changed = True
         for name in self._live(active):
             if name not in pool:
-                # Retirement leaves the pool only after the worker is proven stopped.
-                active["retired"].append({"name": name, "at": self.clock(), "reason": "recovered",
-                                          "endpoint": "", "lease_id": "", "instance": "unknown"})
+                # A member leaves the pool only after its worker is proven stopped.
+                active["removed"].append(name)
                 active["retire_failed"].pop(name, None)
                 changed = True
         return changed
@@ -205,23 +206,15 @@ class RerollRuns:
     def summaries(self) -> list[dict[str, Any]]:
         return [{"number": run["number"], "name": run["name"], "status": run["status"],
                  "started_at": run["started_at"], "closed_at": run.get("closed_at"),
-                 "member_count": len(run["members"]), "retired_count": len(run["retired"]),
+                 "member_count": len(run["members"]),
+                 "left_count": len(run["retired"]) + len(run["removed"]),
                  "members": list(run["members"])}
                 for run in sorted(self._load()["runs"], key=lambda run: -run["number"])]
 
-    def retired_names(self) -> set[str]:
-        state = self._load()
-        return set(state["retired_before_runs"]) | {
-            item["name"] for run in state["runs"] for item in run["retired"]}
-
-    def retire_failures(self) -> dict[str, str]:
+    def leave_failures(self) -> dict[str, str]:
+        """Members whose bot couldn't be proven stopped when a new run started."""
         active = self.active()
         return dict(active["retire_failed"]) if active else {}
-
-    def stop_failures(self) -> list[dict[str, str]]:
-        return [{"name": item["name"], "error": item.get("error", "")}
-                for run in self._load()["runs"] for item in run["retired"]
-                if item["instance"] == "stop_failed"]
 
     # -- mutations -----------------------------------------------------
     def validate_new(self, keep: list[str], add: list[str]) -> None:
@@ -232,34 +225,17 @@ class RerollRuns:
             raise RerollRunsError("keep_not_in_active_run")
         if not keep and not add:
             raise RerollRunsError("run_would_be_empty")
-        if any(name in self.retired_names() for name in add):
-            raise RerollRunsError("instance_retired")
         if add:
             self.pool.validate_add(add)
 
-    def _entry(self, member: dict[str, str], result: RetireResult, reason: str) -> dict[str, Any]:
-        entry = {"name": member["name"], "at": self.clock(), "reason": reason,
-                 "endpoint": member["endpoint"], "lease_id": member["lease_id"],
-                 "instance": result.get("instance", "unknown")}
-        if result.get("error"):
-            entry["error"] = result["error"]
-        return entry
-
-    def _try_retire(self, name: str) -> tuple[dict[str, str] | None, RetireResult | dict[str, str]]:
+    def _try_release(self, name: str) -> tuple[dict[str, str] | None, RetireResult | dict[str, str]]:
         member = self.pool.member(name)
         if member is None:
             return None, {"name": name, "error": "instance_not_in_pool"}
         try:
-            return member, self.retire(member)
-        except RetireError as exc:
-            return None, {"name": name, "error": str(exc)}
+            return member, self.release(member)
         except Exception as exc:
-            error = str(exc) or type(exc).__name__
-            if self.pool.member(name) is None:
-                # retire() only removes from the pool after the worker is proven stopped,
-                # so its absence now means the worker did exit -- record it as retired.
-                return member, {"name": name, "instance": "unknown", "error": error}
-            return None, {"name": name, "error": error}
+            return None, {"name": name, "error": str(exc) or type(exc).__name__}
 
     def start_new(self, keep: list[str], add: list[str], name: str | None = None) -> dict[str, Any]:
         with self._lock:
@@ -268,37 +244,37 @@ class RerollRuns:
             self.validate_new(keep, add)
             self.busy = True
         try:
-            # Prove additions (a stopped one is booted) before retiring anyone:
-            # retirement can't be undone, so a rejected addition must fail first.
+            # Prove additions (a stopped one is booted) before stopping anyone's
+            # bot, so a rejected addition leaves the old run playing.
             proven = self.pool.prove(add) if add else set()
             active = self._active_of(self._load(repair=False))
             leaving = [item for item in (self._live(active) if active else []) if item not in keep]
             with ThreadPoolExecutor(max_workers=max(1, min(4, len(leaving)))) as workers:
-                outcomes = list(workers.map(self._try_retire, leaving))
+                outcomes = list(workers.map(self._try_release, leaving))
             failed = {result["name"]: result["error"] for member, result in outcomes if member is None}
             with self._lock:
                 state = self._load(repair=False)
                 active = self._active_of(state)
                 old_flags = dict(active["retire_failed"]) if active is not None else {}
                 if active is not None:
-                    active["retired"].extend(self._entry(member, result, "new_run")
-                                             for member, result in outcomes if member is not None)
+                    active["removed"].extend(member["name"] for member, _ in outcomes
+                                             if member is not None)
                 # A failed name still has to be a pool member to be carried forward --
-                # _try_retire can report "instance_not_in_pool" for a name that never
+                # _try_release can report "instance_not_in_pool" for a name that never
                 # made it into self.pool at all, and pool.replace would reject it.
                 carried = list(keep) + [item for item in leaving
                                         if item in failed and self.pool.member(item) is not None]
                 try:
                     self.pool.replace(carried, add, proven)
                 except ValueError:
-                    self._save(state)   # retirements stay recorded; the old run stays active
+                    self._save(state)   # stopped bots stay recorded; the old run stays active
                     raise
                 number = max((run["number"] for run in state["runs"]), default=0) + 1
                 if active is not None:
                     active["status"] = "closed"
                     active["closed_at"] = self.clock()
                     active["retire_failed"] = {}
-                retire_failed = dict(failed)
+                retire_failed = {item: failed[item] for item in carried if item in failed}
                 retire_failed.update({kept: old_flags[kept] for kept in keep if kept in old_flags})
                 state["runs"].append(self._new_run(number, carried + list(add), name=name,
                                                    retire_failed=retire_failed))
@@ -307,36 +283,10 @@ class RerollRuns:
         finally:
             self.busy = False
 
-    def validate_retire(self, name: str) -> None:
+    def validate_remove(self, name: str) -> None:
         active = self.active()
         if active is None or name not in self._live(active):
             raise RerollRunsError("instance_not_in_active_run")
-
-    def retire_member(self, name: str) -> RetireResult:
-        with self._lock:
-            if self.busy:
-                raise RerollRunsError("reroll_start_in_progress")
-            self.validate_retire(name)
-            self.busy = True
-        try:
-            member, result = self._try_retire(name)
-            with self._lock:
-                state = self._load(repair=False)
-                active = self._active_of(state)
-                assert active is not None
-                if member is None:
-                    active["retire_failed"][name] = result["error"]
-                    self._save(state)
-                    raise RetireError(result["error"])
-                active["retired"].append(self._entry(member, result, "manual"))
-                active["retire_failed"].pop(name, None)
-                self._save(state)
-                return result
-        finally:
-            self.busy = False
-
-    def validate_remove(self, name: str) -> None:
-        self.validate_retire(name)
 
     def remove_member(self, name: str) -> RetireResult:
         """Take ``name`` out of the active run so it can be added back later."""
@@ -351,9 +301,8 @@ class RerollRuns:
                 raise RerollRunsError("instance_not_in_pool")
             result = self.remove(member)
             with self._lock:
-                # Record the removal before the pool drops the member: a crash in
-                # between must not look like a member that left the pool, which
-                # _repair records as retired for good.
+                # Record the removal before the pool drops the member, so a crash in
+                # between reads the same once _repair runs.
                 state = self._load(repair=False)
                 active = self._active_of(state)
                 assert active is not None
@@ -369,8 +318,6 @@ class RerollRuns:
         with self._lock:
             if self.busy:
                 raise RerollRunsError("reroll_start_in_progress")
-            if any(name in self.retired_names() for name in names):
-                raise RerollRunsError("instance_retired")
             if self.active() is None:
                 self.start_new([], names)
                 return
@@ -383,39 +330,3 @@ class RerollRuns:
                 elif name not in active["members"]:
                     active["members"].append(name)
             self._save(state)
-
-    @staticmethod
-    def _stop_failure(state: dict[str, Any], name: str) -> dict[str, Any] | None:
-        return next((item for run in state["runs"] for item in reversed(run["retired"])
-                     if item["name"] == name and item["instance"] == "stop_failed"), None)
-
-    def retry_stop(self, name: str) -> None:
-        with self._lock:
-            if self.busy:
-                raise RerollRunsError("reroll_start_in_progress")
-            state = self._load()
-            entry = self._stop_failure(state, name)
-            if entry is None:
-                raise RerollRunsError("no_stop_failure")
-            endpoint, lease_id = entry["endpoint"], entry["lease_id"]
-            self.busy = True
-        try:
-            try:
-                self.stop_instance(name, endpoint, lease_id)
-            except Exception as exc:
-                with self._lock:
-                    state = self._load(repair=False)
-                    entry = self._stop_failure(state, name)
-                    if entry is not None:
-                        entry["error"] = str(exc) or type(exc).__name__
-                        self._save(state)
-                raise RerollRunsError("instance_stop_failed") from exc
-            with self._lock:
-                state = self._load(repair=False)
-                entry = self._stop_failure(state, name)
-                if entry is not None:
-                    entry["instance"] = "stopped"
-                    entry.pop("error", None)
-                    self._save(state)
-        finally:
-            self.busy = False

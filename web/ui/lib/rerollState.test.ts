@@ -58,9 +58,9 @@ test("the five decision states keep their separate remedies", () => {
   expect(decisionFor("needs_operator").label).toBe("Needs you");
 });
 
-test("retirement states are labelled and ask for a person only when retiring failed", () => {
-  expect(standingFor("retired")).toMatchObject({ label: "Retired", needsYou: false });
-  expect(standingFor("retire_failed")).toMatchObject({ label: "Retire failed", needsYou: true, tone: "error" });
+test("no standing points at the removed Retire action", () => {
+  expect(standingFor("replace_manually").hint).toMatch(/Remove this emulator/);
+  expect(standingFor("replace_manually").hint).not.toMatch(/Retire/);
 });
 
 test("a start failure explains its own error instead of blaming a worker that never ran", () => {

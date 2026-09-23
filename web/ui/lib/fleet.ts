@@ -61,19 +61,19 @@ export type RerollMember = { name: string; endpoint: string; lease_id: string; s
   wallet_gems?: number | null; wallet_stones?: number | null; wallet_medals?: number | null;
   uw_result?: string | null; observed_at?: number | null; error?: string | null;
   evidence?: string | null; recent_runs?: string[] | null;
-  retire_state?: "retire_failed" | null; retire_error?: string | null;
+  /** Set when a new reroll couldn't prove this bot stopped, so it was kept. */
+  leave_error?: string | null;
 };
 export type RerollRun = { number: number; name: string; status: "active" | "closed";
   started_at: string; closed_at?: string | null };
-export type RerollRunSummary = RerollRun & { member_count: number; retired_count: number; members: string[] };
-export type RetireResult = { name: string; worker?: "stopped" | "killed";
-  instance?: "stopped" | "already_stopped" | "stop_failed"; error?: string };
-export type RerollOperation = { kind: "new_run" | "retire" | "remove" | "add"; state: "running" | "done" | "failed";
+export type RerollRunSummary = RerollRun & { member_count: number; left_count: number; members: string[] };
+export type RetireResult = { name: string; worker?: "stopped" | "killed" | "gone";
+  instance?: "stopped" | "already_stopped" | "missing"; error?: string };
+export type RerollOperation = { kind: "new_run" | "remove" | "add"; state: "running" | "done" | "failed";
   started_at: string; target?: string | null; results: RetireResult[]; error?: string | null };
 export type RerollSnapshot = { candidates: RerollCandidate[]; members: RerollMember[];
   concurrency_limit?: number; pressure?: { running: number; starting: number; limit: number; available: number };
-  run?: RerollRun | null; operation?: RerollOperation | null;
-  stop_failures?: { name: string; error: string }[] };
+  run?: RerollRun | null; operation?: RerollOperation | null };
 export type RerollJournalEntry = { sequence: number; at: string | number; instance: string;
   level: string; kind: string; message: string; color: string };
 export type RerollJournal = { entries: RerollJournalEntry[] };
