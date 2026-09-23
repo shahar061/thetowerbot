@@ -218,7 +218,10 @@ class TowerBot:
         # Consecutive scans a menu page has held every action with nothing
         # walking. See the deadlock note in run_once.
         self._held_scans = 0
-        self.runs = RunTracker(first_run_id)
+        # When the IN_RUN preflight last read the whole frame. See
+        # _preflight_boxes: the backstop for a popup the bands cannot see.
+        self._battle_full_read_at = float("-inf")
+        self.runs =RunTracker(first_run_id)
         # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
         # and the walk itself refuses if there is nothing to take. Persisting
@@ -606,17 +609,39 @@ class TowerBot:
 
     def _preflight_boxes(self, reading: screens.ScreenReading,
                          reads: ocr.FrameReads) -> tuple[ocr.TextBox, ...]:
-        """The boxes the supervisor preflight checks for recovery modals."""
-        return reads.full()
+        """The boxes the supervisor preflight checks for recovery modals.
+
+        Off IN_RUN, the whole frame. On IN_RUN, the two battle bands (spec
+        P2). A recovery modal sits mid-screen, outside both bands, so a frame
+        whose bands show no upgrade panel (the P1 safety net) falls back to
+        the whole frame - and so does one scan every
+        config.BATTLE_FULL_READ_EVERY seconds, the backstop for a popup that
+        leaves the panel readable.
+
+        A reroll account also reads the whole frame: its one-time Workshop
+        coin grant (fleet.tutorial) has markers between the two bands, and
+        nothing records that the grant was claimed.
+        """
+        if (reading.state is not screens.ScreenState.IN_RUN
+                or self.reroll_progress is not None):
+            return reads.full()
+        now = time.monotonic()
+        if now - self._battle_full_read_at >= config.BATTLE_FULL_READ_EVERY:
+            self._battle_full_read_at = now
+            return reads.full()
+        if not self._battle_panel_visible(reads):
+            return reads.full()
+        return reads.battle()
 
     def _battle_panel_visible(self, reads: ocr.FrameReads) -> bool:
         """Spec P1's safety net: does this battle frame show its upgrade panel?
 
-        False - including when the frame could not be read - means something
-        may cover it, and the menu readers run on this scan.
+        Heading text in the bands or a heading colour. False - including when
+        the bands could not be read - means something may cover the panel,
+        and the menu readers and the full-frame preflight run on this scan.
         """
         try:
-            boxes = reads.full()
+            boxes = reads.battle()
         except Exception:  # noqa: BLE001 - an unread frame is not a visible panel
             return False
         return panel_visible(reads.screen, boxes)

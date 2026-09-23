@@ -151,3 +151,77 @@ def test_a_walk_in_progress_keeps_every_reader(bot_in_run_on: Any, monkeypatch: 
     calls = _spy_readers(bot, monkeypatch)
     bot.run_once()
     assert calls == ["account", "missions", "milestones"]
+
+
+IN_RUN_READING = screens.ScreenReading(screens.ScreenState.IN_RUN, 1.0, {})
+
+
+def _scripted_reads(frame: Any, battle_boxes: tuple, calls: list[str]) -> ocr.FrameReads:
+    reads = ocr.FrameReads(frame)
+    reads.battle = lambda: (calls.append("battle"), battle_boxes)[1]
+    reads.full = lambda: (calls.append("full"), ())[1]
+    return reads
+
+
+def test_the_in_run_preflight_reads_only_the_bands(bot_in_run_on: Any) -> None:
+    bot = bot_in_run_on("in_run_lit")
+    bot._battle_full_read_at = time.monotonic()
+    calls: list[str] = []
+    boxes = recorded("in_run_lit")
+    assert bot._preflight_boxes(IN_RUN_READING, _scripted_reads(bot._screen, boxes, calls)) == boxes
+    assert "full" not in calls
+
+
+def test_a_covered_panel_sends_the_preflight_to_the_full_frame(bot_in_run_on: Any) -> None:
+    bot = bot_in_run_on("in_run_lit")
+    bot._battle_full_read_at = time.monotonic()
+    covered = bot._screen.copy()
+    covered[1640:1720] = 0
+    calls: list[str] = []
+    bot._preflight_boxes(IN_RUN_READING, _scripted_reads(covered, (), calls))
+    assert calls[-1] == "full"
+
+
+def test_the_backstop_reads_the_full_frame_every_so_often(bot_in_run_on: Any) -> None:
+    bot = bot_in_run_on("in_run_lit")
+    calls: list[str] = []
+    boxes = recorded("in_run_lit")
+    bot._preflight_boxes(IN_RUN_READING, _scripted_reads(bot._screen, boxes, calls))
+    assert calls == ["full"]
+    calls.clear()
+    bot._preflight_boxes(IN_RUN_READING, _scripted_reads(bot._screen, boxes, calls))
+    assert "full" not in calls
+    bot._battle_full_read_at -= config.BATTLE_FULL_READ_EVERY
+    calls.clear()
+    bot._preflight_boxes(IN_RUN_READING, _scripted_reads(bot._screen, boxes, calls))
+    assert calls == ["full"]
+
+
+def test_menu_preflight_reads_the_full_frame(bot_on_main_menu: Any) -> None:
+    bot = bot_on_main_menu(Shopping())
+    calls: list[str] = []
+    reading = screens.ScreenReading(screens.ScreenState.MAIN_MENU, 1.0, {})
+    bot._preflight_boxes(reading, _scripted_reads(bot._screen, (), calls))
+    assert calls == ["full"]
+
+
+def test_a_pending_workshop_grant_keeps_the_in_run_preflight_on_the_full_frame(
+    bot_in_run_on: Any,
+) -> None:
+    """The grant's markers sit between the two bands (fleet/tutorial.py)."""
+    bot = bot_in_run_on("in_run_lit")
+    bot.reroll_progress = object()
+    bot._battle_full_read_at = time.monotonic()
+    calls: list[str] = []
+    bot._preflight_boxes(IN_RUN_READING, _scripted_reads(bot._screen, recorded("in_run_lit"), calls))
+    assert calls == ["full"]
+
+
+@pytest.mark.parametrize("name", sorted(p.stem for p in FIXTURES.glob("in_run_*.png")))
+def test_in_run_popup_flags_match_the_full_frame(name: str, bot_in_run_on: Any) -> None:
+    """Invariant 4 for the preflight: real engine, every in_run fixture."""
+    from tower_bot import popup_flags
+    bot = bot_in_run_on(name)
+    bot._battle_full_read_at = time.monotonic()
+    new = popup_flags(bot._preflight_boxes(IN_RUN_READING, ocr.FrameReads(bot._screen)))
+    assert new == popup_flags(ocr.FrameReads(bot._screen).full())
