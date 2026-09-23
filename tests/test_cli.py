@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import config
 import digits
 import tower_bot
 from affordability import BrightnessAffordability, DigitAffordability
@@ -1002,3 +1003,36 @@ def test_a_default_constructed_store_cannot_reach_the_real_strategies_dir(
     # ...never in the repo's tracked file.
     real_default = json.loads((REAL_STRATEGY_DIR / "default.json").read_text())
     assert real_default["interval"] != 9.0
+
+
+def test_run_forever_rescans_promptly_while_a_battle_purchase_is_pending(monkeypatch) -> None:
+    """The frame confirming a battle tap also decides the next one, so the
+    loop fetches it after BATTLE_FOLLOWUP_SECONDS rather than the full interval."""
+    import events
+    import vision
+    from tower_bot import TowerBot
+
+    bot = TowerBot(
+        device=MagicMock(),
+        templates=vision.TemplateCache(Path(__file__).parent.parent / "templates"),
+        bus=events.EventBus(),
+    )
+    bot.controls.apply({"interval": 5.0})
+    waits: list[float] = []
+
+    def run_once(max_runs=None) -> bool:
+        bot.autopilot.pending = (MagicMock(), 0.0) if not waits else None
+        return True
+
+    def wait(seconds: float) -> bool:
+        waits.append(seconds)
+        if len(waits) == 2:
+            bot.stop()
+        return False
+
+    monkeypatch.setattr(bot, "run_once", run_once)
+    monkeypatch.setattr(bot._stopping, "wait", wait)
+    bot.run_forever()
+
+    assert waits[0] == config.BATTLE_FOLLOWUP_SECONDS
+    assert waits[1] > 4.0

@@ -1264,6 +1264,10 @@ class TowerBot:
             except Exception as exc:  # noqa: BLE001 - one bad frame must not kill the loop
                 logger.exception("Unexpected error during scan")
                 self._report(f"Unexpected error during scan: {exc}")
+            if interval is None and self.autopilot.pending is not None:
+                # A tap is waiting on the frame that confirms it - and that
+                # decides the next one - so fetch it promptly.
+                current_interval = min(current_interval, config.BATTLE_FOLLOWUP_SECONDS)
             self._stopping.wait(current_interval)
         logger.info("Bot stopped.")
 

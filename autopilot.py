@@ -354,6 +354,9 @@ class BattleAutopilot:
                 (after.price is not None and before.price is not None and after.price > before.price) or
                 (after.value is not None and before.value is not None and after.value != before.value)
             )
+            # A manual buy is one purchase; the policy above is still its
+            # single-rule stand-in, so falling through would buy it again.
+            was_manual = self._manual is not None
             if confirmed:
                 self.state.verified(after)
                 self._emit(events.BattlePurchased(item=after.name, upgrade_id=after.upgrade_id,
@@ -361,6 +364,9 @@ class BattleAutopilot:
                 self._decide("verified", f"Verified {after.name} upgrade", after.upgrade_id)
                 self.pending = None
                 self._manual = None
+                # No return: the frame that proves the last purchase already
+                # shows the new prices and cash, so it can pick the next one.
+                # Stopping here spent a whole scan per purchase doing nothing.
             elif now - sent_at >= 8:
                 self._blocked[before.upgrade_id] = now + 60
                 self._decide("blocked", f"{before.name} purchase was not confirmed", before.upgrade_id)
@@ -368,7 +374,8 @@ class BattleAutopilot:
                 self._manual = None
             else:
                 self._decide("verifying", f"Checking {before.name} purchase", before.upgrade_id)
-            return False
+            if not confirmed or was_manual:
+                return False
         if not observation.category or not observation.rows:
             self._decide("blocked", "Waiting for a readable upgrade panel")
             return False
