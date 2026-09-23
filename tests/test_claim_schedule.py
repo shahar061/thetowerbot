@@ -120,38 +120,85 @@ def test_milestones_override_unusable_missions_cadence(hours: float) -> None:
                milestones_on_new_best=True) == "milestones"
 
 
-# -- Milestones rate limit ---------------------------------------------------
-# A new best wave is necessary but not sufficient: the ladder pays out at
-# fixed thresholds while the best wave creeps up by a wave or two on nearly
-# every autopiloted run, so an unthrottled trigger would arm a full menu walk
-# after almost every run for nothing. `last_missions` is pinned to a recent,
-# not-yet-due time in every test below so a "milestones owes nothing" result
-# is not masked by an incidental "missions" fallthrough.
+# -- Milestones thresholds ---------------------------------------------------
+# A new best owes a claim only when it crosses a ladder row: the best creeps up
+# a wave or two on nearly every autopiloted run, and most of those runs cross
+# nothing. `last_missions` is pinned to a recent, not-yet-due time throughout so
+# a "milestones owes nothing" result is not masked by a "missions" fallthrough.
 
-def test_a_new_best_inside_the_milestones_window_owes_nothing() -> None:
-    assert due(
-        state(last_missions=1000.0, last_milestones=1000.0, best_wave=30, claimed_best_wave=16),
-        now=1000.0 + (MIN_MILESTONES_HOURS * HOUR) - 1,
-        missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True,
-    ) is None
+def recent(**kwargs: object) -> ClaimState:
+    return state(last_missions=1000.0, **kwargs)
 
 
-def test_a_new_best_comes_due_exactly_on_the_milestones_window() -> None:
+def test_a_new_best_that_crosses_no_row_owes_nothing() -> None:
+    assert due(recent(best_wave=29, claimed_best_wave=21), now=1000.0,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) is None
+
+
+def test_a_new_best_landing_exactly_on_a_row_is_due() -> None:
+    """The row is reached AT its wave - the ladder pays wave 30 at wave 30."""
+    assert due(recent(best_wave=30, claimed_best_wave=29), now=1000.0,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) == "milestones"
+
+
+def test_a_best_already_claimed_at_a_row_does_not_owe_it_twice() -> None:
+    assert due(recent(best_wave=35, claimed_best_wave=30), now=1000.0,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) is None
+
+
+def test_the_rows_widen_past_wave_100() -> None:
+    """Past 100 the ladder pays at 150, not 110 - a 101..149 best owes nothing."""
+    assert due(recent(best_wave=149, claimed_best_wave=100), now=1000.0,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) is None
+    assert due(recent(best_wave=150, claimed_best_wave=149), now=1000.0,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) == "milestones"
+
+
+def test_a_crossed_row_is_not_throttled_by_a_recent_claim() -> None:
+    """Each crossing fires once by construction, so it needs no clock."""
+    assert due(recent(last_milestones=1000.0, best_wave=40, claimed_best_wave=30),
+               now=1001.0, missions_every_hours=EIGHT_HOURS,
+               milestones_on_new_best=True) == "milestones"
+
+
+def test_milestones_off_ignores_a_crossed_row_and_the_badge() -> None:
+    assert due(recent(best_wave=40, claimed_best_wave=30, milestones_badge=True),
+               now=1000.0, missions_every_hours=EIGHT_HOURS,
+               milestones_on_new_best=False) is None
+
+
+# -- Milestones badge --------------------------------------------------------
+# The badge is the game's own count, due on its own - but throttled, because
+# a badge the walk cannot clear would otherwise re-arm it on every menu frame.
+# best_wave == claimed_best_wave in every test below, so nothing but the badge
+# can make milestones due.
+
+def badge(**kwargs: object) -> ClaimState:
+    return recent(best_wave=21, claimed_best_wave=21, milestones_badge=True, **kwargs)
+
+
+def test_the_badge_owes_a_claim_no_threshold_explains() -> None:
+    """A restart, a tier switch or a failed walk leaves rewards the waves no
+    longer point at. The badge still does."""
+    assert due(badge(), now=1000.0, missions_every_hours=EIGHT_HOURS,
+               milestones_on_new_best=True) == "milestones"
+
+
+def test_no_badge_and_no_crossing_owes_nothing() -> None:
+    assert due(recent(best_wave=21, claimed_best_wave=21), now=1000.0,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) is None
+
+
+def test_a_badge_inside_the_milestones_window_owes_nothing() -> None:
+    assert due(badge(last_milestones=1000.0),
+               now=1000.0 + (MIN_MILESTONES_HOURS * HOUR) - 1,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) is None
+
+
+def test_a_badge_comes_due_exactly_on_the_milestones_window() -> None:
     """On the boundary, not after it - the same convention missions uses."""
-    assert due(
-        state(last_missions=1000.0, last_milestones=1000.0, best_wave=30, claimed_best_wave=16),
-        now=1000.0 + MIN_MILESTONES_HOURS * HOUR,
-        missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True,
-    ) == "milestones"
-
-
-def test_a_never_claimed_ladder_ignores_the_milestones_window() -> None:
-    """last_milestones=None means never claimed, which is immediately due -
-    not coerced to 0, and not blocked by the window either."""
-    assert due(
-        state(last_missions=1000.0, last_milestones=None, best_wave=30, claimed_best_wave=16),
-        now=1000.0, missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True,
-    ) == "milestones"
+    assert due(badge(last_milestones=1000.0), now=1000.0 + MIN_MILESTONES_HOURS * HOUR,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) == "milestones"
 
 
 @pytest.mark.parametrize("last_milestones", [float("inf"), float("nan")])
@@ -162,7 +209,7 @@ def test_a_non_finite_milestones_clock_falls_through_to_missions(last_milestones
     """
     assert due(
         state(last_missions=None, last_milestones=last_milestones,
-              best_wave=30, claimed_best_wave=16),
+              best_wave=21, claimed_best_wave=21, milestones_badge=True),
         now=1000.0, missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True,
     ) == "missions"
 
@@ -170,7 +217,5 @@ def test_a_non_finite_milestones_clock_falls_through_to_missions(last_milestones
 def test_a_milestones_clock_that_went_backwards_does_not_fire() -> None:
     """A last-claim dated in the future is a corrupt or restored state, not a
     due claim - the same reading applied to last_missions."""
-    assert due(
-        state(last_missions=1000.0, last_milestones=10_000.0, best_wave=30, claimed_best_wave=16),
-        now=1000.0, missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True,
-    ) is None
+    assert due(badge(last_milestones=10_000.0), now=1000.0,
+               missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) is None
