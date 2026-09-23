@@ -18,6 +18,7 @@ import { NewRerollDialog } from "./NewRerollDialog";
 import { PastRerolls } from "./PastRerolls";
 import { SharedWorkshopLedger } from "./Purchases";
 import { RerollCard } from "./RerollCard";
+import { VariantComparison } from "./VariantComparison";
 
 function observed(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return "—";
@@ -265,6 +266,8 @@ export default function RerollPage() {
         <div className="mt-3 flex gap-2"><Button disabled={busy || !selected.length} onClick={add}>Add selected</Button><Button variant="outline" onClick={() => { setPicker(false); setSelected([]); }}>Cancel</Button></div>
       </div>}
     </RerollCard>
+
+    {!!pool?.variant_comparison?.length && <VariantComparison rows={pool.variant_comparison} />}
 
     {!!allMembers.length && <RerollCard
       title="Devices"

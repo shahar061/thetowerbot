@@ -111,6 +111,9 @@ clock, device, screen or database - the same rule `objectives.py`,
 `director.py` and `decision.py` hold themselves to. The one file read in the
 whole dependency closure is each pack's import-time load, which happens once
 and never during a decision.
+
+A variant arrives as an id on `RerollFacts`; the file that stores it is
+read by `fleet/reroll_progress.py`, not here.
 """
 
 from __future__ import annotations
@@ -159,6 +162,9 @@ class RerollFacts:
     spend_fraction: float | None = None
     # None ranks deterministically: always the top pick.
     draw_sharpness: float | None = DRAW_SHARPNESS
+    # The id stored in the worker's reroll-variant.json, or None. Resolved
+    # against the selected build, so it only acts while that build lists it.
+    variant: str | None = None
 
 
 @dataclass(frozen=True)
@@ -339,7 +345,8 @@ def _build_for(facts: RerollFacts) -> builds.Build:
     if build is None:
         raise ValueError(
             f"build_selection chose {selection.build_id!r}, which is not in the pack")
-    return build
+    variant = build.variant(facts.variant)
+    return build if variant is None else replace(build, level_caps=variant.level_caps)
 
 
 def _upgrade_id(objective_id: str | None) -> str | None:
@@ -368,6 +375,12 @@ def _price_share(price: int | None, lifetime_coins: int | None) -> str:
     if price is None or lifetime_coins is None or lifetime_coins <= 0:
         return ""
     return f" Its price is {price / lifetime_coins:.0%} of verified lifetime coins."
+
+
+def _variant_label(build: builds.Build, facts: RerollFacts) -> str:
+    """` (Income first)` when this account plays a variant of this build."""
+    variant = build.variant(facts.variant)
+    return f" ({variant.name})" if variant is not None else ""
 
 
 def _as_int_price(price: int | float | None) -> int | None:
@@ -488,7 +501,8 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
         facts.account_id, build.id, _GOALS.get(build.id, _DEFAULT_GOAL),
         outcome.state, upgrade.id, upgrade.name, upgrade.category, price,
         facts.wallet_coins, facts.lifetime_coins,
-        outcome.reason + drawn + _price_share(price, facts.lifetime_coins))
+        outcome.reason + drawn + _price_share(price, facts.lifetime_coins)
+        + _variant_label(build, facts))
 
 
 def project_next(facts: RerollFacts, *, limit: int = 10) -> tuple[PlannedPurchase, ...]:

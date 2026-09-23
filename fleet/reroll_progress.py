@@ -17,6 +17,7 @@ from fleet.reroll_journal import RerollJournal
 from fleet.account_metrics import game_started_date
 from fleet.reroll_lifetime import read_lifetime
 from fleet.reroll_planner import RerollDecision, RerollFacts, choose_next, project_next
+from fleet.reroll_variants import read_variant
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
@@ -145,7 +146,8 @@ class RerollProgress:
     def decision(self) -> RerollDecision:
         best, purchases = self._history()
         values, lifetime = self._account_readings()
-        target = choose_next(RerollFacts(self.account_id, best, purchases, values))
+        target = choose_next(RerollFacts(self.account_id, best, purchases, values,
+                                         variant=read_variant(self.root)))
         self._battle_stage = target.stage
         wallet = price = None
         if (self._observed is not None and self._observed[0] == target.upgrade_id
@@ -155,6 +157,7 @@ class RerollProgress:
             self.account_id, best, purchases, values, wallet, lifetime,
             {target.upgrade_id: price} if target.upgrade_id and price is not None else {},
             self._spend_fraction,
+            variant=read_variant(self.root),
         ))
 
     def shopping_policy(self, base: Shopping) -> Shopping:
@@ -214,7 +217,8 @@ class RerollProgress:
         path = self.root / "reroll-plan.json"
         best, purchases = self._history()
         values, _ = self._account_readings()
-        preview = project_next(RerollFacts(self.account_id, best, purchases, values))
+        preview = project_next(RerollFacts(self.account_id, best, purchases, values,
+                                           variant=read_variant(self.root)))
         payload = {**asdict(decision), "observed_at": now,
                    "next_purchases": [asdict(step) for step in preview]}
         temporary = path.with_name(f".reroll-plan.{uuid4().hex}.tmp")

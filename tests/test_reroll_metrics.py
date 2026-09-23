@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import db as bot_db
-from fleet.reroll_metrics import observed_metrics
+from fleet.reroll_metrics import observed_metrics, play_to_t1w20, read_play
 
 
 class Response(io.BytesIO):
@@ -120,3 +120,36 @@ def test_lifetime_baseline_adds_only_later_recorded_runs(tmp_path: Path) -> None
                                   web_port=0, running=False)
     assert incomplete["lifetime_coins"] == 1025
     assert incomplete["lifetime_coins_incomplete"] is True
+
+
+def test_play_time_stops_at_the_first_tier_1_wave_20_run() -> None:
+    rows = [(0, 100, 1, 12), (200, 260, 2, 30), (300, 400, 1, 21), (500, 900, 1, 40)]
+    assert play_to_t1w20(rows) == (260, 260)
+
+
+def test_play_time_without_wave_20_is_the_total_so_far() -> None:
+    assert play_to_t1w20([(0, 100, 1, 19), (100, 90, 1, 5), (200, 230, None, None)]) == (None, 130)
+
+
+def test_read_play_reads_ended_runs_in_order(tmp_path: Path) -> None:
+    db = tmp_path / "tower_bot.db"
+    bot_db.bind_account(db, "42")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO runs (id, started_at, ended_at, tier, wave) VALUES (2, 50, 80, 1, 20)")
+        conn.execute("INSERT INTO runs (id, started_at, ended_at, tier, wave) VALUES (1, 0, 40, 1, 9)")
+        conn.execute("INSERT INTO runs (id, started_at, tier, wave) VALUES (3, 90, 1, 3)")
+    assert read_play(db) == (70, 70)
+    assert read_play(tmp_path / "missing.db") is None
+
+
+def test_observed_metrics_report_play_time_to_wave_20(tmp_path: Path) -> None:
+    db = tmp_path / "tower_bot.db"
+    bot_db.bind_account(db, "42")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO runs (id, started_at, ended_at, tier, wave, coins) VALUES (1, 0, 600, 1, 14, 5)")
+    result = observed_metrics(tmp_path, account_key="k", account_id="42", web_port=0, running=False)
+    assert result["play_seconds_so_far"] == 600 and "play_seconds_to_t1w20" not in result
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO runs (id, started_at, ended_at, tier, wave, coins) VALUES (2, 700, 1000, 1, 22, 5)")
+    result = observed_metrics(tmp_path, account_key="k", account_id="42", web_port=0, running=False)
+    assert result["play_seconds_to_t1w20"] == 900 and "play_seconds_so_far" not in result

@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { accountAge, coinsPerSecond } from "@/lib/accountMetrics";
 import type { RerollMember } from "@/lib/fleet";
-import { deletable, LADDER, ladderProgress, STONES_WAVE, standingFor } from "@/lib/rerollState";
+import { deletable, LADDER, ladderProgress, playToW20, STONES_WAVE, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { PlanStrip } from "./PlanStrip";
 import { WorkerBattlePurchases } from "./Purchases";
@@ -275,6 +275,8 @@ export function DeviceCard({
           <Vital label="Tier / wave" value={member.tier != null && member.wave != null ? `${member.tier} / ${member.wave}` : null} />
           <Vital label="Best T1 wave" value={member.best_tier_1_wave} tone={(member.best_tier_1_wave ?? 0) >= STONES_WAVE ? "live" : undefined} />
           <Vital label="Run duration (s)" value={member.run_duration_seconds} />
+          {member.variant_name ? <Vital label="Variant" value={member.variant_name} /> : null}
+          {playToW20(member) ? <Vital label="To T1 W20" value={playToW20(member)} /> : null}
           <Vital label="Battle cash" value={member.battle_cash} />
           <Vital label="Run coins" value={member.run_coins} />
           <Vital label="Lifetime coins" value={member.lifetime_coins} tone={member.lifetime_coins_incomplete ? "warn" : undefined} />

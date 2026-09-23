@@ -458,3 +458,34 @@ def test_add_runs_in_the_background_because_it_may_boot_emulators(tmp_path: Path
     assert snapshot["operation"]["target"] == "Tiramisu64_22"
     _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
     assert ("add_members", ["Tiramisu64_22"]) in runs.calls
+
+
+class _RunsWithVariantFailure(_Runs):
+    def start_new(self, keep, add, name=None):
+        outcome = super().start_new(keep, add, name)
+        return {**outcome, "variants": {}, "variant_errors": {"Tiramisu64_22": "disk full"}}
+
+
+def test_a_failed_variant_assignment_is_journaled(tmp_path: Path) -> None:
+    runs = _RunsWithVariantFailure()
+    service = _service_with_runs(tmp_path, runs)
+    service.reroll_new_run([], ["Tiramisu64_22"], None)
+    _wait_for(lambda: service.reroll_snapshot()["operation"]["state"] == "done")
+    from fleet.reroll_journal import RerollJournal
+    assert any(entry["kind"] == "variant_assign_failed" and entry["level"] == "warn"
+               and entry["instance"] == "Tiramisu64_22" and "disk full" in entry["message"]
+               for entry in RerollJournal(service.root).list_entries())
+
+
+def test_the_snapshot_carries_the_variant_comparison(tmp_path: Path) -> None:
+    service = _service_with_runs(tmp_path, _Runs())
+    rows = service.reroll_snapshot()["variant_comparison"]
+    assert [row["id"] for row in rows] == ["baseline", "income_first", "attack_heavy"]
+
+
+def test_a_variant_file_alone_does_not_register_a_worker(tmp_path: Path) -> None:
+    from web.account_catalog import registered_worker
+    folder = tmp_path / "workers" / "Tiramisu64_40"
+    folder.mkdir(parents=True)
+    (folder / "reroll-variant.json").write_text('{"variant": "baseline"}')
+    assert registered_worker(folder) is None

@@ -222,6 +222,7 @@ class FleetSetupService:
             from fleet.reroll_journal import RerollJournal
             from fleet.reroll_retirement import remove_from_run, stop_bot
             from fleet.reroll_runs import RerollRuns
+            from fleet.reroll_variants import assign_variant, opening_variants
 
             pool = self._manual_pool()
             supervisor = self._manual_supervisor()
@@ -244,7 +245,10 @@ class FleetSetupService:
                     journal=RerollJournal(self.root)),
                 remove=lambda member: remove_from_run(
                     member, supervisor=supervisor, stop_instance=stop_instance,
-                    instance_state=instance_state, journal=RerollJournal(self.root)))
+                    instance_state=instance_state, journal=RerollJournal(self.root)),
+                assign=lambda name: assign_variant(
+                    self.root / "workers" / name, workers_dir=self.root / "workers",
+                    variants=opening_variants()))
         return self._reroll_runs
 
     def reroll_snapshot(self) -> dict[str, Any]:
@@ -253,6 +257,8 @@ class FleetSetupService:
         statuses = supervisor.reconcile(snapshot)
         from web.account_catalog import registered_worker
         from fleet.reroll_metrics import observed_metrics
+        from fleet.reroll_variants import compare, opening_variants, read_variant, variant_name
+        variants = opening_variants()
         for member in snapshot["members"]:
             status = statuses.get(member["name"], {"state": "paused"})
             registration = registered_worker(self.root / "workers" / member["name"])
@@ -268,6 +274,10 @@ class FleetSetupService:
                     account_key=registration.key, account_id=registration.account_id or "",
                     web_port=registration.web_port or 0,
                     running=status["state"] == "running"))
+            variant = read_variant(self.root / "workers" / member["name"])
+            if variant is not None:
+                member["variant"] = variant
+                member["variant_name"] = variant_name(variant, variants)
             if status.get("error"):
                 member["error"] = status["error"]
         snapshot["workers"] = statuses
@@ -286,6 +296,7 @@ class FleetSetupService:
         snapshot["operation"] = (None if self._reroll_operation is None
                                  else {**self._reroll_operation,
                                        "results": list(self._reroll_operation["results"])})
+        snapshot["variant_comparison"] = compare(self.root / "workers", variants)
         return snapshot
 
     def reroll_add(self, names: list[str]) -> dict[str, Any]:
@@ -486,6 +497,10 @@ class FleetSetupService:
                 instance="Fleet", level="info", kind="run_started",
                 message=f"Reroll #{outcome['number']} started: kept {len(keep)}, "
                         f"added {len(add)}, stopped {stopped}")
+            for failed, error in outcome.get("variant_errors", {}).items():
+                RerollJournal(self.root).append(
+                    instance=failed, level="warn", kind="variant_assign_failed",
+                    message=f"No opening variant assigned; plays the opening's own caps: {error}")
             return outcome
 
         return self._reroll_background("new_run", None, operation)

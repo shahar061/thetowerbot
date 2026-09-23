@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { LADDER, attentionRank, decisionFor, failureHint, ladderProgress, standingFor, STONES_WAVE } from "./rerollState";
+import { LADDER, attentionRank, decisionFor, failureHint, hoursMinutes, ladderProgress, playToW20, standingFor, STONES_WAVE } from "./rerollState";
 
 test("a state this build has never heard of is surfaced, not greyed out", () => {
   const unknown = standingFor("warp_core_breach");
@@ -85,4 +85,17 @@ test("failureHint explains known codes and stays silent on unknown ones", () => 
   expect(failureHint("tower_already_opened: Air_2")).toMatch(/already opened/);
   expect(failureHint("mystery")).toBeNull();
   expect(failureHint(null)).toBeNull();
+});
+
+test("play time reads in hours and minutes", () => {
+  expect(hoursMinutes(8040)).toBe("2h 14m");
+  expect(hoursMinutes(59)).toBe("0m");
+  expect(hoursMinutes(3600)).toBe("1h 0m");
+});
+
+test("a card says whether its account reached wave 20", () => {
+  const base = { name: "w", endpoint: "", lease_id: "", state: "running" };
+  expect(playToW20({ ...base, play_seconds_to_t1w20: 8040 })).toBe("W20 in 2h 14m");
+  expect(playToW20({ ...base, play_seconds_so_far: 11400 })).toBe("3h 10m played, not yet W20");
+  expect(playToW20(base)).toBeNull();
 });

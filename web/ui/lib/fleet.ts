@@ -64,6 +64,8 @@ export type RerollMember = { name: string; endpoint: string; lease_id: string; s
   /** Set when a new reroll couldn't prove this bot stopped, so it was kept. */
   leave_error?: string | null;
   /** Deleted from the dashboard's device list; its worker still runs. */
+  variant?: string | null; variant_name?: string | null;
+  play_seconds_to_t1w20?: number | null; play_seconds_so_far?: number | null;
   hidden?: boolean;
 };
 export type RerollRun = { number: number; name: string; status: "active" | "closed";
@@ -73,9 +75,12 @@ export type RetireResult = { name: string; worker?: "stopped" | "killed" | "gone
   instance?: "stopped" | "already_stopped" | "missing"; error?: string };
 export type RerollOperation = { kind: "new_run" | "remove" | "add"; state: "running" | "done" | "failed";
   started_at: string; target?: string | null; results: RetireResult[]; error?: string | null };
+export type VariantRow = { id: string; name: string; caps: string; accounts: number;
+  reached: number; median_seconds: number | null; fastest_seconds: number | null };
 export type RerollSnapshot = { candidates: RerollCandidate[]; members: RerollMember[];
   concurrency_limit?: number; pressure?: { running: number; starting: number; limit: number; available: number };
-  run?: RerollRun | null; operation?: RerollOperation | null };
+  run?: RerollRun | null; operation?: RerollOperation | null;
+  variant_comparison?: VariantRow[] };
 export type RerollJournalEntry = { sequence: number; at: string | number; instance: string;
   level: string; kind: string; message: string; color: string };
 export type RerollJournal = { entries: RerollJournalEntry[] };

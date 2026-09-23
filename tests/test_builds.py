@@ -424,3 +424,33 @@ def test_a_malformed_level_cap_fails_validation(cap: dict, match: str) -> None:
     _a_build(payload)["level_caps"] = cap
     with pytest.raises(ValueError, match=match):
         builds.BuildPack.from_payload(payload)
+
+
+def test_the_opening_offers_three_variants_of_its_caps() -> None:
+    opening = builds.by_id("opening")
+    assert [v.id for v in opening.variants] == ["baseline", "income_first", "attack_heavy"]
+    assert opening.variant("baseline").level_caps == opening.level_caps
+    income = opening.variant("income_first").level_caps
+    assert income["damage"].allowance({"coins_per_wave": 2}) == 3
+    assert income["coins_per_wave"].base == 5
+    heavy = opening.variant("attack_heavy").level_caps
+    assert heavy["attack_speed"].allowance({"coins_per_wave": 1}) == 5
+    assert heavy["coins_per_wave"].base == 2
+    assert opening.variant("gone") is None and opening.variant(None) is None
+    assert builds.by_id("turtle").variants == ()
+
+
+@pytest.mark.parametrize("variants,match", [
+    ([{"id": "a", "name": "A", "level_caps": {}},
+      {"id": "a", "name": "B", "level_caps": {}}], "twice"),
+    ([{"id": "Not A Slug", "name": "A", "level_caps": {}}], "slug"),
+    ([{"id": "a", "name": "", "level_caps": {}}], "name"),
+    ([{"id": "a", "name": "A", "level_caps": {}, "bogus": 1}], "variant 'a' has fields"),
+    ([{"id": "a", "name": "A", "level_caps": {"health": {"base": 2}}}], "unweighted"),
+    ([{"id": "a", "name": "A", "level_caps": {"damage": {"base": -1}}}], "base"),
+])
+def test_a_malformed_variant_fails_validation(variants: list, match: str) -> None:
+    payload = _payload()
+    _a_build(payload)["variants"] = variants
+    with pytest.raises(ValueError, match=match):
+        builds.BuildPack.from_payload(payload)

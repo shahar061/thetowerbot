@@ -64,13 +64,13 @@ def _registration(root: Path, name: str, registered_at: float) -> None:
     (worker / "fleet-registration.json").write_text(json.dumps({"registered_at": registered_at}))
 
 
-def make(root: Path, pool: FakePool, *, release=None, remove=None) -> RerollRuns:
+def make(root: Path, pool: FakePool, *, release=None, remove=None, assign=None) -> RerollRuns:
     return RerollRuns(root, pool=pool,
                       release=release or (lambda member: {"name": member["name"],
                                                           "worker": "stopped"}),
                       remove=remove or (lambda member: {"name": member["name"],
                                                         "worker": "stopped", "instance": "stopped"}),
-                      clock=lambda: "2026-09-23T09:00:00Z")
+                      clock=lambda: "2026-09-23T09:00:00Z", assign=assign)
 
 
 def test_migration_turns_existing_pool_into_active_reroll_one(tmp_path: Path) -> None:
@@ -487,3 +487,33 @@ def test_runs_file_without_hidden_key_still_loads(tmp_path: Path) -> None:
     state["runs"][0].pop("hidden", None)
     runs._save(state)
     assert runs.hidden_names() == set()
+
+
+def test_start_new_assigns_variants_only_to_added_emulators(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_22"})
+    assigned: list[str] = []
+
+    def assign(name: str) -> str:
+        assigned.append(name)
+        return "income_first"
+
+    runs = make(tmp_path, pool, assign=assign)
+    runs.active()
+    outcome = runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
+    assert assigned == ["Tiramisu64_22"]
+    assert outcome["variants"] == {"Tiramisu64_22": "income_first"}
+    assert outcome["variant_errors"] == {}
+
+
+def test_a_failed_assignment_is_reported_and_the_run_still_starts(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20"], fresh={"Tiramisu64_22"})
+
+    def assign(name: str) -> str:
+        raise OSError("disk full")
+
+    runs = make(tmp_path, pool, assign=assign)
+    runs.active()
+    outcome = runs.start_new([], ["Tiramisu64_22"])
+    assert outcome["number"] == 2
+    assert outcome["variant_errors"] == {"Tiramisu64_22": "disk full"}
+    assert [item["name"] for item in pool.members()] == ["Tiramisu64_22"]

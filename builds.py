@@ -40,7 +40,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -58,8 +58,9 @@ _TOP_LEVEL = {"schema_version", "pack_version", "note", "build_sources",
 _BUILD_FIELDS = {"id", "name", "note", "weights", "targets", "focus",
                  "source_refs", "source_url", "validity",
                  "definition_verified", "rule_verified"}
-_OPTIONAL_BUILD_FIELDS = {"level_caps"}
+_OPTIONAL_BUILD_FIELDS = {"level_caps", "variants"}
 _LEVEL_CAP_FIELDS = {"base", "ratio", "per"}
+_VARIANT_FIELDS = {"id", "name", "level_caps"}
 _PREREQUISITE_FIELDS = {"note", "source_refs", "source_url", "validity",
                         "definition_verified", "rule_verified", "requires"}
 _VALIDITY_STATUSES = ("known", "unknown")
@@ -253,6 +254,28 @@ class LevelCap:
 
 
 @dataclass(frozen=True)
+class Variant:
+    """A named alternative to a build's `level_caps`, tried on some accounts.
+
+    Its caps replace the build's caps in full - they never merge - so a
+    variant reads as a complete pacing rule on its own. Which account plays
+    which variant is `fleet/reroll_variants.py`'s business, not the pack's.
+    """
+
+    id: str
+    name: str
+    level_caps: Mapping[str, LevelCap] = MappingProxyType({})
+
+
+def _variant(raw: Mapping[str, Any]) -> Variant:
+    if set(raw) != _VARIANT_FIELDS:
+        raise ValueError(f"variant {raw.get('id')!r} has fields {sorted(raw)}; "
+                         f"expected {sorted(_VARIANT_FIELDS)}")
+    return Variant(raw["id"], raw["name"], MappingProxyType(
+        {k: _level_cap(k, v) for k, v in raw["level_caps"].items()}))
+
+
+@dataclass(frozen=True)
 class Build:
     """One named recipe: an ordered preference list over upgrade ids.
 
@@ -285,6 +308,11 @@ class Build:
     rule_verified: bool
     # Optional in the file; see LevelCap.
     level_caps: Mapping[str, LevelCap] = MappingProxyType({})
+    # Optional in the file; see Variant.
+    variants: tuple[Variant, ...] = ()
+
+    def variant(self, variant_id: str | None) -> Variant | None:
+        return next((v for v in self.variants if v.id == variant_id), None)
 
     @property
     def upgrade_ids(self) -> tuple[str, ...]:
@@ -347,6 +375,17 @@ class Build:
             if type(flag) is not bool:
                 raise ValueError(f"build {self.id!r} verification flags must be boolean")
         self.validity._validate(f"build {self.id!r}")
+        seen_variants: set[str] = set()
+        for variant in self.variants:
+            if not isinstance(variant.id, str) or not _BUILD_ID.fullmatch(variant.id):
+                raise ValueError(f"build {self.id!r} variant id {variant.id!r} must be a lowercase slug")
+            if variant.id in seen_variants:
+                raise ValueError(f"build {self.id!r} lists variant {variant.id!r} twice")
+            seen_variants.add(variant.id)
+            _text(variant.name, f"build {self.id!r} variant {variant.id!r} name")
+            # The same rules as the build's own caps, by validating the build
+            # the variant turns this into.
+            replace(self, level_caps=variant.level_caps, variants=())._validate()
 
 
 @dataclass(frozen=True)
@@ -399,6 +438,8 @@ class BuildPack:
                 if "level_caps" in fields:
                     fields["level_caps"] = MappingProxyType(
                         {k: _level_cap(k, v) for k, v in fields["level_caps"].items()})
+                if "variants" in fields:
+                    fields["variants"] = tuple(_variant(v) for v in fields["variants"])
                 fields["validity"] = Validity(**fields["validity"])
                 fields["source_refs"] = tuple(fields["source_refs"])
                 fields["weights"] = tuple(_weight_pair(p) for p in fields["weights"])
