@@ -208,10 +208,17 @@ test("without an active reroll the page offers Start a reroll and skips the warn
 
 test("a running operation shows a banner and disables starting another", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run,
-    operation: { kind: "new_run", state: "running", started_at: "x", results: [{ name: "Air_2", worker: "stopped" }] } });
+    operation: { kind: "new_run", state: "running", started_at: "x", results: [{ name: "Air_2", worker: "stopped" }] },
+    stop_failures: [{ name: "Air_9", error: "window stuck" }] });
   render(<RerollPage />);
   expect(await screen.findByRole("status", { name: "Reroll operation" })).toHaveTextContent(/Starting a new reroll/);
   expect(screen.getByRole("button", { name: "New reroll" })).toBeDisabled();
+  // The local `busy` flag clears as soon as its own request returns, but the
+  // supervisor's operation can stay running for minutes - every control that
+  // could start a second concurrent action must key off `operation.state`
+  // too, not just the request-in-flight flag.
+  for (const button of screen.getAllByRole("button", { name: "Retire" })) expect(button).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Shut down Air_9" })).toBeDisabled();
 });
 
 test("retire asks first, then calls the retire route", async () => {

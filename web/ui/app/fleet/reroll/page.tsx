@@ -202,7 +202,7 @@ export default function RerollPage() {
     </p>}
     {pool?.stop_failures?.map(item => <p key={item.name} role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">
       {item.name} was retired but its emulator is still running.
-      <Button size="xs" variant="outline" aria-label={`Shut down ${item.name}`} disabled={busy} onClick={() => void act(() => stopRerollInstance(item.name))}>Shut down</Button>
+      <Button size="xs" variant="outline" aria-label={`Shut down ${item.name}`} disabled={busy || operating} onClick={() => void act(() => stopRerollInstance(item.name))}>Shut down</Button>
     </p>)}
 
     <RerollCard title="Pool overview" tone={census.attention ? "warn" : census.live ? "live" : undefined}>
@@ -292,7 +292,7 @@ export default function RerollPage() {
           onRetire={() => void act(() => retireRerollMember(member.name))}
           onJournal={() => setJournalWorker(member.name)}
           onOpenAccount={account ? () => choose(account.key) : undefined}
-          busy={busy}
+          busy={busy || operating}
         />;
       })}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
     </RerollCard>}
