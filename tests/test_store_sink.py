@@ -239,3 +239,18 @@ def test_control_changes_are_persisted(tmp_path: Path) -> None:
     # The events table has no column for `changed`; the JSON detail blob is
     # what absorbs a new event type with no schema migration.
     assert '"paused": true' in rows[0]["detail"]
+
+
+def test_a_mission_claim_keeps_both_of_its_currencies(tmp_path: Path) -> None:
+    """The regression. classify() returns a coins line AND a gems line for one
+    claim, both carrying the claim's seq. With the ledger's unique index keyed
+    on seq alone, INSERT OR IGNORE kept the coins and silently dropped the
+    gems - on every mission claim, through exactly this live path."""
+    path = drain(tmp_path, [
+        events.MissionClaimed(mission="Kill 1,000 enemies", coins=120, gems=5),
+    ])
+
+    with db.reader(path) as conn:
+        moved = {line["currency"]: line["delta"] for line in db.ledger_page(conn)}
+
+    assert moved == {"coins": 120, "gems": 5}

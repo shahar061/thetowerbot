@@ -85,11 +85,25 @@ CREATE TABLE IF NOT EXISTS ledger (
     detail        TEXT
 );
 
--- Partial, because derived UNEXPLAINED lines have no source event and so
--- no seq. It stops an event redelivered across a restart from being
--- counted twice; it deliberately cannot dedupe derived lines, which is why
--- ledger.backfill() guards on the table being empty instead.
-CREATE UNIQUE INDEX IF NOT EXISTS ledger_seq_idx  ON ledger(seq) WHERE seq IS NOT NULL;
+-- One line per currency per source event. It stops an event redelivered
+-- across a restart from being counted twice.
+--
+-- Keyed on the currency as well as the seq, because one event can move
+-- several: a mission claim pays coins AND gems, and classify() returns one
+-- line for each, both carrying the event's seq. Keyed on seq alone - as it
+-- was - INSERT OR IGNORE silently discarded the second line, so every
+-- mission claim's gems vanished from the history. connect() drops that old
+-- index from existing databases.
+--
+-- IFNULL, because SQLite treats NULLs as distinct inside a unique index: on
+-- plain (seq, currency) a redelivered visit boundary or policy change, which
+-- have no currency, would stop being deduplicated and double up.
+--
+-- Partial, because derived UNEXPLAINED lines have no source event and so no
+-- seq. It deliberately cannot dedupe them, which is why ledger.backfill()
+-- guards on the table being empty instead.
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_event_line_idx
+    ON ledger(seq, IFNULL(currency, '')) WHERE seq IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ledger_ts_idx   ON ledger(ts);
 CREATE INDEX IF NOT EXISTS ledger_kind_idx ON ledger(kind);
 
@@ -128,6 +142,10 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    # The index this replaced keyed a ledger line on seq alone, which let only
+    # the first line of a multi-currency event in. Idempotent: it exists on a
+    # database written before the fix and on nothing created since.
+    conn.execute("DROP INDEX IF EXISTS ledger_seq_idx")
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
     if "purpose" not in columns:
         conn.execute(
@@ -491,7 +509,23 @@ def ledger_page(
     rows = conn.execute(
         f"SELECT * FROM ledger {where} ORDER BY id DESC LIMIT ?", params
     ).fetchall()
-    return [_decode(row) for row in rows]
+    lines = [_decode(row) for row in rows]
+
+    # Never end a page halfway through one event. A mission claim is two lines,
+    # one per currency, and a boundary between them shows the gems on this
+    # page and the coins on the next - a reward rendered as two half-rewards
+    # until the reader happens to press "Load more". So a full page whose last
+    # line belongs to an event pulls in that event's remaining lines, under the
+    # same filters. The cursor is still the last line returned, so the next
+    # page resumes after the whole event and never repeats one.
+    if len(lines) == limit and lines[-1]["seq"] is not None:
+        tail = conn.execute(
+            f"SELECT * FROM ledger {where} {'AND' if clauses else 'WHERE'} "
+            "seq = ? AND id < ? ORDER BY id DESC",
+            [*params[:-1], lines[-1]["seq"], lines[-1]["id"]],
+        ).fetchall()
+        lines.extend(_decode(row) for row in tail)
+    return lines
 
 
 def _decode(row: sqlite3.Row) -> dict[str, Any]:

@@ -234,6 +234,97 @@ def test_an_empty_ledger_reports_both_balances_as_unknown(tmp_path: Path) -> Non
     assert db.last_balances(make_db(tmp_path)) == {"coins": None, "gems": None}
 
 
+def test_one_event_may_write_a_line_in_each_currency(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    db.insert_ledger(conn, a_line(seq=501, currency="coins", delta=120))
+    db.insert_ledger(conn, a_line(seq=501, currency="gems", delta=5))
+
+    assert {line["currency"] for line in db.ledger_page(conn)} == {"coins", "gems"}
+
+
+def test_a_redelivered_event_is_still_counted_once_in_every_currency(
+    tmp_path: Path,
+) -> None:
+    """What the unique index is FOR. Widening it to let a second currency in
+    must not also let the same event in twice after a restart."""
+    conn = make_db(tmp_path)
+    for _ in range(2):
+        db.insert_ledger(conn, a_line(seq=501, currency="coins", delta=120))
+        db.insert_ledger(conn, a_line(seq=501, currency="gems", delta=5))
+
+    assert len(db.ledger_page(conn)) == 2
+
+
+def test_a_redelivered_event_with_no_currency_is_still_deduplicated(
+    tmp_path: Path,
+) -> None:
+    """The trap in a plain (seq, currency) key: SQLite treats NULLs as
+    distinct inside a unique index, so a visit boundary - which has no
+    currency - would be let in twice. Hence IFNULL in the index."""
+    conn = make_db(tmp_path)
+    for _ in range(2):
+        db.insert_ledger(conn, a_line(seq=7, kind="VISIT_START", currency=None, delta=None))
+
+    assert len(db.ledger_page(conn)) == 1
+
+
+def test_a_database_written_before_the_fix_gets_the_new_index(tmp_path: Path) -> None:
+    """Existing databases carry the old seq-only index, and CREATE ... IF NOT
+    EXISTS never replaces it. connect() has to drop it, or every account that
+    already has a ledger keeps losing gems after upgrading."""
+    path = tmp_path / "bot.db"
+    old = db.connect(path)
+    old.execute("DROP INDEX ledger_event_line_idx")
+    old.execute(
+        "CREATE UNIQUE INDEX ledger_seq_idx ON ledger(seq) WHERE seq IS NOT NULL"
+    )
+    old.commit()
+    old.close()
+
+    conn = db.connect(path)
+    indexes = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ledger'"
+        )
+    }
+    db.insert_ledger(conn, a_line(seq=501, currency="coins"))
+    db.insert_ledger(conn, a_line(seq=501, currency="gems"))
+
+    assert "ledger_seq_idx" not in indexes
+    assert "ledger_event_line_idx" in indexes
+    assert len(db.ledger_page(conn)) == 2
+
+
+def test_a_page_never_ends_halfway_through_an_event(tmp_path: Path) -> None:
+    """A page boundary between an event's two lines would show a mission's
+    gems on one page and its coins on the next."""
+    conn = make_db(tmp_path)
+    db.insert_ledger(conn, a_line(seq=1, currency="coins"))  # id 1
+    db.insert_ledger(conn, a_line(seq=2, currency="coins"))  # id 2
+    db.insert_ledger(conn, a_line(seq=2, currency="gems"))   # id 3
+    db.insert_ledger(conn, a_line(seq=3, currency="coins"))  # id 4
+
+    first = db.ledger_page(conn, limit=2)
+    second = db.ledger_page(conn, limit=2, before=first[-1]["id"])
+
+    # The limit landed between seq 2's lines; the page finishes the event.
+    assert [line["seq"] for line in first] == [3, 2, 2]
+    # And resumes after it, repeating nothing.
+    assert [line["seq"] for line in second] == [1]
+
+
+def test_finishing_an_event_respects_the_page_filters(tmp_path: Path) -> None:
+    """Filtered to coins, a claim's gem line must not be pulled back in."""
+    conn = make_db(tmp_path)
+    db.insert_ledger(conn, a_line(seq=1, currency="coins"))
+    db.insert_ledger(conn, a_line(seq=2, currency="coins"))
+    db.insert_ledger(conn, a_line(seq=2, currency="gems"))
+
+    page = db.ledger_page(conn, limit=1, currency="coins")
+
+    assert [line["currency"] for line in page] == ["coins"]
+
+
 def test_ledger_rows_survive_the_event_prune(tmp_path: Path) -> None:
     """The whole reason the ledger is its own table: events age out at 30
     days and an account history that forgets last month is not a history."""

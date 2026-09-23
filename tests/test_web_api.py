@@ -501,6 +501,26 @@ def test_the_ledger_route_pages_with_a_cursor(harness) -> None:
     assert second["next"] is None
 
 
+def test_the_ledger_route_keeps_paging_after_finishing_an_event(harness) -> None:
+    """A page extended to finish an event holds MORE than the limit. A cursor
+    computed with `== limit` would report the history as finished there, and
+    everything older would be unreachable."""
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.insert_ledger(conn, a_ledger_line(1))
+    db.insert_ledger(conn, a_ledger_line(2, currency="coins"))
+    db.insert_ledger(conn, a_ledger_line(2, currency="gems"))
+    db.insert_ledger(conn, a_ledger_line(3))
+    conn.close()
+
+    first = client.get("/api/ledger?limit=2").json()
+    assert [line["seq"] for line in first["lines"]] == [3, 2, 2]
+    assert first["next"] is not None
+
+    second = client.get(f"/api/ledger?limit=2&before={first['next']}").json()
+    assert [line["seq"] for line in second["lines"]] == [1]
+
+
 def test_the_ledger_route_answers_no_store_with_an_empty_ledger(harness) -> None:
     """--no-store is a supported mode. An empty account is the honest
     answer; a 500 is not."""
