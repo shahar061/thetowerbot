@@ -55,6 +55,25 @@ test("a background poll delivering a fresh run object keeps the operator's choic
   expect(screen.getByRole("checkbox", { name: /Air_1/ })).toBeChecked();
 });
 
+test("a selection that goes stale after a poll is dropped from the summary, the button and the confirm payload", async () => {
+  const props = { open: true, onClose: vi.fn(), run, members, candidates, busy: false, error: null, onConfirm: vi.fn() };
+  const { rerender } = render(<NewRerollDialog {...props} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Air_1/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Air_3/ }));
+
+  const staleCandidates: RerollCandidate[] = [
+    { name: "Air_3", endpoint: "e3", state: "retired" },
+    { name: "Air_4", endpoint: "e4", state: "retired" },
+  ];
+  rerender(<NewRerollDialog {...props} candidates={staleCandidates} />);
+
+  expect(screen.getByText((_, node) => node?.tagName === "P" && node.textContent === "Keep 1 · Add 0 · Retire 1")).toBeInTheDocument();
+  const confirmButton = screen.getByRole("button", { name: "Start Reroll #3 and retire 1" });
+  fireEvent.click(confirmButton);
+  expect(props.onConfirm).toHaveBeenCalledWith({ keep: ["Air_1"], add: [] });
+});
+
 test("a server refusal is shown inside the dialog", async () => {
   renderDialog({ error: "instance_retired" });
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
