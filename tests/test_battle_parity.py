@@ -79,9 +79,16 @@ def test_a_popup_over_a_battle_reaches_the_preflight(name: str, bot_in_run_on) -
     assert any(expected), "a popup fixture must show a recovery modal"
     bot._battle_full_read_at = time.monotonic()
     between_backstops = popup_flags(bot._preflight_boxes(reading, ocr.FrameReads(bot._screen)))
+    visible = bot._battle_panel_visible(ocr.FrameReads(bot._screen))
+    if not visible:
+        # The bands show no upgrade panel, so the P1 safety net - not the
+        # backstop timer - must have routed this frame to the full read.
+        assert between_backstops == expected, (
+            "the safety net should have sent this frame to the full read")
+    # Else the popup leaves the panel readable: the bands alone are not
+    # guaranteed to catch it between backstops, so detection here is bounded
+    # by the BATTLE_FULL_READ_EVERY backstop - the unconditional
+    # at_backstop == expected assertion below is the guarantee.
     bot._battle_full_read_at = float("-inf")
     at_backstop = popup_flags(bot._preflight_boxes(reading, ocr.FrameReads(bot._screen)))
     assert at_backstop == expected
-    if between_backstops != expected:
-        assert bot._battle_panel_visible(ocr.FrameReads(bot._screen)), (
-            "the safety net should have sent this frame to the full read")
