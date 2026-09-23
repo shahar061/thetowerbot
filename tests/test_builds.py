@@ -330,16 +330,17 @@ def test_a_strategy_naming_an_unknown_build_is_rejected() -> None:
 # `git show` would pin a commit rather than a behaviour, and would start
 # failing for reasons that have nothing to do with the numbers.
 # The opening is no longer the legacy planner's: it is a strict priority -
-# Damage > Attack Speed > Coins/Wave (with its unlocks) > the Thorns chain
-# with two levels of Defense Absolute - with each group spaced far enough
-# apart that value_propagation's 0.6 credit to an unlock cannot reorder them
-# (unlock_cash_bonuses inherits to 81.6, below attack_speed's 90; the whole
+# Damage > Attack Speed > Unlock Defense Upgrades > Coins/Wave (with its
+# unlocks) > the Thorns chain with two levels of Defense Absolute - with each
+# group spaced far enough apart that value_propagation's 0.6 credit to an
+# unlock cannot reorder them (unlock_defense_upgrades inherits to 84.4, below
+# attack_speed's 90; unlock_cash_bonuses to 81.6, below that; the rest of the
 # thorns chain tops out at unlock_thorns' 44, below coins_per_wave's 60).
 _PLANNER_OPENING = (
     ("damage", 100.), ("attack_speed", 90.),
     ("unlock_cash_bonuses", 30.), ("unlock_coin_bonuses", 50.),
     ("coins_per_wave", 60.),
-    ("unlock_defense_upgrades", 10.), ("unlock_thorns", 20.),
+    ("unlock_defense_upgrades", 58.), ("unlock_thorns", 20.),
     ("defense_absolute", 42.), ("thorns", 40.),
 )
 _PLANNER_TURTLE = (

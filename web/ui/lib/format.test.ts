@@ -30,6 +30,14 @@ group("describe", () => {
     expect(line).toContain("value=42");
   });
 
+  it("renders an autopilot decision with its phase, target and reason", () => {
+    const line = describe({
+      type: "AutopilotDecided", seq: 1, ts: 0, phase: "saving",
+      upgrade_id: "damage", reason: "Saving cash for Damage; reserve protected",
+    });
+    expect(line).toBe("PLAN   saving damage Saving cash for Damage; reserve protected");
+  });
+
   it("shows run purpose while keeping historical events without purpose readable", () => {
     expect(describe({ type: "RunStarted", seq: 1, ts: 0, run_id: 7, purpose: "milestone" })).toContain("milestone");
     expect(describe({ type: "RunStarted", seq: 2, ts: 0, run_id: 8 })).toContain("#8 started");

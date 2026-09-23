@@ -153,3 +153,18 @@ def test_pause_is_unknown_on_a_frame_that_never_identified_itself() -> None:
     frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
     result = parse_frame(frame, (), "battle", now=100)
     assert result.paused is None  # not False: nothing was read
+
+
+def test_a_single_digit_value_the_frame_read_misses_is_re_read_off_a_crop() -> None:
+    """Damage "9" gets no box from a whole-frame read, and a row without a
+    value is never bought - so a fresh account's battles bought only Attack
+    Speed. observe_frame re-reads that value off a padded crop."""
+    from perception import observe_frame, parse_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_damage_single_digit.png"))
+    whole_frame = {r.upgrade_id: r for r in parse_frame(frame, ocr.read(frame), "battle").rows}
+    assert whole_frame["damage"].value is None
+    rows = {r.upgrade_id: r for r in observe_frame(frame, "battle").rows}
+    assert rows["damage"].value == 9
+    assert rows["damage"].price == 12
+    assert rows["damage"].status == "available"
+    assert rows["attack_speed"].value == 1.0
