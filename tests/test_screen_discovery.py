@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import pytest
 
+import battle_tab
 import config
 import ocr
 import perception
@@ -280,6 +281,9 @@ def test_existing_battle_categories_keep_semantic_targets(
 ) -> None:
     # Compatibility regression using existing recorded geometry; these are
     # not recordings of Defense/Utility and do not claim recorded coverage.
+    # The frame's heading bar is Attack-blue; silence the colour so the
+    # relabelled text alone names the tab.
+    monkeypatch.setattr(battle_tab, 'classify_frame', lambda _: None)
     frame = cv2.imread(str(FIXTURES / 'in_run_lit.png'))
     boxes = tuple(ocr.TextBox(category + 'UPGRADES' if b.text == 'ATTACKUPGRADES'
                               else label if b.text == 'Damage' else b.text,
@@ -297,6 +301,9 @@ def test_defence_heading_alias_preserves_runtime_health_target(
     name: str, context: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import screen_discovery
+    # in_run_lit's heading bar is Attack-blue; silence the colour so the
+    # relabelled text alone names the tab.
+    monkeypatch.setattr(battle_tab, 'classify_frame', lambda _: None)
     frame = cv2.imread(str(FIXTURES / f'{name}.png'))
     boxes = tuple(ocr.TextBox('DEFENCE UPGRADES' if b.text in ('ATTACKUPGRADES', 'DEFENSEUPGRADES')
                              else 'Health' if b.text == 'Damage' else b.text,

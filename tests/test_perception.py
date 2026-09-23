@@ -211,8 +211,10 @@ def test_a_failed_shared_read_degrades_to_an_unread_frame(monkeypatch: pytest.Mo
     assert result.category is None and result.rows == ()
 
 
-def test_the_panel_is_visible_when_exactly_one_heading_was_read() -> None:
+def test_the_panel_is_visible_when_exactly_one_heading_was_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    import battle_tab
     from perception import panel_visible
+    monkeypatch.setattr(battle_tab, "classify_frame", lambda screen: None)
     frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
     boxes = recorded("in_run_lit")
     heading = next(b for b in boxes if b.text == "ATTACKUPGRADES")
@@ -220,3 +222,68 @@ def test_the_panel_is_visible_when_exactly_one_heading_was_read() -> None:
     assert not panel_visible(frame, (heading, heading))
     assert not panel_visible(frame, tuple(ocr.TextBox(b.text, .5, b.rect) if b is heading else b
                                           for b in boxes))
+
+
+def _without_heading(name: str) -> tuple[ocr.TextBox, ...]:
+    return tuple(b for b in recorded(name) if "UPGRADES" not in b.text.upper())
+
+
+def test_colour_that_agrees_with_the_heading_reads_as_today() -> None:
+    from perception import parse_frame
+    from tests.parity import observation_diff
+    frame = cv2.imread(str(FIXTURES / "in_run_defense.png"))
+    today = parse_frame(frame, recorded("in_run_defense"), "battle", now=1)
+    agreed = parse_frame(frame, recorded("in_run_defense"), "battle", now=1, tab_colour="DEFENSE")
+    assert agreed.category == "DEFENSE"
+    assert observation_diff(today, agreed) == (set(), set())
+
+
+@pytest.mark.parametrize("name,size", [("in_run_defense", (1080, 2400)),
+                                       ("in_run_defense_1920", (1080, 1920))])
+def test_colour_alone_names_the_tab_and_places_the_heading_from_config(
+    name: str, size: tuple[int, int],
+) -> None:
+    from perception import parse_frame
+    from tests.parity import observation_diff
+    frame = cv2.imread(str(FIXTURES / f"{name}.png"))
+    today = parse_frame(frame, recorded(name), "battle", now=1)
+    colour_only = parse_frame(frame, _without_heading(name), "battle", now=1, tab_colour="DEFENSE")
+    assert colour_only.category == "DEFENSE"
+    assert colour_only.heading_y == config.BATTLE_BANDS[size].heading_y
+    assert observation_diff(today, colour_only) == (set(), set())
+
+
+def test_colour_that_disagrees_with_the_heading_refuses_the_frame() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_defense.png"))
+    result = parse_frame(frame, recorded("in_run_defense"), "battle", now=1, tab_colour="ATTACK")
+    assert result.category is None and result.rows == ()
+
+
+def test_observe_frame_falls_back_to_colour_when_ocr_misses_the_heading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from perception import observe_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_defense.png"))
+    reads = ocr.FrameReads(frame)
+    monkeypatch.setattr(reads, "battle", lambda: _without_heading("in_run_defense"))
+    result = observe_frame(frame, "battle", reads=reads)
+    assert result.category == "DEFENSE" and result.rows
+
+
+def test_an_empty_read_never_falls_back_to_colour(monkeypatch: pytest.MonkeyPatch) -> None:
+    from perception import observe_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_defense.png"))
+    reads = ocr.FrameReads(frame)
+    monkeypatch.setattr(reads, "battle", lambda: ())
+    result = observe_frame(frame, "battle", reads=reads)
+    assert result.category is None and result.rows == ()
+
+
+def test_the_panel_is_visible_by_colour_alone() -> None:
+    from perception import panel_visible
+    frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
+    assert panel_visible(frame, ())
+    covered = frame.copy()
+    covered[1640:1720] = 0
+    assert not panel_visible(covered, ())

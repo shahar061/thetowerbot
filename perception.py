@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 
 import cv2
 
+import battle_tab
 import config
 import ocr
 import screen_discovery
@@ -109,16 +110,20 @@ def _headings(boxes: tuple[ocr.TextBox, ...]) -> list[tuple[str, ocr.TextBox]]:
 
 def panel_visible(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> bool:
     """Whether a battle frame shows its upgrade panel: exactly one trusted
-    heading. False means something may cover the panel (spec P1 safety net)."""
-    return len(_headings(tuple(b for b in boxes if b.confidence >= .9))) == 1
+    heading, or a heading bar whose colour names a tab. False means something
+    may cover the panel (spec P1 safety net)."""
+    return (len(_headings(tuple(b for b in boxes if b.confidence >= .9))) == 1
+            or battle_tab.classify_frame(screen) is not None)
 
 
 def parse_frame(
     screen: Image, boxes: tuple[ocr.TextBox, ...], context: str, *, now: float | None = None,
-    digest: str | None = None,
+    digest: str | None = None, tab_colour: str | None = None,
 ) -> Observation:
     """`digest` is the frame's SHA-256 when the caller already has it
-    (ocr.FrameReads.digest); None hashes the frame here, as before."""
+    (ocr.FrameReads.digest); None hashes the frame here, as before.
+    `tab_colour` is battle_tab's reading of the heading bar: a second opinion
+    next to the heading text (spec P2)."""
     now = time.time() if now is None else now
     raw_boxes = boxes
     frame_digest = digest if digest is not None else hashlib.sha256(screen.tobytes()).hexdigest()
@@ -126,10 +131,21 @@ def parse_frame(
                     frame_width=screen.shape[1], frame_height=screen.shape[0])
     boxes = tuple(b for b in boxes if b.confidence >= .9)
     headings = _headings(boxes)
-    if len(headings) != 1:
-        return Observation(None, (), {}, None, now, **evidence)
-    category, heading = headings[0]
-    found = tuple(r for r in tiles.find_tiles(screen) if r.y > heading.rect.y)
+    heading_confidence: float | None
+    if len(headings) == 1:
+        category, heading = headings[0]
+        if tab_colour is not None and tab_colour != category:
+            # Text and colour disagree: refuse rather than guess.
+            return Observation(None, (), {}, None, now, **evidence)
+        heading_y, heading_confidence = heading.rect.y, heading.confidence
+    else:
+        bands = config.BATTLE_BANDS.get((screen.shape[1], screen.shape[0]))
+        if tab_colour is None or context != "battle" or bands is None:
+            return Observation(None, (), {}, None, now, **evidence)
+        # OCR missed the heading (or read two): the bar's colour names the
+        # tab, and the heading sits where it was measured for this size.
+        category, heading_y, heading_confidence = tab_colour, bands.heading_y, None
+    found = tuple(r for r in tiles.find_tiles(screen) if r.y > heading_y)
     rows = []
     for rect in found:
         inside = sorted((b for b in boxes if contains(rect, b.rect)), key=lambda b: (b.rect.y, b.rect.x))
@@ -162,7 +178,8 @@ def parse_frame(
             entry.name if entry else raw_name, category, context, value, price, status, now,
             rect, (price_box.rect.x + price_box.rect.w // 2,
                    price_box.rect.y + price_box.rect.h // 2) if entry and price_box and price is not None else None,
-            confidence=min([heading.confidence, *(b.confidence for b in raw_boxes if contains(rect, b.rect))]),
+            confidence=min([*(() if heading_confidence is None else (heading_confidence,)),
+                            *(b.confidence for b in raw_boxes if contains(rect, b.rect))]),
             raw_name=raw_name, raw_value=value_boxes[0].text if len(value_boxes) == 1 else None,
         ))
     counts = Counter(row.upgrade_id for row in rows)
@@ -185,11 +202,11 @@ def parse_frame(
         # in_run_attack_paused. Two candidates mean the band is not the
         # widget; refuse rather than pick one.
         speeds = [m for m in (_SPEED.fullmatch(b.text.strip()) for b in boxes
-                              if heading.rect.y - 285 < b.rect.y < heading.rect.y - 235) if m]
+                              if heading_y - 285 < b.rect.y < heading_y - 235) if m]
         if len(speeds) == 1:
             combat["game_speed"] = float(speeds[0][1])
         # Constrain unlabeled numbers to their HUD, never the upgrade grid.
-        hud = [b for b in boxes if heading.rect.y - 260 < b.rect.y < heading.rect.y]
+        hud = [b for b in boxes if heading_y - 260 < b.rect.y < heading_y]
         # Health recovery per second, in the same half of the HUD as the
         # health total it feeds. The regen tiles in the grid below carry the
         # same "/sec" text, which is exactly why this is bounded to the HUD.
@@ -221,7 +238,7 @@ def parse_frame(
                       and b.rect.x < screen.shape[1] * .4 and b.text.strip().startswith("$")]
         if len(cash_boxes) == 1:
             cash = price_number(cash_boxes[0].text)
-    return Observation(category, tuple(rows), combat, cash, now, heading.rect.y,
+    return Observation(category, tuple(rows), combat, cash, now, heading_y,
                        paused=paused, **evidence)
 
 
@@ -272,14 +289,22 @@ def observe_frame(screen: Image, context: str, *, locale: str = 'en',
         reads = None
     digest = reads.digest if reads is not None else None
     boxes = ocr.read(screen) if reads is None else _shared_boxes(reads, context)
+    tab_colour = battle_tab.classify_frame(screen) if context == "battle" else None
     discovery = screen_discovery.discover(screen, boxes, context, locale=locale)
+    # The heading colour stands in for a heading OCR missed or doubled
+    # (spec P2), and for no other reason discover() refuses a frame. An empty
+    # read (or a failed one) is never rescued: discover() calls it an
+    # unreadable heading too, but nothing was read to price or tap.
+    colour_only = (bool(boxes) and tab_colour is not None
+                   and discovery.reason == "ambiguous_or_unreadable_heading")
     # Empty OCR preserves frame evidence while preventing unsupported frames
     # from promoting account facts or exposing price/tap targets.
-    if not discovery.readable:
+    if not discovery.readable and not colour_only:
         return parse_frame(screen, (), context, digest=digest)
-    observation = parse_frame(screen, boxes, context, digest=digest)
+    observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
     recovered = _reread_values(screen, observation)
-    return parse_frame(screen, boxes + recovered, context, digest=digest) if recovered else observation
+    return (parse_frame(screen, boxes + recovered, context, digest=digest, tab_colour=tab_colour)
+            if recovered else observation)
 
 
 def read_cash(
