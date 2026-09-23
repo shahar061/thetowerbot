@@ -17,11 +17,12 @@ def test_pool_persists_exact_installed_members_and_excludes_template(tmp_path: P
 
     with pytest.raises(RerollPoolError, match="protected_template"):
         pool.add(["Tiramisu64_6"])
-    added = pool.add(["Tiramisu64_20"])
-    assert added["members"][0]["endpoint"] == "127.0.0.1:5755"
+    pool.add(["Tiramisu64_20"])
+    assert pool.members()[0]["endpoint"] == "127.0.0.1:5755"
     assert RerollPool(tmp_path, inventory=lambda: rows,
                       package_state=lambda endpoint: "installed_unopened",
-                      protected_names=lambda: {"Tiramisu64_6"}).snapshot()["members"] == added["members"]
+                      protected_names=lambda: {"Tiramisu64_6"}).snapshot()["members"] == \
+        pool.snapshot()["members"]
 
 
 def test_pool_rejects_opened_tower_and_changed_host_identity(tmp_path: Path) -> None:
@@ -46,7 +47,8 @@ def test_pool_reports_stopped_instance_as_needing_start(tmp_path: Path) -> None:
                       protected_names=lambda: set())
 
     assert pool.snapshot()["candidates"][0]["state"] == "start_required"
-    assert pool.add(["Tiramisu64_20"])["members"][0]["state"] == "start_required"
+    pool.add(["Tiramisu64_20"])
+    assert pool.snapshot()["members"][0]["state"] == "start_required"
 
 
 def test_registered_running_member_skips_repeated_package_probe(tmp_path: Path) -> None:
@@ -95,6 +97,52 @@ def test_replace_rejects_unknown_keep_empty_result_and_leaves_file_unchanged(tmp
     with pytest.raises(RerollPoolError, match="instance_already_in_pool"):
         pool.replace([], ["Tiramisu64_20"])
     assert (tmp_path / "reroll-pool.json").read_bytes() == before
+
+
+def test_remove_and_replace_succeed_even_when_the_next_inventory_read_fails(tmp_path: Path) -> None:
+    """remove/replace must not lose their already-saved write to a later host
+    read failing. Before the fix both ended with `return self.snapshot()`,
+    which re-reads the host inventory *after* the file was written; a failure
+    there raised RerollPoolError even though membership had already changed
+    on disk."""
+    rows = [HostInstance("Tiramisu64_20", "127.0.0.1:5755", "a", "running"),
+            HostInstance("Tiramisu64_21", "127.0.0.1:5765", "b", "running"),
+            HostInstance("Tiramisu64_22", "127.0.0.1:5775", "c", "running"),
+            HostInstance("Tiramisu64_23", "127.0.0.1:5785", "d", "running")]
+    pool = RerollPool(tmp_path, inventory=lambda: rows,
+                      package_state=lambda endpoint: "installed_unopened",
+                      protected_names=lambda: set())
+    pool.add(["Tiramisu64_20", "Tiramisu64_21", "Tiramisu64_22"])
+
+    # remove() touches no host inventory at all, so it must succeed outright
+    # even once every further inventory read raises.
+    pool.inventory = _raise_after_first_call(rows)
+    pool.remove("Tiramisu64_22")
+    assert [item["name"] for item in pool.members()] == ["Tiramisu64_20", "Tiramisu64_21"]
+    assert RerollPool(tmp_path, inventory=lambda: rows,
+                      package_state=lambda endpoint: "installed_unopened",
+                      protected_names=lambda: set()).members() == pool.members()
+
+    # replace() with a nonempty `add` needs exactly one inventory read to
+    # validate the new member; the old trailing snapshot() call would have
+    # been a second, failing read after the save already landed.
+    pool.inventory = _raise_after_first_call(rows)
+    pool.replace(["Tiramisu64_20"], ["Tiramisu64_23"])
+    assert [item["name"] for item in pool.members()] == ["Tiramisu64_20", "Tiramisu64_23"]
+    assert RerollPool(tmp_path, inventory=lambda: rows,
+                      package_state=lambda endpoint: "installed_unopened",
+                      protected_names=lambda: set()).members() == pool.members()
+
+
+def _raise_after_first_call(rows: list[HostInstance]):
+    calls = {"count": 0}
+
+    def inventory() -> list[HostInstance]:
+        calls["count"] += 1
+        if calls["count"] > 1:
+            raise RuntimeError("host busy")
+        return rows
+    return inventory
 
 
 def test_validate_add_matches_add_without_writing(tmp_path: Path) -> None:

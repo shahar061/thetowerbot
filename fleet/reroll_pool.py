@@ -134,15 +134,20 @@ class RerollPool:
         with self._lock:
             self._new_entries(names, {item["name"] for item in self._members()})
 
-    def add(self, names: list[str]) -> dict[str, list[dict[str, str]]]:
+    def add(self, names: list[str]) -> None:
         with self._lock:
             members = self._members()
             members.extend(self._new_entries(names, {item["name"] for item in members}))
             self._save(members)
-            return self.snapshot()
 
-    def replace(self, keep: list[str], add: list[str]) -> dict[str, list[dict[str, str]]]:
-        """Rewrite membership as ``keep`` (entries unchanged) followed by ``add``."""
+    def replace(self, keep: list[str], add: list[str]) -> None:
+        """Rewrite membership as ``keep`` (entries unchanged) followed by ``add``.
+
+        Returns ``None``: the pool file is saved first, and the caller must not
+        lose that saved state to a later host-inventory read failing (a
+        trailing ``snapshot()`` re-reads the host, which can fail after the
+        write already landed).
+        """
         with self._lock:
             by_name = {item["name"]: item for item in self._members()}
             if len(set(keep)) != len(keep) or any(name not in by_name for name in keep):
@@ -151,13 +156,12 @@ class RerollPool:
             if not keep and not new:
                 raise RerollPoolError("run_would_be_empty")
             self._save([by_name[name] for name in keep] + new)
-            return self.snapshot()
 
-    def remove(self, name: str) -> dict[str, list[dict[str, str]]]:
+    def remove(self, name: str) -> None:
+        """Remove ``name`` from the pool and save. Returns ``None`` -- see ``replace``."""
         with self._lock:
             members = self._members()
             retained = [item for item in members if item["name"] != name]
             if len(retained) == len(members):
                 raise RerollPoolError("instance_not_in_pool")
             self._save(retained)
-            return self.snapshot()
