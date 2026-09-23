@@ -1,0 +1,83 @@
+flowchart TD
+  B01["Base B01: build identity"]:::done
+  B03["Base B03: account/run state"]:::done
+  M01["M01 Worker identity + isolated roots"]:::ready
+  B01 --> M01
+  B03 --> M01
+
+  M02["M02 Capture provider + benchmark"]:::remaining
+  M01 --> M02
+  B05["Base B05: transaction journal"]:::external
+  B06["Base B06: device recovery"]:::external
+  M03["M03 BlueStacks lifecycle + provisioning adapter"]:::remaining
+  M01 --> M03
+  B05 --> M03
+  B06 --> M03
+
+  B08["Base B08: replay fixtures"]:::external
+  R00["R00 New Tower account + ID verification"]:::remaining
+  M01 --> R00
+  M03 --> R00
+  B05 --> R00
+  B08 --> R00
+  M05["M05 Qualify concurrent clone sessions"]:::remaining
+  M03 --> M05
+  R00 --> M05
+  F01["Base F01: run context"]:::external
+  R01["R01 Fresh account + tutorial"]:::remaining
+  M01 --> R01
+  R00 --> R01
+  B05 --> R01
+  B08 --> R01
+  F01 --> R01
+
+  B07["Base B07: currency reserves"]:::external
+  F02["Base F02: battle execution"]:::external
+  F03["Base F03: Workshop progression"]:::external
+  F04["Base F04: maintenance routing"]:::external
+  R02["R02 Early reroll progression"]:::remaining
+  R01 --> R02
+  B07 --> R02
+  F02 --> R02
+  F03 --> R02
+  F04 --> R02
+
+  T01["Base T01: daily/weekly objectives"]:::external
+  T02["Base T02: event shop"]:::external
+  T03["Base T03: tournaments"]:::external
+  R03["R03 Reroll stone plan"]:::remaining
+  R02 --> R03
+  B07 --> R03
+  T01 --> R03
+  T02 --> R03
+  T03 --> R03
+
+  U01["Base U01: UW reader"]:::external
+  R04["R04 UW choice + candidate protection"]:::remaining
+  R03 --> R04
+  B05 --> R04
+  B07 --> R04
+  U01 --> R04
+
+  M04["M04 Campaign supervisor"]:::remaining
+  M03 --> M04
+  R04 --> M04
+  O07["O07 Dashboard template cloning"]:::remaining
+  M03 --> O07
+  M05 --> O07
+  O06["O06 Fleet control room"]:::remaining
+  M04 --> O06
+  O07 --> O06
+  V03["Base V03: recovery faults"]:::external
+  V08["V08 Two-worker campaign qualification"]:::remaining
+  M02 --> V08
+  M04 --> V08
+  O07 --> V08
+  O06 --> V08
+  B08 --> V08
+  V03 --> V08
+
+  classDef done fill:#173b2b,stroke:#52d191,color:#effff7
+  classDef ready fill:#18335d,stroke:#75a9ff,color:#eff6ff
+  classDef remaining fill:#292f3d,stroke:#737d92,color:#edf1f7
+  classDef external fill:#3b2f1a,stroke:#d4a34f,color:#fff6dd

@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-09-17",
+  "purpose": "BlueStacks multi-instance reroll campaign execution graph. Internal task IDs live here; external task IDs resolve against ../tower-autonomy/manifest.json.",
+  "tasks": [
+    {
+      "id": "M01",
+      "title": "Isolate worker identity and runtime roots",
+      "status": "not_started",
+      "depends_on": [],
+      "requires_tower_tasks": [
+        "B01",
+        "B03"
+      ],
+      "task_file": "tasks/M01.md"
+    },
+    {
+      "id": "M05",
+      "title": "Qualify clone provisioning with unique Tower identities",
+      "status": "completed",
+      "depends_on": [
+        "M03",
+        "R00"
+      ],
+      "requires_tower_tasks": [],
+      "task_file": "tasks/M05.md"
+    },
+    {
+      "id": "M02",
+      "title": "Create a capture-provider boundary and benchmark PNG capture",
+      "status": "not_started",
+      "depends_on": [
+        "M01"
+      ],
+      "requires_tower_tasks": [],
+      "task_file": "tasks/M02.md"
+    },
+    {
+      "id": "M03",
+      "title": "Add BlueStacks lifecycle and provisioning adapter",
+      "status": "completed",
+      "depends_on": [
+        "M01"
+      ],
+      "requires_tower_tasks": [
+        "B05",
+        "B06"
+      ],
+      "task_file": "tasks/M03.md"
+    },
+    {
+      "id": "R00",
+      "title": "Create and verify a unique Tower account per instance",
+      "status": "completed",
+      "depends_on": [
+        "M01",
+        "M03"
+      ],
+      "requires_tower_tasks": [
+        "B05",
+        "B08"
+      ],
+      "task_file": "tasks/R00.md"
+    },
+    {
+      "id": "R01",
+      "title": "Bind fresh accounts and complete the tutorial safely",
+      "status": "not_started",
+      "depends_on": [
+        "M01",
+        "R00"
+      ],
+      "requires_tower_tasks": [
+        "B05",
+        "B08",
+        "F01"
+      ],
+      "task_file": "tasks/R01.md"
+    },
+    {
+      "id": "R02",
+      "title": "Progress disposable accounts to reroll prerequisites",
+      "status": "not_started",
+      "depends_on": [
+        "R01"
+      ],
+      "requires_tower_tasks": [
+        "B07",
+        "F02",
+        "F03",
+        "F04"
+      ],
+      "task_file": "tasks/R02.md"
+    },
+    {
+      "id": "R03",
+      "title": "Plan and collect reroll stones from available sources",
+      "status": "not_started",
+      "depends_on": [
+        "R02"
+      ],
+      "requires_tower_tasks": [
+        "B07",
+        "T01",
+        "T02",
+        "T03"
+      ],
+      "task_file": "tasks/R03.md"
+    },
+    {
+      "id": "R04",
+      "title": "Select target UW offers and preserve candidates",
+      "status": "not_started",
+      "depends_on": [
+        "R03"
+      ],
+      "requires_tower_tasks": [
+        "B05",
+        "B07",
+        "U01"
+      ],
+      "task_file": "tasks/R04.md"
+    },
+    {
+      "id": "M04",
+      "title": "Run a restartable reroll campaign supervisor",
+      "status": "not_started",
+      "depends_on": [
+        "M03",
+        "R04"
+      ],
+      "requires_tower_tasks": [],
+      "task_file": "tasks/M04.md"
+    },
+    {
+      "id": "O07",
+      "title": "Add BlueStacks template cloning to the Fleet dashboard",
+      "status": "not_started",
+      "depends_on": [
+        "M03",
+        "M05"
+      ],
+      "requires_tower_tasks": [],
+      "task_file": "tasks/O07.md"
+    },
+    {
+      "id": "O06",
+      "title": "Build the fleet control room",
+      "status": "not_started",
+      "depends_on": [
+        "M04",
+        "O07"
+      ],
+      "requires_tower_tasks": [],
+      "task_file": "tasks/O06.md"
+    },
+    {
+      "id": "V08",
+      "title": "Qualify a two-worker reroll campaign",
+      "status": "not_started",
+      "depends_on": [
+        "M02",
+        "M04",
+        "O06"
+      ],
+      "requires_tower_tasks": [
+        "B08",
+        "V03"
+      ],
+      "task_file": "tasks/V08.md"
+    }
+  ]
+}

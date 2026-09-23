@@ -404,6 +404,18 @@ MODAL_TIER_REGION: Region = Region(dx=110, dy=-4, w=150, h=60)
 # caption, so this spans the full column rather than hugging the digits.
 MODAL_COINS_REGION: Region = Region(dx=-30, dy=52, w=250, h=68)
 
+# The MILESTONES button's red count badge, from the button template's
+# top-left (config.NAV_TARGETS['MILESTONES'], cut tight on the label, so the
+# badge sits past the template's right edge). A ~46px disc centred at
+# (+340, -10) on tests/fixtures/menu_main_bluestacks_1920.png, which shows a
+# badged "2".
+# The box is that disc with ~17px of slack on each side, and nothing else red
+# on the main menu - the MISSIONS, settings and mail badges - comes near it.
+MILESTONES_BADGE_REGION: Region = Region(dx=299, dy=-51, w=80, h=80)
+# Strongly red pixels the box must hold to call a badge present: about a third
+# of the disc, which leaves the white count and anti-aliased rim out of it.
+MILESTONES_BADGE_MIN_PIXELS: int = 550
+
 # --- Menu navigation ------------------------------------------------------
 # Everything here is located by template match and tapped at the match centre,
 # never by fixed coordinates - the same rule the death modal forced on us.
