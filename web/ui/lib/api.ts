@@ -78,6 +78,11 @@ export const addRerollMembers = (names: string[]) =>
 /** The emulator shuts down and can be added back. */
 export const removeRerollMember = (name: string) =>
   send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}`, "DELETE", undefined, "fleet");
+/** Dashboard only: the workers and emulators keep running. */
+export const hideRerollMembers = (names: string[]) =>
+  send<RerollSnapshot>("/api/fleet/reroll/hidden", "POST", { names }, "fleet");
+export const restoreRerollMembers = (names: string[]) =>
+  send<RerollSnapshot>("/api/fleet/reroll/hidden", "DELETE", { names }, "fleet");
 export const startNewReroll = (value: { keep: string[]; add: string[]; name?: string }) =>
   send<RerollSnapshot>("/api/fleet/reroll/runs", "POST", value, "fleet");
 export const listRerolls = () =>

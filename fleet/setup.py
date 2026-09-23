@@ -278,9 +278,11 @@ class FleetSetupService:
         snapshot["run"] = None if active is None else {
             key: active[key] for key in ("number", "name", "started_at", "status")}
         failures = runs.leave_failures()
+        hidden = runs.hidden_names()
         for member in snapshot["members"]:
             if member["name"] in failures:
                 member["leave_error"] = failures[member["name"]]
+            member["hidden"] = member["name"] in hidden
         snapshot["operation"] = (None if self._reroll_operation is None
                                  else {**self._reroll_operation,
                                        "results": list(self._reroll_operation["results"])})
@@ -300,6 +302,11 @@ class FleetSetupService:
             return {"results": []}
 
         return self._reroll_background("add", names[0] if len(names) == 1 else None, operation)
+
+    def reroll_hide(self, names: list[str], hidden: bool) -> dict[str, Any]:
+        """Hide or restore devices on the dashboard; workers and emulators are untouched."""
+        self._runs().set_hidden(names, hidden)
+        return self.reroll_snapshot()
 
     def reroll_remove(self, name: str) -> dict[str, Any]:
         """Take ``name`` out of the reroll and shut it down; it can be added back."""

@@ -82,6 +82,9 @@ class RerollRuns:
         # "removed" was added later; files written before it have no such key.
         if not isinstance(run.get("removed", []), list) or not all(isinstance(m, str) for m in run.get("removed", [])):
             return False
+        # "hidden" (dashboard-only) was added later too.
+        if not isinstance(run.get("hidden", []), list) or not all(isinstance(m, str) for m in run.get("hidden", [])):
+            return False
         if not isinstance(run.get("retire_failed"), dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in run["retire_failed"].items()):
             return False
         return True
@@ -109,6 +112,7 @@ class RerollRuns:
         value.setdefault("retired_before_runs", [])
         for run in value["runs"]:
             run.setdefault("removed", [])
+            run.setdefault("hidden", [])
         return value
 
     def _save(self, state: dict[str, Any]) -> None:
@@ -149,7 +153,7 @@ class RerollRuns:
                  name: str | None = None, retire_failed: dict[str, str] | None = None) -> dict[str, Any]:
         return {"number": number, "name": name or f"Reroll #{number}", "status": "active",
                 "started_at": started_at or self.clock(), "members": list(members),
-                "retired": [], "removed": [], "retire_failed": dict(retire_failed or {})}
+                "retired": [], "removed": [], "hidden": [], "retire_failed": dict(retire_failed or {})}
 
     @staticmethod
     def _active_of(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -215,6 +219,11 @@ class RerollRuns:
         """Members whose bot couldn't be proven stopped when a new run started."""
         active = self.active()
         return dict(active["retire_failed"]) if active else {}
+
+    def hidden_names(self) -> set[str]:
+        """Members the dashboard leaves off its device list; they still run."""
+        active = self.active()
+        return set(active["hidden"]) if active else set()
 
     # -- mutations -----------------------------------------------------
     def validate_new(self, keep: list[str], add: list[str]) -> None:
@@ -325,8 +334,30 @@ class RerollRuns:
             state = self._load(repair=False)
             active = self._active_of(state)
             for name in names:
+                if name in active["hidden"]:
+                    active["hidden"].remove(name)
                 if name in active["removed"]:
                     active["removed"].remove(name)
                 elif name not in active["members"]:
                     active["members"].append(name)
+            self._save(state)
+
+    def set_hidden(self, names: list[str], hidden: bool) -> None:
+        """Hide or restore members on the dashboard only; nothing is stopped.
+
+        Not refused while an operation runs: every mutation reloads the file
+        under the lock before saving, so this can't clobber one.
+        """
+        with self._lock:
+            state = self._load()
+            active = self._active_of(state)
+            if active is None:
+                raise RerollRunsError("no_active_run")
+            live = self._live(active)
+            if not names or any(name not in live for name in names):
+                raise RerollRunsError("instance_not_in_active_run")
+            if hidden:
+                active["hidden"].extend(dict.fromkeys(n for n in names if n not in active["hidden"]))
+            else:
+                active["hidden"] = [n for n in active["hidden"] if n not in names]
             self._save(state)

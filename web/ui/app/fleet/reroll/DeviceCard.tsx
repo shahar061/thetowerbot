@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, RotateCcw, Trash2 } from "lucide-react";
 import { Meter } from "@/components/Meter";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -148,6 +148,7 @@ export function DeviceCard({
   onStart,
   onPause,
   onRemove,
+  onHide,
   onJournal,
   onOpenAccount,
   busy,
@@ -160,6 +161,8 @@ export function DeviceCard({
   onStart: () => void;
   onPause: () => void;
   onRemove: () => void;
+  /** Deletes the card from the list (or restores it); the worker is untouched. */
+  onHide: () => void;
   onJournal: () => void;
   onOpenAccount?: () => void;
   busy: boolean;
@@ -208,6 +211,16 @@ export function DeviceCard({
               Open account {accountId}
             </Link>
           ) : null}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={busy}
+            aria-label={member.hidden ? `Restore ${member.name}` : `Delete ${member.name} from the list`}
+            title={member.hidden ? "Show this device in the list again" : "Delete from the list - the worker and emulator keep running"}
+            onClick={onHide}
+          >
+            {member.hidden ? <RotateCcw aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
+          </Button>
           <Button
             variant="ghost"
             size="icon-sm"

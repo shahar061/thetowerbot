@@ -157,6 +157,27 @@ def test_manual_reroll_pool_api_routes_are_reachable() -> None:
         "candidates"] == [{"name": "Tiramisu64_20"}]
 
 
+def test_reroll_hide_routes_hide_and_restore_and_map_refusals_to_409() -> None:
+    class Pool:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def reroll_hide(self, names: list[str], hidden: bool) -> dict:
+            if names == ["bad"]:
+                raise ValueError("instance_not_in_active_run")
+            self.calls.append((names, hidden))
+            return {"candidates": [], "members": []}
+
+    pool = Pool()
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=pool))
+    assert client.post("/api/fleet/reroll/hidden", json={"names": ["A", "B"]}).status_code == 200
+    assert client.request("DELETE", "/api/fleet/reroll/hidden", json={"names": ["A"]}).status_code == 200
+    assert pool.calls == [(["A", "B"], True), (["A"], False)]
+    refused = client.post("/api/fleet/reroll/hidden", json={"names": ["bad"]})
+    assert refused.status_code == 409 and refused.json()["detail"] == "instance_not_in_active_run"
+
+
 def test_manual_reroll_actions_and_journal_routes() -> None:
     class Pool:
         def __init__(self) -> None:
@@ -200,6 +221,7 @@ class _Runs:
         self.release = Event()
         self.release.set()
         self.busy = False
+        self.hidden: set[str] = set()
         self.run = {"number": 2, "name": "Reroll #2", "started_at": "2026-09-23T09:00:00Z",
                     "status": "active", "members": ["Tiramisu64_20"]}
 
@@ -208,6 +230,13 @@ class _Runs:
 
     def leave_failures(self):
         return {"Tiramisu64_20": "identity_changed"}
+
+    def hidden_names(self):
+        return set(self.hidden)
+
+    def set_hidden(self, names, hidden):
+        self.calls.append(("set_hidden", names, hidden))
+        self.hidden = self.hidden | set(names) if hidden else self.hidden - set(names)
 
     def summaries(self):
         return [{"number": 2}, {"number": 1}]
@@ -264,6 +293,16 @@ def test_snapshot_flags_bots_that_would_not_stop_and_blocks_no_candidate(tmp_pat
     assert snapshot["members"][0]["leave_error"] == "identity_changed"
     assert "stop_failures" not in snapshot and "retire_state" not in snapshot["members"][0]
     assert snapshot["operation"] is None
+
+
+def test_snapshot_marks_members_hidden_from_the_dashboard(tmp_path: Path) -> None:
+    runs = _Runs()
+    service = _service_with_runs(tmp_path, runs)
+    assert service.reroll_snapshot()["members"][0]["hidden"] is False
+    snapshot = service.reroll_hide(["Tiramisu64_20"], True)
+    assert runs.calls == [("set_hidden", ["Tiramisu64_20"], True)]
+    assert snapshot["members"][0]["hidden"] is True
+    assert service.reroll_hide(["Tiramisu64_20"], False)["members"][0]["hidden"] is False
 
 
 def test_new_run_validates_synchronously_then_runs_in_background(tmp_path: Path) -> None:

@@ -1377,6 +1377,22 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    def _reroll_hide(names: list[str], hidden: bool) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "reroll_hide", None)):
+            raise HTTPException(status_code=503, detail="reroll_pool_unavailable")
+        try:
+            return fleet.reroll_hide(names, hidden)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/fleet/reroll/hidden")
+    def fleet_reroll_hide(body: RerollAddRequest) -> dict[str, Any]:
+        return _reroll_hide(body.names, True)
+
+    @app.delete("/api/fleet/reroll/hidden")
+    def fleet_reroll_unhide(body: RerollAddRequest) -> dict[str, Any]:
+        return _reroll_hide(body.names, False)
+
     @app.patch("/api/fleet/reroll/concurrency")
     def fleet_reroll_concurrency(body: RerollConcurrencyRequest) -> dict[str, Any]:
         if fleet is None or not callable(getattr(fleet, "reroll_set_concurrency", None)):
