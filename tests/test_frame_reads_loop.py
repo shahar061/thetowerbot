@@ -205,16 +205,29 @@ def test_menu_preflight_reads_the_full_frame(bot_on_main_menu: Any) -> None:
     assert calls == ["full"]
 
 
-def test_a_pending_workshop_grant_keeps_the_in_run_preflight_on_the_full_frame(
-    bot_in_run_on: Any,
-) -> None:
-    """The grant's markers sit between the two bands (fleet/tutorial.py)."""
+def test_the_workshop_grant_popup_is_read_from_the_full_frame(bot_in_run_on: Any) -> None:
+    """The grant's markers sit between the two bands (fleet/tutorial.py), but
+    its popup does not classify as IN_RUN, so the preflight reads the whole frame."""
+    import cv2
+    import vision
+    grant = cv2.imread(str(FIXTURES / "workshop_coin_grant_bluestacks_1920.png"))
+    reading = screens.classify(grant, vision.TemplateCache(config.TEMPLATE_DIR))
+    assert reading.state is not screens.ScreenState.IN_RUN
+    bot = bot_in_run_on("in_run_lit")
+    bot.reroll_progress = object()
+    bot._battle_full_read_at = time.monotonic()
+    calls: list[str] = []
+    bot._preflight_boxes(reading, _scripted_reads(grant, (), calls))
+    assert calls == ["full"]
+
+
+def test_a_reroll_account_reads_battle_frames_from_the_bands(bot_in_run_on: Any) -> None:
     bot = bot_in_run_on("in_run_lit")
     bot.reroll_progress = object()
     bot._battle_full_read_at = time.monotonic()
     calls: list[str] = []
     bot._preflight_boxes(IN_RUN_READING, _scripted_reads(bot._screen, recorded("in_run_lit"), calls))
-    assert calls == ["full"]
+    assert "full" not in calls
 
 
 @pytest.mark.parametrize("name", sorted(p.stem for p in FIXTURES.glob("in_run_*.png")))

@@ -618,12 +618,11 @@ class TowerBot:
         config.BATTLE_FULL_READ_EVERY seconds, the backstop for a popup that
         leaves the panel readable.
 
-        A reroll account also reads the whole frame: its one-time Workshop
-        coin grant (fleet.tutorial) has markers between the two bands, and
-        nothing records that the grant was claimed.
+        A reroll account's Workshop coin grant (fleet.tutorial) has markers
+        between the two bands; its popup does not classify as IN_RUN, so it
+        takes the whole-frame path.
         """
-        if (reading.state is not screens.ScreenState.IN_RUN
-                or self.reroll_progress is not None):
+        if reading.state is not screens.ScreenState.IN_RUN:
             return reads.full()
         now = time.monotonic()
         if now - self._battle_full_read_at >= config.BATTLE_FULL_READ_EVERY:
