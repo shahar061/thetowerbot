@@ -666,7 +666,10 @@ class TowerBot:
         reading = screens.classify(self.screen, self.templates)
         # One OCR result and one digest for this frame, shared by the
         # preflight, the menu readers and the autopilot - see ocr.FrameReads.
-        reads = ocr.FrameReads(self.screen)
+        # Menu frames may reuse the last full read while nothing on screen
+        # changed (spec P3); battle frames always read their bands fresh.
+        reads = ocr.FrameReads(self.screen,
+                               reuse=reading.state is not screens.ScreenState.IN_RUN)
         tutorial_claim = None
         if self.supervisor is not None:
             observed_screen = reading.state.value

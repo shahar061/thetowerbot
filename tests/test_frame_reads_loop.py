@@ -238,3 +238,23 @@ def test_in_run_popup_flags_match_the_full_frame(name: str, bot_in_run_on: Any) 
     bot._battle_full_read_at = time.monotonic()
     new = popup_flags(bot._preflight_boxes(IN_RUN_READING, ocr.FrameReads(bot._screen)))
     assert new == popup_flags(ocr.FrameReads(bot._screen).full())
+
+
+def test_a_menu_scan_reuses_the_last_read_of_an_unchanged_frame(
+    bot_on_main_menu: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping())
+    monkeypatch.setattr(ocr, "read", _frame_reader(bot, (), []))
+    bot.run_once()
+    stored = ocr._last_full
+    assert stored is not None
+    bot.run_once()
+    assert ocr._last_full is stored
+
+
+def test_a_battle_scan_never_stores_a_read(bot_in_run_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = bot_in_run_on("in_run_lit")
+    bot.supervisor = _Supervisor()
+    monkeypatch.setattr(ocr, "read", _frame_reader(bot, recorded("in_run_lit"), []))
+    bot.run_once()
+    assert ocr._last_full is None
