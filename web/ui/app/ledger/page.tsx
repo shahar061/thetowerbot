@@ -1,33 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CurrencyAmount } from "@/components/CurrencyAmount";
+import { CurrencyGlyph } from "@/components/CurrencyGlyph";
 import { PageHeader } from "@/components/PageHeader";
 import { SectionCard } from "@/components/ui/section-card";
 import { fetchLedger } from "@/lib/api";
 import { clock } from "@/lib/format";
+import {
+  FILTER_KINDS,
+  LEDGER_EVENTS,
+  balancedCurrencies,
+  currencyOptions,
+  groupLines,
+} from "@/lib/ledger";
 import type { LedgerLine, LedgerPayload } from "@/lib/types";
 import { useEventStream } from "@/lib/useEventStream";
 import { cn } from "@/lib/utils";
 
-/** The event types that change the ledger. The page refetches when one
- *  arrives rather than deriving a line in the browser: the catalog and the
- *  balance arithmetic live in ledger.py, and a second implementation here
- *  would be a second thing to get wrong. */
-const LEDGER_EVENTS = new Set([
-  "Purchased", "PurchaseSkipped", "ShoppingStarted", "ShoppingEnded",
-  "ShoppingUnavailable", "ControlChanged", "RunEnded",
-]);
-
-/** The kinds anything actually emits - classify()'s eight, plus the
- *  UNEXPLAINED line the writer derives. The rest of ledger.py's KINDS are
- *  reserved and would be chips that can only ever return nothing. */
-const FILTER_KINDS = [
-  "RUN_PAYOUT", "WORKSHOP_BUY", "CARD_BUY", "BUY_SKIPPED", "VISIT_START",
-  "VISIT_END", "SHOP_UNAVAILABLE", "POLICY_CHANGED", "UNEXPLAINED",
-] as const;
-
-const CURRENCIES = ["all", "coins", "gems"] as const;
-type CurrencyFilter = (typeof CURRENCIES)[number];
+/** "all", or one currency id. A string rather than a fixed union because the
+ *  currencies come from the account's history, not from this file. */
+type CurrencyFilter = string;
 
 /** Chips read as prose, not as the wire value. The table already prints the
  *  raw kind on every row, and two elements with the identical string is a
@@ -36,11 +29,52 @@ const kindLabel = (kind: string) => kind.toLowerCase().replace(/_/g, " ");
 
 const KIND_TONE: Record<string, string> = {
   UNEXPLAINED: "bg-warn-surface text-warn",
+  // "Did it land?" is unanswered, which is the same kind of attention as a
+  // balance that moved on its own.
+  CLAIM_UNCERTAIN: "bg-warn-surface text-warn",
   WORKSHOP_BUY: "bg-chart-2/15 text-chart-2",
   CARD_BUY: "bg-chart-2/15 text-chart-2",
   RUN_PAYOUT: "bg-live-surface text-live",
+  MISSION_CLAIM: "bg-live-surface text-live",
+  MILESTONE_CLAIM: "bg-live-surface text-live",
+  GEM_CLAIM: "bg-live-surface text-live",
   BUY_SKIPPED: "bg-muted text-muted-foreground",
+  CLAIM_SKIPPED: "bg-muted text-muted-foreground",
 };
+
+/** A balance of this currency, or why there is none. `null` alone cannot say
+ *  which: for a balanced currency it is "not read yet", for anything else the
+ *  writer never tracks it at all - and showing either as blank would read
+ *  as an empty wallet. */
+function Balance({
+  currency,
+  value,
+  balanced,
+}: {
+  currency: string;
+  value: number | null;
+  balanced: readonly string[];
+}) {
+  if (value !== null) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <span>{num(value)}</span>
+        <CurrencyGlyph currency={currency} />
+        <span className="sr-only">{currency}</span>
+      </span>
+    );
+  }
+  if (balanced.includes(currency)) {
+    return <span title={`${currency} balance not read yet`}>—</span>;
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-faint-foreground" title={`the ledger keeps no running ${currency} balance`}>
+      <CurrencyGlyph currency={currency} />
+      <span className="text-[11px] italic">not tracked</span>
+      <span className="sr-only">{currency}</span>
+    </span>
+  );
+}
 
 const num = (value: number | null) =>
   value === null ? "—" : value.toLocaleString("en-US");
@@ -108,6 +142,12 @@ export default function LedgerPage() {
       .catch((e: Error) => setFailed(e.message));
   }, [next, query]);
 
+  // Grouped over EVERY page fetched so far, not per page: "Load more" can
+  // land an event's gem line on the page after its coin line.
+  const entries = useMemo(() => groupLines(lines), [lines]);
+  const options = useMemo(() => currencyOptions(data, lines), [data, lines]);
+  const balanced = balancedCurrencies(data);
+
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
@@ -115,8 +155,15 @@ export default function LedgerPage() {
         meta="everything outside a run"
         action={
           data ? (
-            <span className="font-mono text-xs text-muted-foreground">
-              {num(data.balances.coins)} coins · {num(data.balances.gems)} gems
+            <span className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground">
+              {options.map((option) => (
+                <Balance
+                  key={option}
+                  currency={option}
+                  value={data.balances[option] ?? null}
+                  balanced={balanced}
+                />
+              ))}
             </span>
           ) : null
         }
@@ -141,19 +188,20 @@ export default function LedgerPage() {
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="flex items-center gap-1" role="group" aria-label="Currency">
-            {CURRENCIES.map((option) => (
+            {["all", ...options].map((option) => (
               <button
                 key={option}
                 type="button"
                 aria-pressed={currency === option}
                 onClick={() => setCurrency(option)}
                 className={cn(
-                  "rounded-full border px-2 py-0.5 text-xs transition-colors",
+                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
                   currency === option
                     ? "border-transparent bg-primary text-primary-foreground"
                     : "border-border text-muted-foreground hover:bg-muted",
                 )}
               >
+                {option === "all" ? null : <CurrencyGlyph currency={option} />}
                 {option}
               </button>
             ))}
@@ -189,7 +237,7 @@ export default function LedgerPage() {
               reach the bot.
             </p>
           </div>
-        ) : lines.length ? (
+        ) : entries.length ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -197,71 +245,84 @@ export default function LedgerPage() {
                   <th className="py-1 pr-3 font-medium">Time</th>
                   <th className="py-1 pr-3 font-medium">Kind</th>
                   <th className="py-1 pr-3 font-medium">Item</th>
-                  <th className="py-1 pr-3 text-right font-medium">Δ</th>
+                  <th className="py-1 pr-3 text-right font-medium">Amount</th>
                   <th className="py-1 pr-3 text-right font-medium">Balance</th>
                   <th className="py-1 font-medium">Note</th>
                 </tr>
               </thead>
               <tbody>
-                {lines.map((line) => (
-                  <tr key={line.id} className="border-t">
+                {entries.map(({ key, head, financial, rehearsal }) => (
+                  <tr key={key} className="border-t">
                     <td className="py-1.5 pr-3 font-mono text-[11px] text-faint-foreground">
-                      {clock(line.ts)}
+                      {clock(head.ts)}
                     </td>
                     <td className="py-1.5 pr-3">
                       <button
                         type="button"
-                        aria-label={`Filter ${line.kind}`}
-                        aria-pressed={kind === line.kind}
-                        onClick={() => setKind((on) => (on === line.kind ? null : line.kind))}
+                        aria-label={`Filter ${head.kind}`}
+                        aria-pressed={kind === head.kind}
+                        onClick={() => setKind((on) => (on === head.kind ? null : head.kind))}
                         className={cn(
                           "rounded px-1.5 py-0.5 font-mono text-[10px] hover:underline focus-visible:outline-2 focus-visible:outline-primary",
-                          KIND_TONE[line.kind] ?? "bg-muted text-muted-foreground",
+                          KIND_TONE[head.kind] ?? "bg-muted text-muted-foreground",
                         )}
                       >
-                        {line.kind}
+                        {head.kind}
                       </button>
                     </td>
                     <td className="py-1.5 pr-3">
-                      {line.item ?? "—"}
-                      {line.dry_run ? (
+                      {head.item ?? "—"}
+                      {rehearsal ? (
                         <span className="ml-1.5 text-xs text-muted-foreground">
                           rehearsal
                         </span>
                       ) : null}
                     </td>
-                    <td
-                      className={cn(
-                        "py-1.5 pr-3 text-right font-mono",
-                        line.delta !== null && line.delta > 0 && "text-live",
-                        line.delta !== null && line.delta < 0 && "text-muted-foreground",
+                    <td className="py-1.5 pr-3 text-right">
+                      {/* One chip per currency the event moved, so a mission
+                          paying coins and gems reads as one reward rather than
+                          two rows. A visit boundary or a policy change has no
+                          financial character at all: a dash, not a chip, and
+                          never "?" - marking the page's most common rows as
+                          unknown teaches the reader to ignore the symbol. */}
+                      {financial.length ? (
+                        <span className="inline-flex flex-wrap justify-end gap-1">
+                          {financial.map((line: LedgerLine) => (
+                            <CurrencyAmount
+                              key={line.id}
+                              currency={line.currency!}
+                              delta={line.delta}
+                              className="text-xs"
+                            />
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="font-mono text-muted-foreground">—</span>
                       )}
-                    >
-                      {/* "?" means "moved by an unknown amount", which only a
-                          line with a currency can have. A visit boundary or a
-                          policy change has no financial character at all, and
-                          marking the page's most common rows as unknown
-                          teaches the reader to ignore the symbol. */}
-                      {line.currency === null
-                        ? "—"
-                        : line.delta === null
-                          ? "?"
-                          : line.delta > 0
-                            ? `+${line.delta}`
-                            : line.delta}
                     </td>
                     <td className="py-1.5 pr-3 text-right font-mono text-muted-foreground">
-                      {num(line.balance_after)}
-                      {line.currency ? (
-                        <span className="ml-1 text-[10px] text-faint-foreground">
-                          {line.currency}
+                      {/* Per currency, each labelled by its glyph - a bundle
+                          has one balance per currency it moved, and a single
+                          unlabelled number would say which one by accident. */}
+                      {financial.length ? (
+                        <span className="inline-flex flex-col items-end gap-0.5">
+                          {financial.map((line: LedgerLine) => (
+                            <Balance
+                              key={line.id}
+                              currency={line.currency!}
+                              value={line.balance_after}
+                              balanced={balanced}
+                            />
+                          ))}
                         </span>
-                      ) : null}
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td className="py-1.5 text-xs text-muted-foreground">
-                      {line.kind === "UNEXPLAINED"
+                      {head.kind === "UNEXPLAINED"
                         ? "balance moved outside the bot"
-                        : line.reason ?? ""}
+                        : head.reason ?? ""}
                     </td>
                   </tr>
                 ))}

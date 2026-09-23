@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 import config
 import db
+import ledger
 import director
 import events
 import knowledge
@@ -1225,7 +1226,9 @@ def create_app(
         if path is None:
             return {
                 "lines": [],
-                "balances": {"coins": None, "gems": None},
+                "balances": {currency: None for currency in ledger.BALANCED_CURRENCIES},
+                "currencies": [],
+                "balanced": list(ledger.BALANCED_CURRENCIES),
                 "rehearsals": 0,
                 "next": None,
             }
@@ -1239,9 +1242,21 @@ def create_app(
                 currency=currency,
                 include_rehearsals=include_rehearsals,
             )
+            # Every currency the history holds, not just the two the writer
+            # balances: a stones reward is stored today, and a page that only
+            # knows coins and gems renders it as a bare number with no filter
+            # to find it by.
+            currencies = db.ledger_currencies(conn)
             return {
                 "lines": lines,
-                "balances": db.last_balances(conn),
+                "balances": db.last_balances(
+                    conn, dict.fromkeys([*ledger.BALANCED_CURRENCIES, *currencies]),
+                ),
+                "currencies": currencies,
+                # Which balances are kept at all. A null balance for one of
+                # these means "not read yet"; for anything else it means the
+                # writer never tracks it. The page words those differently.
+                "balanced": list(ledger.BALANCED_CURRENCIES),
                 "rehearsals": db.count_rehearsals(conn),
                 # Only a full page can have more behind it. A short page is
                 # the end, and claiming otherwise costs the client a request

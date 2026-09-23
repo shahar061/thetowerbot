@@ -234,6 +234,45 @@ def test_an_empty_ledger_reports_both_balances_as_unknown(tmp_path: Path) -> Non
     assert db.last_balances(make_db(tmp_path)) == {"coins": None, "gems": None}
 
 
+def test_the_ledger_lists_every_currency_it_holds_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """The page's currency filter is built from this. A currency the history
+    holds must be reachable, and one it has never touched must not become a
+    filter that can only return nothing."""
+    conn = make_db(tmp_path)
+    db.insert_ledger(conn, a_line(seq=1, currency="stones", balance_after=None))
+    db.insert_ledger(conn, a_line(seq=2, currency="coins"))
+    db.insert_ledger(conn, a_line(seq=3, currency=None, delta=None, kind="VISIT_START"))
+    db.insert_ledger(conn, a_line(seq=4, currency="coins"))
+
+    assert db.ledger_currencies(conn) == ["coins", "stones"]
+
+
+def test_a_currency_with_no_balance_is_reported_as_unknown_not_dropped(
+    tmp_path: Path,
+) -> None:
+    """Stones reach the ledger with balance_after NULL on every line. Asked
+    for by name, the answer is None - present and unknown - never absent,
+    which would let the page mistake it for a currency it cannot see."""
+    conn = make_db(tmp_path)
+    db.insert_ledger(conn, a_line(seq=1, currency="coins", balance_after=1650))
+    db.insert_ledger(conn, a_line(seq=2, currency="stones", balance_after=None))
+
+    assert db.last_balances(conn, ["coins", "gems", "stones"]) == {
+        "coins": 1650, "gems": None, "stones": None,
+    }
+
+
+def test_the_writer_still_seeds_from_exactly_coins_and_gems(tmp_path: Path) -> None:
+    """The default is what LedgerWriter seeds itself from. Widening it would
+    hand the writer anchors for currencies it never balances."""
+    conn = make_db(tmp_path)
+    db.insert_ledger(conn, a_line(seq=1, currency="stones", balance_after=None))
+
+    assert set(db.last_balances(conn)) == {"coins", "gems"}
+
+
 def test_one_event_may_write_a_line_in_each_currency(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     db.insert_ledger(conn, a_line(seq=501, currency="coins", delta=120))

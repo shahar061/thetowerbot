@@ -21,7 +21,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS account_identity (
@@ -450,14 +450,21 @@ def insert_ledger(conn: sqlite3.Connection, row: dict[str, Any], *, commit: bool
         conn.commit()
 
 
-def last_balances(conn: sqlite3.Connection) -> dict[str, int | None]:
+def last_balances(
+    conn: sqlite3.Connection, currencies: Iterable[str] = ("coins", "gems"),
+) -> dict[str, int | None]:
     """The most recent known balance for each currency, or None.
 
     Skips lines whose balance_after is NULL. That is a hole left by an
     unreadable price, not a balance of zero, and seeding from it would
     invent an enormous UNEXPLAINED line on the next real reading.
+
+    `currencies` defaults to the two the writer balances, which is what
+    LedgerWriter seeds itself from and must keep seeing. The ledger route
+    passes every currency the history holds, so the page can show a stones
+    balance the day one exists instead of assuming there never will be.
     """
-    balances: dict[str, int | None] = {"coins": None, "gems": None}
+    balances: dict[str, int | None] = {currency: None for currency in currencies}
     for currency in balances:
         row = conn.execute(
             """SELECT balance_after FROM ledger
@@ -468,6 +475,21 @@ def last_balances(conn: sqlite3.Connection) -> dict[str, int | None]:
         if row is not None:
             balances[currency] = int(row[0])
     return balances
+
+
+def ledger_currencies(conn: sqlite3.Connection) -> list[str]:
+    """Every currency any ledger line has moved, sorted.
+
+    What the page offers as filters. Read from the history rather than from
+    currencies.CURRENCIES: a filter for a currency this account has never
+    touched is a control that can only ever return nothing, and a currency
+    the history does hold must never be unreachable because a list somewhere
+    forgot it - which is exactly how stones ended up stored and unfilterable.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT currency FROM ledger WHERE currency IS NOT NULL ORDER BY currency"
+    ).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 def count_rehearsals(conn: sqlite3.Connection) -> int:

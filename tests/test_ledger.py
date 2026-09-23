@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -674,3 +675,44 @@ def test_an_unconfirmed_floating_gem_reuses_the_uncertain_kind() -> None:
 
     assert (line.kind, line.delta) == ("CLAIM_UNCERTAIN", None)
     assert line.detail["target"] == "floating_gem"
+
+
+# --- the dashboard's copies of these lists --------------------------------
+#
+# web/ui/lib/ledger.ts keeps two hand-written lists that must mirror this
+# module: the kinds a reader can filter by, and the events that should make
+# the page refetch. They drifted once already - both stopped at the shopping
+# events, so the claim rows (the only multi-currency ones) could neither be
+# filtered to nor appeared until something unrelated triggered a reload.
+# Nothing failed, because nothing compared them. These do.
+
+_LEDGER_TS = Path(__file__).resolve().parent.parent / "web" / "ui" / "lib" / "ledger.ts"
+
+# ledger.KINDS ends with six kinds nothing emits yet. The page deliberately
+# leaves them out: a chip for them could only ever return nothing.
+_RESERVED_KINDS = {"LAB", "CARD_SLOT", "MODULE", "RELIC", "UW", "MANUAL"}
+
+
+def _ts_strings(opener: str) -> set[str]:
+    """The quoted strings in the TypeScript literal that starts at `opener`."""
+    source = _LEDGER_TS.read_text()
+    start = source.index(opener) + len(opener)
+    body = source[start:source.index("]", start)]
+    return set(re.findall(r'"([A-Za-z_]+)"', body))
+
+
+def test_the_reserved_kinds_are_the_tail_of_the_kind_list() -> None:
+    """The comment on KINDS promises the reserved ones come last. If a new
+    real kind is appended after them instead, the page test below would
+    quietly treat it as reserved."""
+    assert set(ledger.KINDS[-len(_RESERVED_KINDS):]) == _RESERVED_KINDS
+
+
+def test_the_page_offers_a_filter_for_every_kind_the_ledger_emits() -> None:
+    emitted = set(ledger.KINDS) - _RESERVED_KINDS
+
+    assert _ts_strings("export const FILTER_KINDS = [") == emitted
+
+
+def test_the_page_refetches_on_every_event_that_writes_a_ledger_line() -> None:
+    assert _ts_strings("export const LEDGER_EVENTS = new Set([") == set(ledger._REPLAYABLE)
