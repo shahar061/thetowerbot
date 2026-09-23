@@ -139,9 +139,9 @@ from workshop_objectives import ID_PREFIX
 
 # The draw: instead of always taking the top-ranked ready upgrade, pick one
 # of the top DRAW_POOL with probability value**sharpness / sum(value**sharpness).
-# At 6, a fresh opening account (Damage 100, Attack Speed 90, Unlock Cash
-# Bonuses 81.6) keeps the top pick ~55% of the time, takes the runner-up
-# ~29% and the third ~16%. It varies accounts without undoing the priority:
+# At 6, a fresh opening account (Damage 100, Attack Speed 90, Unlock Defense
+# Upgrades 84.4) keeps the top pick ~53% of the time, takes the runner-up
+# ~28% and the third ~19%. It varies accounts without undoing the priority:
 # blocked rows and rows past their cap are never in the pool, and an
 # attack row that is drawn early simply reaches its allowance sooner.
 # Seeded by account and verified purchase count, so a decision can be

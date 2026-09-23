@@ -210,12 +210,43 @@ def parse_frame(
                        paused=paused, **evidence)
 
 
+def _reread_values(screen: Image, observation: Observation) -> tuple[ocr.TextBox, ...]:
+    """Value boxes the whole-frame read missed, re-read off padded crops.
+
+    A lone digit - Damage "9" on a fresh account - gets no box at all from
+    a whole-frame read, the same detection gap `ocr.CROP_PADDING` documents
+    for the gems header, and a row without a value is never bought. Only
+    priced rows with no value are re-read, so a frame that read cleanly
+    costs nothing extra. Boxes come back in frame coordinates, inside the
+    band parse_frame takes a value from.
+    """
+    found: list[ocr.TextBox] = []
+    for row in observation.rows:
+        entry = upgrades.by_id(row.upgrade_id)
+        if row.value is not None or row.price is None or entry is None or entry.unlock:
+            continue
+        rect = row.rect
+        band = config.Rect(rect.x + rect.w // 2 + 1, rect.y, rect.w - rect.w // 2 - 1,
+                           int(rect.h * config.TILE_PRICE_TOP_FRACTION))
+        boxes = [b for b in ocr.read_region(screen, band) if stat_number(b.text) is not None]
+        if len(boxes) == 1:
+            box = boxes[0]
+            found.append(replace(box, rect=config.Rect(
+                band.x + box.rect.x - ocr.CROP_PADDING, band.y + box.rect.y - ocr.CROP_PADDING,
+                box.rect.w, box.rect.h)))
+    return tuple(found)
+
+
 def observe_frame(screen: Image, context: str, *, locale: str = 'en') -> Observation:
     boxes = ocr.read(screen)
     discovery = screen_discovery.discover(screen, boxes, context, locale=locale)
     # Empty OCR preserves frame evidence while preventing unsupported frames
     # from promoting account facts or exposing price/tap targets.
-    return parse_frame(screen, boxes if discovery.readable else (), context)
+    if not discovery.readable:
+        return parse_frame(screen, (), context)
+    observation = parse_frame(screen, boxes, context)
+    recovered = _reread_values(screen, observation)
+    return parse_frame(screen, boxes + recovered, context) if recovered else observation
 
 
 def read_cash(

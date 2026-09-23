@@ -15,6 +15,7 @@ export type BotEvent =
   | (EventBase & { type: "Tapped"; action: string; x: number; y: number; score: number; price: number | null; wallet: number | null })
   | (EventBase & { type: "BattlePurchased"; item: string; upgrade_id: string; price: number | null; value: number | null })
   | (EventBase & { type: "Skipped"; action: string; reason: string; detail: string })
+  | (EventBase & { type: "AutopilotDecided"; phase: string; reason: string; upgrade_id: string | null })
   | (EventBase & {
       type: "SpeedAdjusted";
       direction: string;

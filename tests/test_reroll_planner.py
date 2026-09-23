@@ -22,7 +22,7 @@ def facts(**changes: object) -> RerollFacts:
 
 def test_early_plan_leads_with_basic_attack_before_the_unlocks() -> None:
     """Damage (100) and Attack Speed (90) sit above every unlock, including
-    the 81.6 `value_propagation` credits Unlock Cash Bonuses with, so a fresh
+    the 84.4 `value_propagation` credits Unlock Defense Upgrades with, so a fresh
     account buys attack first - two levels of Damage, then Attack Speed."""
     first = choose_next(facts())
     assert first.stage == "opening"
@@ -123,16 +123,18 @@ def test_decisions_remain_bound_to_the_input_account() -> None:
 
 
 # The whole opening, as ranked (no draw): attack to its allowance of
-# 2 + 1 x Coins/Wave, the coin unlocks, then each Coins/Wave level buys one
-# more level of each attack row, until Coins/Wave stops at 3. Then the Thorns
+# 2 + 1 x Coins/Wave, Unlock Defense Upgrades so battles can buy Defense
+# Absolute, the coin unlocks, then each Coins/Wave level buys one more level
+# of each attack row, until Coins/Wave stops at 3. Then the rest of the Thorns
 # chain with two levels of Defense Absolute; Thorns runs to 51 as one step.
 _OPENING_ORDER = [
     "damage", "damage", "attack_speed", "attack_speed",
+    "unlock_defense_upgrades",
     "unlock_cash_bonuses", "unlock_coin_bonuses", "coins_per_wave",
     "damage", "attack_speed", "coins_per_wave",
     "damage", "attack_speed", "coins_per_wave",
     "damage", "attack_speed",
-    "unlock_defense_upgrades", "unlock_thorns",
+    "unlock_thorns",
     "defense_absolute", "defense_absolute", "thorns",
 ]
 
@@ -145,19 +147,27 @@ def test_the_opening_projects_attack_then_coins_then_thorns() -> None:
 
 
 def test_attack_waits_for_coins_per_wave_once_it_reaches_its_allowance() -> None:
-    at_cap = {"damage": 2, "attack_speed": 2}
+    at_cap = {"damage": 2, "attack_speed": 2, "unlock_defense_upgrades": 1}
     assert choose_next(facts(purchases=at_cap)).upgrade_id == "unlock_cash_bonuses"
     one_level = {**at_cap, "unlock_cash_bonuses": 1, "unlock_coin_bonuses": 1,
                  "coins_per_wave": 1}
     assert choose_next(facts(purchases=one_level)).upgrade_id == "damage"
 
 
+def test_unlock_defense_upgrades_follows_the_first_attack_allowance() -> None:
+    """Without the unlock a fresh account's battles can buy only Damage and
+    Attack Speed, so it comes before the coin unlocks, not after Coins/Wave."""
+    at_cap = {"damage": 2, "attack_speed": 2}
+    assert choose_next(facts(purchases=at_cap)).upgrade_id == "unlock_defense_upgrades"
+
+
 def test_the_thorns_chain_waits_until_coins_per_wave_reaches_three() -> None:
-    bought = {"damage": 5, "attack_speed": 5, "unlock_cash_bonuses": 1,
-              "unlock_coin_bonuses": 1, "coins_per_wave": 2}
+    bought = {"damage": 5, "attack_speed": 5, "unlock_defense_upgrades": 1,
+              "unlock_cash_bonuses": 1, "unlock_coin_bonuses": 1,
+              "coins_per_wave": 2}
     assert choose_next(facts(purchases=bought)).upgrade_id == "coins_per_wave"
     bought["coins_per_wave"] = 3
-    assert choose_next(facts(purchases=bought)).upgrade_id == "unlock_defense_upgrades"
+    assert choose_next(facts(purchases=bought)).upgrade_id == "unlock_thorns"
 
 
 # -- the draw ----------------------------------------------------------------
@@ -168,13 +178,13 @@ def test_the_draw_is_reproducible_for_one_account_and_purchase_count() -> None:
 
 
 def test_the_draw_mostly_keeps_the_top_pick_but_not_always() -> None:
-    """Fresh accounts: Damage 100, Attack Speed 90, then Unlock Cash Bonuses
-    at 81.6 - at sharpness 6 that is about 55%, 29% and 16%."""
+    """Fresh accounts: Damage 100, Attack Speed 90, then Unlock Defense
+    Upgrades at 84.4 - at sharpness 6 that is about 53%, 28% and 19%."""
     picks = Counter(
         choose_next(facts(account_id=f"ACCOUNT-{n}",
                           draw_sharpness=DRAW_SHARPNESS)).upgrade_id
         for n in range(600))
-    assert set(picks) == {"damage", "attack_speed", "unlock_cash_bonuses"}
+    assert set(picks) == {"damage", "attack_speed", "unlock_defense_upgrades"}
     assert picks["damage"] > picks["attack_speed"] > 0
     assert 0.40 < picks["damage"] / 600 < 0.62
 
@@ -209,7 +219,7 @@ def test_a_variant_replaces_the_opening_caps() -> None:
     bought = {"damage": 1, "attack_speed": 1}
     assert choose_next(facts(purchases=bought)).upgrade_id == "damage"
     income = choose_next(facts(purchases=bought, variant="income_first"))
-    assert income.upgrade_id == "unlock_cash_bonuses"
+    assert income.upgrade_id == "unlock_defense_upgrades"
     assert income.reason.endswith(" (Income first)")
 
 

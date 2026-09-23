@@ -66,6 +66,18 @@ class BattlePurchased(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class AutopilotDecided(Event):
+    """The battle autopilot changed what it is doing, and why.
+
+    Published only on a change, so a run that stops buying says which state
+    it stopped in - saving, blocked, waiting - instead of going quiet.
+    """
+    phase: str
+    reason: str
+    upgrade_id: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
 class Skipped(Event):
     action: str
     reason: str  # paused | screen_gated | dimmed | unaffordable | cooldown

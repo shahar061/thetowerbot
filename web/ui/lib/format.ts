@@ -41,6 +41,11 @@ export function splitEvent(event: BotEvent): EventLine {
         kind: "SKIP",
         body: `${event.action} reason=${event.reason}${event.detail ? " " + event.detail : ""}`,
       };
+    case "AutopilotDecided":
+      return {
+        kind: "PLAN",
+        body: `${event.phase}${event.upgrade_id ? ` ${event.upgrade_id}` : ""} ${event.reason}`,
+      };
     case "ScreenChanged": {
       // A live event carries `curr`. A replayed history row does not:
       // sinks/store.py's to_row() moves `curr` into the events table's

@@ -40,14 +40,14 @@
     {
       "id": "opening",
       "name": "Opening",
-      "note": "The first stage of a fresh reroll account, selected below Tier 1 Wave 20. A strict priority: Damage > Attack Speed > Coins/Wave (with the two coin unlocks) > the Thorns chain with two levels of Defense Absolute. The groups are spaced so value_propagation's 0.6 credit to an unlock cannot reorder them: unlock_cash_bonuses inherits to 81.6, below attack_speed's 90, and the thorns chain tops out at unlock_thorns' 44, below coins_per_wave's 60. level_caps paces attack against income - each attack row may reach 2 + 1 level per Coins/Wave level - and stops Coins/Wave at 3 and Defense Absolute at 2, so the Thorns chain is reached within the first ~2,100 coins. Coins/Wave rather than Coins/Kill because the wiki's beginner guide puts per-wave income first and Coins/Kill after wave 100; the numbers are the operator's call, not a measurement. variants lists alternative level_caps that fleet/reroll_variants.py assigns to fresh reroll accounts so their time to Tier 1 Wave 20 can be compared; baseline repeats level_caps.",
+      "note": "The first stage of a fresh reroll account, selected below Tier 1 Wave 20. A strict priority: Damage > Attack Speed > Unlock Defense Upgrades > Coins/Wave (with the two coin unlocks) > the Thorns chain with two levels of Defense Absolute. Unlock Defense Upgrades is weighted 58, which value_propagation lifts to 84.4 with 60% of the thorns chain's 44, straight after attack's first allowance, because in battle a fresh account can otherwise buy only Damage and Attack Speed: the unlock is what puts Defense Absolute on the in-run Defense tab. The groups are spaced so value_propagation's 0.6 credit to an unlock cannot reorder them: unlock_cash_bonuses inherits to 81.6, below unlock_defense_upgrades' 84.4, and the thorns chain tops out at unlock_thorns' 44, below coins_per_wave's 60. level_caps paces attack against income - each attack row may reach 2 + 1 level per Coins/Wave level - and stops Coins/Wave at 3 and Defense Absolute at 2, so the Thorns chain is reached within the first ~2,100 coins. Coins/Wave rather than Coins/Kill because the wiki's beginner guide puts per-wave income first and Coins/Kill after wave 100; the numbers are the operator's call, not a measurement. variants lists alternative level_caps that fleet/reroll_variants.py assigns to fresh reroll accounts so their time to Tier 1 Wave 20 can be compared; baseline repeats level_caps.",
       "weights": [
         ["damage", 100],
         ["attack_speed", 90],
         ["unlock_cash_bonuses", 30],
         ["unlock_coin_bonuses", 50],
         ["coins_per_wave", 60],
-        ["unlock_defense_upgrades", 10],
+        ["unlock_defense_upgrades", 58],
         ["unlock_thorns", 20],
         ["defense_absolute", 42],
         ["thorns", 40]

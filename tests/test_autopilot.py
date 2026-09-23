@@ -265,3 +265,29 @@ def test_a_scan_that_buys_nothing_still_draws_the_rows() -> None:
     assert device.actions == []
     assert [box["name"] for box in bot.boxes] == [row.name for row in observation.rows]
     assert not any(box["tapped"] for box in bot.boxes)
+
+
+class Bus:
+    def __init__(self) -> None:
+        self.published: list[Any] = []
+
+    def publish(self, event: Any) -> None:
+        self.published.append(event)
+
+
+def test_a_decision_is_published_once_when_it_changes() -> None:
+    """A run that stops buying leaves a row saying why, not silence."""
+    import events
+    _, device, frame, observation, policy = parts()
+    from autopilot import BattleAutopilot
+    bus = Bus()
+    bot = BattleAutopilot(bus=bus)
+    held = replace(policy, cash_reserve=95)
+    for at in (100, 101, 102):
+        bot.step(frame, device, held, cash=100,
+                 observation=replace(observation, observed_at=at))
+    bot.step(frame, device, policy, cash=100,
+             observation=replace(observation, observed_at=103))
+    decided = [e for e in bus.published if isinstance(e, events.AutopilotDecided)]
+    assert [(e.phase, e.upgrade_id) for e in decided] == [
+        ("wait", None), ("manual", "damage"), ("verifying", "damage")]
