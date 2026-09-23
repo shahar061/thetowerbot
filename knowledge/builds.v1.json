@@ -40,7 +40,7 @@
     {
       "id": "opening",
       "name": "Opening",
-      "note": "The first stage of a fresh reroll account, selected below Tier 1 Wave 20. A strict priority: Damage > Attack Speed > Coins/Wave (with the two coin unlocks) > the Thorns chain with two levels of Defense Absolute. The groups are spaced so value_propagation's 0.6 credit to an unlock cannot reorder them: unlock_cash_bonuses inherits to 81.6, below attack_speed's 90, and the thorns chain tops out at unlock_thorns' 44, below coins_per_wave's 60. level_caps paces attack against income - each attack row may reach 2 + 1 level per Coins/Wave level - and stops Coins/Wave at 3 and Defense Absolute at 2, so the Thorns chain is reached within the first ~2,100 coins. Coins/Wave rather than Coins/Kill because the wiki's beginner guide puts per-wave income first and Coins/Kill after wave 100; the numbers are the operator's call, not a measurement.",
+      "note": "The first stage of a fresh reroll account, selected below Tier 1 Wave 20. A strict priority: Damage > Attack Speed > Coins/Wave (with the two coin unlocks) > the Thorns chain with two levels of Defense Absolute. The groups are spaced so value_propagation's 0.6 credit to an unlock cannot reorder them: unlock_cash_bonuses inherits to 81.6, below attack_speed's 90, and the thorns chain tops out at unlock_thorns' 44, below coins_per_wave's 60. level_caps paces attack against income - each attack row may reach 2 + 1 level per Coins/Wave level - and stops Coins/Wave at 3 and Defense Absolute at 2, so the Thorns chain is reached within the first ~2,100 coins. Coins/Wave rather than Coins/Kill because the wiki's beginner guide puts per-wave income first and Coins/Kill after wave 100; the numbers are the operator's call, not a measurement. variants lists alternative level_caps that fleet/reroll_variants.py assigns to fresh reroll accounts so their time to Tier 1 Wave 20 can be compared; baseline repeats level_caps.",
       "weights": [
         ["damage", 100],
         ["attack_speed", 90],
@@ -61,6 +61,23 @@
         "coins_per_wave": {"base": 3},
         "defense_absolute": {"base": 2}
       },
+      "variants": [
+        {"id": "baseline", "name": "Baseline", "level_caps": {
+          "damage": {"base": 2, "ratio": 1, "per": ["coins_per_wave"]},
+          "attack_speed": {"base": 2, "ratio": 1, "per": ["coins_per_wave"]},
+          "coins_per_wave": {"base": 3},
+          "defense_absolute": {"base": 2}}},
+        {"id": "income_first", "name": "Income first", "level_caps": {
+          "damage": {"base": 1, "ratio": 1, "per": ["coins_per_wave"]},
+          "attack_speed": {"base": 1, "ratio": 1, "per": ["coins_per_wave"]},
+          "coins_per_wave": {"base": 5},
+          "defense_absolute": {"base": 2}}},
+        {"id": "attack_heavy", "name": "Attack heavy", "level_caps": {
+          "damage": {"base": 3, "ratio": 2, "per": ["coins_per_wave"]},
+          "attack_speed": {"base": 3, "ratio": 2, "per": ["coins_per_wave"]},
+          "coins_per_wave": {"base": 2},
+          "defense_absolute": {"base": 2}}}
+      ],
       "focus": {
         "damage": "Basic attack, one more level per Coins/Wave level",
         "attack_speed": "Basic attack, one more level per Coins/Wave level",

@@ -203,3 +203,33 @@ def test_a_drawn_pick_says_so_in_its_reason() -> None:
 def test_a_non_positive_sharpness_is_rejected(sharpness: float) -> None:
     with pytest.raises(ValueError, match="sharpness"):
         choose_next(facts(draw_sharpness=sharpness))
+
+
+def test_a_variant_replaces_the_opening_caps() -> None:
+    bought = {"damage": 1, "attack_speed": 1}
+    assert choose_next(facts(purchases=bought)).upgrade_id == "damage"
+    income = choose_next(facts(purchases=bought, variant="income_first"))
+    assert income.upgrade_id == "unlock_cash_bonuses"
+    assert income.reason.endswith(" (Income first)")
+
+
+def test_the_baseline_variant_plays_like_no_variant() -> None:
+    bought = {"damage": 2, "attack_speed": 2}
+    assert (choose_next(facts(purchases=bought, variant="baseline")).upgrade_id
+            == choose_next(facts(purchases=bought)).upgrade_id)
+
+
+def test_an_unknown_variant_falls_back_to_the_build_caps_without_a_label() -> None:
+    bought = {"damage": 1, "attack_speed": 1}
+    decision = choose_next(facts(purchases=bought, variant="retired_idea"))
+    assert decision.upgrade_id == "damage"
+    assert not decision.reason.endswith(")")
+
+
+def test_a_variant_stops_applying_once_past_wave_20() -> None:
+    past = dict(best_tier_1_wave=25, purchases={"damage": 1, "attack_speed": 1})
+    with_variant = choose_next(facts(**past, variant="income_first"))
+    without = choose_next(facts(**past))
+    assert with_variant.stage == without.stage != "opening"
+    assert with_variant.upgrade_id == without.upgrade_id
+    assert "Income first" not in with_variant.reason

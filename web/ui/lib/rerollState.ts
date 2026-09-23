@@ -1,4 +1,5 @@
 import type { MachineState } from "@/components/StatusBadge";
+import type { RerollMember } from "./fleet";
 
 /**
  * What a reroll worker's `state` string actually means to the person watching.
@@ -251,4 +252,18 @@ export function deviceColor(name: string): string {
   let hash = 0;
   for (const char of name) hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
   return DEVICE_COLORS[hash % DEVICE_COLORS.length];
+}
+
+/** Seconds as `2h 14m` - play time to wave 20 runs for hours. */
+export function hoursMinutes(seconds: number): string {
+  const minutes = Math.max(0, Math.floor(seconds / 60));
+  const hours = Math.floor(minutes / 60);
+  return hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+/** The card's one line on this account's race to Tier 1 Wave 20. */
+export function playToW20(member: RerollMember): string | null {
+  if (member.play_seconds_to_t1w20 != null) return `W20 in ${hoursMinutes(member.play_seconds_to_t1w20)}`;
+  if (member.play_seconds_so_far != null) return `${hoursMinutes(member.play_seconds_so_far)} played, not yet W20`;
+  return null;
 }

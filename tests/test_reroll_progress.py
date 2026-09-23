@@ -243,3 +243,9 @@ def test_published_worker_plan_contains_ten_account_bound_buys(tmp_path: Path) -
     payload = json.loads((progress.root / "reroll-plan.json").read_text())
     assert len(payload["next_purchases"]) == 10
     assert payload["next_purchases"][0]["account_id"] == "ACCOUNT-A"
+
+
+def test_the_worker_variant_file_reaches_the_planner(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    (progress.root / "reroll-variant.json").write_text('{"variant": "income_first"}')
+    assert "(Income first)" in progress.decision().reason

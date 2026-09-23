@@ -6,12 +6,45 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.request import urlopen
 
 import db as bot_db
 import upgrades
 from fleet.account_metrics import account_metrics
+
+
+W20 = 20
+
+
+def play_to_t1w20(rows: Iterable[tuple[float, float, int | None, int | None]]
+                  ) -> tuple[float | None, float]:
+    """Play seconds up to and including the first run ending at T1 W20+.
+
+    `rows` are ended runs `(started_at, ended_at, tier, wave)` in id order.
+    Play on every tier counts; only a Tier 1 run stops the clock. Returns
+    `(seconds_to_w20, seconds_played)`, the first None until W20.
+    """
+    played = 0.
+    for started_at, ended_at, tier, wave in rows:
+        played += max(0., ended_at - started_at)
+        if tier == 1 and wave is not None and wave >= W20:
+            return played, played
+    return None, played
+
+
+def read_play(db_path: Path) -> tuple[float | None, float] | None:
+    """`play_to_t1w20` over a worker database, or None if it cannot be read."""
+    if not Path(db_path).is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=.1) as db:
+            rows = db.execute(
+                "SELECT started_at, ended_at, tier, wave FROM runs "
+                "WHERE ended_at IS NOT NULL ORDER BY id").fetchall()
+    except sqlite3.Error:
+        return None
+    return play_to_t1w20(rows)
 
 
 def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
@@ -61,6 +94,12 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                 result["observed_at"] = rows[0]["ended_at"]
         except (OSError, sqlite3.Error):
             pass
+        play = read_play(db_path)
+        if play is not None:
+            if play[0] is not None:
+                result["play_seconds_to_t1w20"] = play[0]
+            else:
+                result["play_seconds_so_far"] = play[1]
         account = account_metrics(Path(worker_root), account_id)
         if account["lifetime_coins"] is not None:
             result["lifetime_coins"] = account["lifetime_coins"]

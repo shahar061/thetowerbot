@@ -48,13 +48,15 @@ class RerollRuns:
     def __init__(self, root: Path, *, pool: Any,
                  release: Callable[[dict[str, str]], RetireResult],
                  remove: Callable[[dict[str, str]], RetireResult],
-                 clock: Callable[[], str] = _now) -> None:
+                 clock: Callable[[], str] = _now,
+                 assign: Callable[[str], str] | None = None) -> None:
         self.root = Path(root)
         self.path = self.root / "reroll-runs.json"
         self.pool = pool
         self.release = release
         self.remove = remove
         self.clock = clock
+        self.assign = assign
         self.busy = False
         self._lock = RLock()
 
@@ -246,6 +248,23 @@ class RerollRuns:
         except Exception as exc:
             return None, {"name": name, "error": str(exc) or type(exc).__name__}
 
+    def _assign_variants(self, names: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+        """Give each newly added emulator its opening variant.
+
+        After the run is saved, so a failure never undoes a run: the emulator
+        plays the build's own caps and the caller journals why.
+        """
+        assigned: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        if self.assign is None:
+            return assigned, errors
+        for name in names:
+            try:
+                assigned[name] = self.assign(name)
+            except (OSError, ValueError) as exc:
+                errors[name] = str(exc) or type(exc).__name__
+        return assigned, errors
+
     def start_new(self, keep: list[str], add: list[str], name: str | None = None) -> dict[str, Any]:
         with self._lock:
             if self.busy:
@@ -288,7 +307,9 @@ class RerollRuns:
                 state["runs"].append(self._new_run(number, carried + list(add), name=name,
                                                    retire_failed=retire_failed))
                 self._save(state)
-            return {"number": number, "results": [result for _, result in outcomes]}
+            variants, variant_errors = self._assign_variants(add)
+            return {"number": number, "results": [result for _, result in outcomes],
+                    "variants": variants, "variant_errors": variant_errors}
         finally:
             self.busy = False
 
