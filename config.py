@@ -22,6 +22,10 @@ SCAN_INTERVAL_SECONDS: float = 2.0
 # Minimum delay between two clicks on the *same* template, so a slow UI
 # animation does not cause a burst of taps on a button that is already pressed.
 CLICK_COOLDOWN_SECONDS: float = 1.0
+# The scan interval while a battle purchase waits for its confirming frame.
+# That frame is also where the next purchase is decided, so waiting the full
+# interval here doubled the time between purchases for no information.
+BATTLE_FOLLOWUP_SECONDS: float = 0.25
 
 # --- Jitter ---------------------------------------------------------------
 # Every tap is an `input tap` over ADB: no travel path, no dwell, and a

@@ -44,7 +44,7 @@ def test_purchase_needs_new_frame_acknowledgement() -> None:
         for r in observation.rows))
     bot.step(frame, device, policy, cash=90, observation=changed)
     assert bot.state.snapshot()["verified_purchases"] == 1
-    assert len(device.actions) == 1
+    assert len(device.actions) == 2  # the verifying frame buys the next one
 
 
 def test_missing_currency_never_authorizes_a_tap() -> None:
@@ -107,6 +107,29 @@ def test_manual_buy_works_once_with_automatic_policy_off() -> None:
                  observation=replace(observation, observed_at=100+n))
     assert len(device.actions) == 1
 
+
+def test_the_frame_that_verifies_a_purchase_also_makes_the_next_one() -> None:
+    bot, device, frame, observation, policy = parts()
+    bot.step(frame, device, policy, cash=100, observation=observation)
+    changed = replace(observation, observed_at=102, rows=tuple(
+        replace(r, price=12, value=4, observed_at=102) if r.upgrade_id == "damage" else r
+        for r in observation.rows))
+    assert bot.step(frame, device, policy, cash=90, observation=changed)
+    assert bot.state.snapshot()["verified_purchases"] == 1
+    assert len(device.actions) == 2
+    assert bot.pending is not None and bot.pending[0].price == 12
+
+
+def test_a_verified_manual_buy_is_not_repeated_on_the_same_frame() -> None:
+    bot, device, frame, observation, policy = parts()
+    bot.submit({"action": "buy", "upgrade_id": "damage"}, now=100)
+    bot.step(frame, device, replace(policy, enabled=False), cash=100, observation=observation)
+    changed = replace(observation, observed_at=102, rows=tuple(
+        replace(r, price=12, value=4, observed_at=102) if r.upgrade_id == "damage" else r
+        for r in observation.rows))
+    assert not bot.step(frame, device, replace(policy, enabled=False), cash=90, observation=changed)
+    assert bot.state.snapshot()["verified_purchases"] == 1
+    assert len(device.actions) == 1
 
 def test_expired_manual_command_does_not_execute_in_a_later_run() -> None:
     bot, device, frame, observation, policy = parts()
