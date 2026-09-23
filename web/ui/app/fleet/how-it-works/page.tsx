@@ -46,7 +46,7 @@ export default function FleetHowItWorksPage() {
     </SectionCard>)}</div>
     <SectionCard title="Progress and Ultimate Weapons">
       <p className="text-sm">Tier 1 wave 60 is checked from completed runs. Stone earning and Ultimate Weapon choices require game screen evidence or your review. Pause a worker before choosing a weapon yourself. The bot never purchases an Ultimate Weapon or claims Golden Tower or Black Hole without a verified reading.</p>
-      <p className="mt-3 text-sm">Follow the <a className="text-primary underline" href="https://the-tower-idle-tower-defense.game-vault.net/wiki/Guide:Reroll_Guide" target="_blank" rel="noreferrer">Tower reroll guide</a> for the game steps.</p>
+      <p className="mt-3 text-sm">Follow the <a className="text-primary underline" href="https://the-tower-idle-tower-defense.game-vault.net/wiki/Guide:Reroll_Guide" target="_blank" rel="noreferrer">Tower reroll guide</a> for the game steps. If neither offered Ultimate Weapon is the one you want, <strong>Retire</strong> that emulator, then prepare a fresh one.</p>
     </SectionCard>
     <SectionCard title="Retire and reroll"><p className="text-sm">Each emulator plays one Tower account for its whole life. To stop playing an account, <strong>Retire</strong> its emulator: the worker stops, the emulator shuts down, and the account stays in Archives. To begin a new reroll, press <strong>New reroll</strong>, choose which emulators keep playing and which freshly prepared ones join. Everything not kept is retired, and the previous reroll moves to Past rerolls.</p></SectionCard>
   </div>;
