@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
-import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, startReroll } from "@/lib/api";
+import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, listRerolls, retireRerollMember, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
 import type { RerollMember, RerollPlan } from "@/lib/fleet";
 
 const choose = vi.fn();
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
-vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
+vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), retireRerollMember: vi.fn(), startNewReroll: vi.fn(), stopRerollInstance: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
 
 // Named separately so a test that extends the plan keeps its full type -
 // spreading `members[0].reroll_plan` inferred it as optional and lost it.
@@ -24,6 +24,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [] });
   vi.mocked(fetchRerollJournal).mockResolvedValue({ entries: [] });
+  vi.mocked(listRerolls).mockResolvedValue({ runs: [] });
   vi.mocked(fetchAccountWorkshopPurchases).mockResolvedValue({ lines: [], balances: { coins: null, gems: null }, rehearsals: 0, next: null });
   vi.mocked(fetchAccountRuns).mockResolvedValue([]);
   vi.mocked(fetchAccountRunPurchases).mockResolvedValue({ purchases: [], totals: { count: 0, spent: 0, unpriced: 0, by_category: {} } });
@@ -54,13 +55,14 @@ test("worker cards collapse and scoped ledger shows confirmed purchases", async 
 });
 
 test("empty pool offers candidates but rejects protected template", async () => {
+  const run = { number: 2, name: "Reroll #2", status: "active" as const, started_at: "2026-09-23T09:00:00Z" };
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [
     { name: "Air_3", endpoint: "127.0.0.1:5557", state: "ready" },
     { name: "Air_6", endpoint: "127.0.0.1:5559", state: "protected_template" },
-  ], members: [] });
+  ], members: [], run });
   vi.mocked(addRerollMembers).mockResolvedValue({ candidates: [], members: [] });
   render(<RerollPage />);
-  expect(await screen.findByText(/No emulators in the pool/)).toBeInTheDocument();
+  expect(await screen.findByText(/No emulators in this reroll/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Add emulators" }));
   expect(screen.getByText(/Unavailable: protected template/)).toBeInTheDocument();
   const boxes = screen.getAllByRole("checkbox");
@@ -179,4 +181,66 @@ test("the ladder reports the distance left to the operator hand-off", async () =
 
   expect(await screen.findByText("Reach Tier 1 Wave 60")).toBeInTheDocument();
   expect(screen.getByText("T1 W42 · 18 to go")).toBeInTheDocument();
+});
+
+const run = { number: 2, name: "Reroll #2", status: "active" as const, started_at: "2026-09-23T09:00:00Z" };
+
+test("header names the active reroll and New reroll warns before choosing", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [{ name: "Air_3", endpoint: "e3", state: "ready" }], members, run });
+  vi.mocked(startNewReroll).mockResolvedValue({ candidates: [], members: [], run: { ...run, number: 3, name: "Reroll #3" } });
+  render(<RerollPage />);
+  expect(await screen.findByText(/Reroll #2 · started/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "New reroll" }));
+  expect(await screen.findByRole("alertdialog", { name: "Close Reroll #2?" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Air_1/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Air_3/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Start Reroll #3 and retire 1" }));
+  await waitFor(() => expect(startNewReroll).toHaveBeenCalledWith({ keep: ["Air_1"], add: ["Air_3"] }));
+});
+
+test("without an active reroll the page offers Start a reroll and skips the warning", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [{ name: "Air_3", endpoint: "e3", state: "ready" }], members: [], run: null });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Start a reroll" }));
+  expect(await screen.findByRole("alertdialog", { name: "Start a reroll" })).toBeInTheDocument();
+});
+
+test("a running operation shows a banner and disables starting another", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run,
+    operation: { kind: "new_run", state: "running", started_at: "x", results: [{ name: "Air_2", worker: "stopped" }] } });
+  render(<RerollPage />);
+  expect(await screen.findByRole("status", { name: "Reroll operation" })).toHaveTextContent(/Starting a new reroll/);
+  expect(screen.getByRole("button", { name: "New reroll" })).toBeDisabled();
+});
+
+test("retire asks first, then calls the retire route", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0]], run });
+  vi.mocked(retireRerollMember).mockResolvedValue({ candidates: [], members: [], run });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Retire" }));
+  expect(await screen.findByRole("alertdialog", { name: "Retire Air_1?" })).toBeInTheDocument();
+  expect(retireRerollMember).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Retire Air_1" }));
+  await waitFor(() => expect(retireRerollMember).toHaveBeenCalledWith("Air_1"));
+});
+
+test("a retired emulator still running offers a shutdown retry", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [], run,
+    stop_failures: [{ name: "Air_9", error: "window stuck" }] });
+  vi.mocked(stopRerollInstance).mockResolvedValue({ candidates: [], members: [], run });
+  render(<RerollPage />);
+  expect(await screen.findByText(/Air_9 was retired but its emulator is still running/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Shut down Air_9" }));
+  await waitFor(() => expect(stopRerollInstance).toHaveBeenCalledWith("Air_9"));
+});
+
+test("past rerolls list closed runs with links to their archives", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members, run });
+  vi.mocked(listRerolls).mockResolvedValue({ runs: [
+    { number: 2, name: "Reroll #2", status: "active", started_at: "2026-09-23T09:00:00Z", member_count: 2, retired_count: 0, members: ["Air_1", "Air_2"] },
+    { number: 1, name: "Reroll #1", status: "closed", started_at: "2026-09-01T09:00:00Z", closed_at: "2026-09-23T09:00:00Z", member_count: 2, retired_count: 1, members: ["Air_1", "Air_0"] }] });
+  render(<RerollPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Expand Past rerolls" }));
+  expect(screen.getByRole("link", { name: "Reroll #1" })).toHaveAttribute("href", "/archives/?run=1");
 });
