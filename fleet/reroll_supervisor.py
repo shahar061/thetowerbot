@@ -73,6 +73,7 @@ class RerollSupervisor:
     def __init__(self, root: Path, *, pool_snapshot: Callable[[], dict[str, Any]],
                  enroll: Callable[[Member, WorkerRuntime, Attempt], Status],
                  start_instance: Callable[[Member], None] | None = None,
+                 wait_booted: Callable[[Member], None] | None = None,
                  spawn: Callable[[Sequence[str]], int] = _spawn,
                  process_identity: Callable[[int], Sequence[str] | None] = _process_identity,
                  terminate: Callable[[int], None] = _terminate,
@@ -89,6 +90,8 @@ class RerollSupervisor:
         self.pool_snapshot = pool_snapshot
         self.enroll = enroll
         self.start_instance = start_instance
+        # Called after the GUI lock is released: an Android boot takes minutes.
+        self.wait_booted = wait_booted
         self.spawn = spawn
         self.process_identity = process_identity
         self.terminate = terminate
@@ -261,6 +264,8 @@ class RerollSupervisor:
                 if member["state"] == "start_required" and self.start_instance is not None:
                     with self._enroll_lock:
                         self.start_instance(member)
+                    if self.wait_booted is not None:
+                        self.wait_booted(member)
                     refreshed = self._members().get(name)
                     if refreshed is None or any(refreshed.get(key) != member[key]
                             for key in ("name", "endpoint", "lease_id")):

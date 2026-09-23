@@ -10,7 +10,7 @@ import { useAccountSelection } from "@/lib/AccountSelection";
 import { addRerollMembers, fetchReroll, fetchRerollJournal, pauseReroll, removeRerollMember, retireRerollMember, setRerollConcurrency, startNewReroll, startReroll, stopRerollInstance } from "@/lib/api";
 import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
 import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
-import { LADDER, attentionRank, deviceColor, standingFor } from "@/lib/rerollState";
+import { LADDER, attentionRank, deviceColor, failureHint, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { DeviceCard } from "./DeviceCard";
 import { NewRerollDialog } from "./NewRerollDialog";
@@ -196,9 +196,10 @@ export default function RerollPage() {
     {error && <p role="alert" className="rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">{error}</p>}
     {pool?.operation && pool.operation.state !== "done" && <p role="status" aria-label="Reroll operation"
       className={cn("rounded-lg border p-3 text-sm", pool.operation.state === "failed" ? "border-danger bg-danger-surface text-danger" : "border-warn/40 bg-warn-surface text-warn")}>
-      {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}` :
+      {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}${failureHint(pool.operation.error) ? ` - ${failureHint(pool.operation.error)}` : ""}` :
         pool.operation.kind === "new_run" ? "Starting a new reroll… retiring emulators and shutting them down"
           : pool.operation.kind === "remove" ? `Removing ${pool.operation.target} from the reroll…`
+          : pool.operation.kind === "add" ? `Adding ${pool.operation.target ?? "emulators"}… a stopped emulator boots first to check The Tower has never been opened`
           : `Retiring ${pool.operation.target}…`}
     </p>}
     {pool?.stop_failures?.map(item => <p key={item.name} role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">

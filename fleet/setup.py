@@ -7,10 +7,31 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fleet.dashboard import FleetPolicy
+
+
+def wait_for_android_boot(connect: Callable[[], Any], *, timeout: float = 180.,
+                          poll: float = 2., clock: Callable[[], float] = time.monotonic,
+                          sleep: Callable[[float], None] = time.sleep) -> None:
+    """Block until Android reports boot completed.
+
+    ManualAirWorker.start returns once the emulator's adb port is up, not once
+    Android has booted. Until then ``pm`` fails (read as "tower_state_unavailable")
+    or answers empty, which would read as "Tower not installed".
+    """
+    deadline = clock() + timeout
+    while True:
+        try:
+            if connect().shell("getprop sys.boot_completed").strip() == "1":
+                return
+        except Exception:
+            pass
+        if clock() >= deadline:
+            raise TimeoutError("android_boot_not_completed")
+        sleep(poll)
 
 
 class FleetSetupError(ValueError):
@@ -129,13 +150,44 @@ class FleetSetupService:
                 Path("/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"),
                 _EXECUTABLE, live_process_rows)
 
-            def package_state(endpoint: str) -> str:
+            def device(endpoint: str) -> Any:
                 client = AdbClient(host=config.ADB_HOST, port=config.ADB_PORT)
                 client.connect(endpoint, timeout=2.)
-                device = client.device(serial=endpoint)
-                if not device.shell("pm path com.TechTreeGames.TheTower").strip():
+                return client.device(serial=endpoint)
+
+            def package_state(endpoint: str) -> str:
+                target = device(endpoint)
+                if not target.shell("pm path com.TechTreeGames.TheTower").strip():
                     return "not_installed"
-                return "installed_unopened" if tower_is_unopened(device) else "opened"
+                return "installed_unopened" if tower_is_unopened(target) else "opened"
+
+            def probe_stopped(row: Any) -> str:
+                from fleet.manual_air_worker import ManualAirWorker
+                from fleet.reroll_journal import RerollJournal
+
+                journal = RerollJournal(self.root)
+                journal.append(instance=row.name, level="info", kind="tower_check",
+                               message="Booting to check The Tower has never been opened")
+                worker = ManualAirWorker(row.name, row.endpoint, row.lease_id, inventory=inventory)
+                # Same GUI lock as every other BlueStacks Manager start/stop.
+                gui = self._manual_supervisor()._enroll_lock
+                with gui:
+                    worker.start(row.name)
+                try:
+                    wait_for_android_boot(lambda: device(row.endpoint))
+                    state = package_state(row.endpoint)
+                finally:
+                    with gui:
+                        worker.stop(row.name)
+                if state == "installed_unopened":
+                    journal.append(instance=row.name, level="info", kind="tower_check",
+                                   message="The Tower has never been opened; shut back down")
+                else:
+                    journal.append(instance=row.name, level="error", kind="tower_check",
+                                   message="The Tower was already opened on this emulator, so it can't "
+                                           "start a fresh account; not added" if state == "opened"
+                                   else f"Not added: Tower state is {state}")
+                return state
 
             def protected_names() -> set[str]:
                 return {"Tiramisu64_6"} | {item["source_instance"]
@@ -155,7 +207,7 @@ class FleetSetupService:
             self._reroll_pool = RerollPool(
                 self.root, inventory=inventory.instances,
                 package_state=package_state, protected_names=protected_names,
-                registered=registered)
+                probe_stopped=probe_stopped, registered=registered)
         return self._reroll_pool
 
     def _air_inventory(self) -> Any:
@@ -241,8 +293,21 @@ class FleetSetupService:
         return snapshot
 
     def reroll_add(self, names: list[str]) -> dict[str, Any]:
-        self._runs().add_members(names)
-        return self.reroll_snapshot()
+        """Runs in the background: a stopped emulator is booted to check its Tower."""
+        runs = self._runs()
+        with self._reroll_dispatch_lock:
+            if runs.busy or (self._reroll_start_thread is not None
+                             and self._reroll_start_thread.is_alive()):
+                raise ValueError("reroll_start_in_progress")
+        if any(name in runs.retired_names() for name in names):
+            raise ValueError("instance_retired")
+        self._manual_pool().validate_add(names)
+
+        def operation() -> dict[str, Any]:
+            runs.add_members(names)
+            return {"results": []}
+
+        return self._reroll_background("add", names[0] if len(names) == 1 else None, operation)
 
     def reroll_remove(self, name: str) -> dict[str, Any]:
         """Take ``name`` out of the reroll without retiring it; it can be added back."""
@@ -309,6 +374,8 @@ class FleetSetupService:
             self._reroll_supervisor = RerollSupervisor(
                 self.root, pool_snapshot=self._manual_pool().snapshot,
                 enroll=enroll, start_instance=start_instance,
+                wait_booted=lambda member: wait_for_android_boot(
+                    lambda: connect(member["endpoint"])),
                 max_concurrent_workers=limit, start_stagger_seconds=1.0)
         return self._reroll_supervisor
 

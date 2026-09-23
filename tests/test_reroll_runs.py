@@ -17,6 +17,7 @@ class FakePool:
     def __init__(self, names: list[str], *, fresh: set[str] | None = None) -> None:
         self.entries = [self._entry(name) for name in names]
         self.fresh = fresh if fresh is not None else set()
+        self.opened: set[str] = set()   # fresh-looking but fails the boot probe
 
     @staticmethod
     def _entry(name: str) -> dict[str, str]:
@@ -41,7 +42,13 @@ class FakePool:
         self.validate_add(names)
         self.entries.extend(self._entry(name) for name in names)
 
-    def replace(self, keep: list[str], add: list[str]) -> None:
+    def prove(self, names: list[str]) -> set[str]:
+        self.validate_add(names)
+        if self.opened & set(names):
+            raise RerollPoolError(f"tower_already_opened: {sorted(self.opened & set(names))[0]}")
+        return set(names)
+
+    def replace(self, keep: list[str], add: list[str], proven: set[str] | None = None) -> None:
         if add:
             self.validate_add(add)
         by_name = {item["name"]: item for item in self.entries}
@@ -486,3 +493,23 @@ def test_runs_file_without_removed_key_still_loads(tmp_path: Path) -> None:
     del state["runs"][0]["removed"]
     runs._save(state)
     assert runs.active()["members"] == ["Tiramisu64_20"]
+
+
+def test_new_run_checks_additions_before_retiring_anyone(tmp_path: Path) -> None:
+    # Retirement is permanent; a rejected addition must not leave the old run
+    # half-retired with no new run to show for it.
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_23"})
+    pool.opened = {"Tiramisu64_23"}
+    retired: list[str] = []
+
+    def retire(member):
+        retired.append(member["name"])
+        pool.remove(member["name"])
+        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
+
+    runs = make(tmp_path, pool, retire=retire)
+    with pytest.raises(RerollPoolError, match="tower_already_opened: Tiramisu64_23"):
+        runs.start_new(["Tiramisu64_20"], ["Tiramisu64_23"])
+    assert retired == []
+    assert runs.active()["number"] == 1
+    assert not runs.busy
