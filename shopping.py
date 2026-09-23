@@ -52,6 +52,10 @@ logger = logging.getLogger("tower_bot.shopping")
 # read the question must not answer it.
 _MODAL_ACKNOWLEDGEMENTS: frozenset[str] = frozenset({"OK"})
 
+# Steps in a row whose input the device guard may refuse before the visit
+# ends. At a loaded host's ~8s per step this is about 40s of waiting.
+MAX_REFUSED_STEPS = 5
+
 
 class Step(Enum):
     IDLE = auto()
@@ -279,6 +283,10 @@ class ShoppingSession:
         # _buy_rows. Separate from _off_page_streak because _dispatch resets
         # that one optimistically before every BUY_ROWS call.
         self._blind_streak = 0
+        # Consecutive steps whose one input the device guard refused. A
+        # refusal sends nothing, so the step is simply retried on a fresher
+        # frame - until this many in a row say the device is not coming back.
+        self._refused_streak = 0
         self.observations: AutopilotState | None = None
         self._pending: PendingPurchase | None = None
         self._pending_card: PendingCard | None = None
@@ -380,6 +388,7 @@ class ShoppingSession:
         self._exhausted = set()
         self._off_page_streak = 0
         self._blind_streak = 0
+        self._refused_streak = 0
         self._last_page = None
         self._last_run_count = run_count
         self._step = Step.OPEN_WORKSHOP if categories else Step.OPEN_CARDS
@@ -471,6 +480,25 @@ class ShoppingSession:
             # (recognised page, wrong or absent button) still accumulates
             # across calls instead of being wiped before it can reach 2.
             self._dispatch(reading, screen, device, shopping)
+            self._refused_streak = 0
+        except RecoveryPreflightBlocked as exc:
+            # The guard refuses input acting on a frame older than it
+            # accepts, which a loaded host produces routinely. Nothing was
+            # sent, so this is a step to retry, not a visit to end - ending
+            # it strands whatever the step was clearing, such as the info
+            # panel an unlock opens.
+            self._refused_streak += 1
+            if self._refused_streak < MAX_REFUSED_STEPS:
+                logger.info("shopping input refused (%s); retrying on the next frame", exc)
+                return
+            logger.warning("shopping input refused %d steps in a row; ending the visit",
+                           self._refused_streak)
+            try:
+                self._abort(device, shopping, screen, f"input refused: {exc}")
+            except Exception:  # noqa: BLE001 - same promise as below
+                logger.exception("shopping recovery raised; forcing idle without a return tap")
+                self._step = Step.IDLE
+                self._categories = []
         except Exception as exc:  # noqa: BLE001 - a shopping step must never
             # crash the scan loop; give the coins back to the user's control
             # instead by ending the visit and saying why.
@@ -1028,7 +1056,11 @@ class ShoppingSession:
             return
         from autopilot import scroll_panel
         self._taps += 1
-        scroll_panel(device, screen, observation.heading_y, down=search.down)
+        try:
+            scroll_panel(device, screen, observation.heading_y, down=search.down)
+        except RecoveryPreflightBlocked:
+            self._taps -= 1  # refused before sending: nothing to budget
+            raise
         search.scrolls += 1
         search.fingerprint = fingerprint
         if self.observations is not None:
@@ -1449,7 +1481,11 @@ class ShoppingSession:
         if self._tuning is not None:
             x, y = jitter.point(x, y, self._tuning.tap_jitter_px)
             jitter.pause(self._tuning.tap_delay, self._tuning.timing_jitter)
-        tap(device, x, y)
+        try:
+            tap(device, x, y)
+        except RecoveryPreflightBlocked:
+            self._taps -= 1  # refused before sending: nothing to budget
+            raise
 
     def _try_tap(
         self, x: int, y: int, device: Any, shopping: Shopping, screen: Image
@@ -1489,7 +1525,12 @@ class ShoppingSession:
         )
         if match is not None:
             x, y = match.center
-            self._tap(device, x, y, shopping)
+            try:
+                self._tap(device, x, y, shopping)
+            except RecoveryPreflightBlocked as exc:
+                # Nothing was sent. The visit still ends and says so; the
+                # scan loop's navigator walks back from the Workshop page.
+                logger.warning("return tap refused (%s); leaving it to the navigator", exc)
 
     def _abort(self, device: Any, shopping: Shopping, screen: Image, reason: str) -> None:
         self._end_visit(device, shopping, screen, aborted=True, reason=reason)
