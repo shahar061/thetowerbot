@@ -707,6 +707,11 @@ OCR_THREADS: int = 2
 # An OCR call slower than this (lock wait included) is logged, so a late
 # tap can be traced to what ate the frame's freshness window.
 OCR_SLOW_SECONDS: float = 1.0
+# Exact-bytes result caches in ocr.py. Frames: a tick's readers share one
+# frame, so a few entries suffice. Crops: a screen holds ~30 text boxes, so
+# this covers the recurring text of every page the bot cycles through.
+OCR_FRAME_CACHE: int = 4
+OCR_CROP_CACHE: int = 4096
 
 
 # --- In-battle game speed -------------------------------------------------
