@@ -36,7 +36,8 @@ def create_first_launch_account(
 ) -> dict[str, Any]:
     """Journal clone consent and first run before binding its observed account ID."""
     journal = runtime.checkpoint_root / ".first-launch-account.json"
-    with runtime.reserve(attempt.endpoint), adapter.staging_lease():
+    # Shared: first launches may overlap each other but never a clone staging.
+    with runtime.reserve(attempt.endpoint), adapter.staging_lease(shared=True):
         if journal.exists() and not resume_after_consent:
             raise StagingQuarantined("previous first-launch attempt requires review")
         if resume_after_consent:

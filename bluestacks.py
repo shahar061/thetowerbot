@@ -154,18 +154,22 @@ class BlueStacksAdapter:
         return self.driver.stage_clone(name, source)
 
     @contextmanager
-    def staging_lease(self) -> Iterator[None]:
+    def staging_lease(self, *, shared: bool = False) -> Iterator[None]:
+        """Hold the host staging lease; ``shared`` holders coexist but exclude cloning."""
         self.staging_root.mkdir(parents=True, exist_ok=True)
         with (self.staging_root / ".bluestacks-staging.lock").open("a+") as handle:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(),
+                            (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise HostCapabilityError("BlueStacks staging lease is already held") from None
-            self._staging_handle = handle
+            if not shared:
+                self._staging_handle = handle
             try:
                 yield
             finally:
-                self._staging_handle = None
+                if not shared:
+                    self._staging_handle = None
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 

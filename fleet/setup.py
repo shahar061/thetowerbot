@@ -169,16 +169,13 @@ class FleetSetupService:
                 journal.append(instance=row.name, level="info", kind="tower_check",
                                message="Booting to check The Tower has never been opened")
                 worker = ManualAirWorker(row.name, row.endpoint, row.lease_id, inventory=inventory)
-                # Same GUI lock as every other BlueStacks Manager start/stop.
-                gui = self._manual_supervisor()._enroll_lock
-                with gui:
-                    worker.start(row.name)
+                # The worker serializes its own Manager presses with every other start/stop.
+                worker.start(row.name)
                 try:
                     wait_for_android_boot(lambda: device(row.endpoint))
                     state = package_state(row.endpoint)
                 finally:
-                    with gui:
-                        worker.stop(row.name)
+                    worker.stop(row.name)
                 if state == "installed_unopened":
                     journal.append(instance=row.name, level="info", kind="tower_check",
                                    message="The Tower has never been opened; shut back down")
@@ -232,10 +229,9 @@ class FleetSetupService:
                 return next((row.state for row in inventory.instances() if row.name == name), None)
 
             def stop_instance(name: str, endpoint: str, lease_id: str) -> None:
-                # Same lock as the start path (RerollSupervisor._enroll_lock), so a
-                # start and a stop can never drive the BlueStacks Manager GUI at once.
-                with supervisor._enroll_lock:
-                    ManualAirWorker(name, endpoint, lease_id, inventory=inventory).stop(name)
+                # ManualAirWorker holds the Manager lock for the press, so a start and a
+                # stop never drive the BlueStacks Manager GUI at once.
+                ManualAirWorker(name, endpoint, lease_id, inventory=inventory).stop(name)
 
             self._reroll_stop_instance = stop_instance
             self._reroll_runs = RerollRuns(

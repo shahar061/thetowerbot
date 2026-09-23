@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from bluestacks import HostCapabilityError, HostInstance
+from fleet.bluestacks_air import _MANAGER_LOCK
 from fleet.manual_air_worker import ManualAirWorker
 
 
@@ -56,8 +57,10 @@ class LifecycleWorker(ManualAirWorker):
                          manager=SimpleNamespace(activate=lambda: None, press=press),
                          endpoint_present=lambda _endpoint: inventory.rows[0].state == "running")
         self.controls = controls
+        self.held_lock: list[bool] = []
 
     def _control(self, action: str) -> object:
+        self.held_lock.append(_MANAGER_LOCK.locked())
         step = self.controls.pop(0)
         if isinstance(step, Exception):
             raise step
@@ -97,6 +100,8 @@ def test_manual_start_tolerates_a_moving_manager_while_confirming(
 
     assert worker.pressed == [(41, (840, 310), "Start")]
     assert worker.controls == []
+    # Boot confirmation must not hold the Manager lock, or parallel starts would queue.
+    assert worker.held_lock == [True, True, False, False]
 
 
 def test_manual_start_does_not_retry_an_unrelated_refusal(

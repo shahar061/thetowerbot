@@ -60,6 +60,21 @@ def test_provision_defaults_to_fresh_and_clone_requires_exclusive_staging_lease(
     assert host.calls[-1] == ("clone", "alpha")
 
 
+def test_shared_staging_leases_coexist_but_exclude_clone_staging(tmp_path: Path) -> None:
+    host = FakeHost()
+    first, second = (BlueStacksAdapter(host, staging_root=tmp_path) for _ in range(2))
+    with first.staging_lease(shared=True), second.staging_lease(shared=True):
+        with pytest.raises(HostCapabilityError, match="clone staging requires"):
+            first.provision("delta", source="alpha", mode=ProvisionMode.CLONE)
+        with pytest.raises(HostCapabilityError, match="staging lease"):
+            with BlueStacksAdapter(host, staging_root=tmp_path).staging_lease():
+                pass
+    with first.staging_lease():
+        with pytest.raises(HostCapabilityError, match="staging lease"):
+            with second.staging_lease(shared=True):
+                pass
+
+
 def test_manual_pool_is_bounded_and_reports_unavailable_host_automation(tmp_path: Path) -> None:
     path = tmp_path / "pool.json"
     path.write_text(json.dumps({"instances": [

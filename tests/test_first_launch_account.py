@@ -60,7 +60,7 @@ def test_settings_close_button_does_not_block_account_navigation(
     device.click = lambda x, y: device.clicks.append((x, y))
     runtime = SimpleNamespace(checkpoint_root=tmp_path / "w" / "checkpoints", root=tmp_path / "w",
                               reserve=lambda endpoint: nullcontext())
-    adapter = SimpleNamespace(staging_lease=nullcontext, designated=lambda instance, attempt:
+    adapter = SimpleNamespace(staging_lease=lambda **_: nullcontext(), designated=lambda instance, attempt:
                               SimpleNamespace(state="running", source_lineage="lineage"))
 
     audit = module.create_first_launch_account(

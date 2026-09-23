@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import time
-from threading import Event, Lock, Thread
+from threading import Barrier, Event, Lock, Thread
 
 from fleet.reroll_supervisor import RerollSupervisor
 
@@ -300,7 +300,23 @@ def test_kill_is_a_no_op_for_a_paused_worker(tmp_path: Path) -> None:
     assert forced == []
 
 
-def test_boot_wait_runs_after_the_gui_lock_is_released(tmp_path: Path) -> None:
+def test_first_launches_of_different_members_overlap(tmp_path: Path) -> None:
+    make, spawned, _, _ = _harness(tmp_path)
+    supervisor = make()
+    inner = supervisor.enroll
+    both_enrolling = Barrier(2, timeout=5)
+
+    def enroll(member, runtime, attempt):
+        both_enrolling.wait()  # Broken (and the start failed) if enrollment were serialized.
+        return inner(member, runtime, attempt)
+
+    supervisor.enroll = enroll
+    status = supervisor.start_all()
+    assert {row["state"] for row in status.values()} == {"running"}
+    assert len(spawned) == 2
+
+
+def test_boot_wait_runs_after_the_instance_start(tmp_path: Path) -> None:
     make, spawned, _, _ = _harness(tmp_path)
     supervisor = make()
     member = supervisor.pool_snapshot()["members"][0]
@@ -309,9 +325,6 @@ def test_boot_wait_runs_after_the_gui_lock_is_released(tmp_path: Path) -> None:
     def start_instance(selected):
         events.append("start")
     def wait_booted(selected):
-        # Holding the GUI lock through a multi-minute boot would queue every other start.
-        assert supervisor._enroll_lock.acquire(blocking=False)
-        supervisor._enroll_lock.release()
         events.append("booted")
         member["state"] = "ready"
     supervisor.start_instance = start_instance

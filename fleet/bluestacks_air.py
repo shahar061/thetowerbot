@@ -12,6 +12,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -261,6 +262,9 @@ class _ManagerBridge(Protocol):
                     modal: Mapping[str, int | float | str]) -> str: ...
 
 
+# One Manager window serves every instance: concurrent lifecycle presses would
+# steal its focus from each other, so observe-then-press runs one at a time.
+_MANAGER_LOCK = threading.Lock()
 _WINDOW_CHANGED = "manager window changed"
 # A Manager re-observation that disagrees with the one before it; nothing was pressed.
 _REOBSERVABLE = (_WINDOW_CHANGED, "BlueStacks Air lifecycle manager row changed")
@@ -1130,20 +1134,21 @@ class BlueStacksAirDriver:
         if self.timeout < 0 or self.poll_interval <= 0:
             raise ValueError("bounded lifecycle settings required")
         activate = getattr(self.manager, "activate", None)
-        for attempt in range(self._PRESS_RETRIES + 1):
-            try:
-                if callable(activate):
-                    activate()
-                digest, before, control = self._prepress_evidence(name, action=action,
-                                                                   before_state=before_state)
-                self.manager.press(control.window_id, control.point, action)
-                break
-            except HostCapabilityError as exc:
-                # Observations are read-only and the press revalidates before clicking,
-                # so a moved or re-created Manager window means nothing was pressed yet.
-                if not str(exc).startswith(_REOBSERVABLE) or attempt == self._PRESS_RETRIES:
-                    raise
-                self.sleep(self._PRESS_RETRY_SETTLE_SECONDS)
+        with _MANAGER_LOCK:
+            for attempt in range(self._PRESS_RETRIES + 1):
+                try:
+                    if callable(activate):
+                        activate()
+                    digest, before, control = self._prepress_evidence(name, action=action,
+                                                                       before_state=before_state)
+                    self.manager.press(control.window_id, control.point, action)
+                    break
+                except HostCapabilityError as exc:
+                    # Observations are read-only and the press revalidates before clicking,
+                    # so a moved or re-created Manager window means nothing was pressed yet.
+                    if not str(exc).startswith(_REOBSERVABLE) or attempt == self._PRESS_RETRIES:
+                        raise
+                    self.sleep(self._PRESS_RETRY_SETTLE_SECONDS)
         self._wait_for(name, digest=digest, endpoint=before.endpoint,
                        lease=before.lease_id, state=after_state)
 
