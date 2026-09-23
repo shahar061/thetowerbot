@@ -97,7 +97,6 @@ class RerollSupervisor:
         self.terminate = terminate
         self.force_kill = force_kill
         self.state_root = self.root / "reroll-processes"
-        self._enroll_lock = Lock()
 
     @contextmanager
     def _locked(self, name: str) -> Iterator[None]:
@@ -261,9 +260,10 @@ class RerollSupervisor:
                                       "lease_id": member["lease_id"], "state": "starting",
                                       "pid": None, "attempt_id": attempt.attempt_id,
                                       "owner_pid": os.getpid()})
+                # First launches run in parallel: the host driver serializes only the
+                # Manager presses, and the first-launch staging lease is shared.
                 if member["state"] == "start_required" and self.start_instance is not None:
-                    with self._enroll_lock:
-                        self.start_instance(member)
+                    self.start_instance(member)
                     if self.wait_booted is not None:
                         self.wait_booted(member)
                     refreshed = self._members().get(name)
@@ -296,8 +296,7 @@ class RerollSupervisor:
                 if registration is None and member["state"] != "ready":
                     raise ValueError("worker_registration_missing_for_opened_tower")
                 if registration is None:
-                    with self._enroll_lock:
-                        registration = self.enroll(member, runtime, attempt)
+                    registration = self.enroll(member, runtime, attempt)
                 if (registration.get("state") != "registered"
                         or registration.get("instance") != name
                         or registration.get("endpoint") != member["endpoint"]

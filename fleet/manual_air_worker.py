@@ -7,8 +7,8 @@ from typing import Any, Callable
 
 from bluestacks import HostCapabilityError, HostInstance
 from fleet.bluestacks_air import (
-    _REOBSERVABLE, BlueStacksAirInventory, MacOSMultiInstanceManager, ManagerRowObservation,
-    _adb_endpoint_present,
+    _MANAGER_LOCK, _REOBSERVABLE, BlueStacksAirInventory, MacOSMultiInstanceManager,
+    ManagerRowObservation, _adb_endpoint_present,
 )
 import ocr
 
@@ -56,16 +56,17 @@ class ManualAirWorker:
     def _change_state(self, *, action: str, before: str, after: str) -> None:
         if self.timeout <= 0:
             raise ValueError("manual worker lifecycle requires a bounded timeout")
-        for attempt in range(self._PRESS_RETRIES + 1):
-            try:
-                self._press(action=action, before=before)
-                break
-            except HostCapabilityError as exc:
-                # Every step before the click only observes, and the press revalidates
-                # the window before clicking, so a moving Manager means nothing was pressed.
-                if not str(exc).startswith(self._REOBSERVABLE) or attempt == self._PRESS_RETRIES:
-                    raise
-                time.sleep(self._RETRY_SETTLE_SECONDS)
+        with _MANAGER_LOCK:
+            for attempt in range(self._PRESS_RETRIES + 1):
+                try:
+                    self._press(action=action, before=before)
+                    break
+                except HostCapabilityError as exc:
+                    # Every step before the click only observes, and the press revalidates
+                    # the window before clicking, so a moving Manager means nothing was pressed.
+                    if not str(exc).startswith(self._REOBSERVABLE) or attempt == self._PRESS_RETRIES:
+                        raise
+                    time.sleep(self._RETRY_SETTLE_SECONDS)
         deadline = time.monotonic() + self.timeout
         while True:
             current = self.inventory()[0]
