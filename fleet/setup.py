@@ -168,7 +168,7 @@ class FleetSetupService:
         if self._reroll_runs is None:
             from fleet.manual_air_worker import ManualAirWorker
             from fleet.reroll_journal import RerollJournal
-            from fleet.reroll_retirement import retire
+            from fleet.reroll_retirement import remove_from_run, retire
             from fleet.reroll_runs import RerollRuns
 
             pool = self._manual_pool()
@@ -189,7 +189,10 @@ class FleetSetupService:
                 retire=lambda member: retire(
                     member, supervisor=supervisor, remove_from_pool=pool.remove,
                     stop_instance=stop_instance, instance_state=instance_state,
-                    journal=RerollJournal(self.root)))
+                    journal=RerollJournal(self.root)),
+                remove=lambda member: remove_from_run(
+                    member, supervisor=supervisor, stop_instance=stop_instance,
+                    instance_state=instance_state, journal=RerollJournal(self.root)))
         return self._reroll_runs
 
     def reroll_snapshot(self) -> dict[str, Any]:
@@ -242,7 +245,14 @@ class FleetSetupService:
         return self.reroll_snapshot()
 
     def reroll_remove(self, name: str) -> dict[str, Any]:
-        return self.reroll_retire(name)
+        """Take ``name`` out of the reroll without retiring it; it can be added back."""
+        runs = self._runs()
+        with self._reroll_dispatch_lock:
+            if runs.busy or (self._reroll_start_thread is not None
+                             and self._reroll_start_thread.is_alive()):
+                raise ValueError("reroll_start_in_progress")
+        runs.validate_remove(name)
+        return self._reroll_background("remove", name, lambda: runs.remove_member(name))
 
     def _manual_supervisor(self) -> Any:
         if self._reroll_supervisor is None:

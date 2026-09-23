@@ -57,11 +57,14 @@ def _registration(root: Path, name: str, registered_at: float) -> None:
     (worker / "fleet-registration.json").write_text(json.dumps({"registered_at": registered_at}))
 
 
-def make(root: Path, pool: FakePool, *, retire=None, stop_instance=None) -> RerollRuns:
+def make(root: Path, pool: FakePool, *, retire=None, remove=None,
+         stop_instance=None) -> RerollRuns:
     def default_retire(member):
         pool.remove(member["name"])
         return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
     return RerollRuns(root, pool=pool, retire=retire or default_retire,
+                      remove=remove or (lambda member: {"name": member["name"],
+                                                        "worker": "stopped", "instance": "stopped"}),
                       stop_instance=stop_instance or (lambda *args: None),
                       clock=lambda: "2026-09-23T09:00:00Z")
 
@@ -407,3 +410,79 @@ def test_start_new_keeps_retire_failed_flags_for_members_still_kept(tmp_path: Pa
 
     runs.start_new(["Tiramisu64_20"], ["Tiramisu64_22"])
     assert runs.retire_failures() == {"Tiramisu64_20": "identity_changed"}
+
+
+def test_removed_emulator_leaves_the_run_without_being_retired(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
+    runs = make(tmp_path, pool)
+    runs.remove_member("Tiramisu64_21")
+    assert pool.member("Tiramisu64_21") is None
+    assert "Tiramisu64_21" not in runs.retired_names()
+    active = runs.active()   # re-loads, so repair must not record it as "recovered"
+    assert active["retired"] == [] and active["removed"] == ["Tiramisu64_21"]
+    with pytest.raises(ValueError, match="instance_not_in_active_run"):
+        runs.remove_member("Tiramisu64_21")
+
+
+def test_removed_emulator_can_be_added_back_to_the_same_run(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"], fresh={"Tiramisu64_21"})
+    runs = make(tmp_path, pool)
+    runs.remove_member("Tiramisu64_21")
+    runs.add_members(["Tiramisu64_21"])
+    active = runs.active()
+    assert active["members"] == ["Tiramisu64_20", "Tiramisu64_21"]
+    assert active["removed"] == []
+    assert pool.member("Tiramisu64_21") is not None
+
+
+def test_new_run_neither_retires_nor_keeps_a_removed_emulator(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
+    retired: list[str] = []
+
+    def retire(member):
+        retired.append(member["name"])
+        pool.remove(member["name"])
+        return {"name": member["name"], "worker": "stopped", "instance": "stopped"}
+
+    runs = make(tmp_path, pool, retire=retire)
+    runs.remove_member("Tiramisu64_21")
+    with pytest.raises(ValueError, match="keep_not_in_active_run"):
+        runs.validate_new(["Tiramisu64_21"], [])
+    runs.start_new(["Tiramisu64_20"], [])
+    assert retired == []
+    assert runs.active()["members"] == ["Tiramisu64_20"]
+
+
+def test_failed_removal_leaves_pool_and_run_untouched(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
+
+    def remove(member):
+        raise RetireError("instance_stop_failed: window stuck")
+
+    runs = make(tmp_path, pool, remove=remove)
+    with pytest.raises(RetireError, match="instance_stop_failed"):
+        runs.remove_member("Tiramisu64_21")
+    assert pool.member("Tiramisu64_21") is not None
+    assert runs.active()["removed"] == []
+    assert not runs.busy
+
+
+def test_repair_keeps_a_half_removed_emulator_in_play(tmp_path: Path) -> None:
+    # Crash after the run recorded the removal but before the pool dropped it:
+    # the pool is the truth, so the emulator stays in the run (paused).
+    pool = FakePool(["Tiramisu64_20", "Tiramisu64_21"])
+    runs = make(tmp_path, pool)
+    state = runs._load()
+    state["runs"][0]["removed"] = ["Tiramisu64_21"]
+    runs._save(state)
+    assert runs.active()["removed"] == []
+    assert runs.active()["retired"] == []
+
+
+def test_runs_file_without_removed_key_still_loads(tmp_path: Path) -> None:
+    pool = FakePool(["Tiramisu64_20"])
+    runs = make(tmp_path, pool)
+    state = runs._load()
+    del state["runs"][0]["removed"]
+    runs._save(state)
+    assert runs.active()["members"] == ["Tiramisu64_20"]

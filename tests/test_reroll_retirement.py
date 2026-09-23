@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from fleet.reroll_journal import RerollJournal
-from fleet.reroll_retirement import RetireError, retire
+from fleet.reroll_retirement import RetireError, remove_from_run, retire
 
 MEMBER = {"name": "Tiramisu64_20", "endpoint": "127.0.0.1:5755", "lease_id": "a"}
 
@@ -113,3 +113,45 @@ def test_already_stopped_host_is_not_stopped_again(tmp_path: Path) -> None:
     result, calls = _run(tmp_path, FakeSupervisor(["stopped"]), host="stopped")
     assert result["instance"] == "already_stopped"
     assert calls == ["remove:Tiramisu64_20"]
+
+
+def _remove(tmp_path: Path, supervisor: FakeSupervisor, *, host: str | None = "running",
+            stop_error: Exception | None = None):
+    calls: list[str] = []
+    clock = Clock()
+
+    def stop_instance(name: str, endpoint: str, lease_id: str) -> None:
+        calls.append(f"stop:{name}")
+        if stop_error:
+            raise stop_error
+
+    result = remove_from_run(MEMBER, supervisor=supervisor, stop_instance=stop_instance,
+                             instance_state=lambda name: host,
+                             journal=RerollJournal(tmp_path), clock=clock, sleep=clock.sleep,
+                             timeout=5, kill_grace=2, poll=1)
+    return result, calls
+
+
+def test_remove_stops_worker_and_host_but_leaves_pool_to_the_caller(tmp_path: Path) -> None:
+    result, calls = _remove(tmp_path, FakeSupervisor(["stopping", "paused"]))
+    assert result == {"name": "Tiramisu64_20", "worker": "stopped", "instance": "stopped"}
+    assert calls == ["stop:Tiramisu64_20"]
+    assert _kinds(tmp_path) == ["worker_removed", "instance_stopped"]
+
+
+def test_remove_skips_an_already_stopped_host(tmp_path: Path) -> None:
+    result, calls = _remove(tmp_path, FakeSupervisor(["paused"]), host="stopped")
+    assert result["instance"] == "already_stopped"
+    assert calls == []
+
+
+def test_remove_fails_when_the_host_will_not_stop(tmp_path: Path) -> None:
+    # A running emulator with Tower opened can't be re-added, so the removal must not complete.
+    with pytest.raises(RetireError, match="instance_stop_failed"):
+        _remove(tmp_path, FakeSupervisor(["paused"]), stop_error=RuntimeError("window stuck"))
+    assert _kinds(tmp_path) == ["worker_removed", "instance_stop_failed"]
+
+
+def test_remove_refuses_an_unprovable_worker_exit(tmp_path: Path) -> None:
+    with pytest.raises(RetireError, match="identity_changed"):
+        _remove(tmp_path, FakeSupervisor(["identity_changed"]))
