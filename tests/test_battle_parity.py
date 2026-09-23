@@ -48,3 +48,40 @@ def test_two_band_battle_read_parses_what_the_full_frame_read_does(
     changes, gains = observation_diff(old, new)
     assert changes == set()
     assert gains == KNOWN_GAINS.get(name, set())
+
+
+# Named battle_popup_*, not in_run_*: the panel classifies these frames as
+# IN_RUN (spec P2's risk case is a recovery modal drawn over an otherwise
+# ordinary battle frame), but an in_run_* glob is what Tasks 12/14/16's
+# fixtures and tests match on, and a popup fixture must never be picked up
+# by those.
+POPUPS = sorted(p.stem for p in FIXTURES.glob("battle_popup_*.png"))
+
+
+@pytest.mark.skipif(
+    not POPUPS,
+    reason=(
+        "no popup-over-battle fixture captured yet (spec P2 Risks). To capture one: "
+        "when an online-required or session-conflict popup appears over a battle on a "
+        "worker, `adb -s 127.0.0.1:<port> exec-out screencap -p > "
+        "tests/fixtures/battle_popup_<name>.png` then `.venv/bin/python tools/record_ocr.py "
+        "tests/fixtures/battle_popup_<name>.png`."
+    ),
+)
+@pytest.mark.parametrize("name", POPUPS or ["none"])
+def test_a_popup_over_a_battle_reaches_the_preflight(name: str, bot_in_run_on) -> None:
+    """The spec's risk case: a popup mid-screen. Either the safety net fires
+    on this frame, or the backstop's full read names the popup."""
+    from tower_bot import popup_flags
+    bot = bot_in_run_on(name)
+    reading = screens.ScreenReading(screens.ScreenState.IN_RUN, 1.0, {})
+    expected = popup_flags(ocr.FrameReads(bot._screen).full())
+    assert any(expected), "a popup fixture must show a recovery modal"
+    bot._battle_full_read_at = time.monotonic()
+    between_backstops = popup_flags(bot._preflight_boxes(reading, ocr.FrameReads(bot._screen)))
+    bot._battle_full_read_at = float("-inf")
+    at_backstop = popup_flags(bot._preflight_boxes(reading, ocr.FrameReads(bot._screen)))
+    assert at_backstop == expected
+    if between_backstops != expected:
+        assert bot._battle_panel_visible(ocr.FrameReads(bot._screen)), (
+            "the safety net should have sent this frame to the full read")
