@@ -7,6 +7,7 @@ import {
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
   fetchFleet, requestFleetProvision,
   fetchAccountWorkshopPurchases, fetchAccountRuns, fetchAccountRunPurchases,
+  startNewReroll, listRerolls, retireRerollMember, stopRerollInstance,
 } from "./api";
 import type { Strategy } from "./types";
 import { setAccountScope } from "./accountScope";
@@ -87,6 +88,16 @@ beforeEach(() => {
 });
 
 describe("fleet routes", () => {
+  const fleetStatus = { ...validStatus, runtime: { ...validStatus.runtime,
+    capabilities: [...validStatus.runtime.capabilities, "fleet"] } };
+  function allowFleetWrite(result: unknown = {}): void {
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(fleetStatus) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(result) });
+  }
+  const lastCall = () => fetchMock.mock.calls.at(-1) as [string, RequestInit];
+
   it("reads each reroll worker's history independently of the top account selector", async () => {
     setAccountScope("worker:other");
     await fetchAccountWorkshopPurchases("worker:Air_1", 42);
@@ -117,6 +128,26 @@ describe("fleet routes", () => {
     await expect(requestFleetProvision({ mode: "clone", source: "seed", count: 2,
       targets: ["seed_1", "seed_2"], state: "eligible" })).rejects.toMatchObject({ status: 412 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a new reroll with the kept and added emulators", async () => {
+    allowFleetWrite();
+    await startNewReroll({ keep: ["Air_1"], add: ["Air_3"] });
+    expect(lastCall()[0]).toBe("/api/fleet/reroll/runs");
+    expect(lastCall()[1].method).toBe("POST");
+    expect(JSON.parse(lastCall()[1].body as string)).toEqual({ keep: ["Air_1"], add: ["Air_3"] });
+  });
+  it("retires one emulator and retries a shutdown by exact name", async () => {
+    allowFleetWrite();
+    await retireRerollMember("Air 1");
+    expect(lastCall()[0]).toBe("/api/fleet/reroll/members/Air%201/retire");
+    allowFleetWrite();
+    await stopRerollInstance("Air_1");
+    expect(lastCall()[0]).toBe("/api/fleet/reroll/members/Air_1/stop-instance");
+  });
+  it("lists past rerolls", async () => {
+    await listRerolls();
+    expect(callArgs()[0]).toBe("/api/fleet/reroll/runs");
   });
 });
 

@@ -21,7 +21,7 @@ import type {
 } from "./types";
 import { checkRuntimeCompatibility } from "./runtimeCompatibility";
 import { accountScope } from "./accountScope";
-import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup, RerollSnapshot, RerollJournal } from "./fleet";
+import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup, RerollSnapshot, RerollJournal, RerollRunSummary } from "./fleet";
 import type { MilestoneRoadmap } from "./milestoneRoadmap";
 import type { AccountMetrics } from "./accountMetrics";
 
@@ -64,7 +64,7 @@ async function getJson<T>(path: string, init?: RequestInit, scoped = true): Prom
 export const fetchStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" });
 export const fetchHostStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" }, false);
 export type AccountChoice = { key: string; account_id: string | null; instance: string | null;
-  kind: "worker" | "unattributed"; running: boolean; dashboard_url: string | null };
+  kind: "worker" | "unattributed"; running: boolean; dashboard_url: string | null; run_numbers?: number[] };
 export type AccountCatalog = { accounts: AccountChoice[]; active: string | null };
 export const fetchAccounts = () => getJson<AccountCatalog>("/api/accounts", { cache: "no-store" });
 export const fetchMilestoneRoadmap = () => getJson<MilestoneRoadmap>("/api/milestone-roadmap", { cache: "no-store" });
@@ -75,8 +75,14 @@ export const setRerollConcurrency = (limit: number) =>
   send<RerollSnapshot>("/api/fleet/reroll/concurrency", "PATCH", { limit }, "fleet");
 export const addRerollMembers = (names: string[]) =>
   send<RerollSnapshot>("/api/fleet/reroll/members", "POST", { names }, "fleet");
-export const removeRerollMember = (name: string) =>
-  send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}`, "DELETE", undefined, "fleet");
+export const retireRerollMember = (name: string) =>
+  send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}/retire`, "POST", undefined, "fleet");
+export const stopRerollInstance = (name: string) =>
+  send<RerollSnapshot>(`/api/fleet/reroll/members/${encodeURIComponent(name)}/stop-instance`, "POST", undefined, "fleet");
+export const startNewReroll = (value: { keep: string[]; add: string[]; name?: string }) =>
+  send<RerollSnapshot>("/api/fleet/reroll/runs", "POST", value, "fleet");
+export const listRerolls = () =>
+  getJson<{ runs: RerollRunSummary[] }>("/api/fleet/reroll/runs", { cache: "no-store" }, false);
 export const startReroll = (name?: string) =>
   send<RerollSnapshot>(name ? `/api/fleet/reroll/members/${encodeURIComponent(name)}/start` : "/api/fleet/reroll/start", "POST", undefined, "fleet");
 export const pauseReroll = (name?: string) =>
