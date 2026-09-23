@@ -304,7 +304,7 @@ class ScreenReadings:
         try:
             title = _centered(_TITLE, screen.shape[0])
             crop = screen[title.y:title.y + title.h, title.x:title.x + title.w]
-            titles = ocr.read(crop, strict=True, min_confidence=0.)
+            titles = ocr.read(crop, strict=True, min_confidence=0., upscale=False)
             if not any(_normal(b.text) in ('stats', 'settings') for b in titles):
                 # A supported frame the title reader did examine: no account
                 # panel title on it. That IS an observation, and the only one

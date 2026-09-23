@@ -65,6 +65,21 @@ def _remember(cache: OrderedDict[bytes, Any], key: bytes, value: Any, limit: int
         cache.popitem(last=False)
 
 
+def _set_det_mode(engine: Any, upscale: bool) -> bytes:
+    """Point the detector at this read's resize rule; return it for the cache key.
+
+    RapidOCR's TextDetector re-reads `limit_type` on every call (its
+    get_preprocess), and every read runs under _lock, so this applies to
+    exactly one read. "min" is the library default: enlarge any input whose
+    short side is under 736 px. "max" only ever shrinks.
+    """
+    mode = "min" if upscale or config.OCR_DET_UPSCALE else "max"
+    detector = getattr(engine, "text_det", None)
+    if detector is not None:
+        detector.limit_type = mode
+    return mode.encode()
+
+
 def _cache_recognition(engine: Any) -> None:
     """Wrap the engine's recognizer so crops it has read before are not re-run.
 
@@ -126,12 +141,16 @@ def _engine_or_none() -> Any | None:
 
 
 def read(screen: Image | None, *, strict: bool = False,
-         min_confidence: float | None = None) -> tuple[TextBox, ...]:
+         min_confidence: float | None = None, upscale: bool = True) -> tuple[TextBox, ...]:
     """Read boxes, optionally surfacing errors or retaining guard candidates.
 
     Existing callers retain the configured confidence floor and empty-on-error
     behavior. A passive modal guard can retain uncertain titles without ever
     accepting their values as observations.
+
+    `upscale=False` lets the detector skip enlarging a small input (see
+    config.OCR_DET_UPSCALE). Only readers whose parity was measured without
+    it opt out.
     """
     if screen is None:
         return ()
@@ -144,7 +163,7 @@ def read(screen: Image | None, *, strict: bool = False,
                 raise RuntimeError('OCR engine unavailable')
             return ()
         try:
-            key = _digest(screen)
+            key = _digest(screen) + _set_det_mode(engine, upscale)
             cached_engine, result = _frame_results.get(key, (None, None))
             if cached_engine is engine:
                 _frame_results.move_to_end(key)

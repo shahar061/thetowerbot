@@ -724,6 +724,14 @@ OCR_SLOW_SECONDS: float = 1.0
 # this covers the recurring text of every page the bot cycles through.
 OCR_FRAME_CACHE: int = 4
 OCR_CROP_CACHE: int = 4096
+# RapidOCR's detector enlarges any input whose short side is under 736 px
+# (limit_type "min"). Full frames are never enlarged, but every crop is:
+# measured on in_run_defense, a 410x150 title crop 160 ms -> 20 ms and a
+# 1080x270 strip 351 ms -> 112 ms without it. Off means readers that pass
+# ocr.read(upscale=False) skip the enlargement; readers that do not opt out
+# keep it, because a lone "0" in the gems header and the wallet crop are only
+# detected enlarged. True restores upscaling for every read.
+OCR_DET_UPSCALE: bool = False
 
 
 # --- In-battle game speed -------------------------------------------------
