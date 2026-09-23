@@ -54,3 +54,74 @@ def test_digest_is_the_frames_sha256_computed_once(monkeypatch: pytest.MonkeyPat
     assert reads.digest == expected
     monkeypatch.setattr(ocr.hashlib, "sha256", lambda *_: pytest.fail("hashed twice"))
     assert reads.digest == expected
+
+
+def test_a_band_box_lands_at_its_full_frame_position() -> None:
+    box = ocr.TextBox("x1.5", .99, config.Rect(100, 100, 30, 40))
+    band = config.Rect(0, 1320, 1080, 1080)
+    mapped = ocr.band_box_to_frame(box, band, 1080 / 896, 1080 / 896)
+    assert mapped == ocr.TextBox("x1.5", .99, config.Rect(121, 1441, 36, 48))
+
+
+def _expected_band_box(box: ocr.TextBox, band: config.Rect) -> ocr.TextBox:
+    """Where `box`, read off `band` resized by BATTLE_OCR_SCALE, belongs in
+    the frame - worked from the scale, not from the current band sizes."""
+    small_w = round(band.w * config.BATTLE_OCR_SCALE)
+    small_h = round(band.h * config.BATTLE_OCR_SCALE)
+    sx, sy = band.w / small_w, band.h / small_h
+    r = box.rect
+    return ocr.TextBox(box.text, box.confidence, config.Rect(
+        band.x + round(r.x * sx), band.y + round(r.y * sy), round(r.w * sx), round(r.h * sy)))
+
+
+def test_battle_reads_both_bands_small_and_maps_them_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    box = ocr.TextBox("T", .99, config.Rect(100, 100, 30, 40))
+    monkeypatch.setattr(ocr, "read", _counting_reader(calls, (box,)))
+    reads = ocr.FrameReads(np.zeros((2400, 1080, 3), np.uint8))
+    bands = config.BATTLE_BANDS[(1080, 2400)]
+    assert reads.battle() == (_expected_band_box(box, bands.top),
+                              _expected_band_box(box, bands.panel))
+    assert reads.battle() is reads.battle()
+    assert [c["shape"] for c in calls] == [
+        (round(b.h * config.BATTLE_OCR_SCALE), round(b.w * config.BATTLE_OCR_SCALE), 3)
+        for b in (bands.top, bands.panel)]
+    assert all(c["strict"] is True and c["upscale"] is False for c in calls)
+
+
+def test_battle_maps_band_boxes_back_whatever_the_scale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mapping follows the scale math, not one lucky band size."""
+    box = ocr.TextBox("T", .99, config.Rect(57, 211, 83, 19))
+    monkeypatch.setattr(ocr, "read", _counting_reader([], (box,)))
+    for scale in (0.5, 0.71, 0.83):
+        monkeypatch.setattr(config, "BATTLE_OCR_SCALE", scale)
+        bands = config.BATTLE_BANDS[(1080, 1920)]
+        reads = ocr.FrameReads(np.zeros((1920, 1080, 3), np.uint8))
+        assert reads.battle() == (_expected_band_box(box, bands.top),
+                                  _expected_band_box(box, bands.panel))
+
+
+def test_an_unmeasured_frame_size_falls_back_to_the_full_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review focus 5."""
+    calls: list[dict] = []
+    box = ocr.TextBox("T", .99, config.Rect(100, 100, 30, 40))
+    monkeypatch.setattr(ocr, "read", _counting_reader(calls, (box,)))
+    reads = ocr.FrameReads(np.zeros((2340, 1080, 3), np.uint8))
+    assert reads.battle() == reads.full() == (box,)
+    assert [c["shape"] for c in calls] == [(2340, 1080, 3)]
+
+
+def test_a_failed_band_read_is_remembered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review focus 2."""
+    calls: list[int] = []
+
+    def fail(screen, **kwargs):
+        calls.append(1)
+        raise RuntimeError("OCR inference failed")
+
+    monkeypatch.setattr(ocr, "read", fail)
+    reads = ocr.FrameReads(np.zeros((2400, 1080, 3), np.uint8))
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            reads.battle()
+    assert calls == [1]

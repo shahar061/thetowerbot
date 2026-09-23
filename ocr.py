@@ -343,6 +343,8 @@ class FrameReads:
         self._digest: str | None = None
         self._full: tuple[TextBox, ...] | None = None
         self._full_error: Exception | None = None
+        self._battle: tuple[TextBox, ...] | None = None
+        self._battle_error: Exception | None = None
 
     @property
     def digest(self) -> str:
@@ -360,3 +362,47 @@ class FrameReads:
                 self._full_error = error
                 raise
         return self._full
+
+    def battle(self) -> tuple[TextBox, ...]:
+        """Battle text from the two measured bands, in full-frame coordinates.
+
+        Each band (config.BATTLE_BANDS) is resized by config.BATTLE_OCR_SCALE
+        and read without detector upscaling, then its boxes are shifted and
+        rescaled back. The battlefield between the bands carries no text the
+        bot uses. A frame size with no measured bands gets the full read.
+        Remembered, failures included, like full().
+        """
+        if self._battle_error is not None:
+            raise self._battle_error
+        if self._battle is None:
+            try:
+                self._battle = self._read_battle()
+            except Exception as error:
+                self._battle_error = error
+                raise
+        return self._battle
+
+    def _read_battle(self) -> tuple[TextBox, ...]:
+        bands = config.BATTLE_BANDS.get((self.screen.shape[1], self.screen.shape[0]))
+        if bands is None:
+            return self.full()
+        import cv2  # local: keeps the import cost off callers that never crop
+
+        boxes: list[TextBox] = []
+        for rect in (bands.top, bands.panel):
+            crop = self.screen[rect.y:rect.y + rect.h, rect.x:rect.x + rect.w]
+            scale = config.BATTLE_OCR_SCALE
+            small = crop if scale == 1.0 else cv2.resize(
+                crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            sx, sy = crop.shape[1] / small.shape[1], crop.shape[0] / small.shape[0]
+            boxes.extend(band_box_to_frame(box, rect, sx, sy)
+                         for box in read(small, strict=True, upscale=False))
+        return tuple(boxes)
+
+
+def band_box_to_frame(box: TextBox, band: Rect, sx: float, sy: float) -> TextBox:
+    """A box read off a resized band, back in full-frame coordinates."""
+    rect = box.rect
+    return TextBox(box.text, box.confidence, Rect(
+        band.x + round(rect.x * sx), band.y + round(rect.y * sy),
+        round(rect.w * sx), round(rect.h * sy)))
