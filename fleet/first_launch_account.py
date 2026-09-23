@@ -103,7 +103,9 @@ def create_first_launch_account(
             for screen, control, previous in (("home", "settings", None),
                                               ("settings", "account", "home")):
                 frame = read_screen(screen, previous=previous)
-                if (frame.screen != screen or set(frame.controls) != {control}
+                # The observer adds `close` to Settings whenever its X is visible.
+                allowed = ({control}, {control, "close"}) if screen == "settings" else ({control},)
+                if (frame.screen != screen or set(frame.controls) not in allowed
                         or frame.conflict_dialog or clock() - frame.observed_at > 5):
                     raise ValueError("account navigation unavailable")
                 before_action_for_navigation = {
