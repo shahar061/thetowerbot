@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,7 +55,8 @@ def _engine_or_none() -> Any | None:
         try:
             from rapidocr_onnxruntime import RapidOCR
 
-            _engine = RapidOCR()
+            _engine = RapidOCR(intra_op_num_threads=config.OCR_THREADS,
+                               inter_op_num_threads=1)
         except Exception:
             _engine = _FAILED
             logger.exception("could not build the OCR engine; not trying again")
@@ -72,7 +74,9 @@ def read(screen: Image | None, *, strict: bool = False,
     """
     if screen is None:
         return ()
+    started = time.perf_counter()
     with _lock:
+        waited = time.perf_counter() - started
         engine = _engine_or_none()
         if engine is None:
             if strict:
@@ -85,6 +89,11 @@ def read(screen: Image | None, *, strict: bool = False,
             if strict:
                 raise RuntimeError('OCR inference failed') from None
             return ()
+        finally:
+            elapsed = time.perf_counter() - started
+            if elapsed > config.OCR_SLOW_SECONDS:
+                logger.warning("slow OCR: %.2fs on a %s frame (%.2fs waiting for the engine)",
+                               elapsed, getattr(screen, "shape", "?"), waited)
 
     boxes: list[TextBox] = []
     try:

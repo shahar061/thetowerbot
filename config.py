@@ -698,6 +698,16 @@ TILE_PRICE_TOP_FRACTION: float = 0.41
 # live data.
 OCR_CONFIDENCE_FLOOR: float = 0.85
 
+# ONNX threads per OCR engine. The default (-1, every core) has each worker
+# process fight the others and the emulators for all 12 cores. Measured on
+# the Workshop fixture with 4 workers reading at once: all cores 0.7-0.9s
+# median with 1.7s spikes, 4 threads ~0.65s, 2 threads a steady 0.45s. A
+# lone worker pays for it (0.19s -> 0.38s), but the fleet never runs alone.
+OCR_THREADS: int = 2
+# An OCR call slower than this (lock wait included) is logged, so a late
+# tap can be traced to what ate the frame's freshness window.
+OCR_SLOW_SECONDS: float = 1.0
+
 
 # --- In-battle game speed -------------------------------------------------
 # The widget sits at the bottom right of the play area: [-] x1.0 [+]. All
