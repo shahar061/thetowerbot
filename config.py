@@ -740,6 +740,51 @@ OCR_REGION_CACHE: int = 32
 OCR_FRAME_MIN_PIXELS: int = 1_000_000
 
 
+# --- Battle perception from two bands (spec P2) ------------------------------
+class BattleBands(NamedTuple):
+    """Where battle text lives on one frame size, in absolute pixels.
+
+    Not anchor-relative like SPEED_READOUT_REGION: the IN_RUN panel anchor
+    only matches the ATTACK tab, and the panel is pinned to the bottom of the
+    frame. Measured from tests/fixtures/ocr/in_run_*.json: on 1080x2400 cash
+    at y 169, "Game Paused" at 359, speed 1394, HUD 1480-1560, heading 1659,
+    tiles 1790-2300; on 1080x1920 (in_run_defense_1920) cash 35, speed 917,
+    HUD 1004-1072, heading 1183, tiles 1309-1782.
+    """
+
+    top: Rect      # cash, gems and coins rows, and the pause banner
+    panel: Rect    # speed readout down to the bottom of the upgrade grid
+    heading: Rect  # the tab heading bar, whose colour names the tab
+    heading_y: int  # the heading text's y, used when OCR misses the heading
+
+
+BATTLE_BANDS: dict[tuple[int, int], BattleBands] = {
+    (1080, 2400): BattleBands(top=Rect(0, 0, 1080, 440), panel=Rect(0, 1320, 1080, 1080),
+                              heading=Rect(0, 1640, 1080, 80), heading_y=1659),
+    (1080, 1920): BattleBands(top=Rect(0, 0, 1080, 440), panel=Rect(0, 840, 1080, 1080),
+                              heading=Rect(0, 1164, 1080, 80), heading_y=1183),
+}
+# Each band is resized by this before reading: about the 2000/2400 the
+# engine gives a full 2400-tall frame. Measured on every in_run fixture: 0.83
+# parses as the full frame does (one extra price read on
+# in_run_wallet_no_cutout); 0.8333 loses health on three frames. A lower
+# scale is allowed only if tests/test_battle_parity.py passes at it.
+BATTLE_OCR_SCALE: float = 0.83
+# OpenCV hue (0-180) of each tab's heading bar: the median hue of pixels with
+# S and V above BATTLE_TAB_MIN_SV. Measured: ATTACK 97, DEFENSE 175, UTILITY
+# 25 on every in_run fixture at both sizes. The nearest menu fixture sits 18
+# away (menu_cards 115). DEFENSE wraps around red, so distance is circular.
+BATTLE_TAB_HUES: dict[str, int] = {"ATTACK": 97, "DEFENSE": 175, "UTILITY": 25}
+BATTLE_TAB_HUE_TOLERANCE: int = 8
+BATTLE_TAB_MIN_SV: int = 80
+# The bar fills ~90% of its band on every battle fixture; menus that happen
+# to share a hue fill under 10%.
+BATTLE_TAB_MIN_FRACTION: float = 0.5
+# Backstop for a popup that leaves the panel readable (spec Risks): the
+# supervisor preflight reads the full frame at least this often in battle.
+BATTLE_FULL_READ_EVERY: float = 10.0
+
+
 # --- In-battle game speed -------------------------------------------------
 # The widget sits at the bottom right of the play area: [-] x1.0 [+]. All
 # three parts are anchor-relative, like every other in-run region - the
