@@ -101,6 +101,18 @@ class Observation:
         return matches[0].status if len(matches) == 1 else 'unreadable'
 
 
+def _headings(boxes: tuple[ocr.TextBox, ...]) -> list[tuple[str, ocr.TextBox]]:
+    """(category, box) for every upgrade-panel heading among `boxes`."""
+    return [(c, b) for c in ("ATTACK", "DEFENSE", "UTILITY") for b in boxes
+            if tiles.normalise(b.text).replace("defence", "defense") == c.lower() + "upgrades"]
+
+
+def panel_visible(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> bool:
+    """Whether a battle frame shows its upgrade panel: exactly one trusted
+    heading. False means something may cover the panel (spec P1 safety net)."""
+    return len(_headings(tuple(b for b in boxes if b.confidence >= .9))) == 1
+
+
 def parse_frame(
     screen: Image, boxes: tuple[ocr.TextBox, ...], context: str, *, now: float | None = None,
     digest: str | None = None,
@@ -113,8 +125,7 @@ def parse_frame(
     evidence = dict(context=context, frame_digest=frame_digest,
                     frame_width=screen.shape[1], frame_height=screen.shape[0])
     boxes = tuple(b for b in boxes if b.confidence >= .9)
-    headings = [(c, b) for c in ("ATTACK", "DEFENSE", "UTILITY") for b in boxes
-                if tiles.normalise(b.text).replace("defence", "defense") == c.lower() + "upgrades"]
+    headings = _headings(boxes)
     if len(headings) != 1:
         return Observation(None, (), {}, None, now, **evidence)
     category, heading = headings[0]

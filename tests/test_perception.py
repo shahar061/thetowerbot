@@ -207,3 +207,14 @@ def test_a_failed_shared_read_degrades_to_an_unread_frame(monkeypatch: pytest.Mo
     monkeypatch.setattr(reads, "full", fail)
     result = observe_frame(frame, "battle", reads=reads)
     assert result.category is None and result.rows == ()
+
+
+def test_the_panel_is_visible_when_exactly_one_heading_was_read() -> None:
+    from perception import panel_visible
+    frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
+    boxes = recorded("in_run_lit")
+    heading = next(b for b in boxes if b.text == "ATTACKUPGRADES")
+    assert panel_visible(frame, boxes)
+    assert not panel_visible(frame, (heading, heading))
+    assert not panel_visible(frame, tuple(ocr.TextBox(b.text, .5, b.rect) if b is heading else b
+                                          for b in boxes))
