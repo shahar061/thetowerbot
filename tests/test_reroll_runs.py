@@ -135,6 +135,28 @@ def test_unreadable_runs_file_is_an_explicit_error(tmp_path: Path) -> None:
         make(tmp_path, FakePool([])).active()
 
 
+@pytest.mark.parametrize("invalid_data", [
+    # Missing keys
+    {"runs": [{"number": 1, "status": "active"}]},
+    # members is a string instead of list
+    {"runs": [{"number": 1, "name": "R1", "status": "active", "started_at": "2026-01-01T00:00:00Z",
+              "members": "A_1", "retired": [], "retire_failed": {}}]},
+    # Two runs with same number
+    {"runs": [
+        {"number": 1, "name": "R1", "status": "active", "started_at": "2026-01-01T00:00:00Z",
+         "members": ["A_1"], "retired": [], "retire_failed": {}},
+        {"number": 1, "name": "R2", "status": "closed", "started_at": "2026-01-02T00:00:00Z",
+         "members": ["A_2"], "retired": [], "retire_failed": {}}
+    ]},
+    # retired_before_runs is not a list
+    {"runs": [], "retired_before_runs": "x"},
+])
+def test_structurally_invalid_runs_file_raises_error(tmp_path: Path, invalid_data: dict) -> None:
+    (tmp_path / "reroll-runs.json").write_text(json.dumps(invalid_data))
+    with pytest.raises(RerollRunsError, match="runs_state_unreadable"):
+        make(tmp_path, FakePool([])).active()
+
+
 def test_run_numbers_from_maps_every_member_and_tolerates_a_missing_file(tmp_path: Path) -> None:
     assert run_numbers_from(tmp_path / "reroll-runs.json") == {}
     (tmp_path / "reroll-runs.json").write_text(json.dumps({"runs": [

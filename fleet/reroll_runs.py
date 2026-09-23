@@ -54,6 +54,30 @@ class RerollRuns:
         self._lock = RLock()
 
     # -- storage -------------------------------------------------------
+    @staticmethod
+    def _valid_run(run: Any) -> bool:
+        """Validate run structure: dict with required keys and types."""
+        if not isinstance(run, dict):
+            return False
+        if not isinstance(run.get("number"), int) or isinstance(run.get("number"), bool):
+            return False
+        if not isinstance(run.get("name"), str) or not run["name"]:
+            return False
+        if run.get("status") not in {"active", "closed"}:
+            return False
+        if not isinstance(run.get("started_at"), str):
+            return False
+        if not isinstance(run.get("members"), list) or not all(isinstance(m, str) for m in run["members"]):
+            return False
+        if not isinstance(run.get("retired"), list):
+            return False
+        for item in run["retired"]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("instance"), str):
+                return False
+        if not isinstance(run.get("retire_failed"), dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in run["retire_failed"].items()):
+            return False
+        return True
+
     def _read(self) -> dict[str, Any] | None:
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
@@ -61,9 +85,18 @@ class RerollRuns:
             return None
         except (OSError, ValueError) as exc:
             raise RerollRunsError("runs_state_unreadable") from exc
-        if (not isinstance(value, dict) or not isinstance(value.get("runs"), list)
-                or not isinstance(value.get("retired_before_runs", []), list)
-                or sum(run.get("status") == "active" for run in value["runs"]) > 1):
+        if not isinstance(value, dict) or not isinstance(value.get("runs"), list):
+            raise RerollRunsError("runs_state_unreadable")
+        if not isinstance(value.get("retired_before_runs", []), list) or not all(isinstance(name, str) for name in value.get("retired_before_runs", [])):
+            raise RerollRunsError("runs_state_unreadable")
+        seen_numbers = set()
+        for run in value["runs"]:
+            if not self._valid_run(run):
+                raise RerollRunsError("runs_state_unreadable")
+            if run["number"] in seen_numbers:
+                raise RerollRunsError("runs_state_unreadable")
+            seen_numbers.add(run["number"])
+        if sum(run.get("status") == "active" for run in value["runs"]) > 1:
             raise RerollRunsError("runs_state_unreadable")
         value.setdefault("retired_before_runs", [])
         return value
