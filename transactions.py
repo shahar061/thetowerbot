@@ -372,6 +372,34 @@ class TransactionJournal:
         finally:
             conn.close()
 
+    def close_unproven(self, key: str, *, reason: str, now: float) -> Outcome:
+        """Give up on proof: resolve UNPROVEN with the spend left unknown.
+
+        The same verdict a living session writes for a tap it never saw
+        answered. The currency commitment is not released here; a wallet
+        read newer than `now` releases it (see resolved_unproven_keys).
+        """
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM transactions WHERE key = ?", (key,)).fetchone()
+                if row is None:
+                    raise KeyError(key)
+                detail = json.loads(row["detail"] or "{}")
+                if row["stage"] == Stage.RESOLVED.value:
+                    return Outcome(key=key, verdict=Verdict(row["outcome"]), spent=row["spent"],
+                                   reason=detail.get("reason"))
+                detail["reason"] = reason
+                conn.execute(
+                    "UPDATE transactions SET stage = ?, outcome = ?, spent = NULL, resolved_at = ?, "
+                    "detail = ? WHERE key = ?",
+                    (Stage.RESOLVED.value, Verdict.UNPROVEN.value, now, json.dumps(detail), key),
+                )
+                return Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None, reason=reason)
+        finally:
+            conn.close()
+
     def recovered_visit(self) -> tuple[tuple[Transaction, Outcome], ...]:
         """Receipts still owned by the interrupted visit, including after another crash."""
         conn = self._connect()

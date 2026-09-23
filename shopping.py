@@ -56,6 +56,11 @@ _MODAL_ACKNOWLEDGEMENTS: frozenset[str] = frozenset({"OK"})
 # ends. At a loaded host's ~8s per step this is about 40s of waiting.
 MAX_REFUSED_STEPS = 5
 
+# How long a dead process's unanswered tap may hold the device waiting for
+# proof. Recovery never taps, so if its page is not on screen the proof can
+# never arrive; after this the attempt closes UNPROVEN and the bot moves on.
+RECOVERY_TIMEOUT_SECONDS = 60.0
+
 
 class Step(Enum):
     IDLE = auto()
@@ -299,6 +304,8 @@ class ShoppingSession:
         # Permanent unlock evidence outlives an individual shopping visit.
         self._completed_unlocks: set[str] = set()
         self._recovery_sample: tuple[str, transactions.RecoveryEvidence] | None = None
+        # When this process first failed to prove the open attempt; survives reset().
+        self._recovery_since: tuple[str, float] | None = None
         self._recovered_keys: set[str] = set()
 
     @property
@@ -1266,14 +1273,24 @@ class ShoppingSession:
             self._spent = None
             if txn.currency == "coins":
                 self._coin_spent = None
-            self._bus.publish(events.PurchaseSkipped(item=txn.item, reason="unreconciled", detail=outcome.reason))
-            if self.observations is not None:
-                self.observations.decision("blocked", outcome.reason)
-            return True
-        if self.currencies is not None:
+            now = time.time()
+            if self._recovery_since is None or self._recovery_since[0] != txn.key:
+                self._recovery_since = (txn.key, now)
+            if now - self._recovery_since[1] < RECOVERY_TIMEOUT_SECONDS:
+                self._bus.publish(events.PurchaseSkipped(item=txn.item, reason="unreconciled", detail=outcome.reason))
+                if self.observations is not None:
+                    self.observations.decision("blocked", outcome.reason)
+                return True
+            # The commitment stays reserved until a newer wallet read releases it.
+            reason = f"no proof within {RECOVERY_TIMEOUT_SECONDS:.0f}s; closed unproven"
+            logger.warning("%s: %s", txn.item, reason)
+            self.journal.close_unproven(txn.key, reason=reason, now=now)
+            self._bus.publish(events.PurchaseSkipped(item=txn.item, reason="unproven", detail=reason))
+        elif self.currencies is not None:
             self.currencies.release(f"purchase:{txn.key}", txn.currency)
         self._restore_recovered_visit()
         self._recovery_sample = None
+        self._recovery_since = None
         return True
 
     def _restore_recovered_visit(self) -> bool:
