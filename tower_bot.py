@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 from account_collection import StatsCollection, at_home
+import milestones_badge
 from milestones_claim import MilestonesClaim
 from milestones_screen import MilestonesReadings, parse_frame as parse_milestones_frame
 from missions_claim import MissionsClaim
@@ -203,12 +204,21 @@ class TowerBot:
         # walking. See the deadlock note in run_once.
         self._held_scans = 0
         self.runs = RunTracker(first_run_id)
-        # When each claim last landed, and the best wave the ladder was
+        # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
         # and the walk itself refuses if there is nothing to take. Persisting
         # this belongs with the wallet, in B07.
         self._last_claim: dict[str, float] = {}
-        self._claimed_best_wave: int | None = None
+        # Every tier has its own MILESTONES ladder, so the wave that owes a
+        # claim is the best on the tier last played, not the account's best
+        # overall. Keyed by the tier the death modal read; None is "no run
+        # with a read tier has ended yet", which falls back to `_best_wave`.
+        self._ladder_tier: int | None = None
+        self._tier_best_wave: dict[int, int] = {}
+        self._claimed_wave: dict[int | None, int] = {}
+        # Whether the last main menu frame that showed the MILESTONES button
+        # showed its badge - see milestones_badge.
+        self._milestones_badge = False
         # The account's best-ever wave. Seeded here from whatever the caller
         # read at startup (see prepare_store(), which reads db.best_wave())
         # and kept fresh in-process from every RunEnded from then on (see
@@ -523,6 +533,24 @@ class TowerBot:
             tuning=settings.strategy,
         ) is not None
 
+    def _ladder_waves(self) -> tuple[int | None, int | None]:
+        """(best, claimed-at) for the ladder of the tier last played."""
+        tier = self._ladder_tier
+        best = self._best_wave if tier is None else self._tier_best_wave.get(tier)
+        return best, self._claimed_wave.get(tier)
+
+    def _milestones_owed(self, settings: Any) -> bool:
+        """True if a crossed ladder row is worth leaving the death screen for.
+
+        RETRY never passes the main menu, which is the only screen a claim is
+        offered on - so without this a claim is only ever taken when some
+        other errand happens to go home.
+        """
+        claims = settings.strategy.claims
+        return (claims.enabled and claims.milestones_on_new_best
+                and not self.claim.active and not self.milestones_claim.active
+                and claim_schedule.crossed_threshold(*self._ladder_waves()))
+
     def _offer_claim(self, settings: Any) -> str | None:
         """Offer the one claim the cadence says is owed, if any.
 
@@ -536,12 +564,14 @@ class TowerBot:
             return None
         if self.claim.active or self.milestones_claim.active:
             return None
+        best_wave, claimed_wave = self._ladder_waves()
         kind = claim_schedule.due(
             claim_schedule.ClaimState(
                 last_missions=self._last_claim.get("missions"),
                 last_milestones=self._last_claim.get("milestones"),
-                best_wave=self._best_wave,
-                claimed_best_wave=self._claimed_best_wave,
+                best_wave=best_wave,
+                claimed_best_wave=claimed_wave,
+                milestones_badge=self._milestones_badge,
             ),
             now=time.time(),
             missions_every_hours=claims.missions_every_hours,
@@ -554,7 +584,9 @@ class TowerBot:
             return None
         self._last_claim[kind] = time.time()
         if kind == "milestones":
-            self._claimed_best_wave = self._best_wave
+            if best_wave is not None:
+                self._claimed_wave[self._ladder_tier] = best_wave
+            self._milestones_badge = False
         return kind
 
     def run_once(self, max_runs: int | None = None) -> bool:
@@ -664,6 +696,12 @@ class TowerBot:
                         self._best_wave is None or run_event.wave > self._best_wave
                     ):
                         self._best_wave = run_event.wave
+                    if run_event.tier is not None:
+                        self._ladder_tier = run_event.tier
+                        if run_event.wave is not None and run_event.wave > (
+                            self._tier_best_wave.get(run_event.tier, 0)
+                        ):
+                            self._tier_best_wave[run_event.tier] = run_event.wave
                 self.bus.publish(run_event)
                 self.autopilot.suspend("Run boundary", clear_battle=True)
 
@@ -1086,6 +1124,9 @@ class TowerBot:
             # only one maintenance walk may hold the menus. So the claim is
             # only offered on a frame the visit declined - reading begin()'s
             # existing answer rather than re-deriving the same decision.
+            badge = milestones_badge.badge_visible(self.screen, self.templates)
+            if badge is not None:
+                self._milestones_badge = badge
             if not self.shopping.begin(shopping_policy, self.runs.completed):
                 armed = self._offer_claim(settings)
                 if armed is not None:
@@ -1128,6 +1169,7 @@ class TowerBot:
                 go_home=((self.shopping.due(shopping_policy, self.runs.completed)
                           and (self.reroll_progress is None
                                or self.reroll_progress.workshop_worthwhile()))
+                         or self._milestones_owed(settings)
                          or (state is screens.ScreenState.GAME_OVER
                              and self.reroll_progress is not None
                              and self.reroll_progress.stats_due())),

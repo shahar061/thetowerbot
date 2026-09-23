@@ -20,6 +20,7 @@ from typing import Callable
 
 import pytest
 
+import screens
 from strategy import Claims, Shopping, ShoppingRule
 from tower_bot import TowerBot
 
@@ -229,3 +230,65 @@ def test_battle_is_not_tapped_on_the_frame_a_claim_arms(
     assert bot.milestones_claim.active, "the claim should have armed this frame"
     navigated = [e.target for e in bot.bus.published if e.type == "Navigated"]
     assert navigated == [], f"BATTLE was tapped on the frame the claim armed: {navigated}"
+
+
+# -- Milestones: which ladder, and leaving the death screen for it ----------
+def _asked_go_home(bot: TowerBot) -> list[bool]:
+    asked: list[bool] = []
+    navigate = bot.navigator.maybe_navigate
+    bot.navigator.maybe_navigate = lambda *args, **kwargs: (
+        asked.append(kwargs["go_home"]), navigate(*args, **kwargs))[1]
+    return asked
+
+
+@pytest.mark.parametrize("best, claimed, owed", [(30, 21, True), (29, 21, False)])
+def test_game_over_goes_home_only_for_a_crossed_ladder_row(
+    best: int, claimed: int, owed: bool,
+) -> None:
+    """RETRY never passes the main menu, the only screen a claim is offered
+    on - so a crossed row has to take HOME, and a best that crossed nothing
+    must not spend the trip."""
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("game_over", state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True,
+                        claims=Claims(enabled=True))
+    bot._ladder_tier = 1
+    bot._tier_best_wave = {1: best}
+    bot._claimed_wave = {1: claimed}
+    asked = _asked_go_home(bot)
+    bot.run_once()
+    assert asked == [owed]
+
+
+def test_each_tier_has_its_own_ladder() -> None:
+    """Tier 2 wave 50 owes Tier 2's rows though Tier 1's best is far higher."""
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("game_over", state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True,
+                        claims=Claims(enabled=True))
+    bot._best_wave = 137
+    bot._claimed_wave = {None: 137, 1: 137, 2: 40}
+    bot._ladder_tier = 2
+    bot._tier_best_wave = {1: 137, 2: 50}
+    asked = _asked_go_home(bot)
+    bot.run_once()
+    assert asked == [True]
+
+
+@pytest.mark.parametrize("frame, armed", [("menu_main_bluestacks_1920", True),
+                                           ("menu_milestones_entry", False)])
+def test_the_milestones_badge_arms_a_claim_no_wave_explains(frame: str, armed: bool) -> None:
+    """Best == claimed-at, so nothing but the badge can make the ladder due."""
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot(frame, state=screens.ScreenState.MAIN_MENU,
+                        policy=Shopping(), auto_navigate=True,
+                        claims=Claims(enabled=True))
+    bot.runs.completed = 1
+    bot._best_wave = 21
+    bot._claimed_wave = {None: 21}
+    bot._last_claim["missions"] = time.time()
+    bot.run_once()
+    assert bot.milestones_claim.active is armed

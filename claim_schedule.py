@@ -18,15 +18,39 @@ ClaimKind = Literal["missions", "milestones"]
 
 SECONDS_PER_HOUR = 3600.0
 
-# The ladder only pays out at fixed wave thresholds, but under autopilot the
-# best wave creeps up by a wave or two on nearly every run. Without a minimum
-# gap between milestones claims, `due()` would arm a full menu walk after
-# almost every run for a reward the ladder is not actually paying on this
-# particular new best - a menu trip spent for nothing. This is an internal
-# throttle, not a `Claims` strategy field like `missions_every_hours`: there
-# is no live-play evidence yet that the value needs to be user-tunable, and
-# it can be promoted to a strategy field later if that changes.
+# The waves at which a tier's MILESTONES ladder pays, the same rows on every
+# tier (https://the-tower-idle-tower-defense.fandom.com/wiki/Milestones). A new
+# best only owes a claim when it crosses one of these: under autopilot the best
+# creeps up by a wave or two on nearly every run, and a menu walk for a best
+# that crossed nothing is a trip spent for nothing. A superset is the safe
+# error - an extra row costs one walk that finds no `Claim All`, a missing row
+# leaves a reward unclaimed.
+MILESTONE_WAVES: tuple[int, ...] = (
+    10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
+    150, 200, 250, 300, 400, 500, 750,
+    1000, 1250, 1500, 2000, 2500, 4500,
+)
+
+# The MILESTONES badge is the game's own count of claimable rewards, so seeing
+# it is due on its own. But whether it also counts the premium rewards this
+# walk can never take is unrecorded; a badge that a walk cannot clear would
+# otherwise re-arm the walk on every main-menu frame. So a badge alone re-arms
+# at most this often. A crossed threshold is not throttled - it fires once per
+# crossing by construction.
 MIN_MILESTONES_HOURS = 1.0
+
+
+def crossed_threshold(best_wave: int | None, claimed_best_wave: int | None) -> bool:
+    """True if `best_wave` reached a ladder row `claimed_best_wave` had not.
+
+    None claimed means never claimed, which any read best owes - not coerced
+    to 0, which would reach the same answer below wave 10 by accident only.
+    """
+    if best_wave is None:
+        return False
+    if claimed_best_wave is None:
+        return True
+    return any(claimed_best_wave < wave <= best_wave for wave in MILESTONE_WAVES)
 
 
 @dataclass(frozen=True)
@@ -39,15 +63,21 @@ class ClaimState:
     can answer. None means the ladder has never been claimed - the live
     account's actual state.
 
-    `last_milestones` throttles how often a new-best can re-arm the walk (see
-    MIN_MILESTONES_HOURS): None means never claimed, which is immediately due
-    rather than blocked.
+    Both waves are for ONE tier - the one last played - because every tier
+    has its own ladder: a Tier 2 wave 50 owes Tier 2's rows even when Tier 1's
+    best is far higher.
+
+    `milestones_badge` is whether the main menu last showed the MILESTONES
+    badge. `last_milestones` throttles how often that alone can re-arm the
+    walk (see MIN_MILESTONES_HOURS): None means never claimed, which is
+    immediately due rather than blocked.
     """
 
     last_missions: float | None
     last_milestones: float | None
     best_wave: int | None
     claimed_best_wave: int | None
+    milestones_badge: bool = False
 
 
 def due(
@@ -70,27 +100,17 @@ def due(
     if not math.isfinite(now):
         return None
 
-    if milestones_on_new_best and state.best_wave is not None:
-        # None claimed_best_wave means never claimed, which any read best
-        # wave beats. Not coerced to 0 - that would reach the same answer by
-        # accident rather than by rule.
-        if state.claimed_best_wave is None or state.best_wave > state.claimed_best_wave:
-            # A new best is necessary but not sufficient: MIN_MILESTONES_HOURS
-            # throttles how often that alone can re-arm the walk, or the
-            # ladder would be offered after nearly every run (see its module
-            # comment). None means never claimed, which is immediately due -
-            # not coerced to 0 for the same reason claimed_best_wave above is
-            # not. A non-finite or backwards-clock last_milestones is handled
-            # exactly as defensively as last_missions is below: waiting is the
-            # safe reading, so the walk falls through to the missions check
-            # instead of arming milestones on bad data.
+    if milestones_on_new_best:
+        if crossed_threshold(state.best_wave, state.claimed_best_wave):
+            return "milestones"
+        # A non-finite or backwards-clock last_milestones is handled exactly
+        # as defensively as last_missions is below: waiting is the safe
+        # reading, so a badge on bad data falls through to the missions check.
+        if state.milestones_badge:
             if state.last_milestones is None:
                 return "milestones"
             if math.isfinite(state.last_milestones):
                 elapsed = now - state.last_milestones
-                # elapsed < 0 (clock went backwards) falls through here too:
-                # MIN_MILESTONES_HOURS is positive, so it never satisfies the
-                # threshold below.
                 if elapsed >= MIN_MILESTONES_HOURS * SECONDS_PER_HOUR:
                     return "milestones"
 
