@@ -1202,6 +1202,29 @@ def test_restart_ambiguous_workshop_stays_blocked_across_resets_and_visits(
     assert session._bus.of_type("Purchased") == []
 
 
+def test_restart_without_its_proof_page_closes_unproven_after_the_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_header: dict,
+) -> None:
+    session, page, clock, path = _restart_workshop(tmp_path, monkeypatch, fake_header)
+    device = FakeDevice()
+    policy = _workshop_policy()
+    off_page = SimpleNamespace(page="main_menu", top_left=None)
+    assert session._recover_transaction(off_page, frame("menu_cards"))
+    clock[0] += shopping_mod.RECOVERY_TIMEOUT_SECONDS - 1
+    assert session._recover_transaction(off_page, frame("menu_cards"))
+    assert session.reconciliation_pending
+    clock[0] += 1
+    assert session._recover_transaction(off_page, frame("menu_cards"))
+    assert device.taps == []
+    assert not session.reconciliation_pending
+    txn, outcome = transactions.TransactionJournal(path).recovered_visit()[0]
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
+    assert session._spent is None
+    assert "Damage" in session._exhausted
+    skip = session._bus.of_type("PurchaseSkipped")[-1]
+    assert skip.reason == "unproven"
+
+
 def test_restart_card_wallet_proof_counts_against_card_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                          fake_header: dict) -> None:
     path = tmp_path / "bot.db"
