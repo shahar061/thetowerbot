@@ -733,6 +733,12 @@ OCR_CROP_CACHE: int = 4096
 # detected enlarged. True restores upscaling for every read.
 OCR_DET_UPSCALE: bool = False
 
+# Crop reads (read_region, the wallet crop, the account title, the battle
+# bands) keep their own LRU so they cannot evict the full frame a scan's
+# other readers still need. An image at least this many pixels is a frame.
+OCR_REGION_CACHE: int = 32
+OCR_FRAME_MIN_PIXELS: int = 1_000_000
+
 
 # --- In-battle game speed -------------------------------------------------
 # The widget sits at the bottom right of the play area: [-] x1.0 [+]. All

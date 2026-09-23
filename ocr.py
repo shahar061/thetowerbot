@@ -48,6 +48,17 @@ _frame_results: OrderedDict[bytes, tuple[Any, Any]] = OrderedDict()
 # Crops: recognition is ~60% of a read, and mid-run 65% of the text boxes on
 # a frame are byte-identical to ones read 2s earlier (labels, static values).
 _crop_results: OrderedDict[bytes, Any] = OrderedDict()
+# Regions: padded crops and bands, kept apart so a scan's crop reads cannot
+# evict the full frame (spec P0c). Same (engine, result) entries as frames.
+_region_results: OrderedDict[bytes, tuple[Any, Any]] = OrderedDict()
+
+
+def _results_for(image: Image) -> tuple[OrderedDict[bytes, tuple[Any, Any]], int]:
+    """The result cache, and its size limit, an image of this size belongs in."""
+    height, width = image.shape[:2]
+    if height * width >= config.OCR_FRAME_MIN_PIXELS:
+        return _frame_results, config.OCR_FRAME_CACHE
+    return _region_results, config.OCR_REGION_CACHE
 
 
 def _digest(image: Image) -> bytes:
@@ -164,12 +175,13 @@ def read(screen: Image | None, *, strict: bool = False,
             return ()
         try:
             key = _digest(screen) + _set_det_mode(engine, upscale)
-            cached_engine, result = _frame_results.get(key, (None, None))
+            results, limit = _results_for(screen)
+            cached_engine, result = results.get(key, (None, None))
             if cached_engine is engine:
-                _frame_results.move_to_end(key)
+                results.move_to_end(key)
             else:
                 result, _elapsed = engine(screen)
-                _remember(_frame_results, key, (engine, result), config.OCR_FRAME_CACHE)
+                _remember(results, key, (engine, result), limit)
         except Exception:
             logger.exception("OCR failed on a %s frame", getattr(screen, "shape", "?"))
             if strict:
