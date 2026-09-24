@@ -173,12 +173,20 @@ def reader(path: Path | str) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def connection_account(conn: sqlite3.Connection) -> str | None:
+    """Read identity from the same connection used for account history."""
+    table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_identity'").fetchone()
+    if table is None:
+        return None  # History recorded before account identity tracking.
+    row = conn.execute("SELECT account_id FROM account_identity WHERE id = 1").fetchone()
+    return row[0] if row is not None else None
+
+
 def bound_account(path: Path | str) -> str | None:
     """Return the account explicitly assigned to a worker database."""
     try:
         with reader(path) as conn:
-            row = conn.execute("SELECT account_id FROM account_identity WHERE id = 1").fetchone()
-        return row[0] if row is not None else None
+            return connection_account(conn)
     except sqlite3.OperationalError:
         return None  # An older database has no identity marker.
 
@@ -386,6 +394,39 @@ def run_stats(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]
         (limit,),
     ).fetchall()
     return [dict(row) for row in reversed(rows)]
+
+
+def stats_progress(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Full-history Tier 1 benchmarks, confirmed at the end of a run.
+
+    Recorded play counts completed runs on every tier. It excludes gaps
+    between runs; elapsed time includes them. Neither claims the precise
+    moment within a run at which a wave was crossed.
+    """
+    benchmarks = [dict(tier=1, wave=wave, run_id=None, reached_at=None,
+                       play_seconds=None, elapsed_seconds=None)
+                  for wave in (20, 30, 60, 100)]
+    total = 0
+    played = 0.0
+    first_started: float | None = None
+    best: int | None = None
+    for row in conn.execute(
+            "SELECT id, started_at, ended_at, tier, wave FROM runs "
+            "WHERE ended_at IS NOT NULL ORDER BY started_at, id"):
+        total += 1
+        if first_started is None:
+            first_started = row["started_at"]
+        played += max(0.0, row["ended_at"] - row["started_at"])
+        if row["tier"] != 1 or row["wave"] is None:
+            continue
+        best = row["wave"] if best is None else max(best, row["wave"])
+        for milestone in benchmarks:
+            if milestone["run_id"] is None and row["wave"] >= milestone["wave"]:
+                milestone.update(run_id=row["id"], reached_at=row["ended_at"],
+                                 play_seconds=played,
+                                 elapsed_seconds=max(0.0, row["ended_at"] - first_started))
+    return {"summary": {"total_runs": total, "best_tier_1_wave": best,
+                        "play_seconds": played}, "benchmarks": benchmarks}
 
 
 def taps_by_action(conn: sqlite3.Connection) -> list[dict[str, Any]]:

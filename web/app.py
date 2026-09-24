@@ -1225,10 +1225,16 @@ def create_app(
         if path is None:
             return {"runs": [], "taps": [], "screens": []}
         with db.reader(path) as conn:
+            account_id = db.connection_account(conn)
+            expected = request.headers.get("x-expected-account-id")
+            if expected is not None and expected != account_id:
+                raise HTTPException(409, "selected_account_changed")
             return {
+                "account_id": account_id,
                 "runs": db.run_stats(conn),
                 "taps": db.taps_by_action(conn),
                 "screens": db.screen_histogram(conn),
+                **db.stats_progress(conn),
             }
 
     @app.get("/api/errors")
@@ -1266,6 +1272,10 @@ def create_app(
             }
         capped = max(1, min(limit, MAX_LEDGER_PER_PAGE))
         with db.reader(path) as conn:
+            account_id = db.connection_account(conn)
+            expected = request.headers.get("x-expected-account-id")
+            if expected is not None and expected != account_id:
+                raise HTTPException(409, "selected_account_changed")
             lines = db.ledger_page(
                 conn,
                 limit=capped,
@@ -1280,6 +1290,7 @@ def create_app(
             # to find it by.
             currencies = db.ledger_currencies(conn)
             return {
+                "account_id": account_id,
                 "lines": lines,
                 "balances": db.last_balances(
                     conn, dict.fromkeys([*ledger.BALANCED_CURRENCIES, *currencies]),

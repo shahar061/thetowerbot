@@ -353,9 +353,21 @@ export interface RunStat {
 }
 
 export interface StatsPayload {
+  account_id?: string | null;
   runs: RunStat[];
   taps: { action: string; count: number }[];
   screens: { screen: string; count: number }[];
+  summary?: { total_runs: number; best_tier_1_wave: number | null; play_seconds: number };
+  benchmarks?: MilestoneBenchmark[];
+}
+
+export interface MilestoneBenchmark {
+  tier: number;
+  wave: number;
+  run_id: number | null;
+  reached_at: number | null;
+  play_seconds: number | null;
+  elapsed_seconds: number | null;
 }
 
 /** A row from the `ledger` table - the account's permanent non-battle
@@ -383,6 +395,7 @@ export interface LedgerLine {
 }
 
 export interface LedgerPayload {
+  account_id?: string | null;
   lines: LedgerLine[];
   /** The latest known balance per currency. null is ambiguous on its own -
    *  "not read yet" for a currency in `balanced`, "never tracked" for any

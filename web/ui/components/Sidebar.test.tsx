@@ -9,7 +9,7 @@ vi.mock("@/lib/useEventStream", () => ({ useConnected: () => true }));
 vi.mock("@/components/ThemeToggle", () => ({ ThemeToggle: () => <button>Theme</button> }));
 beforeEach(() => { state.pathname = "/"; vi.clearAllMocks(); state.errors.mockResolvedValue([]); state.strategies.mockResolvedValue({ active: "single-strategy" }); });
 
-test.each(["/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/"])("fleet navigation at %s excludes account signals and polling", pathname => {
+test.each(["/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/", "/fleet/reroll/stats/", "/fleet/reroll/ledger/"])("fleet navigation at %s excludes account signals and polling", pathname => {
   state.pathname = pathname;
   render(<Sidebar />);
   expect(screen.getByRole("link", { name: "Fleet Live" })).toHaveAttribute("href", "/fleet/reroll/");
