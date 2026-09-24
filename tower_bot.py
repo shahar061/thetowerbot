@@ -766,6 +766,13 @@ class TowerBot:
                     unlocked = unlocked_screen.read(self.screen, boxes)
                     if unlocked is not None:
                         observed_screen = unlocked_screen.SCREEN_ID
+                if observed_screen == "UNKNOWN":
+                    inbox_preflight = mail_screen.parse(self.screen, boxes)
+                    footer = inbox_preflight.back
+                    if (inbox_preflight.visible and footer is not None
+                            and footer.rect is not None
+                            and footer.rect[1] > self.screen.shape[0] * .85):
+                        observed_screen = "INBOX"
                 online_required, session_conflict = popup_flags(boxes)
                 readable = True
             except Exception:  # noqa: BLE001 - an unreadable modal may cover an anchor
