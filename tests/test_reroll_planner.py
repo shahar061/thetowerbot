@@ -20,6 +20,57 @@ def facts(**changes: object) -> RerollFacts:
     return RerollFacts(**values)
 
 
+def test_first_verified_workshop_coins_go_to_cash_and_coin_utility() -> None:
+    first = choose_next(facts(utility_spent_coins=0))
+    assert first.upgrade_id == "unlock_cash_bonuses"
+    after_cash = choose_next(facts(utility_spent_coins=40, purchases={
+        "unlock_cash_bonuses": 1, "cash_per_wave": 2}))
+    assert after_cash.upgrade_id == "unlock_coin_bonuses"
+    after_unlock = choose_next(facts(utility_spent_coins=140, purchases={
+        "unlock_cash_bonuses": 1, "cash_per_wave": 2,
+        "unlock_coin_bonuses": 1}))
+    assert after_unlock.upgrade_id == "coins_per_kill_bonus"
+    after_coins = choose_next(facts(utility_spent_coins=260, purchases={
+        "unlock_cash_bonuses": 1, "cash_per_wave": 2,
+        "unlock_coin_bonuses": 1, "coins_per_kill_bonus": 3}))
+    assert after_coins.upgrade_id == "cash_bonus"
+
+
+def test_utility_phase_stops_at_budget_and_never_picks_an_over_ceiling_price() -> None:
+    finished = choose_next(facts(utility_spent_coins=350))
+    assert finished.upgrade_id == "damage"
+    near_ceiling = choose_next(facts(utility_spent_coins=390, prices={
+        "unlock_cash_bonuses": 40}))
+    assert near_ceiling.upgrade_id != "unlock_cash_bonuses"
+
+
+def test_unaffordable_turtle_upgrade_checks_a_bounded_cheap_filler() -> None:
+    owned = {"unlock_defense_upgrades": 1, "unlock_thorns": 1,
+             "unlock_cash_bonuses": 1, "unlock_coin_bonuses": 1}
+    main = choose_next(facts(best_tier_1_wave=20, purchases=owned,
+                             utility_spent_coins=350))
+    assert main.upgrade_id in {"defense_absolute", "thorns"}
+    considering = choose_next(facts(best_tier_1_wave=20, purchases=owned,
+                                   utility_spent_coins=350, wallet_coins=100,
+                                   prices={main.upgrade_id: 200}))
+    assert considering.upgrade_id in {"cash_per_wave", "coins_per_kill_bonus",
+                                     "cash_bonus", "damage", "attack_speed"}
+    affordable = choose_next(facts(best_tier_1_wave=20, purchases=owned,
+                                  utility_spent_coins=350, wallet_coins=100,
+                                  prices={main.upgrade_id: 200,
+                                          considering.upgrade_id: 15}))
+    assert affordable.upgrade_id == considering.upgrade_id
+    assert affordable.state == "buy"
+    costly = choose_next(facts(best_tier_1_wave=20, purchases=owned,
+                              utility_spent_coins=350, wallet_coins=100,
+                              prices={main.upgrade_id: 200,
+                                      considering.upgrade_id: 30}))
+    assert costly.upgrade_id != considering.upgrade_id
+    assert choose_next(facts(best_tier_1_wave=20, purchases=owned,
+                             utility_spent_coins=350, wallet_coins=200,
+                             prices={main.upgrade_id: 200})).upgrade_id == main.upgrade_id
+
+
 def test_early_plan_leads_with_basic_attack_before_the_unlocks() -> None:
     """Damage (100) and Attack Speed (90) sit above every unlock, including
     the 84.4 `value_propagation` credits Unlock Defense Upgrades with, so a fresh

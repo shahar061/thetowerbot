@@ -16,7 +16,9 @@ from account_state import AccountState
 from fleet.reroll_journal import RerollJournal
 from fleet.account_metrics import game_started_date
 from fleet.reroll_lifetime import read_lifetime
-from fleet.reroll_planner import RerollDecision, RerollFacts, choose_next, project_next
+from fleet.reroll_planner import (FILLER_SHARE, UTILITY_CEILING_COINS,
+                                  UTILITY_TARGET_COINS, RerollDecision,
+                                  RerollFacts, choose_next, project_next)
 from fleet.reroll_variants import read_variant
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
@@ -26,6 +28,7 @@ from strategy import Shopping, ShoppingRule
 # missing from it and spends outside the workshop are not subtracted, so the
 # estimate is re-anchored by a real visit at least this often.
 RECHECK_EVERY_N_RUNS = 10
+PRICE_MEMORY_SECONDS = 600
 
 
 class RerollProgress:
@@ -35,7 +38,7 @@ class RerollProgress:
         self.root = Path(worker_root)
         self.account_id = account_id
         self.account_state = account_state
-        self._observed: tuple[str, int | None, int | None, float] | None = None
+        self._observed: dict[str, tuple[int | None, int | None, float, int]] = {}
         self._last_state: tuple[str, str | None, str] | None = None
         self._last_decision: RerollDecision | None = None
         self._last_published_at = 0.0
@@ -87,6 +90,29 @@ class RerollProgress:
                     continue
                 purchases[upgrade.id] = purchases.get(upgrade.id, 0) + 1
         return best, purchases
+
+    def _utility_spent(self) -> int | None:
+        """Sum proven utility debits, retaining uncertainty as unknown."""
+        path = self.root / "tower_bot.db"
+        if not path.is_file() or db.bound_account(path) != self.account_id:
+            raise ValueError("reroll account database binding changed")
+        with db.reader(path) as connection:
+            rows = connection.execute(
+                "SELECT delta, detail FROM ledger WHERE kind='WORKSHOP_BUY' "
+                "AND category='UTILITY' AND currency='coins' AND dry_run=0"
+            ).fetchall()
+        spent = 0
+        for delta, detail in rows:
+            try:
+                verdict = json.loads(detail or "{}").get("verdict")
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if verdict not in {"bought", "free"}:
+                continue
+            if delta is None or delta > 0:
+                return None
+            spent -= delta
+        return spent
 
     def _account_readings(self) -> tuple[dict[str, float], int | None]:
         snapshot = self.account_state.snapshot()
@@ -153,19 +179,39 @@ class RerollProgress:
     def decision(self) -> RerollDecision:
         best, purchases = self._history()
         values, lifetime = self._account_readings()
-        target = choose_next(RerollFacts(self.account_id, best, purchases, values,
-                                         variant=read_variant(self.root)))
-        self._battle_stage = target.stage
-        wallet = price = None
-        if (self._observed is not None and self._observed[0] == target.upgrade_id
-                and time.time() - self._observed[3] <= 30):
-            wallet, price = self._observed[1:3]
-        return choose_next(RerollFacts(
+        if not self._observed:
+            try:
+                record = json.loads((self.root / "workshop-target.json").read_text(
+                    encoding="utf-8"))
+            except (OSError, ValueError):
+                record = None
+            if isinstance(record, dict) and record.get("account_id") == self.account_id:
+                upgrade_id = record.get("upgrade_id")
+                observed_at = record.get("observed_at")
+                if (isinstance(upgrade_id, str) and upgrades.by_id(upgrade_id) is not None
+                        and isinstance(observed_at, (int, float))
+                        and 0 <= time.time() - observed_at <= PRICE_MEMORY_SECONDS
+                        and record.get("purchase_count") == purchases.get(upgrade_id, 0)
+                        and isinstance(record.get("wallet"), int)
+                        and isinstance(record.get("price"), int)):
+                    self._observed[upgrade_id] = (
+                        record["wallet"], record["price"], observed_at,
+                        record["purchase_count"])
+        observed = {upgrade_id: entry for upgrade_id, entry in self._observed.items()
+                    if time.time() - entry[2] <= PRICE_MEMORY_SECONDS
+                    and entry[3] == purchases.get(upgrade_id, 0)}
+        latest = max(observed.values(), key=lambda entry: entry[2], default=None)
+        wallet = latest[0] if latest is not None else None
+        prices = {upgrade_id: entry[1] for upgrade_id, entry in observed.items()
+                  if entry[1] is not None}
+        result = choose_next(RerollFacts(
             self.account_id, best, purchases, values, wallet, lifetime,
-            {target.upgrade_id: price} if target.upgrade_id and price is not None else {},
-            self._spend_fraction,
+            prices, self._spend_fraction,
             variant=read_variant(self.root),
+            utility_spent_coins=self._utility_spent(),
         ))
+        self._battle_stage = result.stage
+        return result
 
     def shopping_policy(self, base: Shopping) -> Shopping:
         # The reroll planner selects one item; a visit-wide percentage cap
@@ -177,8 +223,19 @@ class RerollProgress:
             return replace(base, enabled=False, workshop=())
         if not self.workshop_worthwhile():
             return replace(base, enabled=False)
+        budget = base.coin_budget
+        if plan.filler:
+            assert plan.wallet_coins is not None
+            ceiling = int(plan.wallet_coins * FILLER_SHARE)
+            budget = ceiling if budget is None else min(budget, ceiling)
+        else:
+            spent = self._utility_spent()
+            if (plan.category == "UTILITY" and spent is not None
+                    and spent < UTILITY_TARGET_COINS):
+                ceiling = UTILITY_CEILING_COINS - spent
+                budget = ceiling if budget is None else min(budget, ceiling)
         return replace(base, workshop=(ShoppingRule(plan.item, plan.category),),
-                       allow_unlocks=True, coin_budget_pct=None)
+                       allow_unlocks=True, coin_budget=budget, coin_budget_pct=None)
 
     def battle_policy(self, base: AutopilotPolicy) -> AutopilotPolicy:
         if self._battle_stage is None:
@@ -186,13 +243,19 @@ class RerollProgress:
             self._battle_stage = "stones" if best is not None and best >= 60 else (
                 "turtle" if best is not None and best >= 20 else "opening")
         candidates = (
-            UpgradeRule("defense_absolute"), UpgradeRule("thorns", target=51),
             UpgradeRule("cash_per_wave", target=10),
-            UpgradeRule("damage"), UpgradeRule("attack_speed"),
-            UpgradeRule("coins_per_kill_bonus"),
-        ) if self._battle_stage == "opening" else (
+            UpgradeRule("coins_per_kill_bonus", target=1.25),
+            UpgradeRule("cash_bonus", target=1.25),
             UpgradeRule("defense_absolute"), UpgradeRule("thorns", target=51),
-            UpgradeRule("health"), UpgradeRule("cash_per_wave", target=10),
+            UpgradeRule("coins_per_wave", target=10),
+            UpgradeRule("damage"), UpgradeRule("attack_speed"),
+        ) if self._battle_stage == "opening" else (
+            UpgradeRule("cash_per_wave", target=10),
+            UpgradeRule("coins_per_kill_bonus", target=1.25),
+            UpgradeRule("cash_bonus", target=1.25),
+            UpgradeRule("defense_absolute"), UpgradeRule("thorns", target=51),
+            UpgradeRule("health"),
+            UpgradeRule("coins_per_wave", target=10),
             UpgradeRule("damage"), UpgradeRule("attack_speed"),
         )
         _, purchases = self._history()
@@ -213,8 +276,11 @@ class RerollProgress:
         current = self.decision()
         if upgrade_id != current.upgrade_id:
             return
-        self._observed = (upgrade_id, wallet, price, time.time())
-        self._remember_target(upgrade_id, wallet, price)
+        _, purchases = self._history()
+        self._observed[upgrade_id] = (wallet, price, time.time(),
+                                      purchases.get(upgrade_id, 0))
+        if not current.filler:
+            self._remember_target(upgrade_id, wallet, price)
         self._publish(self.decision())
 
     def workshop_worthwhile(self) -> bool:
@@ -265,6 +331,7 @@ class RerollProgress:
             with temporary.open("x", encoding="utf-8") as output:
                 json.dump({"account_id": self.account_id, "upgrade_id": upgrade_id,
                            "wallet": wallet, "price": price,
+                           "purchase_count": self._history()[1].get(upgrade_id, 0),
                            "baseline_run_id": baseline_run_id,
                            "observed_at": time.time()}, output)
                 output.write("\n")
@@ -285,7 +352,8 @@ class RerollProgress:
         best, purchases = self._history()
         values, _ = self._account_readings()
         preview = project_next(RerollFacts(self.account_id, best, purchases, values,
-                                           variant=read_variant(self.root)))
+                                           variant=read_variant(self.root),
+                                           utility_spent_coins=self._utility_spent()))
         payload = {**asdict(decision), "observed_at": now,
                    "next_purchases": [asdict(step) for step in preview]}
         temporary = path.with_name(f".reroll-plan.{uuid4().hex}.tmp")

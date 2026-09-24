@@ -165,6 +165,9 @@ class RerollFacts:
     # The id stored in the worker's reroll-variant.json, or None. Resolved
     # against the selected build, so it only acts while that build lists it.
     variant: str | None = None
+    # Confirmed Workshop coin debits on utility; None means the ledger cannot
+    # prove the amount, so the bounded opening allocation is not activated.
+    utility_spent_coins: int | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,7 @@ class RerollDecision:
     wallet_coins: int | None
     lifetime_coins: int | None
     reason: str
+    filler: bool = False
 
 
 @dataclass(frozen=True)
@@ -213,6 +217,28 @@ _DEFAULT_GOAL = "Advance this reroll account"
 # one per weighted row today, so this is the shape of a future build's gap,
 # not a live default.
 _DEFAULT_FOCUS = "Advance the reroll account"
+_ECONOMY_FOCUS = {
+    "unlock_cash_bonuses": "Open Cash/Wave for faster in-run upgrades",
+    "cash_per_wave": "Earn more cash each wave",
+    "unlock_coin_bonuses": "Open Coins/Kill for Workshop income",
+    "coins_per_kill_bonus": "Earn more permanent coins from kills",
+    "cash_bonus": "Use the remaining early allocation for cash income",
+}
+
+UTILITY_TARGET_COINS = 350
+UTILITY_CEILING_COINS = 400
+_ECONOMY_WEIGHTS = (
+    ("unlock_cash_bonuses", 100.),
+    ("cash_per_wave", 200.),
+    ("unlock_coin_bonuses", 80.),
+    ("coins_per_kill_bonus", 150.),
+    ("cash_bonus", 60.),
+)
+_FILLER_CAPS = {
+    "cash_per_wave": 5, "coins_per_kill_bonus": 5,
+    "cash_bonus": 5, "damage": 3, "attack_speed": 3,
+}
+FILLER_SHARE = .2
 
 # Which unlock tile gates each row, read off the catalog's own `unlocks`
 # lists rather than off `builds.prerequisites()`. The two agree today, but
@@ -415,6 +441,59 @@ def _with_level_caps(build: builds.Build, purchases: Mapping[str, int]) -> build
     }))
 
 
+def _economy_build(build: builds.Build, facts: RerollFacts) -> builds.Build:
+    """Prioritize early utility while verified spend fits the hard ceiling."""
+    spent = facts.utility_spent_coins
+    if spent is None or spent >= UTILITY_TARGET_COINS:
+        return build
+    remaining = UTILITY_CEILING_COINS - spent
+    affordable_ids = {upgrade_id for upgrade_id, _ in _ECONOMY_WEIGHTS
+                      if facts.prices.get(upgrade_id, 0) <= remaining}
+    owned = {upgrade_id for upgrade_id, count in facts.purchases.items() if count > 0}
+    prerequisite = builds.prerequisites()
+    weights = tuple((upgrade_id, weight) for upgrade_id, weight in _ECONOMY_WEIGHTS
+                    if upgrade_id in affordable_ids and
+                    prerequisite.get(upgrade_id) in (None, *owned, *affordable_ids))
+    if not weights:
+        return build
+    return replace(build, weights=weights, targets=MappingProxyType({}),
+                   level_caps=MappingProxyType({
+                       "cash_per_wave": builds.LevelCap(2),
+                       "coins_per_kill_bonus": builds.LevelCap(3),
+                   }))
+
+
+def _cheap_filler(facts: RerollFacts, main: RerollDecision) -> RerollDecision:
+    """Look for one small purchase while saving for an unaffordable goal."""
+    wallet = facts.wallet_coins
+    if (facts.utility_spent_coins is None or main.state != "save_coins"
+            or wallet is None or main.price is None or main.price <= wallet):
+        return main
+    owned = {upgrade_id for upgrade_id, count in facts.purchases.items() if count > 0}
+    ceiling = int(wallet * FILLER_SHARE)
+    for upgrade_id, cap in _FILLER_CAPS.items():
+        if upgrade_id == main.upgrade_id or facts.purchases.get(upgrade_id, 0) >= cap:
+            continue
+        gate = _GATED_BY.get(upgrade_id)
+        if gate is not None and gate not in owned:
+            continue
+        upgrade = upgrades.by_id(upgrade_id)
+        assert upgrade is not None
+        price = facts.prices.get(upgrade_id)
+        if price is not None and (price < 0 or price > ceiling):
+            continue
+        state = "observe_price" if price is None else "buy"
+        reason = (f"Saving for {main.item} ({main.price} coins); checking a "
+                  f"small {upgrade.name} upgrade within {ceiling} coins."
+                  if price is None else
+                  f"Saving for {main.item} ({main.price} coins); {upgrade.name} "
+                  f"costs {price}, within the {ceiling}-coin filler allowance.")
+        return RerollDecision(facts.account_id, main.stage, main.goal, state,
+                              upgrade_id, upgrade.name, upgrade.category, price,
+                              wallet, facts.lifetime_coins, reason, filler=True)
+    return main
+
+
 def _draw(plan: director.Plan, facts: RerollFacts) -> tuple[director.Plan, str]:
     """Replace `plan.top` with a weighted draw from the top ready candidates.
 
@@ -471,7 +550,8 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
             facts.lifetime_coins,
             "Tier 1 Wave 60 was verified; Ultimate Weapon choice stays with the operator.")
 
-    build = _build_for(facts)
+    original_build = _build_for(facts)
+    build = _economy_build(original_build, facts)
     targeted = frozenset(build.targets)
     graph = workshop_objectives.workshop_objectives(
         _with_level_caps(build, facts.purchases),
@@ -480,7 +560,17 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
     plan = director.plan(
         _revision(facts, targeted=targeted), knowledge=knowledge.KNOWLEDGE,
         graph=graph, rates=_NO_MEASURED_INCOME, strategy=_NO_PRE_APPROVALS)
-    plan, drawn = _draw(plan, facts)
+    if plan.top is None and build is not original_build:
+        build = original_build
+        targeted = frozenset(build.targets)
+        graph = workshop_objectives.workshop_objectives(
+            _with_level_caps(build, facts.purchases),
+            _revision(facts, targeted=targeted, anchored=True), prices=facts.prices)
+        plan = director.plan(
+            _revision(facts, targeted=targeted), knowledge=knowledge.KNOWLEDGE,
+            graph=graph, rates=_NO_MEASURED_INCOME, strategy=_NO_PRE_APPROVALS)
+    plan, drawn = _draw(plan, replace(facts, draw_sharpness=None)
+                         if build is not original_build else facts)
     outcome = decision_module.decide(plan, wallet=facts.wallet_coins,
                                      spend_fraction=facts.spend_fraction)
 
@@ -497,12 +587,17 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
             facts.lifetime_coins, outcome.reason)
 
     price = _as_int_price(outcome.price)
-    return RerollDecision(
+    economy_reason = (f"Early utility allocation: {facts.utility_spent_coins} "
+                      f"of about {UTILITY_TARGET_COINS} verified coins invested "
+                      f"(ceiling {UTILITY_CEILING_COINS}). "
+                      if build is not original_build else "")
+    result = RerollDecision(
         facts.account_id, build.id, _GOALS.get(build.id, _DEFAULT_GOAL),
         outcome.state, upgrade.id, upgrade.name, upgrade.category, price,
         facts.wallet_coins, facts.lifetime_coins,
-        outcome.reason + drawn + _price_share(price, facts.lifetime_coins)
+        economy_reason + outcome.reason + drawn + _price_share(price, facts.lifetime_coins)
         + _variant_label(build, facts))
+    return _cheap_filler(facts, result)
 
 
 def project_next(facts: RerollFacts, *, limit: int = 10) -> tuple[PlannedPurchase, ...]:
@@ -545,8 +640,9 @@ def project_next(facts: RerollFacts, *, limit: int = 10) -> tuple[PlannedPurchas
         # that chose the upgrade - never from a second selection call that
         # could answer differently.
         build = builds.by_id(decision.stage)
-        focus = (build.focus.get(upgrade.id, _DEFAULT_FOCUS)
-                 if build is not None else _DEFAULT_FOCUS)
+        focus = (_ECONOMY_FOCUS.get(upgrade.id)
+                 or (build.focus.get(upgrade.id) if build is not None else None)
+                 or _DEFAULT_FOCUS)
         planned.append(PlannedPurchase(facts.account_id, position, upgrade.id,
                                        upgrade.name, upgrade.category,
                                        upgrade.unlock, focus))
