@@ -260,6 +260,37 @@ def test_colour_that_disagrees_with_the_heading_refuses_the_frame() -> None:
     assert result.category is None and result.rows == ()
 
 
+def _with_headings(name: str, *headings: tuple[str, float]) -> tuple[ocr.TextBox, ...]:
+    """`name`'s recorded boxes with its heading replaced by `headings` (text, confidence)."""
+    rect = next(b for b in recorded(name) if "UPGRADES" in b.text.upper()).rect
+    return _without_heading(name) + tuple(ocr.TextBox(text, confidence, rect)
+                                          for text, confidence in headings)
+
+
+def test_colour_that_matches_neither_of_two_headings_refuses_the_frame() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_defense.png"))
+    boxes = _with_headings("in_run_defense", ("ATTACKUPGRADES", .99), ("UTILITYUPGRADES", .99))
+    result = parse_frame(frame, boxes, "battle", now=1, tab_colour="DEFENSE")
+    assert result.category is None and result.rows == ()
+
+
+def test_colour_that_contradicts_an_untrusted_heading_refuses_the_frame() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_defense.png"))
+    boxes = _with_headings("in_run_defense", ("ATTACKUPGRADES", .5))
+    result = parse_frame(frame, boxes, "battle", now=1, tab_colour="DEFENSE")
+    assert result.category is None and result.rows == ()
+
+
+def test_colour_that_agrees_with_an_untrusted_heading_names_the_tab() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_defense.png"))
+    boxes = _with_headings("in_run_defense", ("DEFENSEUPGRADES", .5))
+    result = parse_frame(frame, boxes, "battle", now=1, tab_colour="DEFENSE")
+    assert result.category == "DEFENSE" and result.rows
+
+
 def test_observe_frame_falls_back_to_colour_when_ocr_misses_the_heading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

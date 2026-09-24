@@ -142,6 +142,11 @@ def parse_frame(
         bands = config.BATTLE_BANDS.get((screen.shape[1], screen.shape[0]))
         if tab_colour is None or context != "battle" or bands is None:
             return Observation(None, (), {}, None, now, **evidence)
+        # Heading text read at any confidence that names only other tabs is
+        # still a disagreement with the colour: refuse rather than guess.
+        read = {c for c, _ in _headings(raw_boxes)}
+        if read and tab_colour not in read:
+            return Observation(None, (), {}, None, now, **evidence)
         # OCR missed the heading (or read two): the bar's colour names the
         # tab, and the heading sits where it was measured for this size.
         category, heading_y, heading_confidence = tab_colour, bands.heading_y, None

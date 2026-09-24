@@ -27,6 +27,10 @@ KNOWN_GAINS: dict[str, set[str]] = {
     "in_run_wallet_no_cutout": {"rows.attack_speed.price", "rows.attack_speed.status",
                                 "rows.attack_speed.tap"},
 }
+# The value each pinned gain must read, not just that it changed.
+GAINED_PRICES: dict[str, dict[str, int]] = {
+    "in_run_wallet_no_cutout": {"attack_speed": 21},
+}
 
 
 def cold_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -48,6 +52,9 @@ def test_two_band_battle_read_parses_what_the_full_frame_read_does(
     changes, gains = observation_diff(old, new)
     assert changes == set()
     assert gains == KNOWN_GAINS.get(name, set())
+    rows = {row.upgrade_id: row for row in new.rows}
+    for upgrade_id, price in GAINED_PRICES.get(name, {}).items():
+        assert rows[upgrade_id].price == price
 
 
 # Named battle_popup_*, not in_run_*: the panel classifies these frames as
