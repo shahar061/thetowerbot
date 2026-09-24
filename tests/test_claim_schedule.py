@@ -219,3 +219,17 @@ def test_a_milestones_clock_that_went_backwards_does_not_fire() -> None:
     due claim - the same reading applied to last_missions."""
     assert due(badge(last_milestones=10_000.0), now=1000.0,
                missions_every_hours=EIGHT_HOURS, milestones_on_new_best=True) is None
+
+
+def test_numbered_missions_badge_shortens_cadence_but_keeps_cooldown() -> None:
+    assert due(state(last_missions=0, missions_badge=True), now=3600,
+               missions_every_hours=8, milestones_on_new_best=False) == 'missions'
+    assert due(state(last_missions=3500, missions_badge=True), now=3600,
+               missions_every_hours=8, milestones_on_new_best=False) is None
+
+
+def test_mail_only_visits_for_a_numbered_badge_and_waits_after_attempts() -> None:
+    assert due(state(last_missions=3500, mail_badge=True), now=3600,
+               missions_every_hours=8, milestones_on_new_best=False) == 'mail'
+    assert due(state(last_missions=3500, mail_badge=True, last_mail=3500), now=3600,
+               missions_every_hours=8, milestones_on_new_best=False) is None

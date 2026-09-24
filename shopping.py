@@ -241,6 +241,7 @@ class ShoppingSession:
         # Optional reroll planner observation. The buyer still owns every
         # authorization and transaction; this only reports fresh row facts.
         self.reroll_observe_price: Any | None = None
+        self.reroll_observe_prices: Any | None = None
         self._templates = templates
         self._bus = bus
         self._reader = reader
@@ -782,6 +783,9 @@ class ShoppingSession:
         if self._pending is not None:
             self._confirm_purchase(observation, coins, device, shopping, screen)
             return
+        if self.reroll_observe_prices is not None and observation.category == category:
+            self.reroll_observe_prices(
+                {row.upgrade_id: row.price for row in observation.rows if row.status == "available"}, coins)
         rules = [r for r in shopping.rows_for(category) if r.name not in self._exhausted]
         if not rules:
             self._categories.pop(0)

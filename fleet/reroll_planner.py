@@ -184,6 +184,7 @@ class RerollDecision:
     lifetime_coins: int | None
     reason: str
     filler: bool = False
+    starter: bool = False
 
 
 @dataclass(frozen=True)
@@ -239,6 +240,9 @@ _FILLER_CAPS = {
     "cash_bonus": 5, "damage": 3, "attack_speed": 3,
 }
 FILLER_SHARE = .2
+STARTER_MAX_PRICE = 75
+STARTER_UPGRADES = ("damage", "attack_speed", "health",
+                    "unlock_defense_upgrades", "defense_absolute")
 
 # Which unlock tile gates each row, read off the catalog's own `unlocks`
 # lists rather than off `builds.prerequisites()`. The two agree today, but
@@ -480,18 +484,40 @@ def _cheap_filler(facts: RerollFacts, main: RerollDecision) -> RerollDecision:
         upgrade = upgrades.by_id(upgrade_id)
         assert upgrade is not None
         price = facts.prices.get(upgrade_id)
-        if price is not None and (price < 0 or price > ceiling):
+        if price is None or price < 0 or price > ceiling:
             continue
-        state = "observe_price" if price is None else "buy"
-        reason = (f"Saving for {main.item} ({main.price} coins); checking a "
-                  f"small {upgrade.name} upgrade within {ceiling} coins."
-                  if price is None else
-                  f"Saving for {main.item} ({main.price} coins); {upgrade.name} "
+        state = "buy"
+        reason = (f"Saving for {main.item} ({main.price} coins); {upgrade.name} "
                   f"costs {price}, within the {ceiling}-coin filler allowance.")
         return RerollDecision(facts.account_id, main.stage, main.goal, state,
                               upgrade_id, upgrade.name, upgrade.category, price,
                               wallet, facts.lifetime_coins, reason, filler=True)
     return main
+
+
+def _survival_starter(facts: RerollFacts) -> RerollDecision | None:
+    """One cheap level per starter row before the bounded utility allocation."""
+    if (facts.best_tier_1_wave or 0) >= 20 or facts.utility_spent_coins is None:
+        return None
+    for uid in STARTER_UPGRADES:
+        if facts.purchases.get(uid, 0) > 0:
+            continue
+        gate = _GATED_BY.get(uid)
+        if gate and facts.purchases.get(gate, 0) == 0:
+            continue
+        price = facts.prices.get(uid)
+        if price is not None and price > STARTER_MAX_PRICE:
+            continue
+        upgrade = upgrades.by_id(uid)
+        assert upgrade is not None
+        state = ("observe_price" if price is None else "observe_balance" if facts.wallet_coins is None
+                 else "buy" if facts.wallet_coins >= price else "save_coins")
+        return RerollDecision(facts.account_id, "opening", _GOALS["opening"], state,
+                              uid, upgrade.name, upgrade.category, price,
+                              facts.wallet_coins, facts.lifetime_coins,
+                              f"Survival starter: one {upgrade.name} upgrade, up to {STARTER_MAX_PRICE} coins, "
+                              "before the early utility allocation." + _variant_label(_build_for(facts), facts), starter=True)
+    return None
 
 
 def _draw(plan: director.Plan, facts: RerollFacts) -> tuple[director.Plan, str]:
@@ -550,6 +576,9 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
             facts.lifetime_coins,
             "Tier 1 Wave 60 was verified; Ultimate Weapon choice stays with the operator.")
 
+    starter = _survival_starter(facts)
+    if starter is not None:
+        return starter
     original_build = _build_for(facts)
     build = _economy_build(original_build, facts)
     targeted = frozenset(build.targets)

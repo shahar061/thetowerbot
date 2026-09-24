@@ -42,6 +42,7 @@ from account_collection import (
 from account_screens import ControlTarget
 from device import Image
 from missions_screen import ClaimTarget, MissionsReadings
+from mail_claim import MailClaim
 
 if TYPE_CHECKING:
     from strategy import Strategy
@@ -112,12 +113,14 @@ class MissionsClaim(ControlTaps):
         # has no `rect` field to hold one, so this is true by construction
         # rather than by remembering not to read one off it.
         self._pending: tuple[_PendingClaim, int] | None = None
+        self._mail = MailClaim(frame_budget=frame_budget)
+        self._mail_mode = False
 
     # -- reporting ---------------------------------------------------------
     @property
     def active(self) -> bool:
         with self._lock:
-            return self._step is not Step.IDLE
+            return self._step is not Step.IDLE or self._mail.active
 
     def snapshot(self) -> dict[str, Any]:
         """Detached. 'idle' is the absence of a walk, not a failed one.
@@ -126,6 +129,8 @@ class MissionsClaim(ControlTaps):
         from, so a remembered point here could only ever be used wrongly.
         """
         with self._lock:
+            if self._mail_mode:
+                return self._mail.snapshot()
             status = 'running' if self._step is not Step.IDLE else (
                 self._result.status if self._result is not None else 'idle')
             return {'status': status, 'step': self._step.name.lower(),
@@ -134,11 +139,20 @@ class MissionsClaim(ControlTaps):
                     'result': asdict(self._result) if self._result is not None else None}
 
     # -- lifecycle ---------------------------------------------------------
+    def request_mail(self, now: float | None = None) -> bool:
+        """Mail shares this transaction's existing pause/recovery/navigation guards."""
+        with self._lock:
+            if self.active:
+                return False
+            self._mail_mode = True
+            return self._mail.request(now)
+
     def request(self, now: float | None = None) -> bool:
         """Arm a walk. False when one is already running; never queues."""
         with self._lock:
-            if self._step is not Step.IDLE:
+            if self.active:
                 return False
+            self._mail_mode = False
             self._requested_at = time.time() if now is None else now
             self._result = None
             self._waited = 0
@@ -152,6 +166,9 @@ class MissionsClaim(ControlTaps):
     def cancel(self, reason: str, detail: str, now: float | None = None) -> None:
         """End a walk the loop can no longer honour. Idempotent."""
         with self._lock:
+            if self._mail_mode:
+                self._mail.cancel(reason, detail, now)
+                return
             if self._step is Step.IDLE:
                 return
             self._finish('failed', reason, detail, time.time() if now is None else now)
@@ -163,6 +180,10 @@ class MissionsClaim(ControlTaps):
                 tuning: Strategy | None = None) -> ClaimAction | None:
         """One frame of the walk. Returns the tap it issued, if any."""
         with self._lock:
+            if self._mail_mode:
+                return self._mail.advance(screen=screen, device=device, templates=templates,
+                                          readings=readings, state=state, bus=bus,
+                                          now=now, tuning=tuning)
             self._tuning = tuning
             self._bus = bus
             if self._step is Step.IDLE:

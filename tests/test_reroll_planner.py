@@ -20,17 +20,19 @@ def facts(**changes: object) -> RerollFacts:
     return RerollFacts(**values)
 
 
-def test_first_verified_workshop_coins_go_to_cash_and_coin_utility() -> None:
-    first = choose_next(facts(utility_spent_coins=0))
+def test_utility_allocation_follows_the_survival_starter() -> None:
+    starter = {"damage": 1, "attack_speed": 1, "health": 1,
+               "unlock_defense_upgrades": 1, "defense_absolute": 1}
+    first = choose_next(facts(utility_spent_coins=0, purchases=starter))
     assert first.upgrade_id == "unlock_cash_bonuses"
-    after_cash = choose_next(facts(utility_spent_coins=40, purchases={
+    after_cash = choose_next(facts(utility_spent_coins=40, purchases={**starter,
         "unlock_cash_bonuses": 1, "cash_per_wave": 2}))
     assert after_cash.upgrade_id == "unlock_coin_bonuses"
-    after_unlock = choose_next(facts(utility_spent_coins=140, purchases={
+    after_unlock = choose_next(facts(utility_spent_coins=140, purchases={**starter,
         "unlock_cash_bonuses": 1, "cash_per_wave": 2,
         "unlock_coin_bonuses": 1}))
     assert after_unlock.upgrade_id == "coins_per_kill_bonus"
-    after_coins = choose_next(facts(utility_spent_coins=260, purchases={
+    after_coins = choose_next(facts(utility_spent_coins=260, purchases={**starter,
         "unlock_cash_bonuses": 1, "cash_per_wave": 2,
         "unlock_coin_bonuses": 1, "coins_per_kill_bonus": 3}))
     assert after_coins.upgrade_id == "cash_bonus"
@@ -52,7 +54,7 @@ def test_unaffordable_turtle_upgrade_checks_a_bounded_cheap_filler() -> None:
     assert main.upgrade_id in {"defense_absolute", "thorns"}
     considering = choose_next(facts(best_tier_1_wave=20, purchases=owned,
                                    utility_spent_coins=350, wallet_coins=100,
-                                   prices={main.upgrade_id: 200}))
+                                   prices={main.upgrade_id: 200, "cash_per_wave": 15}))
     assert considering.upgrade_id in {"cash_per_wave", "coins_per_kill_bonus",
                                      "cash_bonus", "damage", "attack_speed"}
     affordable = choose_next(facts(best_tier_1_wave=20, purchases=owned,

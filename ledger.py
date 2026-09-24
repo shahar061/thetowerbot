@@ -49,6 +49,7 @@ KINDS: tuple[str, ...] = (
     "WORKSHOP_BUY",
     "CARD_BUY",
     "MISSION_CLAIM",
+    "MAIL_CLAIM",
     "MILESTONE_CLAIM",
     "GEM_CLAIM",
     "CLAIM_SKIPPED",
@@ -200,6 +201,12 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                 detail={"detail": event.detail} if event.detail else {},
                 **base,
             ),)
+
+        case events.MailClaimed():
+            return tuple(LedgerLine(
+                kind='MAIL_CLAIM', category='MAIL', currency=currency,
+                delta=amount, detail={'confirmation': event.confirmation}, **base,
+            ) for currency, amount in ((COINS, event.coins), (GEMS, event.gems)))
 
         case events.MissionClaimed():
             # Two currencies move on one claim and a LedgerLine carries one.
@@ -470,6 +477,7 @@ _REPLAYABLE: dict[str, type[events.Event]] = {
     "ControlChanged": events.ControlChanged,
     "ClaimStarted": events.ClaimStarted,
     "MissionClaimed": events.MissionClaimed,
+    "MailClaimed": events.MailClaimed,
     "ClaimSkipped": events.ClaimSkipped,
     "ClaimEnded": events.ClaimEnded,
     "MilestoneClaimed": events.MilestoneClaimed,

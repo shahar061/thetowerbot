@@ -1,0 +1,258 @@
+{
+  "version": 1,
+  "source_revision": "da361120e28de87b33ffc340d25962b966dc6150",
+  "attribution": "Early coin-price facts compiled from AngryBrit/tower-smith Workshop tables. No calculator code copied.",
+  "source_license": "CC BY-NC-SA 4.0",
+  "source_license_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/LICENCE",
+  "scope": "Planning estimates for early Workshop levels only. Index L is the coin cost to buy L to L+1. No cash curves. Rounded K/M source values are omitted. Observed game price always wins.",
+  "upgrades": {
+    "damage": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/attack/damage.json",
+      "next_coins": [
+        30,
+        55,
+        88,
+        128,
+        177,
+        235,
+        304,
+        383,
+        472,
+        573,
+        686,
+        810,
+        947,
+        1095,
+        1257,
+        1431,
+        1618,
+        1819,
+        2032,
+        2260
+      ]
+    },
+    "attack_speed": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/attack/attack-speed.json",
+      "next_coins": [
+        30,
+        56,
+        92,
+        140,
+        200,
+        274,
+        363,
+        467,
+        588,
+        725,
+        879,
+        1050,
+        1240,
+        1448,
+        1676,
+        1922,
+        2188,
+        2474,
+        2780,
+        3106
+      ]
+    },
+    "health": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/defense/health.json",
+      "next_coins": [
+        30,
+        55,
+        87,
+        127,
+        176,
+        234,
+        301,
+        379,
+        467,
+        566,
+        676,
+        798,
+        931,
+        1076,
+        1233,
+        1403,
+        1585,
+        1780,
+        1987,
+        2208
+      ]
+    },
+    "health_regen": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/defense/health-regen.json",
+      "next_coins": [
+        30,
+        55,
+        87,
+        127,
+        176,
+        234,
+        301,
+        379,
+        467,
+        566,
+        676,
+        798,
+        931,
+        1076,
+        1233,
+        1403,
+        1585,
+        1780,
+        1987,
+        2208
+      ]
+    },
+    "defense_percent": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/defense/defense-percent.json",
+      "next_coins": [
+        50,
+        76,
+        109,
+        151,
+        203,
+        266,
+        340,
+        426,
+        525,
+        636,
+        760,
+        898
+      ]
+    },
+    "defense_absolute": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/defense/defense-absolute.json",
+      "next_coins": [
+        50,
+        75,
+        107,
+        147,
+        196,
+        254,
+        321,
+        399,
+        487,
+        586,
+        696,
+        818,
+        951,
+        1096,
+        1253,
+        1423,
+        1605,
+        1800,
+        2007,
+        2228
+      ]
+    },
+    "thorns": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/defense/thorns.json",
+      "next_coins": [
+        60,
+        85,
+        117,
+        157,
+        206,
+        264,
+        331,
+        409,
+        497,
+        596,
+        706,
+        828,
+        961
+      ]
+    },
+    "cash_bonus": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/utility/cash-bonus.json",
+      "next_coins": [
+        30,
+        56,
+        90,
+        134,
+        190,
+        259,
+        341,
+        437,
+        547,
+        674,
+        816,
+        974
+      ]
+    },
+    "cash_per_wave": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/utility/cash-wave.json",
+      "next_coins": [
+        30,
+        56,
+        90,
+        134,
+        190,
+        259,
+        341,
+        437,
+        547,
+        674,
+        816,
+        974
+      ]
+    },
+    "coins_per_kill_bonus": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/utility/coins-kill-bonus.json",
+      "next_coins": [
+        50,
+        83,
+        126,
+        180,
+        248,
+        332,
+        432,
+        549,
+        684,
+        838
+      ]
+    },
+    "coins_per_wave": {
+      "source_url": "https://raw.githubusercontent.com/AngryBrit/tower-smith/da361120e28de87b33ffc340d25962b966dc6150/tables/workshop/utility/coins-wave.json",
+      "next_coins": [
+        50,
+        83,
+        126,
+        180,
+        248,
+        332,
+        432,
+        549,
+        684,
+        838
+      ]
+    },
+    "unlock_cash_bonuses": {
+      "source_url": "https://the-tower-idle-tower-defense.game-vault.net/wiki/Workshop/Cash_Bonus",
+      "next_coins": [
+        40
+      ]
+    },
+    "unlock_coin_bonuses": {
+      "source_url": "https://the-tower-idle-tower-defense.game-vault.net/wiki/Workshop/Coins_Per_Wave",
+      "next_coins": [
+        100
+      ]
+    },
+    "unlock_defense_upgrades": {
+      "source_url": "https://the-tower-idle-tower-defense.game-vault.net/wiki/Defense_Percent",
+      "next_coins": [
+        75
+      ]
+    },
+    "unlock_thorns": {
+      "source_url": "https://the-tower-idle-tower-defense.game-vault.net/wiki/Thorn_Damage",
+      "next_coins": [
+        500
+      ]
+    }
+  }
+}
