@@ -45,6 +45,8 @@ const FLEET_GROUPS: { label: string; items: Item[] }[] = [{
   label: "Reroll fleet",
   items: [
     { href: "/fleet/reroll/", label: "Fleet Live", icon: Monitor },
+    { href: "/fleet/reroll/stats/", label: "Stats", icon: ChartLine },
+    { href: "/fleet/reroll/ledger/", label: "Ledger", icon: Receipt },
     { href: "/fleet/reroll/strategies/", label: "Strategies", icon: SlidersHorizontal },
     { href: "/fleet/reroll/progression/", label: "Progression", icon: Map },
     { href: "/fleet/reroll/history/", label: "History", icon: List },

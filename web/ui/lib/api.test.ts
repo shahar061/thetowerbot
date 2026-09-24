@@ -7,7 +7,7 @@ import {
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
   fetchFleet, requestFleetProvision,
   fetchAccountWorkshopPurchases, fetchAccountRuns, fetchAccountRunPurchases,
-  fetchAccountRoadmap, fetchAccountSnapshot,
+  fetchAccountRoadmap, fetchAccountSnapshot, fetchAccountStats, fetchAccountLedger,
   startNewReroll, listRerolls,
 } from "./api";
 import type { Strategy } from "./types";
@@ -89,6 +89,25 @@ beforeEach(() => {
 });
 
 describe("fleet routes", () => {
+  it("reads a filtered ledger page for the explicit account", async () => {
+    await fetchAccountLedger("worker:Air_2", "account-2", { before: 42, kind: "WORKSHOP_BUY", currency: "coins", includeRehearsals: true });
+    const [url, init] = callArgs();
+    const params = new URL(url, "http://localhost").searchParams;
+    expect(params.get("before")).toBe("42");
+    expect(params.get("kind")).toBe("WORKSHOP_BUY");
+    expect(params.get("currency")).toBe("coins");
+    expect(params.get("include_rehearsals")).toBe("true");
+    expect(init?.headers).toMatchObject({ "x-account-scope": "worker:Air_2", "x-expected-account-id": "account-2" });
+  });
+  it("reads fleet stats for the explicit worker and expected account", async () => {
+    setAccountScope("worker:unrelated");
+    await fetchAccountStats("worker:Air_1", "account-1");
+    expect(callArgs()[0]).toContain("/api/stats");
+    expect(callArgs()[1]?.headers).toMatchObject({
+      "x-account-scope": "worker:Air_1", "x-expected-account-id": "account-1",
+    });
+    setAccountScope(null);
+  });
   it("binds all purchase read stages to the expected account behind a mutable worker scope", async () => {
     await fetchAccountWorkshopPurchases("worker:Air_1", undefined, "old-account");
     expect(callArgs()[1]?.headers).toMatchObject({ "x-account-scope": "worker:Air_1", "x-expected-account-id": "old-account" });

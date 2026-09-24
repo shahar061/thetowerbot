@@ -49,6 +49,17 @@ def test_status_reports_the_live_state_and_the_dropped_count(harness) -> None:
     assert body["uptime"] >= 0
 
 
+@pytest.mark.parametrize("route", ["/api/stats", "/api/ledger"])
+def test_history_pages_support_databases_before_account_identity(harness, route: str) -> None:
+    client, _, _, _, path, _ = harness
+    with db.connect(path) as conn:
+        conn.execute("DROP TABLE account_identity")
+    response = client.get(route)
+    assert response.status_code == 200
+    assert response.json()["account_id"] is None
+    assert client.get(route, headers={"x-expected-account-id": "known-account"}).status_code == 409
+
+
 def test_concepts_endpoint_is_read_only_and_preserves_legacy_upgrades(harness) -> None:
     client, _, _, _, _, _ = harness
     response = client.get("/api/concepts")

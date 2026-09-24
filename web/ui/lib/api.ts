@@ -149,25 +149,29 @@ export const fetchAccountRunPurchases = (accountKey: string, runId: number, expe
   workerRead<RunPurchasePayload>(`/api/runs/${runId}/purchases`, accountKey, expectedAccountId);
 export const fetchUnknown = () => getJson<Snapshot[]>("/api/unknown");
 export const fetchStats = () => getJson<StatsPayload>("/api/stats");
+export const fetchAccountStats = (accountKey: string, expectedAccountId: string) =>
+  workerRead<StatsPayload>("/api/stats", accountKey, expectedAccountId);
 export const fetchErrors = (limit = 100) => getJson<StoredEvent[]>(`/api/errors?limit=${limit}`);
 
-export const fetchLedger = (
-  opts: {
+export type LedgerQuery = {
     includeRehearsals?: boolean;
     before?: number;
     /** A single kind, matching the route - not a list. */
     kind?: string;
     currency?: string;
-  } = {},
-) => {
+};
+function ledgerPath(opts: LedgerQuery): string {
   const params = new URLSearchParams();
   if (opts.includeRehearsals) params.set("include_rehearsals", "true");
   if (opts.before !== undefined) params.set("before", String(opts.before));
   if (opts.kind) params.set("kind", opts.kind);
   if (opts.currency) params.set("currency", opts.currency);
   const query = params.toString();
-  return getJson<LedgerPayload>(`/api/ledger${query ? `?${query}` : ""}`);
-};
+  return `/api/ledger${query ? `?${query}` : ""}`;
+}
+export const fetchLedger = (opts: LedgerQuery = {}) => getJson<LedgerPayload>(ledgerPath(opts));
+export const fetchAccountLedger = (accountKey: string, expectedAccountId: string, opts: LedgerQuery = {}) =>
+  workerRead<LedgerPayload>(ledgerPath(opts), accountKey, expectedAccountId);
 
 export const fetchControl = () => getJson<ControlPayload>("/api/control");
 export const fetchDirector = () => getJson<DirectorPlanPayload>("/api/director");

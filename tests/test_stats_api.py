@@ -70,3 +70,38 @@ def test_the_reader_still_cannot_write(populated) -> None:
     with db.reader(populated) as conn:
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("DELETE FROM runs")
+
+
+def test_progress_uses_all_history_and_first_reaching_run(tmp_path) -> None:
+    path = tmp_path / "history.db"
+    with db.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO runs(id,started_at,ended_at,tier,wave) VALUES(?,?,?,?,?)",
+            [(1, 100, 110, 2, 100), (2, 200, 230, 1, 65),
+             *[(i, i * 200, i * 200 + 5, 1, 10) for i in range(3, 204)],
+             (204, 50000, None, 1, 150)])
+    with db.reader(path) as conn:
+        assert max(row["wave"] for row in db.run_stats(conn)) == 10
+        progress = db.stats_progress(conn)
+    assert progress["summary"] == {
+        "total_runs": 203, "best_tier_1_wave": 65, "play_seconds": 1045.0}
+    for row in progress["benchmarks"][:3]:
+        assert row["run_id"] == 2
+        assert row["play_seconds"] == 40
+        assert row["elapsed_seconds"] == 130
+        assert row["reached_at"] == 230
+    assert progress["benchmarks"][3]["play_seconds"] is None
+
+
+def test_progress_distinguishes_unknown_wave_and_unreached_milestones(tmp_path) -> None:
+    path = tmp_path / "history.db"
+    with db.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO runs(id,started_at,ended_at,tier,wave) VALUES(?,?,?,?,?)",
+            [(1, 10, 20, None, 100), (2, 30, 40, 1, None),
+             (3, 50, 49, 1, 10), (4, 60, 70, 1, 20)])
+    with db.reader(path) as conn:
+        progress = db.stats_progress(conn)
+    assert progress["summary"]["best_tier_1_wave"] == 20
+    assert progress["benchmarks"][0]["play_seconds"] == 30
+    assert all(row["run_id"] is None for row in progress["benchmarks"][1:])
