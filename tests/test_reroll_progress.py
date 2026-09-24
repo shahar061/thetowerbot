@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import db
 import pytest
 from account_state import AccountState
 from fleet.reroll_progress import RerollProgress
-from policy import AutopilotPolicy
+from policy import AutopilotPolicy, choose
 from strategy import Strategy
 
 
@@ -20,17 +21,66 @@ def worker(tmp_path: Path, account_id: str = "ACCOUNT-A") -> RerollProgress:
     return RerollProgress(root, account_id, AccountState())
 
 
-def test_single_planned_row_uses_existing_shopping_executor(tmp_path: Path) -> None:
-    """One row, whichever row the planner picked.
+def worker_without_verified_utility_debits(tmp_path: Path) -> RerollProgress:
+    progress = worker(tmp_path)
+    progress._utility_spent = lambda: None
+    return progress
 
-    An untouched account leads with Damage - see
-    tests/test_reroll_planner.py.
-    """
+
+def test_utility_budget_counts_only_proven_workshop_coin_debits(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        for delta, dry_run, verdict in ((-40, 0, "bought"),
+                                        (-50, 1, "bought"),
+                                        (-60, 0, "unproven")):
+            connection.execute(
+                "INSERT INTO ledger(ts,kind,item,category,currency,delta,dry_run,detail) "
+                "VALUES(1,'WORKSHOP_BUY','Unlock Cash Bonuses','UTILITY','coins',?,?,?)",
+                (delta, dry_run, json.dumps({"verdict": verdict})))
+    assert progress._utility_spent() == 40
+    assert progress.decision().upgrade_id == "cash_per_wave"
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        connection.execute(
+            "INSERT INTO ledger(ts,kind,item,category,currency,delta,dry_run,detail) "
+            "VALUES(1,'WORKSHOP_BUY','Cash / Wave','UTILITY','coins',NULL,0,?)",
+            (json.dumps({"verdict": "bought"}),))
+    assert progress._utility_spent() is None
+
+
+def test_early_utility_visit_cannot_spend_past_400_coins(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        connection.execute(
+            "INSERT INTO ledger(ts,kind,item,category,currency,delta,dry_run,detail) "
+            "VALUES(1,'WORKSHOP_BUY','Unlock Cash Bonuses','UTILITY','coins',-340,0,?)",
+            (json.dumps({"verdict": "bought"}),))
+    policy = progress.shopping_policy(replace(Strategy.from_config().shopping,
+                                             coin_budget=None))
+    assert policy.workshop[0].category == "UTILITY"
+    assert policy.coin_budget == 60
+
+
+def test_reroll_workshop_can_observe_a_cheap_filler_after_expensive_main(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("unlock_cash_bonuses", 100, 200)
+    assert progress.decision().upgrade_id in {"damage", "attack_speed"}
+    policy = progress.shopping_policy(replace(Strategy.from_config().shopping,
+                                             coin_budget=None))
+    assert policy.workshop[0].name != "Unlock Cash Bonuses"
+    assert policy.coin_budget == 20
+    restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
+    assert restarted.decision().filler
+    assert restarted.shopping_policy(replace(Strategy.from_config().shopping,
+                                             coin_budget=None)).coin_budget == 20
+
+
+def test_single_planned_row_uses_existing_shopping_executor(tmp_path: Path) -> None:
+    """A fresh account begins its bounded Workshop utility allocation."""
     progress = worker(tmp_path)
     base = Strategy.from_config().shopping
     policy = progress.shopping_policy(base)
     assert [(row.name, row.category) for row in policy.workshop] == [
-        ("Damage", "ATTACK")]
+        ("Unlock Cash Bonuses", "UTILITY")]
     assert policy.enabled == base.enabled and policy.armed == base.armed
     record = json.loads((progress.root / "reroll-plan.json").read_text())
     assert record["account_id"] == "ACCOUNT-A"
@@ -70,8 +120,8 @@ def test_only_confirmed_ledger_purchase_advances_plan(tmp_path: Path) -> None:
     def buy(verdict: str) -> None:
         with db.connect(path) as connection:
             connection.execute(
-                "INSERT INTO ledger(ts,kind,item,category,currency,dry_run,detail) "
-                "VALUES (1,'WORKSHOP_BUY','Damage','ATTACK','coins',0,?)",
+                "INSERT INTO ledger(ts,kind,item,category,currency,delta,dry_run,detail) "
+                "VALUES (1,'WORKSHOP_BUY','Unlock Cash Bonuses','UTILITY','coins',-40,0,?)",
                 (json.dumps({"verdict": verdict}),))
 
     buy("unproven")
@@ -100,7 +150,7 @@ def test_visible_granted_rows_advance_unlock_after_unproven_debit(tmp_path: Path
 
 
 def test_price_and_wallet_are_fresh_and_specific_to_planned_item(tmp_path: Path) -> None:
-    progress = worker(tmp_path)
+    progress = worker_without_verified_utility_debits(tmp_path)
     # "damage" is the planned row; "attack_speed" is the unplanned row whose
     # price must be ignored.
     progress.observe_price("attack_speed", 100, 10)
@@ -184,12 +234,12 @@ def test_lifetime_coins_from_another_account_are_rejected(tmp_path: Path) -> Non
 
 
 def test_stale_price_cannot_authorize_purchase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    progress = worker(tmp_path)
+    progress = worker_without_verified_utility_debits(tmp_path)
     progress.observe_price("damage", 1000, 50)
     assert progress.decision().state == "buy"
     import fleet.reroll_progress as module
     now = module.time.time()
-    monkeypatch.setattr(module.time, "time", lambda: now + 31)
+    monkeypatch.setattr(module.time, "time", lambda: now + module.PRICE_MEMORY_SECONDS + 1)
     assert progress.decision().state == "observe_price"
 
 
@@ -237,6 +287,41 @@ def test_opening_battle_prioritizes_verified_turtle_defense(tmp_path: Path) -> N
     assert [rule.upgrade_id for rule in rules[:2]] == ["defense_absolute", "thorns"]
 
 
+def test_battle_uses_affordable_economy_when_turtle_defense_is_too_costly(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        for item, category in (("Unlock Defense Upgrades", "DEFENSE"),
+                               ("Unlock Thorns", "DEFENSE"),
+                               ("Unlock Cash Bonuses", "UTILITY"),
+                               ("Unlock Coin Bonuses", "UTILITY")):
+            connection.execute(
+                "INSERT INTO ledger(ts,kind,item,category,dry_run,detail) "
+                "VALUES(1,'WORKSHOP_BUY',?,?,0,?)",
+                (item, category, json.dumps({"verdict": "bought"})))
+        connection.execute("INSERT INTO runs(id,started_at,ended_at,tier,wave) "
+                           "VALUES(1,1,2,1,20)")
+    policy = progress.battle_policy(AutopilotPolicy(enabled=True, preset="turtle"))
+    assert [rule.upgrade_id for rule in policy.rules[:3]] == [
+        "cash_per_wave", "coins_per_kill_bonus", "cash_bonus"]
+    observations = {
+        "defense_absolute": {"status": "available", "value": 10, "price": 100},
+        "thorns": {"status": "available", "value": 10, "price": 80},
+        "health": {"status": "available", "value": 20, "price": 90},
+        "cash_per_wave": {"status": "available", "value": 10, "price": 2},
+        "coins_per_kill_bonus": {"status": "available", "value": 1.1, "price": 5},
+        "cash_bonus": {"status": "available", "value": 1.1, "price": 6},
+        "damage": {"status": "available", "value": 10, "price": 7},
+    }
+    observations["cash_per_wave"]["value"] = 9
+    assert choose(policy, observations, {"cash": 20}).upgrade_id == "cash_per_wave"
+    observations["cash_per_wave"]["value"] = 10
+    assert choose(policy, observations, {"cash": 20}).upgrade_id == "coins_per_kill_bonus"
+    observations["coins_per_kill_bonus"]["value"] = 1.25
+    assert choose(policy, observations, {"cash": 20}).upgrade_id == "cash_bonus"
+    observations["cash_bonus"]["value"] = 1.25
+    assert choose(policy, observations, {"cash": 20}).upgrade_id == "damage"
+
+
 def test_published_worker_plan_contains_ten_account_bound_buys(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     progress.shopping_policy(Strategy.from_config().shopping)
@@ -264,7 +349,7 @@ def test_workshop_visit_is_worthwhile_until_a_price_is_known(tmp_path: Path) -> 
 
 
 def test_unaffordable_target_skips_visits_until_run_coins_cover_it(tmp_path: Path) -> None:
-    progress = worker(tmp_path)
+    progress = worker_without_verified_utility_debits(tmp_path)
     end_run(progress, 1, 10)
     progress.observe_price("damage", 80, 120)
     assert not progress.workshop_worthwhile()
@@ -279,14 +364,15 @@ def test_unaffordable_target_skips_visits_until_run_coins_cover_it(tmp_path: Pat
 
 
 def test_cached_target_survives_a_restart(tmp_path: Path) -> None:
-    progress = worker(tmp_path)
+    progress = worker_without_verified_utility_debits(tmp_path)
     progress.observe_price("damage", 80, 120)
     restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
+    restarted._utility_spent = lambda: None
     assert not restarted.workshop_worthwhile()
 
 
 def test_cached_target_is_ignored_for_another_account(tmp_path: Path) -> None:
-    progress = worker(tmp_path)
+    progress = worker_without_verified_utility_debits(tmp_path)
     progress.observe_price("damage", 80, 120)
     record = json.loads((progress.root / "workshop-target.json").read_text())
     record["account_id"] = "ACCOUNT-B"
@@ -310,7 +396,7 @@ def test_changed_plan_or_unread_price_forces_a_visit(tmp_path: Path) -> None:
 
 
 def test_estimate_is_rechecked_every_few_runs(tmp_path: Path) -> None:
-    progress = worker(tmp_path)
+    progress = worker_without_verified_utility_debits(tmp_path)
     progress.observe_price("damage", 0, 10_000)
     for run_id in range(1, 10):
         end_run(progress, run_id, 1)
