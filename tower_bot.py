@@ -221,7 +221,10 @@ class TowerBot:
         # When the IN_RUN preflight last read the whole frame. See
         # _preflight_boxes: the backstop for a popup the bands cannot see.
         self._battle_full_read_at = float("-inf")
-        self.runs =RunTracker(first_run_id)
+        # Whether this scan's IN_RUN preflight ran the backstop's full read,
+        # successful or not; the menu readers run on such a scan too.
+        self._battle_backstop_scan = False
+        self.runs = RunTracker(first_run_id)
         # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
         # and the walk itself refuses if there is nothing to take. Persisting
@@ -626,8 +629,12 @@ class TowerBot:
             return reads.full()
         now = time.monotonic()
         if now - self._battle_full_read_at >= config.BATTLE_FULL_READ_EVERY:
+            self._battle_backstop_scan = True
+            boxes = reads.full()
+            # Only a read that succeeded pays the backstop; a failed one is
+            # due again next scan.
             self._battle_full_read_at = now
-            return reads.full()
+            return boxes
         if not self._battle_panel_visible(reads):
             return reads.full()
         return reads.battle()
@@ -667,9 +674,15 @@ class TowerBot:
         # One OCR result and one digest for this frame, shared by the
         # preflight, the menu readers and the autopilot - see ocr.FrameReads.
         # Menu frames may reuse the last full read while nothing on screen
-        # changed (spec P3); battle frames always read their bands fresh.
+        # changed (spec P3); battle frames always read their bands fresh. So
+        # does any scan with a walk or a shopping visit active: it tapped and
+        # now reads what the tap did.
+        acting = (self.collection.active or self.visit.active or self.claim.active
+                  or self.milestones_claim.active or self.shopping.active)
         reads = ocr.FrameReads(self.screen,
-                               reuse=reading.state is not screens.ScreenState.IN_RUN)
+                               reuse=reading.state is not screens.ScreenState.IN_RUN
+                               and not acting)
+        self._battle_backstop_scan = False
         tutorial_claim = None
         if self.supervisor is not None:
             observed_screen = reading.state.value
@@ -793,9 +806,10 @@ class TowerBot:
         # account panel, missions page or milestones screen is up - they are
         # menu overlays. MAIN_MENU, GAME_OVER and UNKNOWN keep all three,
         # because account overlays can keep a MAIN_MENU anchor visible
-        # underneath. A covered panel (the safety net) or a walk in progress
-        # also keeps them.
+        # underneath. A covered panel (the safety net), a walk in progress or
+        # a backstop scan (whose full read they reuse) also keeps them.
         if (reading.state is screens.ScreenState.IN_RUN and not walking_before
+                and not self._battle_backstop_scan
                 and self._battle_panel_visible(reads)):
             # The outcome each reader gives a frame it cannot measure (its
             # unsupported-geometry branch): no conclusion, and no hold.

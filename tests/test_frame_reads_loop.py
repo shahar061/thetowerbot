@@ -153,6 +153,58 @@ def test_a_walk_in_progress_keeps_every_reader(bot_in_run_on: Any, monkeypatch: 
     assert calls == ["account", "missions", "milestones"]
 
 
+def test_a_backstop_scan_runs_the_menu_readers(bot_in_run_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backstop's full read covers the P1 readers too: an overlay that
+    leaves the heading bar lit must not keep them skipped forever."""
+    bot = bot_in_run_on("in_run_lit")
+    bot.supervisor = _Supervisor()
+    monkeypatch.setattr(ocr, "read", _frame_reader(bot, recorded("in_run_lit"), []))
+    calls = _spy_readers(bot, monkeypatch)
+    bot.run_once()  # first scan: the backstop is due
+    assert calls == ["account", "missions", "milestones"]
+    calls.clear()
+    bot.run_once()  # backstop just paid: the bands decide again
+    assert calls == []
+
+
+def test_a_failed_backstop_read_runs_the_menu_readers(
+    bot_in_run_on: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The safety net fails closed: the bands read fine, the full read failed."""
+    bot = bot_in_run_on("in_run_lit")
+    bot.supervisor = _Supervisor()
+
+    def fail_full(screen: Any, **kwargs: Any) -> Any:
+        if screen is bot._screen:
+            raise RuntimeError("OCR inference failed")
+        return ()
+
+    monkeypatch.setattr(ocr, "read", fail_full)
+    calls = _spy_readers(bot, monkeypatch)
+    bot.run_once()
+    assert bot.supervisor.evidence[-1]["readable"] is False
+    assert calls == ["account", "missions", "milestones"]
+
+
+def test_a_menu_scan_during_a_walk_reads_fresh(bot_on_main_menu: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A walk taps and then reads the result: never a stored read."""
+    bot = bot_on_main_menu(Shopping())
+    monkeypatch.setattr(ocr, "read", _frame_reader(bot, (), []))
+    monkeypatch.setattr(type(bot.visit), "active", property(lambda self: True))
+    monkeypatch.setattr(bot.visit, "advance", lambda **kwargs: None)
+    bot.run_once()
+    assert ocr._last_full is None
+
+
+def test_a_menu_scan_while_shopping_reads_fresh(bot_on_main_menu: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = bot_on_main_menu(Shopping())
+    monkeypatch.setattr(ocr, "read", _frame_reader(bot, (), []))
+    monkeypatch.setattr(type(bot.shopping), "active", property(lambda self: True))
+    monkeypatch.setattr(bot.shopping, "advance", lambda *args, **kwargs: None)
+    bot.run_once()
+    assert ocr._last_full is None
+
+
 IN_RUN_READING = screens.ScreenReading(screens.ScreenState.IN_RUN, 1.0, {})
 
 
@@ -195,6 +247,19 @@ def test_the_backstop_reads_the_full_frame_every_so_often(bot_in_run_on: Any) ->
     calls.clear()
     bot._preflight_boxes(IN_RUN_READING, _scripted_reads(bot._screen, boxes, calls))
     assert calls == ["full"]
+
+
+def test_a_failed_backstop_read_is_retried_next_scan(bot_in_run_on: Any) -> None:
+    bot = bot_in_run_on("in_run_lit")
+    reads = _scripted_reads(bot._screen, recorded("in_run_lit"), [])
+
+    def fail() -> Any:
+        raise RuntimeError("OCR inference failed")
+
+    reads.full = fail
+    with pytest.raises(RuntimeError):
+        bot._preflight_boxes(IN_RUN_READING, reads)
+    assert bot._battle_full_read_at == float("-inf")
 
 
 def test_menu_preflight_reads_the_full_frame(bot_on_main_menu: Any) -> None:
