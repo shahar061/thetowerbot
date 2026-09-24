@@ -7,6 +7,7 @@ import pytest
 import events
 import mail_screen
 import screens
+from supervisor import RecoveryState
 from strategy import Claims, Shopping
 from tests.conftest import _shopping_bot
 
@@ -49,3 +50,26 @@ def test_orphan_inbox_exit_retries_are_bounded(monkeypatch: pytest.MonkeyPatch) 
     for _ in range(6):
         bot.run_once()
     assert len(bot.device.taps) == 3
+
+
+def test_live_inbox_is_named_for_device_preflight() -> None:
+    bot = _shopping_bot('main_menu_resume', state=screens.ScreenState.UNKNOWN,
+                        policy=Shopping(), auto_navigate=True)
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures' / 'menu_mail_empty_live_39.jpg'))
+    assert frame is not None
+    bot._screen = frame
+
+    class Supervisor:
+        current_account = 'ACCOUNT-A'
+        observed_screen = None
+
+        def observe(self, **facts: object) -> RecoveryState:
+            self.observed_screen = facts['screen']
+            return (RecoveryState.READY if self.observed_screen == 'INBOX'
+                    else RecoveryState.BLOCKED)
+
+    guard = Supervisor()
+    bot.supervisor = guard
+    bot.run_once()
+    assert guard.observed_screen == 'INBOX'
+    assert len(bot.device.taps) == 1  # Safe return footer; the walk is inactive.

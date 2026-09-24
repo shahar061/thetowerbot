@@ -111,7 +111,7 @@ def parse(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> MailReading:
     news_tab, news_badge = None, False
     tabs = [b for b in boxes if b.confidence >= .95 and normalise(b.text) == 'news'
             and b.rect.y < height * .2]
-    mail_tabs = [b for b in boxes if b.confidence >= .95 and normalise(b.text) == 'mail'
+    mail_tabs = [b for b in boxes if b.confidence >= .90 and normalise(b.text) == 'mail'
                  and b.rect.y < height * .2]
     news: list[NewsEntry] = []
     mail: list[NewsEntry] = []

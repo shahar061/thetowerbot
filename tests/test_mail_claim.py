@@ -131,6 +131,31 @@ def test_captured_empty_inbox_has_safe_exit_and_numbered_badge_is_not_reward_pro
     assert result.news_badge
 
 
+def test_live_full_resolution_empty_inbox_exposes_unread_news() -> None:
+    from pathlib import Path
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures' / 'menu_mail_empty_live_39.jpg'))
+    assert frame is not None
+    result = mail_screen.parse(frame, ocr.read(frame, strict=True))
+    assert result.visible and result.back is not None
+    assert result.selected_tab == 'mail'
+    assert result.news_tab is not None and result.news_badge
+    assert result.claim is None
+
+
+def test_live_empty_mail_opens_news_before_returning_home() -> None:
+    from pathlib import Path
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures' / 'menu_mail_empty_live_39.jpg'))
+    assert frame is not None
+    walk = mail_claim.MailClaim()
+    walk.request(now=0)
+    walk._step = mail_claim.Step.READ
+    device = FakeDevice()
+    walk.advance(screen=frame, device=device, templates=FakeTemplates(),
+                 readings=FakePanel(), state='UNKNOWN', bus=FakeBus(), now=1)
+    assert device.taps == [mail_screen.scan(frame).news_tab.point]
+    assert walk._step is mail_claim.Step.NEWS_LIST
+
+
 def test_captured_news_list_has_four_unique_entries_and_no_reward_claims() -> None:
     frame, boxes = captured_mail('menu_news_list_cua.png')
     result = mail_screen.parse(frame, boxes)
