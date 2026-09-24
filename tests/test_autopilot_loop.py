@@ -266,9 +266,46 @@ def test_game_over_goes_home_only_for_a_crossed_ladder_row(
     bot._ladder_tier = 1
     bot._tier_best_wave = {1: best}
     bot._claimed_wave = {1: claimed}
+    bot._last_claim["missions"] = time.time()
+    bot._last_claim["mail"] = time.time()
+    bot._last_menu_badge_check_at = time.time()
     asked = _asked_go_home(bot)
     bot.run_once()
     assert asked == [owed]
+
+
+def test_game_over_goes_home_when_missions_are_due() -> None:
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("game_over", state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True,
+                        claims=Claims(enabled=True))
+    bot._ladder_tier = 1
+    bot._tier_best_wave = {1: 2}
+    bot._claimed_wave = {1: 2}
+    asked = _asked_go_home(bot)
+    bot.run_once()
+    assert asked == [True]
+
+
+@pytest.mark.parametrize("elapsed, expected", [(3500., False), (3601., True)])
+def test_game_over_checks_menu_badges_hourly_even_without_a_known_badge(
+    elapsed: float, expected: bool,
+) -> None:
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("game_over", state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True,
+                        claims=Claims(enabled=True))
+    bot._ladder_tier = 1
+    bot._tier_best_wave = {1: 2}
+    bot._claimed_wave = {1: 2}
+    bot._last_claim["missions"] = time.time()
+    bot._last_claim["mail"] = time.time()
+    bot._last_menu_badge_check_at = time.time() - elapsed
+    asked = _asked_go_home(bot)
+    bot.run_once()
+    assert asked == [expected]
 
 
 def test_each_tier_has_its_own_ladder() -> None:

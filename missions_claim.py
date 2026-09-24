@@ -10,9 +10,10 @@ Two properties make this walk safe in a way a general "tap the button" loop
 would not be:
 
 * A claimed card VANISHES and the list reflows up. Each pass therefore reads a
-  different page, and the walk ends when no claimable card is left. Claiming
-  the same mission twice is impossible because the card stops existing, not
-  because a guard prevents it.
+  different page. Once visible cards have no CLAIM buttons, the walk scrolls
+  through the remaining cards with a fixed bound and stops on an unchanged
+  list. Claiming the same mission twice is impossible because the card stops
+  existing, not because a guard prevents it.
 * The `completed N/35` counter moves the instant a reward is taken. That is a
   success test the walk can actually check, so a tap that changed nothing is
   REPORTED rather than repeated.
@@ -59,6 +60,7 @@ MISSIONS_SCREEN = 'missions.daily'
 # rewards is not reading reflow correctly. The bound turns that into a stop
 # rather than a loop.
 MAX_CLAIMS_PER_WALK = 8
+MAX_MISSIONS_SCROLLS = 4
 
 TARGET = 'missions'
 
@@ -115,6 +117,9 @@ class MissionsClaim(ControlTaps):
         self._pending: tuple[_PendingClaim, int] | None = None
         self._mail = MailClaim(frame_budget=frame_budget)
         self._mail_mode = False
+        self._scrolls = 0
+        self._scroll_pending: tuple[Any, ...] | None = None
+        self._scroll_seen: set[tuple[Any, ...]] = set()
 
     # -- reporting ---------------------------------------------------------
     @property
@@ -159,6 +164,9 @@ class MissionsClaim(ControlTaps):
             self._claimed = 0
             self._announced = False
             self._pending = None
+            self._scrolls = 0
+            self._scroll_pending = None
+            self._scroll_seen.clear()
             self._trail = []
             self._enter(Step.OPEN_MISSIONS)
             return True
@@ -241,15 +249,45 @@ class MissionsClaim(ControlTaps):
                 coins=claimed.coins, gems=claimed.gems,
                 completed_before=before, completed_after=completed))
 
+        visible = tuple(evidence.get('visible', ()))
+        if self._scroll_pending is not None:
+            if visible == self._scroll_pending:
+                self._waited += 1
+                if self._waited <= self._budget:
+                    return None
+                # A dropped gesture and the end of the list look alike. In
+                # either case, another blind swipe would only repeat it.
+                return self._return_home(screen, device, templates, moment)
+            self._scroll_pending = None
+            self._waited = 0
+
         claims = evidence['claims']
-        if not claims or self._claimed >= self._max_claims:
-            return self._tap(screen, device, templates, RETURN_TEMPLATE,
-                             'return_control', Step.CONFIRM_HOME, moment)
+        if self._claimed >= self._max_claims:
+            return self._return_home(screen, device, templates, moment)
+        if not claims:
+            if (visible and visible not in self._scroll_seen
+                    and self._scrolls < MAX_MISSIONS_SCROLLS):
+                height, width = screen.shape[:2]
+                x = width // 2
+                y, y2 = int(height * .78), int(height * .43)
+                device.swipe(x, y, x, y2, .35)
+                self._scrolls += 1
+                self._scroll_pending = visible
+                self._scroll_seen.add(visible)
+                self._waited = 0
+                return ClaimAction('claim', 'missions_scroll', x, y, 1.,
+                                   (x, y2, 1, y - y2))
+            return self._return_home(screen, device, templates, moment)
 
         target = claims[0]
         self._pending = (_PendingClaim(target.raw_text, target.mission_id,
                                        target.coins, target.gems), completed)
         return self._tap_point(target, device, moment)
+
+    def _return_home(self, screen: Image, device: Any, templates: Any,
+                     moment: float) -> ClaimAction | None:
+        return self._tap(screen, device, templates, RETURN_TEMPLATE,
+                         'return_control', Step.CONFIRM_HOME, moment)
 
     def _wait_for_claim_confirmation(self, claimed: _PendingClaim,
                                      moment: float) -> ClaimAction | None:
@@ -325,4 +363,5 @@ class MissionsClaim(ControlTaps):
         self._step = Step.IDLE
         self._waited = 0
         self._pending = None
+        self._scroll_pending = None
         return None

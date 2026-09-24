@@ -3,19 +3,21 @@
 import { useEffect, useState } from "react";
 import { ChartLine, Timer, Trophy } from "lucide-react";
 import { Meter } from "@/components/Meter";
+import { StatTile } from "@/components/StatTile";
 import { StatsPanels } from "@/components/StatsPanels";
 import { fetchAccountStats } from "@/lib/api";
+import { coinsPerSecond } from "@/lib/accountMetrics";
 import type { RerollMember } from "@/lib/fleet";
 import type { StatsPayload } from "@/lib/types";
 import { deviceColor, LADDER, ladderProgress } from "@/lib/rerollState";
 import { useRerollWorkspace } from "../RerollWorkspace";
 import { memberIdentity, timeLabel } from "../statsHelpers";
+import { WorkshopComparison } from "./WorkshopComparison";
 
 type Result = { data: StatsPayload | null; error: string | null };
 const TARGETS = [20, 30, 60, 100];
 
-function EmulatorStats({ member, result }: { member: RerollMember; result?: Result }): React.JSX.Element {
-  const [expanded, setExpanded] = useState(false);
+function EmulatorStats({ member, result, advanced }: { member: RerollMember; result?: Result; advanced: boolean }): React.JSX.Element {
   const data = result?.data;
   const best = data?.summary?.best_tier_1_wave ?? null;
   const progress = ladderProgress(best);
@@ -40,10 +42,16 @@ function EmulatorStats({ member, result }: { member: RerollMember; result?: Resu
         </section>
         {data.runs.length ? <>
           <p className="mb-3 text-xs text-muted-foreground">Recent-run stats · latest {data.runs.length} completed runs across all tiers</p>
-          <StatsPanels stats={data} compact view="wave" />
-          <button type="button" aria-expanded={expanded} className="mt-4 w-full rounded-lg border border-border py-2 text-sm hover:bg-accent" onClick={() => setExpanded(value => !value)}>{expanded ? "Hide detailed charts" : "Run length, taps & screen events"}</button>
-          {expanded && <div className="mt-4"><StatsPanels stats={data} compact view="details" /></div>}
+          <StatsPanels stats={data} compact view="wave" recentWaveWindow={10} />
         </> : <p className="py-4 text-sm text-muted-foreground">No completed runs recorded yet.</p>}
+        {advanced && <div className="mt-5 space-y-4 border-t pt-4">
+          <div className="grid grid-cols-2 gap-2">
+            <StatTile label="Recent CPS" value={coinsPerSecond(member.recent_cps ?? null)} sub="Latest collected game stat" />
+            <StatTile label="Lifetime coins" value={member.lifetime_coins == null ? "Not recorded" : new Intl.NumberFormat().format(member.lifetime_coins)}
+              sub={member.lifetime_coins_incomplete ? "Recorded total may be incomplete" : "Collected account total"} />
+          </div>
+          {data.runs.length > 0 && <StatsPanels stats={data} compact view="details" />}
+        </div>}
       </>}
   </article>;
 }
@@ -54,6 +62,7 @@ export default function FleetStatsPage(): React.JSX.Element {
   const identity = JSON.stringify(members.map(({ name, account_key, account_id, lease_id }) => ({ name, account_key, account_id, lease_id })));
   const [results, setResults] = useState<Record<string, Result>>({});
   const [metric, setMetric] = useState<"play_seconds" | "elapsed_seconds">("play_seconds");
+  const [advanced, setAdvanced] = useState(false);
   useEffect(() => {
     let active = true;
     const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -103,8 +112,11 @@ export default function FleetStatsPage(): React.JSX.Element {
             })}</tr>)}</tbody></table></div>
         <p className="border-t px-5 py-3 text-xs text-muted-foreground">{metric === "play_seconds" ? "Sums completed-run durations through the reaching run; excludes time between runs." : "Time from the first recorded run to the reaching run’s end; includes time between runs."} A run can cross several milestones. These are recorded timings, not exact wave-crossing timestamps.</p>
       </section>
-      <div className="flex items-center gap-2"><ChartLine className="size-4 text-primary" /><h2 className="font-semibold">Emulator stats</h2><span className="text-xs text-muted-foreground">Updates every 15 seconds</span></div>
-      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">{members.map(member => <EmulatorStats key={memberIdentity(member)} member={member} result={results[memberIdentity(member)]} />)}</div>
+      <WorkshopComparison members={members} />
+      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><ChartLine className="size-4 text-primary" /><h2 className="font-semibold">Emulator stats</h2><span className="text-xs text-muted-foreground">Updates every 15 seconds</span></div>
+        <button type="button" aria-expanded={advanced} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent" onClick={() => setAdvanced(value => !value)}>{advanced ? "Hide advanced stats" : "Show advanced stats"}</button>
+      </div>
+      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">{members.map(member => <EmulatorStats key={memberIdentity(member)} member={member} result={results[memberIdentity(member)]} advanced={advanced} />)}</div>
     </>}
   </main>;
 }

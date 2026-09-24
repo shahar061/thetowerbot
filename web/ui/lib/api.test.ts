@@ -7,7 +7,7 @@ import {
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
   fetchFleet, requestFleetProvision,
   fetchAccountWorkshopPurchases, fetchAccountRuns, fetchAccountRunPurchases,
-  fetchAccountRoadmap, fetchAccountSnapshot, fetchAccountStats, fetchAccountLedger,
+  fetchAccountRoadmap, fetchAccountSnapshot, fetchAccountStats, fetchAccountLedger, fetchAccountWorkshopSummary,
   startNewReroll, listRerolls,
 } from "./api";
 import type { Strategy } from "./types";
@@ -107,6 +107,13 @@ describe("fleet routes", () => {
       "x-account-scope": "worker:Air_1", "x-expected-account-id": "account-1",
     });
     setAccountScope(null);
+  });
+  it("reads the full workshop aggregate for the expected worker account", async () => {
+    await fetchAccountWorkshopSummary("worker:Air_1", "account-1");
+    expect(callArgs()[0]).toBe("/api/workshop-purchases/summary");
+    expect(callArgs()[1]?.headers).toMatchObject({
+      "x-account-scope": "worker:Air_1", "x-expected-account-id": "account-1",
+    });
   });
   it("binds all purchase read stages to the expected account behind a mutable worker scope", async () => {
     await fetchAccountWorkshopPurchases("worker:Air_1", undefined, "old-account");

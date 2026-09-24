@@ -1237,6 +1237,19 @@ def create_app(
                 **db.stats_progress(conn),
             }
 
+    @app.get("/api/workshop-purchases/summary")
+    def workshop_purchases_summary(request: Request) -> dict:
+        path = _history_path(request)
+        if path is None:
+            return {"account_id": None, "items": []}
+        with db.reader(path) as conn:
+            account_id = db.connection_account(conn)
+            expected = request.headers.get("x-expected-account-id")
+            if expected is not None and expected != account_id:
+                raise HTTPException(409, "selected_account_changed")
+            return {"account_id": account_id,
+                    "items": db.workshop_purchase_summary(conn)}
+
     @app.get("/api/errors")
     def errors(request: Request, limit: int = 100) -> list[dict]:
         path = _history_path(request)

@@ -584,7 +584,10 @@ class MissionsReadings:
             return {'screen_id': None if reading is None else reading.screen_id,
                     'error': self._error, 'scanned': self._scanned,
                     'completed': None if reading is None else reading.completed,
-                    'claims': self._claims}
+                    'claims': self._claims,
+                    'visible': (() if reading is None else tuple(
+                        (entry.mission_id, entry.raw_text, entry.status)
+                        for entry in reading.missions))}
 
     def observe(self, reading: MissionsReading | None, *, error: str | None = None,
                 scanned: bool = False,
