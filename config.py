@@ -246,6 +246,13 @@ FLOATING_GEM_COOLDOWN_SECONDS: float = 30.0
 # genuinely stuck before anything changes course.
 HELD_PAGE_SCAN_LIMIT: int = 10
 
+# Consecutive recovery-blocked scans an armed walk (collect stats, missions
+# visit or claim, milestones claim) may sit through before it is ended. A
+# blocked scan never reaches the walk, so the walk's own wait budget cannot
+# end it; this does. Thirty is ~a minute at the ~2s interval - far past the
+# few blocked scans a tap's frame transition legitimately costs.
+RECOVERY_BLOCKED_WALK_LIMIT: int = 30
+
 # --- Unknown-screen snapshots ---------------------------------------------
 UNKNOWN_DIR: Path = Path(__file__).parent / "unknown"
 UNKNOWN_MIN_INTERVAL: float = 30.0
