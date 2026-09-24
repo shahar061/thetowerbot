@@ -18,7 +18,7 @@ from fleet.account_observer import (parse_account_popup, parse_google_play_profi
                                     parse_tower_consent,
                                     parse_new_account_warning,
                                     parse_game_stats_home,
-                                    parse_settings, parse_home,
+                                    parse_settings, parse_home, parse_inbox,
                                     parse_link_account_prompt,
                                     StagingAccountObserver)
 import vision
@@ -343,6 +343,59 @@ def test_live_observer_identifies_battle_without_exposing_controls(
                                      allowed_versions=frozenset({"29.0.2"}))(device)
     assert reading.screen == "battle"
     assert reading.controls == {}
+
+
+def test_live_inbox_exposes_only_its_measured_return_caption(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ocr
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "menu_mail_empty_live_39.jpg"))
+    observed = ocr.read(frame, strict=True, min_confidence=0.)
+    reading = parse_inbox(frame, observed, observed_at=101.,
+                          app_version="29.0.3", evidence_ref="capture://inbox")
+    assert reading is not None
+    assert reading.screen == "inbox"
+    assert reading.controls == {"return_to_game": (540, 2301)}
+
+    monkeypatch.setattr(ocr, "read", lambda *_, **__: observed)
+    device = SimpleNamespace(
+        serial="127.0.0.1:5775",
+        app_current=lambda: SimpleNamespace(package="com.TechTreeGames.TheTower"),
+        app_info=lambda _: SimpleNamespace(version_name="29.0.3"),
+        screenshot=lambda **_: PILImage.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)),
+    )
+    observed_frame = StagingAccountObserver(
+        tmp_path, endpoint=device.serial, allowed_versions=frozenset({"29.0.3"}),
+    )(device)
+    assert observed_frame.screen == "inbox"
+    assert observed_frame.controls == reading.controls
+
+
+def test_inbox_requires_anchored_header_and_bottom_return_caption() -> None:
+    frame = np.zeros((2400, 1080, 3), dtype=np.uint8)
+    observed = (
+        TextBox("INBOX", .99, Rect(27, 110, 173, 46)),
+        TextBox("Mail", .94, Rect(209, 199, 118, 52)),
+        TextBox("News", .99, Rect(737, 198, 152, 56)),
+        TextBox("Tap To Return To Game", .98, Rect(231, 2270, 618, 62)),
+    )
+    for removed in (observed[0], observed[-1]):
+        assert parse_inbox(frame, tuple(box for box in observed if box is not removed),
+                           observed_at=101., app_version="29.0.3",
+                           evidence_ref="capture://incomplete") is None
+    assert parse_inbox(frame, (observed[0], observed[-1]),
+                       observed_at=101., app_version="29.0.3",
+                       evidence_ref="capture://news-detail") is not None
+    assert parse_inbox(frame, observed[:-1] + (
+        TextBox("Tap To Return To Game", .98, Rect(231, 1000, 618, 62)),),
+        observed_at=101., app_version="29.0.3",
+        evidence_ref="capture://wrong-position") is None
+    assert parse_inbox(frame, observed + (observed[-1],),
+                       observed_at=101., app_version="29.0.3",
+                       evidence_ref="capture://ambiguous-footer") is None
+    assert parse_inbox(frame, observed[:-1] + (
+        TextBox("Tap To Return To Game", .89, observed[-1].rect),),
+        observed_at=101., app_version="29.0.3",
+        evidence_ref="capture://weak-footer") is None
 
 
 def test_live_observer_identifies_native_bluestacks_workshop(
