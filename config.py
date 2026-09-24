@@ -775,6 +775,11 @@ BATTLE_BANDS: dict[tuple[int, int], BattleBands] = {
 # parses as the full frame does (one extra price read on
 # in_run_wallet_no_cutout); 0.8333 loses health on three frames. A lower
 # scale is allowed only if tests/test_battle_parity.py passes at it.
+# Bands are read without detector upscaling (limit_type "max", limit_side_len
+# 736 by default), so the 1080-wide bands, 896 px after this scale, are
+# shrunk again to 736 for detection: the detector effectively sees ~0.68 of
+# native. Recognition crops come from the 0.83 image. Parity was measured
+# with both in place.
 BATTLE_OCR_SCALE: float = 0.83
 # OpenCV hue (0-180) of each tab's heading bar: the median hue of pixels with
 # S and V above BATTLE_TAB_MIN_SV. Measured: ATTACK 97, DEFENSE 175, UTILITY
