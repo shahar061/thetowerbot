@@ -89,6 +89,11 @@ def visiting(bot_on_main_menu: Any) -> Any:
     bot = bot_on_main_menu(Shopping(enabled=False))
     bot.controls.apply({'tap_jitter_px': 0, 'tap_delay': 0})
     bot.visit.request(now=100.)
+    # menu_main.png also carries the Cards tab's "new" arrow, which would arm
+    # the first Cards visit the moment this one hands the menu back. A visit
+    # just run keeps it from being offered again for a while.
+    bot.cards_intro.request()
+    bot.cards_intro.cancel('test', 'The Cards arrow is not under test here.')
     return bot
 
 

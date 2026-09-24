@@ -290,5 +290,10 @@ def test_the_milestones_badge_arms_a_claim_no_wave_explains(frame: str, armed: b
     bot._best_wave = 21
     bot._claimed_wave = {None: 21}
     bot._last_claim["missions"] = time.time()
+    # menu_main_bluestacks_1920 also carries the Cards tab's "new" arrow,
+    # which would arm the first Cards visit ahead of the claim. A visit just
+    # run keeps it from being offered again for a while.
+    bot.cards_intro.request()
+    bot.cards_intro.cancel("test", "The Cards arrow is not under test here.")
     bot.run_once()
     assert bot.milestones_claim.active is armed
