@@ -209,7 +209,14 @@ class RerollProgress:
             budget = STARTER_MAX_PRICE if budget is None else min(budget, STARTER_MAX_PRICE)
         elif plan.filler:
             assert plan.wallet_coins is not None
-            ceiling = int(plan.wallet_coins * FILLER_SHARE)
+            # This fallback was selected against a known Defense Absolute
+            # price relative to Thorns, not the general 20%-of-wallet limit.
+            # Bound the visit to that exact quote; the buyer checks the live
+            # price again before spending.
+            ceiling = (plan.price if plan.stage == "turtle"
+                       and plan.upgrade_id == "defense_absolute"
+                       and plan.price is not None
+                       else int(plan.wallet_coins * FILLER_SHARE))
             budget = ceiling if budget is None else min(budget, ceiling)
         else:
             spent = self._utility_spent()
