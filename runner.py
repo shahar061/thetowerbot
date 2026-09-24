@@ -351,6 +351,8 @@ class BotRunner:
                 raise RunnerError("Collecting stats requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Collecting stats requires a confirmed main menu", 409)
+            if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
+                raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.visit.active:
                 raise RunnerError("A missions visit is already walking the menus", 409)
             if self.claim.active:
@@ -380,6 +382,8 @@ class BotRunner:
                 raise RunnerError("Visiting missions requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Visiting missions requires a confirmed main menu", 409)
+            if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
+                raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.collection.active:
                 raise RunnerError("A stats collection is already walking the menus", 409)
             if self.claim.active:
@@ -411,6 +415,8 @@ class BotRunner:
                 raise RunnerError("Claiming missions requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Claiming missions requires a confirmed main menu", 409)
+            if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
+                raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.collection.active:
                 raise RunnerError("A stats collection is already walking the menus", 409)
             if self.visit.active:
@@ -443,6 +449,8 @@ class BotRunner:
                 raise RunnerError("Claiming milestones requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Claiming milestones requires a confirmed main menu", 409)
+            if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
+                raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.collection.active:
                 raise RunnerError("A stats collection is already walking the menus", 409)
             if self.visit.active:

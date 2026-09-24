@@ -429,6 +429,17 @@ MILESTONES_BADGE_REGION: Region = Region(dx=299, dy=-51, w=80, h=80)
 # of the disc, which leaves the white count and anti-aliased rim out of it.
 MILESTONES_BADGE_MIN_PIXELS: int = 550
 
+# The green "new" arrow the game floats above a bottom tab that was unlocked
+# and never opened, from the tab template's top-left. It bobs: measured
+# between dy=-130..-24 (menu_main.png) and dy=-116..-10 (menu_workshop.png),
+# always within the tab's 108px column. The box spans both with slack, and
+# stays inside the column so neighbouring tabs' arrows and the Cards page's
+# own green glow stay out of it.
+NAV_ARROW_REGION: Region = Region(dx=-10, dy=-145, w=128, h=150)
+# Green pixels the box must hold to call the arrow present. Every recorded
+# arrow gives 2,400-2,970; every frame without one gives 0-120.
+NAV_ARROW_MIN_PIXELS: int = 1000
+
 # --- Menu navigation ------------------------------------------------------
 # Everything here is located by template match and tapped at the match centre,
 # never by fixed coordinates - the same rule the death modal forced on us.

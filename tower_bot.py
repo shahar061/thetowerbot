@@ -20,7 +20,9 @@ Usage:
 from __future__ import annotations
 
 from account_collection import StatsCollection, at_home
+from cards_intro import CardsIntro, popup_visible as cards_popup_visible
 import milestones_badge
+import nav_arrow
 from milestones_claim import MilestonesClaim
 from milestones_screen import MilestonesReadings, parse_frame as parse_milestones_frame
 from missions_claim import MissionsClaim
@@ -156,6 +158,10 @@ class TowerBot:
         self.milestones_claim = (milestones_claim if milestones_claim is not None
                                 else MilestonesClaim())
         self.milestones = milestones if milestones is not None else MilestonesReadings()
+        # Owned by the bot, not the runner: nothing arms it from the browser.
+        # It is offered from the main menu whenever the Cards tab carries its
+        # green "new" arrow - see _offer_cards_intro.
+        self.cards_intro = CardsIntro()
         self.device = device
         self.supervisor = supervisor
         self.templates = templates
@@ -576,6 +582,22 @@ class TowerBot:
                 and not self.claim.active and not self.milestones_claim.active
                 and claim_schedule.crossed_threshold(*self._ladder_waves()))
 
+    def _offer_cards_intro(self) -> bool:
+        """Arm the first Cards visit if the tab still carries its arrow.
+
+        Not gated on claims.enabled: the visit is owed once, spends nothing,
+        and the arrow it answers to is gone as soon as it has run. Only
+        offered while no other walk holds the menus.
+        """
+        if (self.collection.active or self.visit.active or self.claim.active
+                or self.milestones_claim.active):
+            return False
+        if not self.cards_intro.due(time.time()):
+            return False
+        if nav_arrow.arrow_over(self.screen, self.templates, 'CARDS') is not True:
+            return False
+        return self.cards_intro.request()
+
     def _offer_claim(self, settings: Any) -> str | None:
         """Offer the one claim the cadence says is owed, if any.
 
@@ -658,11 +680,13 @@ class TowerBot:
 
     def _any_walk_active(self) -> bool:
         return (self.collection.active or self.visit.active
-                or self.claim.active or self.milestones_claim.active)
+                or self.claim.active or self.milestones_claim.active
+                or self.cards_intro.active)
 
     def _cancel_walks(self, reason: str, detail: str) -> None:
         """End whichever walk is armed. Each cancel is idempotent."""
-        for walk in (self.collection, self.visit, self.claim, self.milestones_claim):
+        for walk in (self.collection, self.visit, self.claim,
+                     self.milestones_claim, self.cards_intro):
             walk.cancel(reason, detail)
 
     def run_once(self, max_runs: int | None = None) -> bool:
@@ -713,6 +737,11 @@ class TowerBot:
                     milestone_frame = parse_milestones_frame(self.screen, boxes)
                     if milestone_frame is not None:
                         observed_screen = milestone_frame.screen_id
+                    # The first Cards visit's intro and gems reward are named
+                    # only while that walk is out, so it can clear them.
+                    if (observed_screen == "UNKNOWN" and self.cards_intro.active
+                            and cards_popup_visible(self.screen, self.templates)):
+                        observed_screen = "CARDS_INTRO"
                 if self.reroll_progress is not None:
                     from fleet.tutorial import workshop_coin_claim
                     tutorial_claim = workshop_coin_claim(self.screen, boxes)
@@ -841,7 +870,8 @@ class TowerBot:
         # including paused scans and an already-active shopping visit.
         screen_readings = self.account_state.screen_readings if self.account_state is not None else self._screen_readings
         walking_before = (self.collection.active or self.visit.active
-                          or self.claim.active or self.milestones_claim.active)
+                          or self.claim.active or self.milestones_claim.active
+                          or self.cards_intro.active)
         # Spec P1: on a battle frame whose upgrade panel is readable, no
         # account panel, missions page or milestones screen is up - they are
         # menu overlays. MAIN_MENU, GAME_OVER and UNKNOWN keep all three,
@@ -883,6 +913,7 @@ class TowerBot:
                 and not self.shopping.active and not self.shopping.reconciliation_pending
                 and not self.collection.active and not self.visit.active
                 and not self.claim.active and not self.milestones_claim.active
+                and not self.cards_intro.active
                 and at_home(state.value, screen_readings.current_evidence())
                 and self.reroll_progress.stats_due()):
             if self.collection.request():
@@ -904,6 +935,9 @@ class TowerBot:
         if self.milestones_claim.active and settings.paused:
             self.milestones_claim.cancel(
                 'paused', 'The bot was paused mid-claim; it was not resumed.')
+        if self.cards_intro.active and settings.paused:
+            self.cards_intro.cancel(
+                'paused', 'The bot was paused mid-visit; it was not resumed.')
         # An armed transaction owns the frame the same way a panel does, on
         # the menu as well as on the page itself: these are the only
         # sanctioned exceptions to the guard above, and nothing else may tap
@@ -924,7 +958,8 @@ class TowerBot:
         # reader can see the condition: "a page is up" is one module's
         # answer and "nothing is walking" is another's.
         walking_now = (self.collection.active or self.visit.active
-                       or self.claim.active or self.milestones_claim.active)
+                       or self.claim.active or self.milestones_claim.active
+                       or self.cards_intro.active)
         if (panel or missions_page or milestones_page) and not walking_now:
             self._held_scans += 1
         else:
@@ -941,7 +976,7 @@ class TowerBot:
         if not deadlocked and (
                 panel or missions_page or milestones_page or self.collection.active
                 or self.visit.active or self.claim.active
-                or self.milestones_claim.active):
+                or self.milestones_claim.active or self.cards_intro.active):
             self.controls.drain()
             self.wallet = None
             if panel:
@@ -962,6 +997,9 @@ class TowerBot:
             elif self.milestones_claim.active:
                 reason, detail = ('milestones_claim_transaction',
                                   'A Milestones claim walk holds actions')
+            elif self.cards_intro.active:
+                reason, detail = ('cards_intro_transaction',
+                                  'The first Cards visit holds actions')
             else:
                 reason, detail = ('missions_visit_transaction',
                                   'A read-only Missions visit holds actions')
@@ -993,6 +1031,15 @@ class TowerBot:
                     readings=screen_readings, milestones=self.milestones, bus=self.bus,
                     state=state.value, tuning=settings.strategy,
                 )
+            elif self.cards_intro.active:
+                walking = 'cards_intro'
+                action = self.cards_intro.advance(
+                    screen=self.screen, device=self.device, templates=self.templates,
+                    readings=screen_readings, state=state.value, tuning=settings.strategy,
+                )
+                if not self.cards_intro.active:
+                    logger.info("First Cards visit ended: %s",
+                                self.cards_intro.snapshot()['result'])
             else:
                 walking, action = None, None
             # A tap nobody can find afterwards is the failure this guards
@@ -1243,7 +1290,11 @@ class TowerBot:
             badge = milestones_badge.badge_visible(self.screen, self.templates)
             if badge is not None:
                 self._milestones_badge = badge
-            if not self.shopping.begin(shopping_policy, self.runs.completed):
+            # The first Cards visit goes before everything else: it is owed
+            # once, pays gems, and takes a handful of frames.
+            if self._offer_cards_intro():
+                logger.info("Armed the first Cards visit from the main menu.")
+            elif not self.shopping.begin(shopping_policy, self.runs.completed):
                 armed = self._offer_claim(settings)
                 if armed is not None:
                     logger.info("Armed a %s claim from the main menu.", armed)
@@ -1254,6 +1305,7 @@ class TowerBot:
             and not self.run_cap_reached(max_runs, settings.strategy)
             and not visiting and not self.shopping.active
             and not self.claim.active and not self.milestones_claim.active
+            and not self.cards_intro.active
         ):
             # Navigator taps BATTLE on MAIN_MENU on a cooldown - left alone
             # it would start a run in the middle of a shopping errand.
