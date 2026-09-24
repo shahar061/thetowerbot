@@ -95,6 +95,7 @@ from strategy import MIN_INTERVAL, ControlError, Strategy, StrategyStore
 from telegram_report import TelegramConfig, TelegramReporter
 
 logger = logging.getLogger("tower_bot")
+_FAILED_MILESTONES_RETRY_SECONDS = 60.
 
 
 def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
@@ -250,6 +251,11 @@ class TowerBot:
         self._ladder_tier: int | None = None
         self._tier_best_wave: dict[int, int] = {}
         self._claimed_wave: dict[int | None, int] = {}
+        # Claim accounting is provisional until the menu walk finishes. A
+        # failed lookup must restore the prior wave and badge, then retry
+        # with a short backoff instead of hiding a visible reward for an hour.
+        self._milestones_attempt: tuple[int | None, int | None, float | None, bool] | None = None
+        self._milestones_retry_at = 0.
         # Whether the last main menu frame that showed the MILESTONES button
         # showed its badge - see milestones_badge.
         self._milestones_badge = False
@@ -578,16 +584,62 @@ class TowerBot:
         return best, self._claimed_wave.get(tier)
 
     def _milestones_owed(self, settings: Any) -> bool:
-        """True if a crossed ladder row is worth leaving the death screen for.
+        """True if a due ladder claim is worth leaving the death screen for.
 
         RETRY never passes the main menu, which is the only screen a claim is
         offered on - so without this a claim is only ever taken when some
         other errand happens to go home.
         """
         claims = settings.strategy.claims
-        return (claims.enabled and claims.milestones_on_new_best
-                and not self.claim.active and not self.milestones_claim.active
-                and claim_schedule.crossed_threshold(*self._ladder_waves()))
+        return (claims.enabled and not self.claim.active and not self.milestones_claim.active
+                and self._claim_due(settings) == "milestones")
+
+    def _claim_due(self, settings: Any) -> claim_schedule.ClaimKind | None:
+        """Apply the failed-walk backoff to the shared claim cadence."""
+        claims = settings.strategy.claims
+        best_wave, claimed_wave = self._ladder_waves()
+        now = time.time()
+        return claim_schedule.due(
+            claim_schedule.ClaimState(
+                last_missions=self._last_claim.get("missions"),
+                last_milestones=self._last_claim.get("milestones"),
+                best_wave=best_wave,
+                claimed_best_wave=claimed_wave,
+                milestones_badge=(self._milestones_badge
+                                  and now >= self._milestones_retry_at),
+                missions_badge=self._missions_badge,
+                mail_badge=self._mail_badge,
+                last_mail=self._last_claim.get("mail"),
+            ),
+            now=now,
+            missions_every_hours=claims.missions_every_hours,
+            milestones_on_new_best=(claims.milestones_on_new_best
+                                    and now >= self._milestones_retry_at),
+        )
+
+    def _settle_milestones_attempt(self) -> None:
+        """Commit a completed walk; roll back and back off after a failed one."""
+        attempt = self._milestones_attempt
+        if attempt is None or self.milestones_claim.active:
+            return
+        self._milestones_attempt = None
+        result = self.milestones_claim.snapshot()["result"]
+        if result is not None and result["status"] == "completed":
+            return
+        tier, previous_wave, previous_claim_at, previous_badge = attempt
+        if previous_wave is None:
+            self._claimed_wave.pop(tier, None)
+        else:
+            self._claimed_wave[tier] = previous_wave
+        if previous_claim_at is None:
+            self._last_claim.pop("milestones", None)
+        else:
+            self._last_claim["milestones"] = previous_claim_at
+        self._milestones_badge = self._milestones_badge or previous_badge
+        self._milestones_retry_at = time.time() + _FAILED_MILESTONES_RETRY_SECONDS
+        logger.info("Milestones walk failed (%s); retry in %.0f seconds.",
+                    result["reason"] if result is not None else "missing_result",
+                    _FAILED_MILESTONES_RETRY_SECONDS)
 
     def _offer_cards_intro(self) -> bool:
         """Arm the first Cards visit if the tab still carries its arrow.
@@ -618,22 +670,8 @@ class TowerBot:
             return None
         if self.claim.active or self.milestones_claim.active:
             return None
-        best_wave, claimed_wave = self._ladder_waves()
-        kind = claim_schedule.due(
-            claim_schedule.ClaimState(
-                last_missions=self._last_claim.get("missions"),
-                last_milestones=self._last_claim.get("milestones"),
-                best_wave=best_wave,
-                claimed_best_wave=claimed_wave,
-                milestones_badge=self._milestones_badge,
-                missions_badge=self._missions_badge,
-                mail_badge=self._mail_badge,
-                last_mail=self._last_claim.get('mail'),
-            ),
-            now=time.time(),
-            missions_every_hours=claims.missions_every_hours,
-            milestones_on_new_best=claims.milestones_on_new_best,
-        )
+        best_wave, _ = self._ladder_waves()
+        kind = self._claim_due(settings)
         if kind is None:
             return None
         if kind == 'mail':
@@ -644,6 +682,11 @@ class TowerBot:
         walk = self.claim if kind == "missions" else self.milestones_claim
         if not walk.request():
             return None
+        if kind == "milestones":
+            self._milestones_attempt = (
+                self._ladder_tier, self._claimed_wave.get(self._ladder_tier),
+                self._last_claim.get("milestones"), self._milestones_badge,
+            )
         self._last_claim[kind] = time.time()
         if kind == "milestones":
             if best_wave is not None:
@@ -713,6 +756,7 @@ class TowerBot:
         started run N+1 in the emulator.
         """
         started = time.monotonic()
+        self._settle_milestones_attempt()
         # Exactly one snapshot for the whole pass. Re-reading mid-scan would
         # let a setting change underneath a half-finished scan - the wallet
         # read with one strategy and the price gate applied with another.
