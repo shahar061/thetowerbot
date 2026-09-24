@@ -40,13 +40,14 @@ GEMS = "gems"
 # would be a third, wrong one.
 BALANCED_CURRENCIES: tuple[str, ...] = (COINS, GEMS)
 
-# Every kind a line can carry. The last six are RESERVED - the parts of the
-# economy the bot cannot see (labs and lab slots, card slots, modules,
-# relics, ultimate weapons) plus hand-entered lines. They are named here so
+# Every kind a line can carry. The last five are RESERVED - the parts of the
+# economy the bot cannot see (card slots, modules, relics, ultimate weapons)
+# plus hand-entered lines. They are named here so
 # adding one later is a branch in classify(), not a schema change.
 KINDS: tuple[str, ...] = (
     "RUN_PAYOUT",
     "WORKSHOP_BUY",
+    "LAB",
     "CARD_BUY",
     "MISSION_CLAIM",
     "MAIL_CLAIM",
@@ -60,7 +61,6 @@ KINDS: tuple[str, ...] = (
     "SHOP_UNAVAILABLE",
     "POLICY_CHANGED",
     "UNEXPLAINED",
-    "LAB",
     "CARD_SLOT",
     "MODULE",
     "RELIC",
@@ -134,6 +134,16 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
     base: dict[str, Any] = {"ts": event.ts, "seq": event.seq}
 
     match event:
+        case events.LabResearchStarted():
+            return (LedgerLine(
+                kind="LAB", item=("Game Speed" if event.concept_id == "labs.game-speed"
+                                  else event.concept_id), category="RESEARCH",
+                currency=COINS, delta=-event.price, price=event.price,
+                observed=event.coins_before,
+                detail={"slot": 1, "concept_id": event.concept_id,
+                        "coins_after": event.coins_after,
+                        "completes_at": event.completes_at}, **base,
+            ),)
         case events.RunEnded():
             # The only thing a battle contributes. RunEnded.coins is read off
             # the game-over modal's Coins caption - coins EARNED that run, not
@@ -469,6 +479,7 @@ class LedgerWriter:
 # events table. Anything else is skipped without being rebuilt at all.
 _REPLAYABLE: dict[str, type[events.Event]] = {
     "RunEnded": events.RunEnded,
+    "LabResearchStarted": events.LabResearchStarted,
     "Purchased": events.Purchased,
     "PurchaseSkipped": events.PurchaseSkipped,
     "ShoppingStarted": events.ShoppingStarted,

@@ -11,6 +11,7 @@ import type { LedgerLine, LedgerPayload } from "@/lib/types";
  *  unrelated happened to trigger a reload. */
 export const LEDGER_EVENTS = new Set([
   "RunEnded",
+  "LabResearchStarted",
   "Purchased",
   "PurchaseSkipped",
   "ShoppingStarted",
@@ -27,7 +28,7 @@ export const LEDGER_EVENTS = new Set([
   "FloatingGemClaimed",
 ]);
 
-/** Every kind `classify()` can emit - `ledger.KINDS` minus its six reserved
+/** Every kind `classify()` can emit - `ledger.KINDS` minus its five reserved
  *  entries, which nothing produces and which would be chips that can only
  *  ever return nothing. tests/test_ledger.py pins this against the Python
  *  list: the claim kinds were missing for exactly as long as nothing did,
@@ -42,6 +43,7 @@ export const FILTER_KINDS = [
   "MILESTONE_CLAIM",
   "GEM_CLAIM",
   "WORKSHOP_BUY",
+  "LAB",
   "CARD_BUY",
   "BUY_SKIPPED",
   "CLAIM_SKIPPED",

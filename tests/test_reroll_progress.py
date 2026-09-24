@@ -12,6 +12,7 @@ import pytest
 from account_state import AccountState
 from fleet.reroll_planner import RerollFacts, choose_next
 from fleet.reroll_progress import RerollProgress
+from lab_plan import LabDecision
 from policy import AutopilotPolicy, choose
 from strategy import Strategy
 
@@ -21,6 +22,16 @@ def worker(tmp_path: Path, account_id: str = "ACCOUNT-A") -> RerollProgress:
     root.mkdir(parents=True)
     db.bind_account(root / "tower_bot.db", account_id)
     return RerollProgress(root, account_id, AccountState())
+
+
+def test_lab_check_cadence_survives_worker_restart(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert progress.lab_due(now=1000.)
+    progress.note_lab_observation(
+        LabDecision("wait_coins", price=300, wallet_coins=122), now=1000.)
+    restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
+    assert not restarted.lab_due(now=1100.)
+    assert restarted.lab_due(now=1300.)
 
 
 def worker_without_verified_utility_debits(tmp_path: Path) -> RerollProgress:

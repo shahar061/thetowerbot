@@ -26,6 +26,8 @@ _RECORDED_READERS = (
     ('battle.utility', 'in_run_utility'),
     ('missions.daily', 'menu_missions'),
     ('cards.inventory', 'menu_cards'),
+    ('labs.home', 'menu_labs_slot1_idle'),
+    ('labs.research', 'menu_labs_game_speed_picker'),
 )
 
 # Screens read at two genuinely different points in an account's life: the
@@ -96,7 +98,13 @@ _GAME_OVER = ('game_over.result',)
 # Even a progressed v29.0.2 history table draws literal zeros for tiers with
 # no recorded wave. Nothing on that screen distinguishes no history, a lock,
 # and a trusted numeric zero, so the unavailable-state example remains owned.
-_REPLAY_GAPS = {'account.stats.tiers.unavailable': 'B08'}
+_REPLAY_GAPS = {
+    'account.stats.tiers.unavailable': 'B08',
+    # Recorded home/idle and an unaffordable picker exist, but a locked slot
+    # and an affordable Game Speed row have not yet been captured for replay.
+    'labs.home.locked': 'B08',
+    'labs.research.affordable': 'L02',
+}
 
 # What remains out of scope, and who owns it. An entry with no owner is a
 # standing property of the design rather than work someone will pick up.
@@ -117,10 +125,8 @@ _UNSUPPORTED_OWNERS = {
     'later_unlock_stage_layouts_outside_workshop': 'B08',
     'battle_history_export': 'B08',
     'native_stat_export': 'B08',
-    # An active v29.0.2 Labs page is recorded, but no Labs discovery context
-    # or second layout is validated. Recording a Rush price does not enable a
-    # gem spend; starting and accelerating research have separate owners.
-    'labs_screen_layout': 'B08',
+    # The slot-one home and Game Speed picker are now read at 1080x2400.
+    # Reading a row does not enable a research or gem-spend action.
     'labs_research_actions': 'L02',
     'labs_acceleration_spend': 'L03',
     'missions_claim_actions': 'T01',
@@ -525,7 +531,7 @@ def capabilities() -> dict[str, Any]:
             # than disappearing: the Workshop tabs have one, nothing else does.
             'later_unlock_stage_layouts_outside_workshop',
             'battle_history_export', 'native_stat_export',
-            'labs_screen_layout', 'labs_research_actions', 'labs_acceleration_spend',
+            'labs_research_actions', 'labs_acceleration_spend',
             'other_locales', 'other_resolutions', 'unknown_overlays',
             # A claimable capture and the full 5..35 strip are now recorded
             # (menu_missions_claimable and menu_missions_weekly), so the
@@ -615,8 +621,19 @@ def discover(
         return ScreenDiscovery(None, False, 'unsupported_geometry')
     if locale != 'en':
         return ScreenDiscovery(None, False, 'unsupported_locale')
-    if context not in ('workshop', 'battle', 'missions', 'cards', 'milestones'):
+    if context not in ('workshop', 'battle', 'missions', 'cards', 'milestones', 'labs'):
         return ScreenDiscovery(None, False, 'unsupported_context')
+    if context == 'labs':
+        import lab_screen
+        picker = lab_screen.read_picker(screen, boxes)
+        if picker.page:
+            return ScreenDiscovery('labs.research', True, 'recorded_layout')
+        if _has_guarded_overlay(screen):
+            return ScreenDiscovery(None, False, 'overlay_geometry')
+        home = lab_screen.read_home(screen, boxes)
+        if home.page:
+            return ScreenDiscovery('labs.home', True, 'recorded_layout')
+        return ScreenDiscovery(None, False, 'ambiguous_or_unreadable_heading')
     labels = {tiles.normalise(b.text) for b in boxes}
     if {'currentlevel', 'maxlevel'} <= labels:
         return ScreenDiscovery('workshop.info_overlay', False, 'overlay')

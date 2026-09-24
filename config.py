@@ -327,6 +327,7 @@ GAME_OVER_HOME: tuple[str, str] = ("HOME", "buttons/home.png")
 MENU_NAV_BUTTONS: dict[str, tuple[str, str]] = {
     "WORKSHOP": ("BATTLE_TAB", "nav/tab_battle.png"),
     "CARDS": ("BATTLE_TAB", "nav/tab_battle.png"),
+    "LABS": ("BATTLE_TAB", "nav/tab_battle.png"),
     "MILESTONES": ("MILESTONES_RETURN", "nav/missions_return.png"),
 }
 
@@ -447,6 +448,7 @@ NAV_TARGETS: dict[str, str] = {
     "MISSIONS": "nav/missions.png",          # top-right of the main menu
     "WORKSHOP": "nav/tab_workshop.png",      # bottom tab bar
     "CARDS": "nav/tab_cards.png",            # bottom tab bar
+    "LABS": "nav/tab_labs.png",              # unlocked bottom tab bar
     "BATTLE_TAB": "nav/tab_battle.png",      # bottom tab bar - back to the menu
     "MISSIONS_RETURN": "nav/missions_return.png",  # missions has no tab; this exits
     "MILESTONES": "nav/milestones.png",      # main menu, cut TIGHT on the label - see
@@ -487,6 +489,7 @@ PAGE_ANCHORS: dict[str, str] = {
     "MAIN_MENU": "screens/main_menu.png",
     "WORKSHOP": "screens/workshop.png",
     "CARDS": "screens/cards.png",
+    "LABS": "screens/labs.png",
     "MISSIONS": "screens/missions.png",
 }
 

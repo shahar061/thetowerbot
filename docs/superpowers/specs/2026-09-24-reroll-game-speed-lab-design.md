@@ -45,14 +45,19 @@ job timer avoids reopening the page on every run; idle and unaffordable
 accounts retry at a bounded interval or after a meaningful balance change.
 The existing one-visit-at-a-time coordinator prevents a Labs walk from racing
 with claims or shopping. Claimable rewards take priority because they may
-provide the coins needed for research.
+provide the coins needed for research. An affordable Game Speed research in
+slot 1 takes priority over Workshop purchases. If that lab is unaffordable or
+slot 1 is occupied, normal Workshop buying proceeds.
 
 For an authorized start, the executor opens the observed idle slot, finds the
 Game Speed row, rechecks the coin price and balance on the current screen, and
-taps that row's verified purchase control. It then rereads slot 1. The action
-is successful only when slot 1 visibly names Game Speed and shows an active
-timer. A tap alone never records success or increments a research level.
-Account state and the fleet ledger receive the verified job and coin spend;
+taps that row's verified control. The row opens a separate Research confirmation
+dialog. The executor confirms the Game Speed name, price, and wallet there on
+two fresh readings before tapping Research. It then rereads slot 1. The action
+is successful only when two readings show Game Speed running in slot 1 and the
+wallet has fallen by the exact price. A tap alone never records success or
+increments a research level. Account state and the fleet ledger receive the
+verified job and coin spend; the ledger shows a LAB / Game Speed coin debit;
 completion is observed on a later visit, not inferred from elapsed time.
 
 At every transition the walk has a timeout and a safe return path to the main
@@ -62,8 +67,9 @@ end the visit without another spend. The normal reroll loop can continue.
 ## Evidence and verification
 
 Before enabling purchase taps, record current-game fixtures for: an unlocked
-idle slot 1, the research list with Game Speed affordable and unaffordable, a
-maxed or locked Game Speed row where available, and slot 1 after starting it.
+idle slot 1, the research list with Game Speed affordable and unaffordable,
+the separate Research confirmation dialog, a maxed or locked Game Speed row
+where available, and slot 1 after starting it.
 Use the existing active Labs fixture for occupied-slot behavior. These frames
 define anchors and button bounds; the executor must not guess coordinates
 from the active fixture alone.

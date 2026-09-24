@@ -8,6 +8,7 @@ feature can break something that already works. Each one gets a test.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import cv2
 
@@ -17,6 +18,9 @@ import events
 import tower_bot
 import vision
 from shopping import ShoppingSession
+from lab_plan import LabDecision
+from lab_visit import LabVisit, LabVisitResult
+from labs import LabJob, LabsReading, LabsState
 from strategy import Shopping, ShoppingRule
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -66,6 +70,89 @@ def test_due_visit_starts_before_battle_navigation(bot_on_main_menu) -> None:
     bot.run_once()
     assert bot.shopping.active
     assert navigated(bot.bus) == []
+
+
+def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy()
+    progress.stats_due.return_value = False
+    progress.lab_due.return_value = True
+    bot.reroll_progress = progress
+    bot.lab_visit = LabVisit(bot.templates)
+
+    bot.run_once()
+
+    assert bot.lab_visit.active
+    assert not bot.shopping.active
+    assert navigated(bot.bus) == []
+
+
+def test_reroll_workshop_resumes_when_lab_check_not_due(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy()
+    progress.stats_due.return_value = False
+    progress.lab_due.return_value = False
+    bot.reroll_progress = progress
+    bot.lab_visit = LabVisit(bot.templates)
+
+    bot.run_once()
+
+    assert bot.shopping.active
+    assert not bot.lab_visit.active
+
+
+def test_single_emulator_does_not_construct_a_lab_visit(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    assert bot.lab_visit is None
+
+
+def test_confirmed_lab_start_records_one_job_and_one_coin_debit(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot.reroll_progress = Mock()
+    account = Mock()
+    bot.lab_state = LabsState(account)
+    job = LabJob(1, "labs.game-speed", "Game Speed Lv.1", 5000., 4000.,
+                 None, "unknown", "researching", 1., (100, 300, 200, 50))
+    frames = tuple(LabsReading(1000. + index, 1080, 2400, f"frame-{index}",
+                               1, "observed", (), (job,)) for index in range(2))
+    result = LabVisitResult("started", "game_speed_confirmed",
+                            LabDecision("start", price=300, wallet_coins=400),
+                            job, 300, frames)
+
+    bot._finish_lab_visit(result)
+    bot._finish_lab_visit(result)
+
+    account.record_labs.assert_called_once()
+    started = [event for event in bot.bus.published
+               if isinstance(event, events.LabResearchStarted)]
+    assert len(started) == 1
+    assert (started[0].coins_before, started[0].coins_after) == (400, 100)
+
+
+def test_failed_lab_start_does_not_record_a_spend(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot.reroll_progress = Mock()
+    bot.lab_state = LabsState(Mock())
+    bot._finish_lab_visit(LabVisitResult(
+        "failed", "purchase_unconfirmed", LabDecision("unknown")))
+    assert not [event for event in bot.bus.published
+                if isinstance(event, events.LabResearchStarted)]
+
+
+def test_pause_cancels_a_live_lab_visit_without_a_tap(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot.reroll_progress = Mock()
+    bot.lab_visit = LabVisit(bot.templates)
+    assert bot.lab_visit.request()
+    bot.controls.apply({"paused": True})
+
+    bot.run_once()
+
+    assert not bot.lab_visit.active
+    assert not [event for event in bot.bus.published
+                if isinstance(event, events.Tapped) and event.action.startswith("lab:")]
 
 
 def test_unknown_snapshots_are_suppressed_while_a_visit_is_live(bot_on_workshop) -> None:

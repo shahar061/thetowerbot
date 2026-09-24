@@ -1,11 +1,8 @@
 """Evidence-bounded model of Lab ownership, research levels and running jobs.
 
-No Labs page is recorded in this repository at any unlock stage, and the live
-account may not have Labs unlocked at all. So this module holds no screen
-geometry, no OCR anchor and no tap target: it is the state model, and the
-observation contract that a future recorded reader has to satisfy.
-`screen_discovery.capabilities()` names the missing layout and its owner
-instead of this module inventing bounds nothing measured.
+The slot-one home and Game Speed research picker now have recorded readers in
+`lab_screen`. This module remains the state model rather than a source of tap
+targets. Research and acceleration actions have separate safety gates.
 
 Identity comes from the versioned catalog's `labs` concepts and from nothing
 else. Several of them research an Ultimate Weapon; the weapon itself is a
@@ -172,13 +169,11 @@ def capabilities() -> dict[str, Any]:
         'schema_version': 1,
         'complete': False,
         'concepts': len(LAB_CONCEPT_IDS),
-        # No reader and no recorded capture, stated rather than left to be
-        # discovered by whoever calls a parse function that does not exist.
-        'reader': None,
-        'recorded_capture': None,
-        # This module observes. Starting, queueing and accelerating research
-        # are other tasks' work, and there is no device in this import graph.
-        'actions': (),
+        'reader': 'lab_screen',
+        'recorded_capture': 'tests/fixtures/menu_labs_slot1_idle.png',
+        # The narrow reroll Lab 1 Game Speed walk lives in lab_visit. Generic
+        # research rows, queueing and acceleration still have no executor.
+        'actions': ('reroll_game_speed_slot_1',),
         'entry_statuses': ENTRY_STATUSES,
         'job_statuses': JOB_STATUSES,
         'acceleration_states': ACCELERATION_STATES,

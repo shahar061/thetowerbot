@@ -156,9 +156,9 @@ def test_ambiguous_evidence_makes_no_claim_and_no_device_action(tmp_path: Path) 
     assert account.snapshot()['revision'] is None
     assert lab_state.current().status_for(DAMAGE) == 'ambiguous'
     assert lab_state.levels()[DAMAGE]['status'] == 'unknown'
-    # There is no route from this module to the phone - no device, no
-    # navigation, no tap target - so no reading of any shape can produce one.
-    assert labs.capabilities()['actions'] == ()
+    # This state module still has no route to the phone. The separate
+    # reroll-only Game Speed walk owns the one declared action.
+    assert labs.capabilities()['actions'] == ('reroll_game_speed_slot_1',)
     reachable = {v.__name__ for v in vars(labs).values() if isinstance(v, types.ModuleType)}
     assert not reachable & {'device', 'control', 'navigate', 'jitter', 'shopping'}
 
@@ -265,26 +265,26 @@ def test_unlock_milestones_are_unknown_rather_than_absent() -> None:
     assert all(labs.unlock_milestone(cid)[0] == 'unknown' for cid in labs.LAB_CONCEPT_IDS)
 
 
-def test_the_labs_page_is_declared_unsupported_with_an_owner() -> None:
-    """No recorded capture, so no reader: the gap is named, not filled."""
+def test_recorded_labs_pages_are_readable_without_enabling_spending() -> None:
     import labs
     import screen_discovery
+    idle = cv2.imread(str(FIXTURES / 'menu_labs_slot1_idle.png'))
+    picker = cv2.imread(str(FIXTURES / 'menu_labs_game_speed_picker.png'))
     frame = cv2.imread(str(FIXTURES / 'menu_workshop_attack.png'))
-    # Even a frame this repository CAN read is refused when it is offered as
-    # a Labs page: there is no such context, so there is no such screen id.
+    assert screen_discovery.discover(idle, recorded('menu_labs_slot1_idle'), 'labs').screen_id == 'labs.home'
+    assert screen_discovery.discover(picker, recorded('menu_labs_game_speed_picker'), 'labs').screen_id == 'labs.research'
     result = screen_discovery.discover(frame, recorded('menu_workshop_attack'), 'labs')
     assert result.screen_id is None and not result.readable
-    assert result.reason == 'unsupported_context'
 
     capabilities = screen_discovery.capabilities()
-    assert capabilities['unsupported_owners']['labs_screen_layout'] == 'B08'
+    assert capabilities['readers']['labs.home'] == 'menu_labs_slot1_idle'
     assert capabilities['unsupported_owners']['labs_research_actions'] == 'L02'
     assert capabilities['unsupported_owners']['labs_acceleration_spend'] == 'L03'
-    assert 'labs_screen_layout' in capabilities['unsupported']
-    assert not [name for name in capabilities['readers'] if name.startswith('labs')]
-    assert labs.capabilities()['reader'] is None
+    assert 'labs_screen_layout' not in capabilities['unsupported']
+    assert labs.capabilities()['reader'] == 'lab_screen'
+    assert labs.capabilities()['actions'] == ('reroll_game_speed_slot_1',)
     assert labs.capabilities()['unsupported_owners'] == {
-        'labs_screen_layout': 'B08', 'labs_research_actions': 'L02',
+        'labs_research_actions': 'L02',
         'labs_acceleration_spend': 'L03'}
 
 
