@@ -161,8 +161,11 @@ def test_a_crossed_row_is_not_throttled_by_a_recent_claim() -> None:
                milestones_on_new_best=True) == "milestones"
 
 
-def test_milestones_off_ignores_a_crossed_row_and_the_badge() -> None:
+def test_new_best_switch_off_still_honors_a_visible_reward_badge() -> None:
     assert due(recent(best_wave=40, claimed_best_wave=30, milestones_badge=True),
+               now=1000.0, missions_every_hours=EIGHT_HOURS,
+               milestones_on_new_best=False) == "milestones"
+    assert due(recent(best_wave=40, claimed_best_wave=30),
                now=1000.0, missions_every_hours=EIGHT_HOURS,
                milestones_on_new_best=False) is None
 

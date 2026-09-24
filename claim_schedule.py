@@ -104,19 +104,18 @@ def due(
     if not math.isfinite(now):
         return None
 
-    if milestones_on_new_best:
-        if crossed_threshold(state.best_wave, state.claimed_best_wave):
+    if milestones_on_new_best and crossed_threshold(state.best_wave, state.claimed_best_wave):
+        return "milestones"
+    # The game's visible reward badge is independent of the optional
+    # new-best-wave trigger. A non-finite or backwards-clock last claim
+    # still waits rather than repeatedly walking the same badge.
+    if state.milestones_badge:
+        if state.last_milestones is None:
             return "milestones"
-        # A non-finite or backwards-clock last_milestones is handled exactly
-        # as defensively as last_missions is below: waiting is the safe
-        # reading, so a badge on bad data falls through to the missions check.
-        if state.milestones_badge:
-            if state.last_milestones is None:
+        if math.isfinite(state.last_milestones):
+            elapsed = now - state.last_milestones
+            if elapsed >= MIN_MILESTONES_HOURS * SECONDS_PER_HOUR:
                 return "milestones"
-            if math.isfinite(state.last_milestones):
-                elapsed = now - state.last_milestones
-                if elapsed >= MIN_MILESTONES_HOURS * SECONDS_PER_HOUR:
-                    return "milestones"
 
     badges: tuple[tuple[ClaimKind, bool, float | None], ...] = (
         ('missions', state.missions_badge, state.last_missions),

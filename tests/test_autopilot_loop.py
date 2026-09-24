@@ -150,16 +150,7 @@ def test_a_still_active_walk_is_not_re_armed_on_the_next_frame(
 def test_a_completed_walk_is_not_re_armed_for_the_same_best(
     bot_on_main_menu: Callable[..., TowerBot]
 ) -> None:
-    """The real invariant: once a milestones claim has actually been armed
-    for a best wave, that same best wave must not re-arm it again after the
-    walk goes idle. Without `_last_claim`/`_claimed_best_wave` being recorded
-    when the walk arms, a milestones claim would re-arm on every idle frame
-    forever - the previous test only proves the walk is not re-armed *while
-    still active*, which is a structural early return in run_once() and
-    would pass even with the recording deleted (see conftest.py's fixture
-    docstring and the reviewer's probe: setting `_claimed_best_wave = None`
-    between two scans still left that test green).
-    """
+    """A completed claim keeps its best wave and must not immediately re-arm."""
     bot = bot_on_main_menu(Shopping(), claims=Claims(enabled=True))
     bot._best_wave = 137
     # Keep missions out of the way so the only thing under test is the
@@ -167,21 +158,40 @@ def test_a_completed_walk_is_not_re_armed_for_the_same_best(
     # own and would otherwise arm bot.claim on the second scan below,
     # muddying what this test is checking.
     bot._last_claim["missions"] = time.time()
+    bot._last_claim["mail"] = time.time()
 
     bot.run_once()
     assert bot.milestones_claim.active
 
-    # Simulate the walk finishing and going idle again, with the best wave
-    # unchanged - exactly the scenario the recording in _offer_claim exists
-    # to guard.
-    bot.milestones_claim.cancel("test", "forced idle for the re-arm probe")
+    bot.milestones_claim._finish("completed", "claimed", "Returned home.", time.time())
     assert not bot.milestones_claim.active
 
     bot.run_once()
+    assert bot._claimed_wave[None] == 137
     assert not bot.milestones_claim.active, (
-        "an idle walk was re-armed for a best wave it was already recorded "
-        "as having claimed"
+        "a completed walk was re-armed for a best wave it already checked"
     )
+
+
+def test_failed_milestones_walk_restores_unclaimed_wave(
+    bot_on_main_menu: Callable[..., TowerBot]
+) -> None:
+    bot = bot_on_main_menu(Shopping(), claims=Claims(enabled=True))
+    bot._best_wave = 137
+    bot._claimed_wave = {None: 90}
+    bot._last_claim["missions"] = time.time()
+    bot._last_claim["mail"] = time.time()
+
+    bot.run_once()
+    assert bot.milestones_claim.active
+    bot.milestones_claim.cancel("milestones_control_absent", "The button was not found.")
+    bot.run_once()
+    assert bot._claimed_wave[None] == 90
+    assert not bot.milestones_claim.active
+
+    bot._milestones_retry_at = 0.
+    bot.run_once()
+    assert bot.milestones_claim.active
 
 
 def test_a_disabled_cadence_arms_nothing(bot_on_main_menu: Callable[..., TowerBot]) -> None:
@@ -297,3 +307,49 @@ def test_the_milestones_badge_arms_a_claim_no_wave_explains(frame: str, armed: b
     bot.cards_intro.cancel("test", "The Cards arrow is not under test here.")
     bot.run_once()
     assert bot.milestones_claim.active is armed
+
+
+def test_game_over_returns_home_for_a_previously_seen_badge() -> None:
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("game_over", state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True,
+                        claims=Claims(enabled=True))
+    bot._best_wave = 21
+    bot._claimed_wave = {None: 21}
+    bot._milestones_badge = True
+    bot._last_claim["missions"] = time.time()
+    bot._last_claim["mail"] = time.time()
+    asked = _asked_go_home(bot)
+    bot.run_once()
+    assert asked == [True]
+
+
+def test_failed_badge_claim_is_retried_without_waiting_an_hour() -> None:
+    """A failed menu lookup must leave the red badge eligible after a short backoff."""
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("menu_main_bluestacks_1920",
+                        state=screens.ScreenState.MAIN_MENU,
+                        policy=Shopping(), auto_navigate=True,
+                        claims=Claims(enabled=True))
+    bot.runs.completed = 1
+    bot._best_wave = 21
+    bot._claimed_wave = {None: 21}
+    bot._last_claim["missions"] = time.time()
+    bot._last_claim["mail"] = time.time()
+    bot.cards_intro.request()
+    bot.cards_intro.cancel("test", "The Cards arrow is not under test here.")
+
+    bot.run_once()
+    assert bot.milestones_claim.active
+    bot.milestones_claim.cancel("milestones_control_absent", "The button was not found.")
+    bot.run_once()
+    assert not bot.milestones_claim.active
+    assert bot._milestones_badge
+    assert "milestones" not in bot._last_claim
+    assert bot._milestones_retry_at > time.time()
+
+    bot._milestones_retry_at = 0.
+    bot.run_once()
+    assert bot.milestones_claim.active
