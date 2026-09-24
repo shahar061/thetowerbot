@@ -77,7 +77,8 @@ def home() -> dict[str, Any]:
 
 
 def page(completed: int | None, claims: int, *, error: str | None = None,
-         screen_id: str | None = 'missions.daily') -> dict[str, Any]:
+         screen_id: str | None = 'missions.daily',
+         visible: tuple[str, ...] = ()) -> dict[str, Any]:
     """A missions-page frame. `error`/`screen_id` default to a clean read;
     a caller exercising `missions_unreadable` or `missions_not_reached`
     overrides one of them."""
@@ -86,7 +87,7 @@ def page(completed: int | None, claims: int, *, error: str | None = None,
                                     (454, 751 + 265 * i, 153, 46))
         for i in range(claims))
     return {'screen_id': screen_id, 'error': error, 'scanned': True,
-            'completed': completed, 'claims': targets}
+            'completed': completed, 'claims': targets, 'visible': visible}
 
 
 def image(name: str) -> Any:
@@ -130,9 +131,13 @@ class FakeDevice:
 
     def __init__(self) -> None:
         self.taps: list[tuple[int, int]] = []
+        self.swipes: list[tuple[int, int, int, int, float]] = []
 
     def click(self, x: int, y: int) -> None:
         self.taps.append((x, y))
+
+    def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
+        self.swipes.append((x, y, x2, y2, duration))
 
 
 def drive(frames: list[dict[str, Any]], *,
@@ -205,6 +210,33 @@ def test_a_walk_with_nothing_claimable_returns_home_without_tapping() -> None:
     result = claim.snapshot()['result']
     assert result['status'] == 'completed' and result['reason'] == 'claimed'
     assert RETURN_CONTROL in device.taps
+
+
+def test_a_walk_scrolls_to_claim_a_reward_below_the_first_cards() -> None:
+    frames = [home(), page(0, 0, visible=('daily-a', 'daily-b')),
+              page(0, 1, visible=('daily-c', 'daily-d')),
+              page(1, 0), home()]
+    claim, bus, device = drive(frames)
+    assert len(device.swipes) == 1
+    assert len(bus.of(events.MissionClaimed)) == 1
+    assert claim.snapshot()['result']['status'] == 'completed'
+
+
+def test_a_walk_stops_scrolling_when_the_list_does_not_move() -> None:
+    frames = [home()] + [page(0, 0, visible=('daily-a', 'daily-b'))] * 8 + [home()]
+    claim, bus, device = drive(frames)
+    assert len(device.swipes) == 1
+    assert not bus.of(events.MissionClaimed)
+    assert claim.snapshot()['result']['status'] == 'completed'
+
+
+def test_a_walk_stops_after_four_distinct_pages_without_a_claim() -> None:
+    frames = [home()] + [page(0, 0, visible=(f'page-{i}',))
+                         for i in range(5)] + [home()]
+    claim, bus, device = drive(frames)
+    assert len(device.swipes) == missions_claim.MAX_MISSIONS_SCROLLS
+    assert not bus.of(events.MissionClaimed)
+    assert claim.snapshot()['result']['status'] == 'completed'
 
 
 def test_a_walk_stops_at_the_bound_even_if_the_page_keeps_offering() -> None:

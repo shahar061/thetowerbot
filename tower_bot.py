@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from account_collection import StatsCollection, at_home
 from cards_intro import CardsIntro, popup_visible as cards_popup_visible
+import battle_upgrade_info
 import milestones_badge
 import menu_badges
 import mail_screen
@@ -235,6 +236,12 @@ class TowerBot:
         # Whether this scan's IN_RUN preflight ran the backstop's full read,
         # successful or not; the menu readers run on such a scan too.
         self._battle_backstop_scan = False
+        # Upgrade-info panels can cover the death dialog while its cash HUD
+        # still reads IN_RUN. Only a fresh, labelled overlay can authorize a
+        # dismissal; retries are spaced and capped until a clear full read.
+        self._battle_info_dismiss_at = float("-inf")
+        self._battle_info_dismiss_count = 0
+        self._battle_info_full_read_at = float("-inf")
         # Consecutive scans device recovery has blocked while a walk was
         # armed. See the note beside the recovery gate in run_once.
         self._recovery_blocked_scans = 0
@@ -261,6 +268,7 @@ class TowerBot:
         self._milestones_badge = False
         self._missions_badge = False
         self._mail_badge = False
+        self._last_menu_badge_check_at: float | None = None
         self._mail_recovery_taps = 0
         self._mail_recovery_at = float('-inf')
         # The account's best-ever wave. Seeded here from whatever the caller
@@ -583,8 +591,8 @@ class TowerBot:
         best = self._best_wave if tier is None else self._tier_best_wave.get(tier)
         return best, self._claimed_wave.get(tier)
 
-    def _milestones_owed(self, settings: Any) -> bool:
-        """True if a due ladder claim is worth leaving the death screen for.
+    def _claim_owed(self, settings: Any) -> bool:
+        """True if a due free claim is worth leaving the death screen for.
 
         RETRY never passes the main menu, which is the only screen a claim is
         offered on - so without this a claim is only ever taken when some
@@ -592,7 +600,15 @@ class TowerBot:
         """
         claims = settings.strategy.claims
         return (claims.enabled and not self.claim.active and not self.milestones_claim.active
-                and self._claim_due(settings) == "milestones")
+                and self._claim_due(settings) is not None)
+
+    def _menu_badge_check_due(self, settings: Any) -> bool:
+        """Visit home hourly so a badge cannot stay unseen in the RETRY loop."""
+        if not settings.strategy.claims.enabled:
+            return False
+        last = self._last_menu_badge_check_at
+        return (last is None or time.time() - last >=
+                claim_schedule.MIN_BADGE_HOURS * claim_schedule.SECONDS_PER_HOUR)
 
     def _claim_due(self, settings: Any) -> claim_schedule.ClaimKind | None:
         """Apply the failed-walk backoff to the shared claim cadence."""
@@ -780,6 +796,12 @@ class TowerBot:
         self._battle_backstop_scan = False
         tutorial_claim = None
         unlocked = None
+        preflight_boxes = None
+        battle_context = (reading.state in (screens.ScreenState.IN_RUN,
+                                            screens.ScreenState.GAME_OVER)
+                          or (reading.state is screens.ScreenState.UNKNOWN
+                              and reading.cash_top_left is not None))
+        info_dismiss = None
         if self.supervisor is not None:
             observed_screen = reading.state.value
             if observed_screen == "UNKNOWN":
@@ -788,7 +810,16 @@ class TowerBot:
                 except Exception:  # noqa: BLE001 - unreadable page is no permission to act
                     observed_screen = "UNKNOWN"
             try:
-                boxes = self._preflight_boxes(reading, reads)
+                boxes = (reads.full() if self._battle_info_dismiss_count
+                         else self._preflight_boxes(reading, reads))
+                preflight_boxes = boxes
+                if reading.state is screens.ScreenState.UNKNOWN:
+                    battle_context = (battle_context or
+                                      battle_upgrade_info.death_controls_visible(boxes, self.screen.shape))
+                if battle_context:
+                    info_dismiss = battle_upgrade_info.dismiss_point(boxes, self.screen.shape)
+                    if info_dismiss is not None:
+                        observed_screen = "BATTLE_UPGRADE_INFO"
                 if observed_screen == "UNKNOWN":
                     # Recovery preflight runs before MilestonesReadings.scan.
                     # A valid ladder or reward modal must be named here or the
@@ -865,6 +896,48 @@ class TowerBot:
                     action="reroll:workshop_tutorial_claim", x=tutorial_claim[0],
                     y=tutorial_claim[1], score=1.0))
                 return True
+        if battle_context or reading.state is screens.ScreenState.UNKNOWN:
+            try:
+                if self._battle_info_dismiss_count:
+                    boxes = reads.full()
+                elif preflight_boxes is not None:
+                    boxes = preflight_boxes
+                elif reading.state is screens.ScreenState.IN_RUN:
+                    moment = time.monotonic()
+                    if (not self._battle_panel_visible(reads)
+                            or moment - self._battle_info_full_read_at
+                            >= config.BATTLE_FULL_READ_EVERY):
+                        boxes = reads.full()
+                        self._battle_info_full_read_at = moment
+                    else:
+                        boxes = ()
+                else:
+                    boxes = reads.full()
+                if reading.state is screens.ScreenState.UNKNOWN:
+                    battle_context = (battle_context or
+                                      battle_upgrade_info.death_controls_visible(boxes, self.screen.shape))
+                info_dismiss = (battle_upgrade_info.dismiss_point(boxes, self.screen.shape)
+                                if battle_context else None)
+            except Exception:  # noqa: BLE001 - unreadable evidence grants no tap
+                info_dismiss = None
+            if info_dismiss is not None:
+                self.autopilot.suspend("Upgrade info overlay; actions held")
+                moment = time.monotonic()
+                if (not settings.paused and self._battle_info_dismiss_count < 3
+                        and moment - self._battle_info_dismiss_at >= 2.):
+                    x, y = info_dismiss
+                    self.device.click(x, y)
+                    self._battle_info_dismiss_count += 1
+                    self._battle_info_dismiss_at = moment
+                    self.bus.publish(events.Tapped(
+                        action="battle_upgrade_info:dismiss", x=x, y=y, score=1.0))
+                    return True
+                self.bus.publish(events.Skipped(
+                    action="*", reason="battle_upgrade_info_guard",
+                    detail="Upgrade explanation is open; waiting for safe dismissal"))
+                return False
+            if self._battle_info_dismiss_count:
+                self._battle_info_dismiss_count = 0
         previous = self.tracker.state
         if self.tracker.observe(reading) is not None:
             if self.account_state is not None:
@@ -1399,6 +1472,7 @@ class TowerBot:
                 self.screen, self.templates, 'missions') is not None
             self._mail_badge = menu_badges.read_badge(
                 self.screen, self.templates, 'mail') is not None
+            self._last_menu_badge_check_at = time.time()
             # The first Cards visit goes before everything else: it is owed
             # once, pays gems, and takes a handful of frames.
             if self._offer_cards_intro():
@@ -1446,7 +1520,9 @@ class TowerBot:
                 go_home=((self.shopping.due(shopping_policy, self.runs.completed)
                           and (self.reroll_progress is None
                                or self.reroll_progress.workshop_worthwhile()))
-                         or self._milestones_owed(settings)
+                         or self._claim_owed(settings)
+                         or (state is screens.ScreenState.GAME_OVER
+                             and self._menu_badge_check_due(settings))
                          or (state is screens.ScreenState.GAME_OVER
                              and self.reroll_progress is not None
                              and self.reroll_progress.stats_due())),

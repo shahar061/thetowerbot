@@ -49,9 +49,10 @@ function EmptyPanel({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{children}</div>;
 }
 
-export function StatsPanels({ stats, compact = false, view = "all" }: { stats: StatsPayload; compact?: boolean; view?: "all" | "wave" | "details" }): React.JSX.Element {
+export function StatsPanels({ stats, compact = false, view = "all", recentWaveWindow }: { stats: StatsPayload; compact?: boolean; view?: "all" | "wave" | "details"; recentWaveWindow?: number }): React.JSX.Element {
   const waves = stats.runs.map((r) => r.wave).filter((w): w is number => w != null);
-  const medianWave = median(waves);
+  const historyMedianWave = median(waves);
+  const medianWave = recentWaveWindow ? median(waves.slice(-recentWaveWindow)) : historyMedianWave;
   const medianLength = median(stats.runs.map((r) => r.duration));
 
   return (
@@ -62,7 +63,8 @@ export function StatsPanels({ stats, compact = false, view = "all" }: { stats: S
           you would otherwise read off four charts by eye. */}
       {view !== "details" && <div className={compact ? "grid grid-cols-2 gap-2" : "grid grid-cols-2 gap-3 sm:grid-cols-4"}>
         <StatTile label="runs" value={stats.runs.length} />
-        <StatTile label="median wave" value={medianWave == null ? "—" : Math.round(medianWave)} />
+        <StatTile label={recentWaveWindow ? `recent ${recentWaveWindow} median wave` : "median wave"} value={medianWave == null ? "—" : Math.round(medianWave)}
+          sub={recentWaveWindow && historyMedianWave != null ? `shown-history median W${Math.round(historyMedianWave)}` : undefined} />
         <StatTile label="best wave" value={waves.length ? Math.max(...waves) : "—"} tone="live" />
         <StatTile
           label="median length"

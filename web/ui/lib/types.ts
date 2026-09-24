@@ -361,6 +361,11 @@ export interface StatsPayload {
   benchmarks?: MilestoneBenchmark[];
 }
 
+export interface WorkshopPurchaseSummary {
+  account_id: string | null;
+  items: { category: string; item: string; count: number }[];
+}
+
 export interface MilestoneBenchmark {
   tier: number;
   wave: number;

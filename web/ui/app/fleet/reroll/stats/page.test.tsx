@@ -4,11 +4,12 @@ import FleetStatsPage from "./page";
 
 const { fetchAccountStats, workspace } = vi.hoisted(() => ({
   fetchAccountStats: vi.fn(),
-  workspace: { pool: { members: [] as { name: string; account_key: string; account_id: string; lease_id: string; state: string }[] }, loading: false, error: null },
+  workspace: { pool: { members: [] as { name: string; account_key: string; account_id: string; lease_id: string; state: string; recent_cps?: number; lifetime_coins?: number }[] }, loading: false, error: null },
 }));
 vi.mock("@/lib/api", () => ({ fetchAccountStats }));
+vi.mock("./WorkshopComparison", () => ({ WorkshopComparison: () => null }));
 vi.mock("../RerollWorkspace", () => ({ useRerollWorkspace: () => workspace }));
-const member = (name: string) => ({ name, account_key: `worker:${name}`, account_id: `account-${name}`, lease_id: name, state: "running" });
+const member = (name: string) => ({ name, account_key: `worker:${name}`, account_id: `account-${name}`, lease_id: name, state: "running", recent_cps: 0.35, lifetime_coins: 1200 });
 const payload = (account: string, seconds: number) => ({ account_id: account,
   runs: [{ id: 1, started_at: 0, ended_at: 60, duration: 60, wave: 20, tier: 1, coins: 100, tap_count: 3, scan_count: 4 }], taps: [], screens: [],
   summary: { total_runs: 230, best_tier_1_wave: 65, play_seconds: 10000 },
@@ -28,14 +29,37 @@ describe("FleetStatsPage", () => {
     const card = within(screen.getByRole("article", { name: "Stats for Air_1" }));
     expect(card.getByText("65")).toBeDefined();
     expect(card.getByText("230 completed runs")).toBeDefined();
+    expect(card.queryByText("Recent CPS")).toBeNull();
     expect(card.getByRole("progressbar", { name: "Reroll progress for Air_1" })).toBeDefined();
     expect(card.getByText("Wave per run")).toBeDefined();
     expect(screen.getAllByText("Not reached")).toHaveLength(2);
     expect(screen.getAllByText("2m 0s")).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: "Elapsed time" }));
     expect(screen.getAllByText("12m 0s")).toHaveLength(3);
-    fireEvent.click(card.getByRole("button", { name: "Run length, taps & screen events" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show advanced stats" }));
+    expect(card.getByText("Recent CPS")).toBeDefined();
+    expect(card.getByText("0.35")).toBeDefined();
+    expect(card.getByText("Lifetime coins")).toBeDefined();
+    expect(card.getByText("1,200")).toBeDefined();
     expect(card.getByText("Run length (s)")).toBeDefined();
+    expect(within(screen.getByRole("article", { name: "Stats for Air_2" })).getByText("Recent CPS")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Hide advanced stats" }));
+    expect(screen.queryByText("Recent CPS")).toBeNull();
+  });
+
+  it("shows latest-ten median alongside the longer recorded-window median", async () => {
+    workspace.pool.members = [member("Air_1")];
+    const data = payload("account-Air_1", 120);
+    data.runs = Array.from({ length: 21 }, (_, index) => ({
+      id: index + 1, started_at: index * 60, ended_at: (index + 1) * 60,
+      duration: 60, wave: index < 11 ? 2 : 12, tier: 1, coins: 100, tap_count: 3, scan_count: 4,
+    }));
+    fetchAccountStats.mockResolvedValue(data);
+    render(<FleetStatsPage />);
+    const card = within(await screen.findByRole("article", { name: "Stats for Air_1" }));
+    expect(card.getByText("recent 10 median wave")).toBeDefined();
+    expect(card.getByText("shown-history median W2")).toBeDefined();
+    expect(card.getAllByText("12").length).toBeGreaterThan(0);
   });
 
   it("distinguishes unavailable account history from unreached milestones", async () => {

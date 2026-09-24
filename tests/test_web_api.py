@@ -49,7 +49,7 @@ def test_status_reports_the_live_state_and_the_dropped_count(harness) -> None:
     assert body["uptime"] >= 0
 
 
-@pytest.mark.parametrize("route", ["/api/stats", "/api/ledger"])
+@pytest.mark.parametrize("route", ["/api/stats", "/api/ledger", "/api/workshop-purchases/summary"])
 def test_history_pages_support_databases_before_account_identity(harness, route: str) -> None:
     client, _, _, _, path, _ = harness
     with db.connect(path) as conn:
@@ -58,6 +58,30 @@ def test_history_pages_support_databases_before_account_identity(harness, route:
     assert response.status_code == 200
     assert response.json()["account_id"] is None
     assert client.get(route, headers={"x-expected-account-id": "known-account"}).status_code == 409
+
+
+def test_workshop_summary_counts_full_confirmed_history_by_category_and_item(harness) -> None:
+    client, _, _, _, path, _ = harness
+    db.bind_account(path, "ACCOUNT-A")
+    with db.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO ledger(ts, kind, item, category, dry_run, detail) VALUES (?, ?, ?, ?, ?, ?)",
+            [(float(index), "WORKSHOP_BUY", "Damage", "ATTACK", 0, '{"verdict":"bought"}')
+             for index in range(110)] + [
+                (111., "WORKSHOP_BUY", "Cash / Wave", "UTILITY", 0, '{"verdict":"free"}'),
+                (112., "WORKSHOP_BUY", "Health", "DEFENSE", 1, '{"verdict":"bought"}'),
+                (113., "WORKSHOP_BUY", "Health", "DEFENSE", 0, '{"verdict":"skipped"}'),
+                (114., "BATTLE_BUY", "Damage", "ATTACK", 0, '{"verdict":"bought"}'),
+                (115., "WORKSHOP_BUY", "Health", "DEFENSE", 0, '{invalid'),
+            ],
+        )
+
+    response = client.get("/api/workshop-purchases/summary")
+    assert response.status_code == 200
+    assert response.json() == {"account_id": "ACCOUNT-A", "items": [
+        {"category": "ATTACK", "item": "Damage", "count": 110},
+        {"category": "UTILITY", "item": "Cash / Wave", "count": 1},
+    ]}
 
 
 def test_concepts_endpoint_is_read_only_and_preserves_legacy_upgrades(harness) -> None:

@@ -396,6 +396,22 @@ def run_stats(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]
     return [dict(row) for row in reversed(rows)]
 
 
+def workshop_purchase_summary(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Full-history counts of confirmed Workshop buys, grouped for comparison."""
+    rows = conn.execute(
+        """SELECT COALESCE(category, 'OTHER') AS category,
+                  COALESCE(item, 'Unknown upgrade') AS item,
+                  COUNT(*) AS count
+             FROM ledger
+            WHERE kind = 'WORKSHOP_BUY' AND dry_run = 0
+              AND CASE WHEN json_valid(detail)
+                       THEN json_extract(detail, '$.verdict') END IN ('bought', 'free')
+            GROUP BY COALESCE(category, 'OTHER'), COALESCE(item, 'Unknown upgrade')
+            ORDER BY category, item"""
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def stats_progress(conn: sqlite3.Connection) -> dict[str, Any]:
     """Full-history Tier 1 benchmarks, confirmed at the end of a run.
 
