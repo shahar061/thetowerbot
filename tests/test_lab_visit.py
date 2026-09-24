@@ -8,11 +8,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 import cv2
+import pytest
 
 import config
 from lab_screen import LabPickerReading, read_picker
 from lab_visit import LabVisit
 import ocr
+from supervisor import RecoveryState
+import screens
+from strategy import Shopping
+from tests.conftest import _shopping_bot
 import vision
 
 
@@ -67,6 +72,35 @@ def test_unaffordable_recorded_row_is_not_tapped_and_visit_returns() -> None:
     assert result.status == "observed"
     assert result.decision.kind == "wait_coins"
     assert result.observed_coin_spend == 0
+
+
+@pytest.mark.parametrize(("fixture", "expected_screen"), [
+    ("menu_labs_game_speed_picker", "LAB_PICKER"),
+    ("menu_labs_game_speed_confirmation", "LAB_CONFIRMATION"),
+])
+def test_active_lab_dialog_is_named_to_recovery_preflight(
+    fixture: str, expected_screen: str,
+) -> None:
+    class RecordingSupervisor:
+        current_account = "account-a"
+
+        def __init__(self) -> None:
+            self.screen: str | None = None
+
+        def observe(self, **kwargs: object) -> RecoveryState:
+            self.screen = str(kwargs["screen"])
+            return RecoveryState.BLOCKED
+
+    bot = _shopping_bot(fixture, state=screens.ScreenState.UNKNOWN,
+                        policy=Shopping(), auto_navigate=False)
+    bot.lab_visit = LabVisit(bot.templates)
+    assert bot.lab_visit.request()
+    guard = RecordingSupervisor()
+    bot.supervisor = guard
+
+    bot.run_once()
+
+    assert guard.screen == expected_screen
 
 
 def test_purchase_requires_two_matching_affordable_frames_and_coin_delta() -> None:

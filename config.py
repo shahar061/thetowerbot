@@ -189,7 +189,11 @@ GEMS_FROM_CASH: Region = Region(dx=60, dy=149, w=170, h=72)
 # colour are BOTH outside it: the HUD gem counter above (dy=+149) and the
 # ad-gem button below (dy=+1175). A full-frame search would find one of them
 # on every single scan.
-FLOATING_GEM_SEARCH: Region = Region(dx=200, dy=260, w=680, h=720)
+# Reach the bottom of the orbit on a 2400px screen without a display cutout.
+# At cash y=35 the gem can be centered near y=1040; h=720 clipped it at
+# y=1015 and made the detector tap its upper edge. The ad-gem button begins
+# below dy=1175, outside this window's dy=1060 lower edge.
+FLOATING_GEM_SEARCH: Region = Region(dx=200, dy=260, w=680, h=800)
 
 # Measured off the HUD gem icon in in_run_early.png, which is the same
 # artwork at a smaller size: hue 151 with a 2nd-98th percentile spread of
@@ -850,10 +854,9 @@ SPEED_READOUT_REGION: Region = Region(dx=733, dy=-255, w=126, h=50)
 # value here without a template is a crash the first time the bot reads the
 # widget, so never add one by hand.
 #
-# x1.5 is the ceiling on the account this was harvested from, not a ceiling
-# in the game - higher speeds unlock with progression. Re-run the harvest
-# after unlocking one and the tuple grows.
-SPEED_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5)
+# x2.0 was harvested from a live account whose Game Speed Lv.1 had finished.
+# Later levels need their own measured readout templates before being added.
+SPEED_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0)
 
 # The subset a strategy may aim for. x0.0 is deliberately excluded, and the
 # asymmetry with SPEED_VALUES above is the whole point.

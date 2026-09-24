@@ -122,7 +122,10 @@ def test_a_target_above_the_reading_climbs(in_run: TowerBot) -> None:
 def test_reroll_raises_speed_before_any_other_battle_action(
     in_run: TowerBot, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    in_run.reroll_progress = object()
+    from unittest.mock import Mock
+
+    in_run.reroll_progress = Mock()
+    in_run.reroll_progress.speed_target.return_value = 1.5
     in_run.controls.apply({"target_speed": 1.0})
 
     def unexpected(*args: object, **kwargs: object) -> None:
@@ -133,6 +136,22 @@ def test_reroll_raises_speed_before_any_other_battle_action(
     assert in_run.run_once()
     assert len(tapped_in(PLUS_BOX, in_run.device.taps)) == 1
     assert len(in_run.device.taps) == 1
+
+
+def test_reroll_uses_account_verified_lab_speed_target(
+    in_run: TowerBot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    in_run.reroll_progress = Mock()
+    in_run.reroll_progress.speed_target.return_value = 2.0
+    targets: list[float | None] = []
+    monkeypatch.setattr(in_run.speed, "settle", lambda *args, **kwargs:
+                        targets.append(kwargs["target"]) or None)
+
+    in_run._manage_speed(in_run.controls.snapshot(), (12, 1646), ())
+
+    assert targets == [2.0]
 
 
 def test_a_target_below_the_reading_descends(bot_in_run_fast: TowerBot) -> None:

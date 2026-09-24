@@ -51,6 +51,9 @@ class RerollProgress:
     def lab_due(self, now: float | None = None) -> bool:
         return self.lab_cadence.due(time.time() if now is None else now)
 
+    def speed_target(self) -> float:
+        return self.lab_cadence.speed_target()
+
     def note_lab_observation(self, decision: LabDecision, now: float | None = None) -> None:
         self.lab_cadence.note(decision, time.time() if now is None else now)
 

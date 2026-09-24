@@ -8,6 +8,8 @@ handing over.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import cv2
 import numpy as np
 
@@ -46,6 +48,21 @@ def test_a_scan_pass_taps_a_gem_on_the_ring():
     bot.run_once()
 
     assert bot.device.taps, "the scan loop never reached the gem claim"
+
+
+def test_gem_tap_owns_the_scan_before_autopilot_can_buy():
+    bot = battle_bot("in_run_wallet_no_cutout")
+    paint_gem(bot._screen, centre=(540, 1040))
+    strategy = bot.controls.snapshot().strategy
+    bot.controls.strategy = replace(
+        strategy, autopilot=replace(strategy.autopilot, enabled=True))
+    calls: list[object] = []
+    bot.autopilot.step = lambda *args, **kwargs: calls.append((args, kwargs)) or False
+
+    bot.run_once()
+
+    assert bot.device.taps, "the gem was not tapped"
+    assert calls == [], "a second action used the pre-tap frame"
 
 
 def test_a_scan_pass_taps_nothing_on_an_ordinary_battle_frame():

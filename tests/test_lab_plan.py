@@ -48,6 +48,16 @@ def test_unaffordable_game_speed_reserves_slot_one_without_blocking_workshop() -
     assert decision.wallet_coins == 122
 
 
+def test_level_two_picker_proves_the_first_speed_research_completed() -> None:
+    from lab_plan import decide
+
+    decision = decide(idle(), row(level=2, cost=2500, balance=835,
+                                  status="unavailable", point=None))
+
+    assert decision.kind == "wait_coins"
+    assert getattr(decision, "game_speed_level", None) == 2
+
+
 def test_maxed_game_speed_ends_slot_one_policy() -> None:
     from lab_plan import decide
 
@@ -82,3 +92,34 @@ def test_completed_lab_stays_done_after_restart(tmp_path: Path) -> None:
     LabCadence(root, "ACCOUNT-A").note(
         decide(idle(), row(level=7, maximum=7, status="maxed", point=None)), now=1000.)
     assert not LabCadence(root, "ACCOUNT-A").due(now=100_000.)
+
+
+def test_confirmed_next_level_unlocks_x2_speed_after_restart(tmp_path: Path) -> None:
+    from lab_plan import LabCadence, decide
+
+    root = tmp_path / "worker"
+    first = LabCadence(root, "ACCOUNT-A")
+    first.note(decide(idle(), row(level=2, cost=2500, balance=835,
+                                  status="unavailable", point=None)), now=1000.)
+    resumed = LabCadence(root, "ACCOUNT-A")
+
+    assert getattr(resumed, "speed_target", lambda: None)() == 2.0
+    assert LabCadence(root, "ACCOUNT-B").speed_target() == 1.5
+    resumed.note(decide(LabHomeReading(True, "researching", LabJob(
+        1, "labs.game-speed", "Game Speed Lv.2", 5000., 3000., None,
+        "unknown", "researching", .99, (96, 615, 290, 40)), None),
+        None), now=1100.)
+    assert resumed.speed_target() == 2.0
+
+
+def test_legacy_lab_record_gets_one_new_level_check(tmp_path: Path) -> None:
+    import json
+    from lab_plan import LabCadence
+
+    root = tmp_path / "worker"
+    root.mkdir()
+    (root / "lab-slot1-cadence.json").write_text(json.dumps({
+        "account_id": "ACCOUNT-A", "kind": "wait_coins", "next_check_at": 9999.,
+    }))
+
+    assert LabCadence(root, "ACCOUNT-A").due(now=1000.)
