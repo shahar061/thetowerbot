@@ -18,3 +18,11 @@ test("main Fleet page and unrelated failures stay put", () => {
   expect(rerollCoordinatorUrl(new Error("network failure"),
     "http://localhost:10020/fleet/reroll/")).toBeNull();
 });
+
+for (const suffix of ["", "strategies/", "progression/", "history/"]) {
+  test(`coordinator preserves ${suffix || "live"} and inspection query`, () => {
+    expect(rerollCoordinatorUrl(new ApiError(503, "reroll_pool_unavailable"),
+      `http://localhost:10020/fleet/reroll/${suffix}?worker=Air18&account=worker%3AAir18#details`))
+      .toBe(`http://localhost:8765/fleet/reroll/${suffix}?worker=Air18&account=worker%3AAir18#details`);
+  });
+}

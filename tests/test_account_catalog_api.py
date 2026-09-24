@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import json
 import io
+import threading
 from pathlib import Path
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from fastapi.testclient import TestClient
+import numpy as np
 import pytest
 
 import db
 from autopilot import AutopilotState
 from events import EventBus
+from frames import FrameBuffer
 from sinks.sse import SseSink
 from sinks.state import BotState
 from web.app import create_app
@@ -213,3 +217,100 @@ def test_catalog_tags_each_worker_with_its_reroll_numbers(tmp_path: Path) -> Non
     numbers = {item["instance"]: item["run_numbers"]
                for item in client.get("/api/accounts?local_only=true").json()["accounts"]}
     assert numbers == {"Tiramisu64_20": [1, 2], "Tiramisu64_21": [2]}
+
+
+def _replace_account(worker_db: Path, account_id: str) -> None:
+    registration = worker_db.parent / "fleet-registration.json"
+    record = json.loads(registration.read_text())
+    record["account_id"] = account_id
+    registration.write_text(json.dumps(record))
+    binding = Path(record["binding"])
+    identity = json.loads(binding.read_text())
+    identity["account_id"] = account_id
+    binding.write_text(json.dumps(identity))
+    worker_db.unlink()
+    db.bind_account(worker_db, account_id)
+
+
+@pytest.mark.parametrize("route", ["/api/runs", "/api/ledger", "/api/runs/1/purchases",
+                                    "/api/account", "/api/milestone-roadmap"])
+def test_scoped_read_rejects_replaced_account(tmp_path: Path, route: str) -> None:
+    root = tmp_path / "fleet"
+    path = _worker(root, "Tiramisu64_18", "ACCOUNT_A")
+    db.bind_account(path, "ACCOUNT_A")
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None, fleet=type("Fleet", (), {"root": root})()))
+    scope = {"x-account-scope": "worker:Tiramisu64_18"}
+    assert client.get(route, headers={**scope, "x-expected-account-id": "ACCOUNT_A"}).status_code == 200
+    _replace_account(path, "ACCOUNT_B")
+    conn = db.connect(path)
+    db.start_run(conn, 1, 1.0)
+    conn.execute("INSERT INTO ledger(ts, kind, item, dry_run) VALUES (1, 'WORKSHOP_BUY', 'Damage', 0)")
+    conn.commit()
+    conn.close()
+    response = client.get(route, headers={**scope, "x-expected-account-id": "ACCOUNT_A"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "selected_account_changed"
+    assert client.get(route, headers={**scope, "x-expected-account-id": "ACCOUNT_B"}).status_code == 200
+    assert client.get(route, headers=scope).status_code == 200
+
+
+@pytest.mark.parametrize("route", ["/api/frame.jpg", "/api/frame"])
+def test_frame_rejects_replaced_account(tmp_path: Path, route: str) -> None:
+    root = tmp_path / "fleet"
+    path = _worker(root, "Tiramisu64_18", "ACCOUNT_A")
+    db.bind_account(path, "ACCOUNT_A")
+    runner = type("Runner", (), {"autopilot_state": AutopilotState(),
+                                 "status": lambda self: {"running": True},
+                                 "verified_account": lambda self: db.bound_account(path)})()
+    shutdown = threading.Event()
+    shutdown.set()  # Accepted MJPEG requests finish immediately in this test.
+    frames = FrameBuffer()
+    frames.publish(np.zeros((8, 8, 3), dtype=np.uint8))
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=path, runner=runner, frames=frames, shutdown=shutdown,
+                                   fleet=type("Fleet", (), {"root": root})()))
+    _replace_account(path, "ACCOUNT_B")
+    response = client.get(route, params={"scope": "worker:Tiramisu64_18", "expected_account_id": "ACCOUNT_A"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "selected_account_changed"
+    accepted = 200
+    assert client.get(route, params={"scope": "worker:Tiramisu64_18", "expected_account_id": "ACCOUNT_B"}).status_code == accepted
+    assert client.get(route, params={"scope": "worker:Tiramisu64_18"}).status_code == accepted
+
+
+def test_expected_frame_stream_revalidates_registration_each_iteration(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "fleet"
+    path = _worker(root, "Tiramisu64_18", "ACCOUNT_A")
+    db.bind_account(path, "ACCOUNT_A")
+    runner = type("Runner", (), {"autopilot_state": AutopilotState(),
+                                 "status": lambda self: {"running": True},
+                                 "verified_account": lambda self: "ACCOUNT_A"})()
+
+    async def changing_stream(
+            frames: FrameBuffer, is_disconnected: Callable[[], Awaitable[bool]], *,
+            shutdown: threading.Event, allowed: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[bytes]:
+        assert allowed is not None and allowed()
+        yield b"original account frame"
+        # Registration can move before the previous runtime/database is gone.
+        registration = path.parent / "fleet-registration.json"
+        record = json.loads(registration.read_text())
+        record["account_id"] = "ACCOUNT_B"
+        registration.write_text(json.dumps(record))
+        binding = Path(record["binding"])
+        identity = json.loads(binding.read_text())
+        identity["account_id"] = "ACCOUNT_B"
+        binding.write_text(json.dumps(identity))
+        if allowed():
+            yield b"frame after identity changed"
+
+    monkeypatch.setattr("web.app.frame_stream", changing_stream)
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=path, runner=runner, frames=FrameBuffer(),
+                                   fleet=type("Fleet", (), {"root": root})()))
+    response = client.get("/api/frame", params={
+        "scope": "worker:Tiramisu64_18", "expected_account_id": "ACCOUNT_A"})
+    assert response.status_code == 200
+    assert response.content == b"original account frame"

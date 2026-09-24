@@ -32,9 +32,8 @@ const number = (value: number | null | undefined) =>
  * item, big; the gap to affording it, as a bar; and only then the prose.
  */
 export function PlanStrip({ plan, worker }: { plan: RerollPlan; worker: string }) {
-  // Open by default: the queue is the plan, and a plan behind a click is a
-  // plan nobody reads. The toggle is for quieting a card, not for revealing it.
-  const [open, setOpen] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const projections = (plan.next_purchases ?? []).filter(step => step.account_id === plan.account_id).slice(0, 10);
   const decision = decisionFor(plan.state);
   const price = plan.price;
   const wallet = plan.wallet_coins;
@@ -87,33 +86,30 @@ export function PlanStrip({ plan, worker }: { plan: RerollPlan; worker: string }
       <p className="mt-2 text-sm text-muted-foreground">{plan.reason}</p>
       <p className="mt-1 text-xs text-faint-foreground">{decision.hint}</p>
 
-      {plan.next_purchases?.length ? (
+      {projections.length ? (
         <div className="mt-3 border-t border-border pt-3">
-          <button
+          <h4 className="font-heading text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Projected Workshop purchases</h4>
+          {projections.length > 3 && <button
             type="button"
-            onClick={() => setOpen((value) => !value)}
-            aria-expanded={open}
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
             className="flex w-full items-center justify-between gap-2 text-left"
           >
-            <span className="font-heading text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-              Next 10 Workshop buys
-            </span>
             <span className="font-mono text-[10px] text-faint-foreground">
-              {open ? "hide" : "show"} · {plan.next_purchases.length}
+              {expanded ? "Show first 3 projections" : `Show all ${projections.length} projections`}
             </span>
-          </button>
+          </button>}
 
-          {open ? (
           <div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Projected order. Only the first is executable; every buy still
+              Projected order. Only the first verified decision is executable; every buy still
               needs a fresh price, balance and screen check before it happens.
             </p>
             <ol
-              aria-label={`Next 10 Workshop buys for ${worker}`}
+              aria-label={`Projected Workshop purchases for ${worker}`}
               className="mt-2 flex flex-col gap-1"
             >
-              {plan.next_purchases.map((step, index) => {
+              {projections.slice(0, expanded ? 10 : 3).map((step, index) => {
                 const tone = categoryTone(step.category);
                 const now = index === 0;
                 return (
@@ -151,7 +147,6 @@ export function PlanStrip({ plan, worker }: { plan: RerollPlan; worker: string }
               })}
             </ol>
           </div>
-          ) : null}
         </div>
       ) : null}
     </div>

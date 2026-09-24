@@ -12,6 +12,7 @@ import { fetchErrors, fetchStrategies } from "@/lib/api";
 import { useConnected } from "@/lib/useEventStream";
 import { useAccountSelection } from "@/lib/AccountSelection";
 import { cn } from "@/lib/utils";
+import { isRerollPath } from "@/lib/workspace";
 
 type Item = { href: string; label: string; icon: typeof Activity };
 
@@ -29,7 +30,6 @@ const GROUPS: { label: string; items: Item[] }[] = [
       { href: "/account/", label: "Account", icon: Contact },
       { href: "/milestones/", label: "Milestones", icon: Map },
       { href: "/director/", label: "Director", icon: Compass },
-      { href: "/fleet/reroll/", label: "Reroll", icon: Monitor },
     ],
   },
   {
@@ -41,13 +41,24 @@ const GROUPS: { label: string; items: Item[] }[] = [
   },
 ];
 
+const FLEET_GROUPS: { label: string; items: Item[] }[] = [{
+  label: "Reroll fleet",
+  items: [
+    { href: "/fleet/reroll/", label: "Fleet Live", icon: Monitor },
+    { href: "/fleet/reroll/strategies/", label: "Strategies", icon: SlidersHorizontal },
+    { href: "/fleet/reroll/progression/", label: "Progression", icon: Map },
+    { href: "/fleet/reroll/history/", label: "History", icon: List },
+  ],
+}];
+
 const GUIDE: Item = { href: "/guide/", label: "Guide", icon: BookOpen };
 
-export function Sidebar() {
+export function Sidebar(): React.JSX.Element {
   const { selected } = useAccountSelection();
   const selectedKey = selected?.key;
   const selectedRunning = selected?.running;
   const pathname = usePathname();
+  const reroll = isRerollPath(pathname);
   // Read from the shared stream rather than opening one here: this component
   // is on every page, including the two that already subscribe via
   // useControlSync.
@@ -59,6 +70,8 @@ export function Sidebar() {
   useEffect(() => {
     let active = true;
     setErrorCount(null);
+    setActive(null);
+    if (reroll) return;
     const load = () => {
       if (selectedKey) fetchErrors(100).then((rows) => { if (active) setErrorCount(rows.length); }).catch(() => {});
       if (selectedRunning) fetchStrategies().then((list) => { if (active) setActive(list.active); }).catch(() => {});
@@ -67,10 +80,10 @@ export function Sidebar() {
     load();
     const id = setInterval(load, 30_000);
     return () => { active = false; clearInterval(id); };
-  }, [selectedKey, selectedRunning]);
+  }, [selectedKey, selectedRunning, reroll]);
 
   function link({ href, label, icon: Icon }: Item) {
-    const isActive = pathname === href;
+    const isActive = pathname.replace(/\/$/, "") === href.replace(/\/$/, "");
     const isErrors = href === "/errors/";
     return (
       <Link
@@ -107,11 +120,18 @@ export function Sidebar() {
         {/* Which strategy is loaded is the one piece of bot state worth
             carrying on every page - it is what every rule on /strategy edits. */}
         <div className="mt-0.5 truncate font-mono text-[10px] text-faint-foreground">
-          {active ?? "…"}
+          {reroll ? "Fleet workspace" : active ?? "…"}
         </div>
       </div>
 
-      {GROUPS.map((group) => (
+      <div aria-label="Workspace" className="flex shrink-0 items-center gap-1 rounded-md border p-1 md:mb-2 md:flex-col md:items-stretch">
+        <Link href="/" aria-current={!reroll ? "true" : undefined}
+          className={cn("whitespace-nowrap rounded px-2 py-1.5 text-xs", !reroll && "bg-primary/12 text-primary")}>Single emulator</Link>
+        <Link href="/fleet/reroll/" aria-current={reroll ? "true" : undefined}
+          className={cn("whitespace-nowrap rounded px-2 py-1.5 text-xs", reroll && "bg-primary/12 text-primary")}>Reroll fleet</Link>
+      </div>
+
+      {(reroll ? FLEET_GROUPS : GROUPS).map((group) => (
         <div key={group.label} className="contents md:block">
           <div className="hidden px-2.5 pb-1.5 pt-3 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-faint-foreground md:block">
             {group.label}
@@ -123,9 +143,9 @@ export function Sidebar() {
       <div className="contents md:mt-auto md:block">
         {link(GUIDE)}
         <div className="mt-3 hidden items-center gap-2 md:flex">
-          <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
+          {!reroll && <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
             {selected?.running && connected ? "live" : "no bot"}
-          </StatusBadge>
+          </StatusBadge>}
           <ThemeToggle />
         </div>
       </div>
@@ -133,9 +153,9 @@ export function Sidebar() {
       {/* On the mobile strip the badge rides beside the theme toggle - the
           rail is horizontal there and has no footer to sit in. */}
       <div className="ml-auto flex items-center gap-2 self-center md:hidden">
-        <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
+        {!reroll && <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
           {selected?.running && connected ? "live" : "no bot"}
-        </StatusBadge>
+        </StatusBadge>}
         <ThemeToggle />
       </div>
     </nav>

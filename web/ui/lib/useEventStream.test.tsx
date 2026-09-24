@@ -2,6 +2,9 @@ import { act, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { EventStreamProvider, useEventStream } from "./useEventStream";
 
+const navigation = vi.hoisted(() => ({ pathname: "/" }));
+vi.mock("next/navigation", () => ({ usePathname: () => navigation.pathname }));
+
 const selection = vi.hoisted(() => ({ selected: null as null | {
   key: string; running: boolean; dashboard_url: string | null;
 } }));
@@ -25,6 +28,7 @@ function Feed() {
 
 beforeEach(() => {
   sources.length = 0;
+  navigation.pathname = "/";
   selection.selected = null;
   vi.stubGlobal("EventSource", FakeSource);
 });
@@ -42,4 +46,22 @@ test("stream exists only for local running account and clears on selection chang
   expect(sources[0].closed).toBe(true);
   expect(screen.getByText("Events: 0")).toBeInTheDocument();
   expect(sources).toHaveLength(1);
+});
+
+
+test("reroll routes close and clear single-account streams; returning to single resumes", () => {
+  selection.selected = { key: "worker:Air18", running: true, dashboard_url: window.location.origin + "/" };
+  const view = render(<EventStreamProvider><Feed /></EventStreamProvider>);
+  act(() => sources[0].onmessage?.({ data: JSON.stringify({ seq: 1, type: "ScanCompleted" }) }));
+  navigation.pathname = "/fleet/reroll/strategies/";
+  view.rerender(<EventStreamProvider><Feed /></EventStreamProvider>);
+  expect(sources[0].closed).toBe(true);
+  expect(screen.getByText("Events: 0")).toBeInTheDocument();
+  navigation.pathname = "/fleet/reroll/history/";
+  view.rerender(<EventStreamProvider><Feed /></EventStreamProvider>);
+  expect(sources).toHaveLength(1);
+  navigation.pathname = "/strategy/";
+  view.rerender(<EventStreamProvider><Feed /></EventStreamProvider>);
+  expect(sources).toHaveLength(2);
+  expect(sources[1].closed).toBe(false);
 });

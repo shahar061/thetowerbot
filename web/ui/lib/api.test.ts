@@ -7,6 +7,7 @@ import {
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
   fetchFleet, requestFleetProvision,
   fetchAccountWorkshopPurchases, fetchAccountRuns, fetchAccountRunPurchases,
+  fetchAccountRoadmap, fetchAccountSnapshot,
   startNewReroll, listRerolls,
 } from "./api";
 import type { Strategy } from "./types";
@@ -88,6 +89,28 @@ beforeEach(() => {
 });
 
 describe("fleet routes", () => {
+  it("binds all purchase read stages to the expected account behind a mutable worker scope", async () => {
+    await fetchAccountWorkshopPurchases("worker:Air_1", undefined, "old-account");
+    expect(callArgs()[1]?.headers).toMatchObject({ "x-account-scope": "worker:Air_1", "x-expected-account-id": "old-account" });
+    fetchMock.mockClear();
+    await fetchAccountWorkshopPurchases("worker:Air_1", 42, "old-account");
+    expect(callArgs()[0]).toContain("before=42");
+    expect(callArgs()[1]?.headers).toMatchObject({ "x-expected-account-id": "old-account" });
+    fetchMock.mockClear();
+    await fetchAccountRuns("worker:Air_1", "old-account");
+    expect(callArgs()[1]?.headers).toMatchObject({ "x-expected-account-id": "old-account" });
+    fetchMock.mockClear();
+    await fetchAccountRunPurchases("worker:Air_1", 7, "old-account");
+    expect(callArgs()[1]?.headers).toMatchObject({ "x-expected-account-id": "old-account" });
+  });
+
+  it("rejects purchase evidence when the worker now belongs to another account", async () => {
+    respond(409, { detail: "Account identity changed" });
+    await expect(fetchAccountWorkshopPurchases("worker:Air_1", undefined, "old-account")).rejects.toMatchObject({ status: 409 });
+    await expect(fetchAccountRuns("worker:Air_1", "old-account")).rejects.toMatchObject({ status: 409 });
+    await expect(fetchAccountRunPurchases("worker:Air_1", 7, "old-account")).rejects.toMatchObject({ status: 409 });
+  });
+
   const fleetStatus = { ...validStatus, runtime: { ...validStatus.runtime,
     capabilities: [...validStatus.runtime.capabilities, "fleet"] } };
   function allowFleetWrite(result: unknown = {}): void {
@@ -117,6 +140,16 @@ describe("fleet routes", () => {
     expect((callArgs()[1]?.headers as Record<string, string>)["x-account-scope"])
       .toBe("worker:Air_1");
     setAccountScope(null);
+  });
+  it("reads roadmap and account evidence with explicit scope despite a different selected account", async () => {
+    setAccountScope("worker:other");
+    await fetchAccountRoadmap("worker:Air_1");
+    expect(callArgs()[0]).toBe("/api/milestone-roadmap");
+    expect(callArgs()[1]).toMatchObject({ cache: "no-store", headers: { "x-account-scope": "worker:Air_1" } });
+    fetchMock.mockClear();
+    await fetchAccountSnapshot("worker:Air_2");
+    expect(callArgs()[0]).toBe("/api/account");
+    expect(callArgs()[1]).toMatchObject({ cache: "no-store", headers: { "x-account-scope": "worker:Air_2" } });
   });
   it("reads the fleet snapshot", async () => {
     await fetchFleet();
