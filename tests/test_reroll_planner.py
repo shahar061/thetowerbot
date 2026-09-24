@@ -118,6 +118,42 @@ def test_turtle_returns_to_thorns_after_five_defense_absolute_buys() -> None:
     assert decision.upgrade_id == "thorns"
 
 
+@pytest.mark.parametrize("defense_buys, defense_price, wallet", [
+    (5, 254, 300), (6, 321, 350),
+])
+def test_turtle_buys_more_defense_while_unaffordable_thorns_is_the_goal(
+    defense_buys: int, defense_price: int, wallet: int,
+) -> None:
+    decision = choose_next(facts(
+        best_tier_1_wave=25, utility_spent_coins=None,
+        purchases={"unlock_defense_upgrades": 1, "unlock_thorns": 1,
+                   "defense_absolute": defense_buys, "thorns": 7},
+        values={"thorns": 7.}, wallet_coins=wallet,
+        prices={"defense_absolute": defense_price, "thorns": 409},
+    ))
+    assert (decision.upgrade_id, decision.state, decision.price, decision.filler) == (
+        "defense_absolute", "buy", defense_price, True)
+
+
+@pytest.mark.parametrize("defense_price,wallet", [
+    (399, 400), (254, 200), (None, 300), (254, 500),
+])
+def test_turtle_keeps_thorns_when_defense_is_not_a_cheap_affordable_filler(
+    defense_price: int | None, wallet: int,
+) -> None:
+    prices = {"thorns": 409}
+    if defense_price is not None:
+        prices["defense_absolute"] = defense_price
+    decision = choose_next(facts(
+        best_tier_1_wave=25, utility_spent_coins=350,
+        purchases={"unlock_defense_upgrades": 1, "unlock_thorns": 1,
+                   "defense_absolute": 5, "thorns": 7},
+        values={"thorns": 7.}, wallet_coins=wallet, prices=prices,
+    ))
+    assert decision.upgrade_id == "thorns"
+    assert not decision.filler
+
+
 def test_turtle_buys_affordable_defense_instead_of_saving_for_thorns() -> None:
     decision = choose_next(facts(
         best_tier_1_wave=25, utility_spent_coins=350,

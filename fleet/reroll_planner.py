@@ -240,6 +240,7 @@ _FILLER_CAPS = {
     "cash_bonus": 5, "damage": 3, "attack_speed": 3,
 }
 FILLER_SHARE = .2
+DEFENSE_FALLBACK_THORNS_SHARE = .8
 STARTER_MAX_PRICE = 75
 STARTER_UPGRADES = ("damage", "attack_speed", "health",
                     "unlock_defense_upgrades", "defense_absolute")
@@ -470,8 +471,24 @@ def _economy_build(build: builds.Build, facts: RerollFacts) -> builds.Build:
 def _cheap_filler(facts: RerollFacts, main: RerollDecision) -> RerollDecision:
     """Look for one small purchase while saving for an unaffordable goal."""
     wallet = facts.wallet_coins
-    if (facts.utility_spent_coins is None or main.state != "save_coins"
-            or wallet is None or main.price is None or main.price <= wallet):
+    if (main.state != "save_coins" or wallet is None
+            or main.price is None or main.price <= wallet):
+        return main
+    if (main.stage == "turtle" and main.upgrade_id == "thorns"
+            and facts.purchases.get("unlock_defense_upgrades", 0) > 0):
+        price = facts.prices.get("defense_absolute")
+        if (price is not None and 0 <= price <= wallet
+                and price <= int(main.price * DEFENSE_FALLBACK_THORNS_SHARE)):
+            upgrade = upgrades.by_id("defense_absolute")
+            assert upgrade is not None
+            return RerollDecision(
+                facts.account_id, main.stage, main.goal, "buy",
+                upgrade.id, upgrade.name, upgrade.category, price,
+                wallet, facts.lifetime_coins,
+                f"Saving for Thorns ({main.price} coins); Defense Absolute costs {price}, "
+                f"at most {DEFENSE_FALLBACK_THORNS_SHARE:.0%} of the Thorns price.",
+                filler=True)
+    if facts.utility_spent_coins is None:
         return main
     owned = {upgrade_id for upgrade_id, count in facts.purchases.items() if count > 0}
     ceiling = int(wallet * FILLER_SHARE)

@@ -10,6 +10,7 @@ from pathlib import Path
 import db
 import pytest
 from account_state import AccountState
+from fleet.reroll_planner import RerollFacts, choose_next
 from fleet.reroll_progress import RerollProgress
 from policy import AutopilotPolicy, choose
 from strategy import Strategy
@@ -84,6 +85,27 @@ def test_known_cheap_filler_uses_bounded_budget_after_starter(tmp_path: Path) ->
     restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
     assert restarted.decision().filler
     assert restarted.shopping_policy(replace(Strategy.from_config().shopping, coin_budget=None)).coin_budget == 20
+
+
+def test_cheap_defense_filler_can_spend_its_known_price(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress = worker(tmp_path)
+    plan = choose_next(RerollFacts(
+        account_id="ACCOUNT-A", best_tier_1_wave=25,
+        purchases={"unlock_defense_upgrades": 1, "unlock_thorns": 1,
+                   "defense_absolute": 5, "thorns": 7},
+        values={"thorns": 7.}, wallet_coins=300,
+        prices={"defense_absolute": 254, "thorns": 409},
+        draw_sharpness=None,
+    ))
+    assert plan.filler and plan.upgrade_id == "defense_absolute"
+    monkeypatch.setattr(progress, "decision", lambda: plan)
+    monkeypatch.setattr(progress, "_publish", lambda decision: None)
+    policy = progress.shopping_policy(replace(Strategy.from_config().shopping,
+                                              coin_budget=None))
+    assert policy.workshop[0].name == "Defense Absolute"
+    assert policy.coin_budget == 254
 
 
 def test_single_planned_row_uses_existing_shopping_executor(tmp_path: Path) -> None:

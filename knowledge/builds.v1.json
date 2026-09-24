@@ -104,7 +104,7 @@
     {
       "id": "turtle",
       "name": "Turtle",
-      "note": "The second stage from Tier 1 Wave 20: Thorns kills enemies while Defense Absolute absorbs hits. The weighted rows follow the original turtle plan, with a five-purchase Defense Absolute cap so its objective remains eligible beyond the first buy. The cap keeps early permanent defense in the plan without making it an unlimited coin sink.",
+      "note": "The second stage from Tier 1 Wave 20: Thorns kills enemies while Defense Absolute absorbs hits. Defense Absolute remains a main objective through five verified purchases. After that, Thorns is the main goal; while its price is unaffordable, a known, affordable Defense Absolute upgrade may still be bought when it costs at most 80% of Thorns. The price comparison, rather than another fixed level cap, limits extra defense spending.",
       "weights": [
         ["unlock_defense_upgrades", 10],
         ["defense_absolute", 16],
@@ -122,7 +122,7 @@
       },
       "focus": {
         "unlock_defense_upgrades": "Unlock Defense Absolute for early survival",
-        "defense_absolute": "Absorb more hits in the turtle build",
+        "defense_absolute": "Absorb more hits; buy cheap extra levels while saving for Thorns",
         "unlock_thorns": "Unlock the turtle build's damage source",
         "thorns": "Kill enemies that reach the tower",
         "cash_bonus": "Earn more cash for in-battle defense buys",
