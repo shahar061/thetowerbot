@@ -42,15 +42,16 @@ def classify_page(
 ) -> PageReading:
     """Best-scoring menu page, or UNKNOWN below threshold.
 
-    Full-frame against every anchor, matching screens.classify(): four
-    templates at ~130ms against a 2s scan interval is not worth optimising,
-    and an ROI would need retuning every time the header grows a row.
+    Every anchor over the whole frame, coarse-then-fine like screens.classify().
     """
     scores: dict[str, float] = {}
     positions: dict[str, tuple[int, int]] = {}
 
+    coarse = vision.coarse_image(screen)
     for name, template_path in config.PAGE_ANCHORS.items():
-        score, top_left = vision.best_score(screen, cache.get(template_path))
+        score, top_left = vision.two_step_score(
+            screen, cache.get(template_path),
+            coarse_screen=coarse, coarse_template=cache.coarse(template_path))
         scores[name] = score
         positions[name] = top_left
 

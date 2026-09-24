@@ -214,6 +214,7 @@ def test_a_frame_read_twice_runs_the_engine_once(monkeypatch) -> None:
     calls: list[int] = []
     monkeypatch.setattr(ocr, "_engine_or_none", lambda engine=_fake_engine(calls): engine)
     monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    monkeypatch.setattr(ocr, "_region_results", type(ocr._frame_results)())
     frame = np.full((50, 50, 3), 7, np.uint8)
 
     assert [b.text for b in ocr.read(frame)] == ["READ"]
@@ -226,6 +227,7 @@ def test_a_frame_read_twice_runs_the_engine_once(monkeypatch) -> None:
 
 def test_a_swapped_engine_does_not_serve_the_old_engines_answer(monkeypatch) -> None:
     monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    monkeypatch.setattr(ocr, "_region_results", type(ocr._frame_results)())
     frame = np.full((50, 50, 3), 7, np.uint8)
     first: list[int] = []
     second: list[int] = []
@@ -265,3 +267,73 @@ def test_a_batch_larger_than_the_crop_cache_still_answers_every_crop(monkeypatch
     results, _ = engine.text_rec([np.full((4, 4), v, np.uint8) for v in range(5)])
     assert [text for text, _ in results] == ["0", "1", "2", "3", "4"]
     assert len(ocr._crop_results) == 2
+
+
+# --- detector upscaling (spec P0a) -------------------------------------------
+
+
+def _det_engine(seen: list[str]):
+    """A fake engine with RapidOCR's detector attribute; records its mode."""
+    detector = types.SimpleNamespace(limit_type="min")
+
+    def engine(image):
+        seen.append(detector.limit_type)
+        return [([[0, 0], [100, 0], [100, 40], [0, 40]], "READ", .99)], None
+
+    engine.text_det = detector
+    return engine
+
+
+def test_a_read_that_opts_out_runs_the_detector_without_upscaling(monkeypatch) -> None:
+    seen: list[str] = []
+    engine = _det_engine(seen)
+    monkeypatch.setattr(ocr, "_engine_or_none", lambda: engine)
+    monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    monkeypatch.setattr(ocr, "_region_results", type(ocr._frame_results)())
+    monkeypatch.setattr(config, "OCR_DET_UPSCALE", False)
+    ocr.read(np.full((50, 50, 3), 3, np.uint8), upscale=False)
+    ocr.read(np.full((50, 50, 3), 4, np.uint8))
+    assert seen == ["max", "min"]
+
+
+def test_each_detector_mode_is_its_own_cache_entry(monkeypatch) -> None:
+    """Review focus 1: a result detected one way is never served for the other."""
+    seen: list[str] = []
+    engine = _det_engine(seen)
+    monkeypatch.setattr(ocr, "_engine_or_none", lambda: engine)
+    monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    monkeypatch.setattr(ocr, "_region_results", type(ocr._frame_results)())
+    monkeypatch.setattr(config, "OCR_DET_UPSCALE", False)
+    frame = np.full((50, 50, 3), 5, np.uint8)
+    ocr.read(frame, upscale=False)
+    ocr.read(frame)
+    ocr.read(frame, upscale=False)
+    ocr.read(frame)
+    assert seen == ["max", "min"]
+
+
+def test_the_config_switch_restores_upscaling_for_every_read(monkeypatch) -> None:
+    seen: list[str] = []
+    engine = _det_engine(seen)
+    monkeypatch.setattr(ocr, "_engine_or_none", lambda: engine)
+    monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    monkeypatch.setattr(ocr, "_region_results", type(ocr._frame_results)())
+    monkeypatch.setattr(config, "OCR_DET_UPSCALE", True)
+    ocr.read(np.full((50, 50, 3), 6, np.uint8), upscale=False)
+    assert seen == ["min"]
+
+
+def test_crop_reads_cannot_evict_a_full_frame(monkeypatch) -> None:
+    """Spec P0c: a scan's title, cash and re-read crops left the full frame
+    to be detected again. Crops now live in their own LRU."""
+    calls: list[int] = []
+    monkeypatch.setattr(ocr, "_engine_or_none", lambda engine=_fake_engine(calls): engine)
+    monkeypatch.setattr(ocr, "_frame_results", type(ocr._frame_results)())
+    monkeypatch.setattr(ocr, "_region_results", type(ocr._frame_results)())
+    frame = np.full((2400, 1080, 3), 1, np.uint8)
+    ocr.read(frame)
+    for value in range(2, 2 + config.OCR_FRAME_CACHE * 3):
+        ocr.read(np.full((150, 410, 3), value, np.uint8))
+    ocr.read(frame)
+    assert calls.count(1) == 1
+    assert len(ocr._frame_results) == 1

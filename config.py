@@ -119,6 +119,12 @@ ACTIONS: tuple[Action, ...] = (
 # so 0.8 has a wide margin in both directions.
 ANCHOR_THRESHOLD: float = 0.8
 
+# Screen and page anchors are matched coarse-then-fine (spec P4): greyscale
+# at half size over the whole frame, then full-resolution BGR in a window of
+# the template's size plus this margin (full-resolution px) around the coarse
+# hit. The fine score and location are what callers get.
+ANCHOR_FINE_MARGIN: int = 8
+
 # A transition is only declared after this many consecutive identical
 # readings. Capture lands inside the death modal's fade animation (the same
 # region measures 0.74 mid-fade and 0.28 fully dimmed), and without debounce
@@ -724,6 +730,81 @@ OCR_SLOW_SECONDS: float = 1.0
 # this covers the recurring text of every page the bot cycles through.
 OCR_FRAME_CACHE: int = 4
 OCR_CROP_CACHE: int = 4096
+# RapidOCR's detector enlarges any input whose short side is under 736 px
+# (limit_type "min"). Full frames are never enlarged, but every crop is:
+# measured on in_run_defense, a 410x150 title crop 160 ms -> 20 ms and a
+# 1080x270 strip 351 ms -> 112 ms without it. Off means readers that pass
+# ocr.read(upscale=False) skip the enlargement; readers that do not opt out
+# keep it, because a lone "0" in the gems header and the wallet crop are only
+# detected enlarged. True restores upscaling for every read.
+OCR_DET_UPSCALE: bool = False
+
+# Crop reads (read_region, the wallet crop, the account title, the battle
+# bands) keep their own LRU so they cannot evict the full frame a scan's
+# other readers still need. An image at least this many pixels is a frame.
+OCR_REGION_CACHE: int = 32
+OCR_FRAME_MIN_PIXELS: int = 1_000_000
+
+
+# --- Battle perception from two bands (spec P2) ------------------------------
+class BattleBands(NamedTuple):
+    """Where battle text lives on one frame size, in absolute pixels.
+
+    Not anchor-relative like SPEED_READOUT_REGION: the IN_RUN panel anchor
+    only matches the ATTACK tab, and the panel is pinned to the bottom of the
+    frame. Measured from tests/fixtures/ocr/in_run_*.json: on 1080x2400 cash
+    at y 169, "Game Paused" at 359, speed 1394, HUD 1480-1560, heading 1659,
+    tiles 1790-2300; on 1080x1920 (in_run_defense_1920) cash 35, speed 917,
+    HUD 1004-1072, heading 1183, tiles 1309-1782.
+    """
+
+    top: Rect      # cash, gems and coins rows, and the pause banner
+    panel: Rect    # speed readout down to the bottom of the upgrade grid
+    heading: Rect  # the tab heading bar, whose colour names the tab
+    heading_y: int  # the heading text's y, used when OCR misses the heading
+
+
+BATTLE_BANDS: dict[tuple[int, int], BattleBands] = {
+    (1080, 2400): BattleBands(top=Rect(0, 0, 1080, 440), panel=Rect(0, 1320, 1080, 1080),
+                              heading=Rect(0, 1640, 1080, 80), heading_y=1659),
+    (1080, 1920): BattleBands(top=Rect(0, 0, 1080, 440), panel=Rect(0, 840, 1080, 1080),
+                              heading=Rect(0, 1164, 1080, 80), heading_y=1183),
+}
+# Each band is resized by this before reading: about the 2000/2400 the
+# engine gives a full 2400-tall frame. Measured on every in_run fixture: 0.83
+# parses as the full frame does (one extra price read on
+# in_run_wallet_no_cutout); 0.8333 loses health on three frames. A lower
+# scale is allowed only if tests/test_battle_parity.py passes at it.
+# Bands are read without detector upscaling (limit_type "max", limit_side_len
+# 736 by default), so the 1080-wide bands, 896 px after this scale, are
+# shrunk again to 736 for detection: the detector effectively sees ~0.68 of
+# native. Recognition crops come from the 0.83 image. Parity was measured
+# with both in place.
+BATTLE_OCR_SCALE: float = 0.83
+# OpenCV hue (0-180) of each tab's heading bar: the median hue of pixels with
+# S and V above BATTLE_TAB_MIN_SV. Measured: ATTACK 97, DEFENSE 175, UTILITY
+# 25 on every in_run fixture at both sizes. The nearest menu fixture sits 18
+# away (menu_cards 115). DEFENSE wraps around red, so distance is circular.
+BATTLE_TAB_HUES: dict[str, int] = {"ATTACK": 97, "DEFENSE": 175, "UTILITY": 25}
+BATTLE_TAB_HUE_TOLERANCE: int = 8
+BATTLE_TAB_MIN_SV: int = 80
+# The bar fills ~90% of its band on every battle fixture; menus that happen
+# to share a hue fill under 10%.
+BATTLE_TAB_MIN_FRACTION: float = 0.5
+# Backstop for a popup that leaves the panel readable (spec Risks): the
+# supervisor preflight reads the full frame at least this often in battle.
+BATTLE_FULL_READ_EVERY: float = 10.0
+
+
+# --- Menu OCR reuse (spec P3) ------------------------------------------------
+# A menu frame reuses the last full read when every cell of its greyscale
+# 1/8 thumbnail (one cell = the mean of an 8x8 block) is within this of the
+# stored one. Measured: distinct menu fixtures differ by at least 80, a
+# one-digit change by 31+, capture noise by ~3.
+OCR_REUSE_DIFF: int = 12
+# A stored read is never reused past this age, so a change too small to
+# cross the threshold is still picked up.
+OCR_REUSE_MAX_AGE: float = 10.0
 
 
 # --- In-battle game speed -------------------------------------------------

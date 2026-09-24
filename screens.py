@@ -4,9 +4,10 @@ Anchors are small crops unique to one screen. Every scan matches all of them
 full-frame and takes the argmax; below ANCHOR_THRESHOLD the answer is UNKNOWN
 and the bot holds.
 
-Full-frame rather than region-of-interest is deliberate: ~100ms for three
-anchors against a 2s scan interval is not worth optimising, and the death
-modal moves vertically, so ROI padding would need tuning for no gain.
+Every anchor is still searched over the whole frame, but coarse-then-fine
+(vision.two_step_score): the full-resolution score is only computed around
+the half-size greyscale hit, which cut classification cost about tenfold on
+the fixtures.
 """
 
 from __future__ import annotations
@@ -49,8 +50,11 @@ def classify(
     scores: dict[str, float] = {}
     positions: dict[str, tuple[int, int]] = {}
 
+    coarse = vision.coarse_image(screen)
     for name, template_path in config.SCREEN_ANCHORS.items():
-        score, top_left = vision.best_score(screen, cache.get(template_path))
+        score, top_left = vision.two_step_score(
+            screen, cache.get(template_path),
+            coarse_screen=coarse, coarse_template=cache.coarse(template_path))
         scores[name] = score
         positions[name] = top_left
 

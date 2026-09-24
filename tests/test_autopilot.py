@@ -314,3 +314,34 @@ def test_a_decision_is_published_once_when_it_changes() -> None:
     decided = [e for e in bus.published if isinstance(e, events.AutopilotDecided)]
     assert [(e.phase, e.upgrade_id) for e in decided] == [
         ("wait", None), ("manual", "damage"), ("verifying", "damage")]
+
+
+def test_step_checks_the_observation_against_the_scans_digest() -> None:
+    import ocr
+    bot, device, frame, observation, policy = parts()
+    reads = ocr.FrameReads(frame)
+    reads._digest = "0" * 64  # a scan digest that does not match the observation
+    bot.step(frame, device, policy, cash=100, observation=observation, reads=reads)
+    assert device.actions == []
+    assert "does not match" in bot.state.snapshot()["reason"]
+
+
+def test_reads_for_another_frame_are_ignored_by_step() -> None:
+    import ocr
+    bot, device, frame, observation, policy = parts()
+    reads = ocr.FrameReads(frame.copy())
+    reads._digest = "0" * 64
+    bot.step(frame, device, policy, cash=100, observation=observation, reads=reads)
+    assert len(device.actions) == 1
+
+
+def test_step_hands_its_reads_to_observe_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    import autopilot
+    import ocr
+    bot, device, frame, observation, policy = parts()
+    reads = ocr.FrameReads(frame)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(autopilot, "observe_frame",
+                        lambda screen, context, **kwargs: (seen.update(kwargs), observation)[1])
+    bot.step(frame, device, policy, cash=100, reads=reads)
+    assert seen["reads"] is reads

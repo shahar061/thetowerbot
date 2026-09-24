@@ -31,7 +31,6 @@ from account_screens import ScreenReadings
 
 import argparse
 import dataclasses
-import hashlib
 import ipaddress
 import json
 import logging
@@ -70,7 +69,7 @@ from affordability import (
 )
 from autopilot import AutopilotState, BattleAutopilot
 from combat_context import RunIdentity, build_revision
-from perception import read_cash
+from perception import panel_visible, read_cash
 from control import Controls, Live
 from device import EmulatorError, Image, capture_screen, connect_device, tap
 from fleet.runtime import RuntimeIsolationError, WorkerRuntime, reserve_endpoint
@@ -91,6 +90,22 @@ from strategy import MIN_INTERVAL, ControlError, Strategy, StrategyStore
 from telegram_report import TelegramConfig, TelegramReporter
 
 logger = logging.getLogger("tower_bot")
+
+
+def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
+    """(online_required, session_conflict) from one read of the frame."""
+    text = " ".join(box.text.lower() for box in boxes)
+    online_required = (
+        ("online" in text and ("required" in text or "connect" in text))
+        or ("internet" in text and ("required" in text or "connect" in text))
+    )
+    session_conflict = (
+        ("another device" in text and ("logged in" in text or "in use" in text))
+        or "logged in elsewhere" in text
+        or "new session detected" in text
+        or "cloud session different than local session" in text
+    )
+    return online_required, session_conflict
 
 
 # --------------------------------------------------------------------------
@@ -203,6 +218,12 @@ class TowerBot:
         # Consecutive scans a menu page has held every action with nothing
         # walking. See the deadlock note in run_once.
         self._held_scans = 0
+        # When the IN_RUN preflight last read the whole frame. See
+        # _preflight_boxes: the backstop for a popup the bands cannot see.
+        self._battle_full_read_at = float("-inf")
+        # Whether this scan's IN_RUN preflight ran the backstop's full read,
+        # successful or not; the menu readers run on such a scan too.
+        self._battle_backstop_scan = False
         self.runs = RunTracker(first_run_id)
         # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
@@ -589,6 +610,48 @@ class TowerBot:
             self._milestones_badge = False
         return kind
 
+    def _preflight_boxes(self, reading: screens.ScreenReading,
+                         reads: ocr.FrameReads) -> tuple[ocr.TextBox, ...]:
+        """The boxes the supervisor preflight checks for recovery modals.
+
+        Off IN_RUN, the whole frame. On IN_RUN, the two battle bands (spec
+        P2). A recovery modal sits mid-screen, outside both bands, so a frame
+        whose bands show no upgrade panel (the P1 safety net) falls back to
+        the whole frame - and so does one scan every
+        config.BATTLE_FULL_READ_EVERY seconds, the backstop for a popup that
+        leaves the panel readable.
+
+        A reroll account's Workshop coin grant (fleet.tutorial) has markers
+        between the two bands; its popup does not classify as IN_RUN, so it
+        takes the whole-frame path.
+        """
+        if reading.state is not screens.ScreenState.IN_RUN:
+            return reads.full()
+        now = time.monotonic()
+        if now - self._battle_full_read_at >= config.BATTLE_FULL_READ_EVERY:
+            self._battle_backstop_scan = True
+            boxes = reads.full()
+            # Only a read that succeeded pays the backstop; a failed one is
+            # due again next scan.
+            self._battle_full_read_at = now
+            return boxes
+        if not self._battle_panel_visible(reads):
+            return reads.full()
+        return reads.battle()
+
+    def _battle_panel_visible(self, reads: ocr.FrameReads) -> bool:
+        """Spec P1's safety net: does this battle frame show its upgrade panel?
+
+        Heading text in the bands or a heading colour. False - including when
+        the bands could not be read - means something may cover the panel,
+        and the menu readers and the full-frame preflight run on this scan.
+        """
+        try:
+            boxes = reads.battle()
+        except Exception:  # noqa: BLE001 - an unread frame is not a visible panel
+            return False
+        return panel_visible(reads.screen, boxes)
+
     def run_once(self, max_runs: int | None = None) -> bool:
         """One scan pass over the configured actions. True if anything clicked.
 
@@ -608,6 +671,18 @@ class TowerBot:
         self.refresh_screen()
 
         reading = screens.classify(self.screen, self.templates)
+        # One OCR result and one digest for this frame, shared by the
+        # preflight, the menu readers and the autopilot - see ocr.FrameReads.
+        # Menu frames may reuse the last full read while nothing on screen
+        # changed (spec P3); battle frames always read their bands fresh. So
+        # does any scan with a walk or a shopping visit active: it tapped and
+        # now reads what the tap did.
+        acting = (self.collection.active or self.visit.active or self.claim.active
+                  or self.milestones_claim.active or self.shopping.active)
+        reads = ocr.FrameReads(self.screen,
+                               reuse=reading.state is not screens.ScreenState.IN_RUN
+                               and not acting)
+        self._battle_backstop_scan = False
         tutorial_claim = None
         if self.supervisor is not None:
             observed_screen = reading.state.value
@@ -617,7 +692,7 @@ class TowerBot:
                 except Exception:  # noqa: BLE001 - unreadable page is no permission to act
                     observed_screen = "UNKNOWN"
             try:
-                boxes = ocr.read(self.screen, strict=True)
+                boxes = self._preflight_boxes(reading, reads)
                 if observed_screen == "UNKNOWN":
                     # Recovery preflight runs before MilestonesReadings.scan.
                     # A valid ladder or reward modal must be named here or the
@@ -630,24 +705,14 @@ class TowerBot:
                     tutorial_claim = workshop_coin_claim(self.screen, boxes)
                     if tutorial_claim is not None:
                         observed_screen = "WORKSHOP_TUTORIAL_CLAIM"
-                text = " ".join(box.text.lower() for box in boxes)
-                online_required = (
-                    ("online" in text and ("required" in text or "connect" in text))
-                    or ("internet" in text and ("required" in text or "connect" in text))
-                )
-                session_conflict = (
-                    ("another device" in text and ("logged in" in text or "in use" in text))
-                    or "logged in elsewhere" in text
-                    or "new session detected" in text
-                    or "cloud session different than local session" in text
-                )
+                online_required, session_conflict = popup_flags(boxes)
                 readable = True
             except Exception:  # noqa: BLE001 - an unreadable modal may cover an anchor
                 online_required = False
                 session_conflict = False
                 readable = False
             recovery = self.supervisor.observe(
-                frame_digest=hashlib.sha256(self.screen.tobytes()).hexdigest(),
+                frame_digest=reads.digest,
                 observed_at=getattr(self, "_screen_captured_at", time.time()),
                 screen=observed_screen,
                 account_id=self.supervisor.current_account,
@@ -735,34 +800,44 @@ class TowerBot:
         # passive reader owns the frame before every possible action path,
         # including paused scans and an already-active shopping visit.
         screen_readings = self.account_state.screen_readings if self.account_state is not None else self._screen_readings
-        panel = screen_readings.scan(self.screen)
-        # The same passive ownership for the Daily Missions page. The bot has
-        # no verified target on it, so a tap aimed at the menu underneath
-        # would land somewhere nobody chose - it holds actions exactly as a
-        # panel does, whether or not a visit is walking.
-        # THREE full-frame readers over one frame. RapidOCR's cost here is
-        # near-fixed rather than proportional to pixels, so reading the same
-        # bytes once per reader is a second and third full price for nothing.
-        # Measured on tests/fixtures/in_run_lit.png, median of 5 after a warm
-        # tick: 347.9 ms for the three sharing this read, against 354.4 ms for
-        # the two readers that shipped before it and 611.8 ms for the same
-        # three reading independently. The third reader is free; an unshared
-        # one would have cost ~75% of a tick.
-        #
-        # On a failed read each reader falls back to its own attempt and
-        # reports its own error, which is the behaviour they had before this
-        # was shared.
-        try:
-            shared_boxes = ocr.read(self.screen, strict=True)
-        except Exception:
-            shared_boxes = None
-        missions_page = self.missions.scan(self.screen, boxes=shared_boxes)
-        # The same passive ownership for both MILESTONES screens. This matters
-        # most for the reward modal: it is a full-screen overlay carrying a
-        # tappable CLAIM, and config.NAV_DISMISS - walked by shopping.py's
-        # OPEN_CARDS step - holds nav/claim_reward.png and nav/skip.png, both
-        # of which match it at 1.0000.
-        milestones_page = self.milestones.scan(self.screen, boxes=shared_boxes)
+        walking_before = (self.collection.active or self.visit.active
+                          or self.claim.active or self.milestones_claim.active)
+        # Spec P1: on a battle frame whose upgrade panel is readable, no
+        # account panel, missions page or milestones screen is up - they are
+        # menu overlays. MAIN_MENU, GAME_OVER and UNKNOWN keep all three,
+        # because account overlays can keep a MAIN_MENU anchor visible
+        # underneath. A covered panel (the safety net), a walk in progress or
+        # a backstop scan (whose full read they reuse) also keeps them.
+        if (reading.state is screens.ScreenState.IN_RUN and not walking_before
+                and not self._battle_backstop_scan
+                and self._battle_panel_visible(reads)):
+            # The outcome each reader gives a frame it cannot measure (its
+            # unsupported-geometry branch): no conclusion, and no hold.
+            screen_readings.observe(None)
+            self.missions.observe(None)
+            self.milestones.observe(None)
+            panel = missions_page = milestones_page = False
+        else:
+            panel = screen_readings.scan(self.screen)
+            # The same passive ownership for the Daily Missions page. The bot
+            # has no verified target on it, so a tap aimed at the menu
+            # underneath would land somewhere nobody chose - it holds actions
+            # exactly as a panel does, whether or not a visit is walking.
+            # The missions and milestones readers share the scan's one
+            # full-frame read (ocr.FrameReads). On a failed read each falls
+            # back to its own attempt and reports its own error, which is the
+            # behaviour they had before this was shared.
+            try:
+                shared_boxes = reads.full()
+            except Exception:
+                shared_boxes = None
+            missions_page = self.missions.scan(self.screen, boxes=shared_boxes)
+            # The same passive ownership for both MILESTONES screens. This
+            # matters most for the reward modal: it is a full-screen overlay
+            # carrying a tappable CLAIM, and config.NAV_DISMISS - walked by
+            # shopping.py's OPEN_CARDS step - holds nav/claim_reward.png and
+            # nav/skip.png, both of which match it at 1.0000.
+            milestones_page = self.milestones.scan(self.screen, boxes=shared_boxes)
         if (self.reroll_progress is not None and not settings.paused
                 and not panel and not missions_page and not milestones_page
                 and not self.shopping.active and not self.shopping.reconciliation_pending
@@ -1080,7 +1155,8 @@ class TowerBot:
                                                    cash=self.wallet, cooldown=settings.strategy.click_cooldown,
                                                    run_id=self.runs.current_id,
                                                    identity=self.run_identity(settings),
-                                                   elapsed=self.runs.elapsed(time.monotonic()))
+                                                   elapsed=self.runs.elapsed(time.monotonic()),
+                                                   reads=reads)
                     # The autopilot reads the panel itself, so its rows are
                     # the only description of this frame anything has. Left
                     # out, the set_boxes() below blanks the device view on
