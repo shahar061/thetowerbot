@@ -19,6 +19,7 @@ export const LEDGER_EVENTS = new Set([
   "ControlChanged",
   "ClaimStarted",
   "MissionClaimed",
+  "MailClaimed",
   "ClaimSkipped",
   "ClaimEnded",
   "MilestoneClaimed",
@@ -37,6 +38,7 @@ export const LEDGER_EVENTS = new Set([
 export const FILTER_KINDS = [
   "RUN_PAYOUT",
   "MISSION_CLAIM",
+  "MAIL_CLAIM",
   "MILESTONE_CLAIM",
   "GEM_CLAIM",
   "WORKSHOP_BUY",

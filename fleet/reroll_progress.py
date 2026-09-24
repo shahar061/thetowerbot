@@ -6,6 +6,7 @@ import json
 import os
 import time
 from dataclasses import asdict, replace
+from typing import Any, Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,19 +17,15 @@ from account_state import AccountState
 from fleet.reroll_journal import RerollJournal
 from fleet.account_metrics import game_started_date
 from fleet.reroll_lifetime import read_lifetime
-from fleet.reroll_planner import (FILLER_SHARE, UTILITY_CEILING_COINS,
+from fleet.reroll_planner import (FILLER_SHARE, STARTER_MAX_PRICE, UTILITY_CEILING_COINS,
                                   UTILITY_TARGET_COINS, RerollDecision,
                                   RerollFacts, choose_next, project_next)
 from fleet.reroll_variants import read_variant
+from fleet.workshop_prices import WorkshopPrices, PriceQuote, catalog_price
+from fleet.reroll_survival import prioritize_survival
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
-# A skipped trip rests on an estimate - the last balance read in the workshop
-# plus the coins each run since reported. Coins from claims or ads are
-# missing from it and spends outside the workshop are not subtracted, so the
-# estimate is re-anchored by a real visit at least this often.
-RECHECK_EVERY_N_RUNS = 10
-PRICE_MEMORY_SECONDS = 600
 
 
 class RerollProgress:
@@ -38,7 +35,9 @@ class RerollProgress:
         self.root = Path(worker_root)
         self.account_id = account_id
         self.account_state = account_state
-        self._observed: dict[str, tuple[int | None, int | None, float, int]] = {}
+        self.price_memory = WorkshopPrices(self.root, account_id)
+        self._quotes: dict[str, PriceQuote] = {}
+        self._import_legacy_target()
         self._last_state: tuple[str, str | None, str] | None = None
         self._last_decision: RerollDecision | None = None
         self._last_published_at = 0.0
@@ -179,37 +178,19 @@ class RerollProgress:
     def decision(self) -> RerollDecision:
         best, purchases = self._history()
         values, lifetime = self._account_readings()
-        if not self._observed:
-            try:
-                record = json.loads((self.root / "workshop-target.json").read_text(
-                    encoding="utf-8"))
-            except (OSError, ValueError):
-                record = None
-            if isinstance(record, dict) and record.get("account_id") == self.account_id:
-                upgrade_id = record.get("upgrade_id")
-                observed_at = record.get("observed_at")
-                if (isinstance(upgrade_id, str) and upgrades.by_id(upgrade_id) is not None
-                        and isinstance(observed_at, (int, float))
-                        and 0 <= time.time() - observed_at <= PRICE_MEMORY_SECONDS
-                        and record.get("purchase_count") == purchases.get(upgrade_id, 0)
-                        and isinstance(record.get("wallet"), int)
-                        and isinstance(record.get("price"), int)):
-                    self._observed[upgrade_id] = (
-                        record["wallet"], record["price"], observed_at,
-                        record["purchase_count"])
-        observed = {upgrade_id: entry for upgrade_id, entry in self._observed.items()
-                    if time.time() - entry[2] <= PRICE_MEMORY_SECONDS
-                    and entry[3] == purchases.get(upgrade_id, 0)}
-        latest = max(observed.values(), key=lambda entry: entry[2], default=None)
-        wallet = latest[0] if latest is not None else None
-        prices = {upgrade_id: entry[1] for upgrade_id, entry in observed.items()
-                  if entry[1] is not None}
+        wallet, self._quotes = self._pricing(purchases)
+        prices = {uid: quote.price for uid, quote in self._quotes.items()}
         result = choose_next(RerollFacts(
             self.account_id, best, purchases, values, wallet, lifetime,
             prices, self._spend_fraction,
             variant=read_variant(self.root),
             utility_spent_coins=self._utility_spent(),
         ))
+        quote = self._quotes.get(result.upgrade_id or "")
+        if quote is not None:
+            label = ("Observed Workshop price" if quote.source == "observed" else
+                     "Catalog estimate; live price will be checked")
+            result = replace(result, reason=f"{result.reason} {label}." )
         self._battle_stage = result.stage
         return result
 
@@ -224,7 +205,9 @@ class RerollProgress:
         if not self.workshop_worthwhile():
             return replace(base, enabled=False)
         budget = base.coin_budget
-        if plan.filler:
+        if plan.starter:
+            budget = STARTER_MAX_PRICE if budget is None else min(budget, STARTER_MAX_PRICE)
+        elif plan.filler:
             assert plan.wallet_coins is not None
             ceiling = int(plan.wallet_coins * FILLER_SHARE)
             budget = ceiling if budget is None else min(budget, ceiling)
@@ -237,7 +220,8 @@ class RerollProgress:
         return replace(base, workshop=(ShoppingRule(plan.item, plan.category),),
                        allow_unlocks=True, coin_budget=budget, coin_budget_pct=None)
 
-    def battle_policy(self, base: AutopilotPolicy) -> AutopilotPolicy:
+    def battle_policy(self, base: AutopilotPolicy,
+                      observations: Mapping[str, Mapping[str, Any]] | None = None) -> AutopilotPolicy:
         if self._battle_stage is None:
             best, _ = self._history()
             self._battle_stage = "stones" if best is not None and best >= 60 else (
@@ -247,6 +231,7 @@ class RerollProgress:
             UpgradeRule("coins_per_kill_bonus", target=1.25),
             UpgradeRule("cash_bonus", target=1.25),
             UpgradeRule("defense_absolute"), UpgradeRule("thorns", target=51),
+            UpgradeRule("health"),
             UpgradeRule("coins_per_wave", target=10),
             UpgradeRule("damage"), UpgradeRule("attack_speed"),
         ) if self._battle_stage == "opening" else (
@@ -269,77 +254,139 @@ class RerollProgress:
                           if (utility_open or upgrades.by_id(rule.upgrade_id).category != "UTILITY")
                           and locked_children.get(rule.upgrade_id) in
                           (None, *confirmed_unlocks))
-        return replace(base, preset="manual", purpose="milestone", rules=available)
+        return replace(base, preset="manual", purpose="milestone",
+                       rules=prioritize_survival(available, observations or {}))
 
-    def observe_price(self, upgrade_id: str, wallet: int | None,
-                      price: int | None) -> None:
-        current = self.decision()
-        if upgrade_id != current.upgrade_id:
+    def _discount_signature(self) -> str:
+        revision = self.account_state.snapshot().get("revision") or {}
+        levels = revision.get("lab_levels")
+        if levels is None:
+            return "unknown"
+        discounts = sorted((fact.get("concept_id"), fact.get("status"), fact.get("value"))
+                           for fact in levels if "workshop-" in str(fact.get("concept_id"))
+                           and "discount" in str(fact.get("concept_id")))
+        return json.dumps(discounts) if discounts else "unknown"
+
+    def _import_legacy_target(self) -> None:
+        if self.price_memory.path.exists():
             return
+        try:
+            record = json.loads((self.root / "workshop-target.json").read_text(encoding="utf-8"))
+            if record.get("account_id") != self.account_id:
+                return
+            uid, count, observed = record["upgrade_id"], record["purchase_count"], record["observed_at"]
+            self.price_memory.observe(uid, record["price"], count, now=observed)
+            if type(record["wallet"]) is int and record["wallet"] >= 0 and type(record["baseline_run_id"]) is int:
+                self.price_memory.wallet = {"coins": record["wallet"], "run_id": record["baseline_run_id"],
+                                            "observed_at": observed}
+            self.price_memory.save()
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return
+
+    def _pricing(self, purchases: Mapping[str, int]) -> tuple[int | None, dict[str, PriceQuote]]:
+        anchor = self.price_memory.wallet
+        earliest = min([entry["observed_at"] for entry in self.price_memory.entries.values()] +
+                       ([anchor["observed_at"]] if anchor else [time.time()]))
+        invalidated: dict[str, float] = {}
+        offsets = {uid: entry["purchases"] for uid, entry in self.price_memory.entries.items()}
+        changed_at = 0.
+        changes: list[tuple[float, int, int | None, int | None]] = []
+        with db.reader(self.root / "tower_bot.db") as conn:
+            rows = conn.execute("SELECT id,ts,kind,item,category,delta,balance_after,observed,detail,reason "
+                                "FROM ledger WHERE dry_run=0 AND ts>=? AND "
+                                "(currency='coins' OR (currency IS NULL AND kind='WORKSHOP_BUY') "
+                                "OR (kind='BUY_SKIPPED' AND reason='unconfirmed')) "
+                                "ORDER BY ts,id", (earliest,)).fetchall()
+            if anchor:
+                runs = conn.execute("SELECT id,ended_at,coins FROM runs WHERE id>? AND ended_at>?",
+                                    (anchor["run_id"], anchor["observed_at"])).fetchall()
+                changes.extend((row["ended_at"], -row["id"], row["coins"], None) for row in runs)
+        for row in rows:
+            if row["kind"] == "BUY_SKIPPED" and row["reason"] == "unconfirmed":
+                upgrade = upgrades.resolve(row["item"], row["category"])
+                if upgrade:
+                    invalidated[upgrade.id] = max(row["ts"], invalidated.get(upgrade.id, 0))
+                    if anchor and row["ts"] >= anchor["observed_at"]:
+                        changes.append((row["ts"], row["id"], None, None))
+                continue
+            if row["kind"] == "WORKSHOP_BUY":
+                try:
+                    verdict = json.loads(row["detail"] or "{}").get("verdict")
+                except (ValueError, TypeError, AttributeError):
+                    verdict = None
+                upgrade = upgrades.resolve(row["item"], row["category"])
+                if verdict in {"bought", "free"} and upgrade:
+                    entry = self.price_memory.entries.get(upgrade.id)
+                    # StoreSink is asynchronous. A delayed receipt already
+                    # visible in this observation must not advance it again.
+                    if entry and row["ts"] > entry["observed_at"]:
+                        offsets[upgrade.id] += 1
+                elif verdict not in {"bought", "free"}:
+                    if upgrade:
+                        invalidated[upgrade.id] = max(row["ts"], invalidated.get(upgrade.id, 0))
+            if row["kind"] == "UNEXPLAINED" and row["delta"] is not None and row["delta"] < 0:
+                # A reconciliation emitted for the very frame we just read
+                # invalidates older rows, not prices observed on that frame.
+                moment = (anchor["observed_at"] if anchor and row["observed"] == anchor["coins"]
+                          and 0 <= row["ts"] - anchor["observed_at"] < 2 else row["ts"])
+                changed_at = max(changed_at, moment)
+            if anchor and row["ts"] >= anchor["observed_at"] and row["kind"] != "RUN_PAYOUT":
+                # A balance observation closes an earlier uncertainty. Other
+                # ledger debits/rewards are applied once; run payouts above
+                # come from completed runs, so they aren't counted twice.
+                balance = row["balance_after"] if row["observed"] is not None else None
+                changes.append((row["ts"], row["id"], row["delta"], balance))
+        wallet = anchor["coins"] if anchor else None
+        for _, _, delta, balance in sorted(changes):
+            if balance is not None:
+                wallet = balance
+            elif delta is None:
+                wallet = None
+            elif wallet is not None:
+                wallet += delta
+        if wallet is not None and wallet < 0:
+            wallet = None
+        quotes = self.price_memory.quotes(offsets, invalidated=invalidated, changed_at=changed_at,
+                                          discount_signature=self._discount_signature())
+        # Unlock prices have no level ambiguity. They are estimates until read.
+        for uid in ("unlock_cash_bonuses", "unlock_coin_bonuses", "unlock_defense_upgrades", "unlock_thorns"):
+            if uid not in quotes and uid not in invalidated and not purchases.get(uid):
+                price = catalog_price(uid, 0)
+                if price is not None:
+                    quotes[uid] = PriceQuote(price, 0, "catalog_estimate")
+        return wallet, quotes
+
+    def observe_prices(self, prices: Mapping[str, int | None], wallet: int | None) -> None:
+        """Learn all readable rows during an already necessary Workshop visit."""
         _, purchases = self._history()
-        self._observed[upgrade_id] = (wallet, price, time.time(),
-                                      purchases.get(upgrade_id, 0))
-        if not current.filler:
-            self._remember_target(upgrade_id, wallet, price)
+        now = time.time()
+        signature = self._discount_signature()
+        for uid, price in prices.items():
+            self.price_memory.observe(uid, price, purchases.get(uid, 0), now=now,
+                                      discount_signature=signature)
+        if type(wallet) is int and wallet >= 0:
+            with db.reader(self.root / "tower_bot.db") as conn:
+                last_run = conn.execute("SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL").fetchone()[0]
+            self.price_memory.wallet = {"coins": wallet, "run_id": last_run, "observed_at": now}
+        self.price_memory.save()
+
+    def observe_price(self, upgrade_id: str, wallet: int | None, price: int | None) -> None:
+        if upgrade_id != self.decision().upgrade_id:
+            return
+        self.observe_prices({upgrade_id: price}, wallet)
         self._publish(self.decision())
 
     def workshop_worthwhile(self) -> bool:
-        """Could the planned item be affordable yet, by the last visit's numbers?
-
-        Every visit ends with the planned row's price and the balance beside
-        it, both saved. Until the coins earned by the runs since cover the
-        gap, a trip would only read the same "unaffordable" again. Anything
-        that makes the saved numbers doubtful - none saved, another account,
-        a different planned item, too many runs since - says visit.
-        """
-        path = self.root / "workshop-target.json"
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return True
-        if (not isinstance(record, dict) or record.get("account_id") != self.account_id
-                or record.get("upgrade_id") != self.decision().upgrade_id):
-            return True
-        with db.reader(self.root / "tower_bot.db") as connection:
-            runs, earned = connection.execute(
-                "SELECT COUNT(*), COALESCE(SUM(coins),0) FROM runs "
-                "WHERE id > ? AND ended_at IS NOT NULL",
-                (record["baseline_run_id"],)).fetchone()
-        estimate = record["wallet"] + earned
-        worthwhile = runs >= RECHECK_EVERY_N_RUNS or estimate >= record["price"]
-        note = None if worthwhile else (
-            f"workshop skipped: ~{estimate} coins < {record['price']} for "
-            f"{record['upgrade_id']}")
+        plan = self.decision()
+        worthwhile = (plan.upgrade_id is not None and
+                      (plan.wallet_coins is None or plan.wallet_coins > 0) and
+                      (plan.price is None or plan.wallet_coins is None or plan.wallet_coins >= plan.price))
+        note = None if worthwhile else f"workshop skipped: {plan.wallet_coins} coins; {plan.item} needs {plan.price}"
         if note is not None and note != self._last_skip_note:
             RerollJournal(self.root.parent.parent).append(
                 instance=self.root.name, level="info", kind="workshop_skip", message=note)
         self._last_skip_note = note
         return worthwhile
-
-    def _remember_target(self, upgrade_id: str, wallet: int | None,
-                         price: int | None) -> None:
-        path = self.root / "workshop-target.json"
-        if wallet is None or price is None:
-            path.unlink(missing_ok=True)
-            return
-        with db.reader(self.root / "tower_bot.db") as connection:
-            baseline_run_id = connection.execute(
-                "SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL"
-            ).fetchone()[0]
-        temporary = path.with_name(f".workshop-target.{uuid4().hex}.tmp")
-        try:
-            with temporary.open("x", encoding="utf-8") as output:
-                json.dump({"account_id": self.account_id, "upgrade_id": upgrade_id,
-                           "wallet": wallet, "price": price,
-                           "purchase_count": self._history()[1].get(upgrade_id, 0),
-                           "baseline_run_id": baseline_run_id,
-                           "observed_at": time.time()}, output)
-                output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
 
     def _publish(self, decision: RerollDecision) -> None:
         now = time.time()

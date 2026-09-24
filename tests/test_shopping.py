@@ -2018,6 +2018,29 @@ def test_reroll_planner_receives_verified_row_price_before_purchase(
     assert seen == [("damage", 1000, 300)]
 
 
+def test_reroll_observes_neighbor_prices_but_not_pending_receipts(
+    session, monkeypatch, fake_header,
+) -> None:
+    fake_header["coins"] = 1000
+    rows = (
+        dataclasses.replace(_tab_row("damage", "Damage"), price=300),
+        dataclasses.replace(_tab_row("attack_speed", "Attack Speed"), price=30),
+    )
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
+                        Observation("ATTACK", rows, {}, None, 1, 270))
+    seen = []
+    session.reroll_observe_prices = lambda prices, coins: seen.append((prices, coins))
+    policy = a_policy(armed=True, coin_budget=500, workshop=(
+        ShoppingRule(name="Damage", category="ATTACK"),))
+    session.begin(policy, run_count=1)
+    device = FakeDevice()
+    for _ in range(2):
+        session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                          frame("menu_workshop_attack"), device, policy)
+    assert seen == [({"damage": 300, "attack_speed": 30}, 1000)]
+    assert len(device.taps) == 1
+
+
 def test_a_wallet_share_and_a_coin_ceiling_both_bind(
     session, monkeypatch, fake_header,
 ) -> None:

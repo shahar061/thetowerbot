@@ -16,6 +16,7 @@ const KIND_TONE: Record<string, string> = {
   CARD_BUY: "bg-chart-2/15 text-chart-2",
   RUN_PAYOUT: "bg-live-surface text-live",
   MISSION_CLAIM: "bg-live-surface text-live",
+  MAIL_CLAIM: "bg-live-surface text-live",
   MILESTONE_CLAIM: "bg-live-surface text-live",
   GEM_CLAIM: "bg-live-surface text-live",
   BUY_SKIPPED: "bg-muted text-muted-foreground",

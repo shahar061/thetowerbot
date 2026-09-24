@@ -337,6 +337,22 @@ class ClaimStarted(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class NewsRead(Event):
+    """A selected inbox News entry was observed by its own detail heading."""
+
+    title: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class MailClaimed(Event):
+    """A mail claim confirmed by a new acknowledgement or decreased counter."""
+
+    coins: int | None = None
+    gems: int | None = None
+    confirmation: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class MissionClaimed(Event):
     """One mission reward taken, with the evidence that it landed.
 

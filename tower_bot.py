@@ -22,6 +22,8 @@ from __future__ import annotations
 from account_collection import StatsCollection, at_home
 from cards_intro import CardsIntro, popup_visible as cards_popup_visible
 import milestones_badge
+import menu_badges
+import mail_screen
 import nav_arrow
 from milestones_claim import MilestonesClaim
 from milestones_screen import MilestonesReadings, parse_frame as parse_milestones_frame
@@ -189,6 +191,7 @@ class TowerBot:
         self._reroll_shopping_policy = None
         if reroll_progress is not None:
             self.shopping.reroll_observe_price = reroll_progress.observe_price
+            self.shopping.reroll_observe_prices = getattr(reroll_progress, "observe_prices", None)
         self.shopping.observations = self.autopilot.state
         # Read once, here, rather than per scan: both configure an object
         # that carries state across scans (the tracker's part-confirmed
@@ -250,6 +253,10 @@ class TowerBot:
         # Whether the last main menu frame that showed the MILESTONES button
         # showed its badge - see milestones_badge.
         self._milestones_badge = False
+        self._missions_badge = False
+        self._mail_badge = False
+        self._mail_recovery_taps = 0
+        self._mail_recovery_at = float('-inf')
         # The account's best-ever wave. Seeded here from whatever the caller
         # read at startup (see prepare_store(), which reads db.best_wave())
         # and kept fresh in-process from every RunEnded from then on (see
@@ -619,6 +626,9 @@ class TowerBot:
                 best_wave=best_wave,
                 claimed_best_wave=claimed_wave,
                 milestones_badge=self._milestones_badge,
+                missions_badge=self._missions_badge,
+                mail_badge=self._mail_badge,
+                last_mail=self._last_claim.get('mail'),
             ),
             now=time.time(),
             missions_every_hours=claims.missions_every_hours,
@@ -626,6 +636,11 @@ class TowerBot:
         )
         if kind is None:
             return None
+        if kind == 'mail':
+            if not self.claim.request_mail():
+                return None
+            self._last_claim[kind] = time.time()
+            return kind
         walk = self.claim if kind == "missions" else self.milestones_claim
         if not walk.request():
             return None
@@ -887,6 +902,7 @@ class TowerBot:
             self.missions.observe(None)
             self.milestones.observe(None)
             panel = missions_page = milestones_page = False
+            inbox = mail_screen.MailReading()
         else:
             panel = screen_readings.scan(self.screen)
             # The same passive ownership for the Daily Missions page. The bot
@@ -908,8 +924,12 @@ class TowerBot:
             # shopping.py's OPEN_CARDS step - holds nav/claim_reward.png and
             # nav/skip.png, both of which match it at 1.0000.
             milestones_page = self.milestones.scan(self.screen, boxes=shared_boxes)
+            inbox = (mail_screen.parse(self.screen, shared_boxes)
+                     if shared_boxes is not None else mail_screen.MailReading(error='mail_unreadable'))
+        if not inbox.visible and inbox.error is None:
+            self._mail_recovery_taps = 0
         if (self.reroll_progress is not None and not settings.paused
-                and not panel and not missions_page and not milestones_page
+                and not panel and not missions_page and not milestones_page and not inbox.visible
                 and not self.shopping.active and not self.shopping.reconciliation_pending
                 and not self.collection.active and not self.visit.active
                 and not self.claim.active and not self.milestones_claim.active
@@ -960,6 +980,38 @@ class TowerBot:
         walking_now = (self.collection.active or self.visit.active
                        or self.claim.active or self.milestones_claim.active
                        or self.cards_intro.active)
+        # Cancelling a mail walk while paused can leave a full-screen Inbox
+        # whose lifecycle state is UNKNOWN. Its current semantic footer is
+        # the only permitted recovery action; never restart reward traversal.
+        if inbox.visible and not walking_now and not self.shopping.active:
+            self.controls.drain()
+            self.wallet = None
+            self.autopilot.suspend('Inbox recovery; actions held')
+            footer = inbox.back
+            recovered = False
+            moment = time.monotonic()
+            if (not settings.paused and settings.strategy.auto_navigate
+                    and self._mail_recovery_taps < 3
+                    and moment - self._mail_recovery_at >= config.NAVIGATION_COOLDOWN_SECONDS
+                    and footer is not None and footer.status == 'located'
+                    and footer.point is not None and footer.rect is not None
+                    and footer.rect[1] > self.screen.shape[0] * .85):
+                x, y = jitter.point(*footer.point, settings.strategy.tap_jitter_px)
+                jitter.pause(settings.strategy.tap_delay, settings.strategy.timing_jitter)
+                tap(self.device, x, y)
+                self._mail_recovery_taps += 1
+                self._mail_recovery_at = moment
+                recovered = True
+                self.bus.publish(events.Tapped(action='mail_recovery:return', x=x, y=y,
+                                              score=footer.score))
+            else:
+                self.bus.publish(events.Skipped(action='*', reason='mail_recovery_guard',
+                                               detail='Inbox is open; waiting for a safe return.'))
+            if self.frames is not None:
+                self.frames.set_boxes([])
+            self.bus.publish(events.ScanCompleted(screen=state.value,
+                duration_ms=(time.monotonic() - started) * 1000, wallet=None))
+            return recovered
         if (panel or missions_page or milestones_page) and not walking_now:
             self._held_scans += 1
         else:
@@ -1236,7 +1288,9 @@ class TowerBot:
                 # could not navigate back off it either. `step()` takes no
                 # anchor; it re-reads the panel from the frame itself.
                 if not speed_changed and not commands:
-                    battle_policy = (self.reroll_progress.battle_policy(settings.strategy.autopilot)
+                    battle_policy = (self.reroll_progress.battle_policy(
+                        settings.strategy.autopilot,
+                        self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)))
                                      if self.reroll_progress is not None else settings.strategy.autopilot)
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
                                                    cash=self.wallet, cooldown=settings.strategy.click_cooldown,
@@ -1290,6 +1344,10 @@ class TowerBot:
             badge = milestones_badge.badge_visible(self.screen, self.templates)
             if badge is not None:
                 self._milestones_badge = badge
+            self._missions_badge = menu_badges.read_badge(
+                self.screen, self.templates, 'missions') is not None
+            self._mail_badge = menu_badges.read_badge(
+                self.screen, self.templates, 'mail') is not None
             # The first Cards visit goes before everything else: it is owed
             # once, pays gems, and takes a handful of frames.
             if self._offer_cards_intro():
