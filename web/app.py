@@ -338,13 +338,20 @@ def create_app(
         except (RunnerError, AttributeError, OSError, ValueError, TypeError):
             return False
 
+    def _validate_expected_account(choice: AccountChoice | None, expected: str | None) -> None:
+        if expected is not None and (choice is None or choice.account_id != expected):
+            raise HTTPException(409, "selected_account_changed")
+
     def _selected(request: Request) -> AccountChoice | None:
         key = request.headers.get("x-account-scope")
+        expected = request.headers.get("x-expected-account-id")
         if key is None:
+            _validate_expected_account(None, expected)
             return None  # Existing API callers retain the single-runtime contract.
         choice = next((item for item in _choices() if item.key == key), None)
         if choice is None:
             raise HTTPException(404, "account_scope_unavailable")
+        _validate_expected_account(choice, expected)
         return choice
 
     def _history_path(request: Request) -> Path | None:
@@ -356,9 +363,12 @@ def create_app(
 
     def _live_choice(request: Request) -> AccountChoice | None:
         key = request.query_params.get("scope")
+        expected = request.query_params.get("expected_account_id")
         if key is None:
+            _validate_expected_account(None, expected)
             return None  # Legacy non-browser clients retain the existing route.
         choice = next((item for item in _choices() if item.key == key), None)
+        _validate_expected_account(choice, expected)
         if choice is None or not _running_account(choice):
             raise HTTPException(409, "selected_account_not_running")
         return choice
@@ -909,9 +919,17 @@ def create_app(
         choice = _live_choice(request)
         if frames is None:
             raise HTTPException(status_code=404, detail="no frame buffer")
+
+        def still_selected() -> bool:
+            try:
+                current = _live_choice(request)
+            except HTTPException:
+                return False
+            return current is not None and choice is not None and current.account_id == choice.account_id
+
         return StreamingResponse(
             frame_stream(frames, request.is_disconnected, shutdown=shutdown,
-                         allowed=(lambda: _running_account(choice)) if choice is not None else None),
+                         allowed=still_selected if choice is not None else None),
             media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )

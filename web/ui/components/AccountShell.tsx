@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { isRerollPath } from "@/lib/workspace";
 import { usePathname } from "next/navigation";
 import { RuntimeGate } from "./RuntimeGate";
 import { EmulatorRecovery } from "./EmulatorRecovery";
@@ -12,10 +13,13 @@ const HISTORY = new Set(["/runs/", "/stats/", "/errors/", "/ledger/", "/account/
 export function AccountShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { accounts, selected, loading, error, choose } = useAccountSelection();
+  const reroll = isRerollPath(pathname);
   const independent = pathname.startsWith("/fleet/") || pathname === "/guide/" || pathname === "/archives/" || pathname === "/milestones/";
   const history = HISTORY.has(pathname);
   const remote = selected?.running && selected.dashboard_url && typeof window !== "undefined"
     && new URL(selected.dashboard_url).origin !== window.location.origin;
+
+  if (reroll) return <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">{children}</main>;
 
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
     <header className="sticky top-0 z-10 flex shrink-0 flex-wrap items-center gap-3 border-b bg-card px-4 py-3" aria-label="Game account">

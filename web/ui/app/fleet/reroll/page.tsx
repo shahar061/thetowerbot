@@ -1,78 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
-import { Meter, Pips } from "@/components/Meter";
-import { StatTile } from "@/components/StatTile";
+import { Pips } from "@/components/Meter";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { useAccountSelection } from "@/lib/AccountSelection";
-import { addRerollMembers, fetchReroll, fetchRerollJournal, hideRerollMembers, pauseReroll, removeRerollMember, restoreRerollMembers, setRerollConcurrency, startNewReroll, startReroll } from "@/lib/api";
-import type { RerollJournalEntry, RerollMember, RerollSnapshot } from "@/lib/fleet";
-import { rerollCoordinatorUrl } from "@/lib/fleetRedirect";
-import { LADDER, attentionRank, deletable, deviceColor, failureHint, standingFor } from "@/lib/rerollState";
+import { addRerollMembers, hideRerollMembers, pauseReroll, removeRerollMember, restoreRerollMembers, setRerollConcurrency, startNewReroll, startReroll } from "@/lib/api";
+import type { RerollMember } from "@/lib/fleet";
+import { deletable, failureHint, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { DeviceCard } from "./DeviceCard";
+import { FleetLiveCard, verifiedWorkerAccount } from "./FleetLiveCard";
+import { AccountInspector } from "./AccountInspector";
+import { useRerollWorkspace } from "./RerollWorkspace";
 import { NewRerollDialog } from "./NewRerollDialog";
-import { PastRerolls } from "./PastRerolls";
-import { SharedWorkshopLedger } from "./Purchases";
 import { RerollCard } from "./RerollCard";
-import { VariantComparison } from "./VariantComparison";
 
-function observed(value: string | number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  const date = new Date(typeof value === "number" ? value * 1000 : value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
-}
-
-function stateLabel(value: string): string {
-  return standingFor(value).label;
-}
-
-function Journal({ entries, worker, onWorker }: { entries: RerollJournalEntry[]; worker: string; onWorker: (name: string) => void }) {
-  const [level, setLevel] = useState("all");
-  const [diagnostics, setDiagnostics] = useState(false);
-  const names = [...new Set(entries.map(entry => entry.instance))].sort();
-  const visible = entries.filter(entry => (worker === "all" || entry.instance === worker)
-    && (level === "all" || entry.level === level)
-    && (diagnostics || entry.kind !== "diagnostic"))
-    .sort((a, b) => new Date(typeof a.at === "number" ? a.at * 1000 : a.at).getTime()
-      - new Date(typeof b.at === "number" ? b.at * 1000 : b.at).getTime() || a.sequence - b.sequence);
-  const severities = { info: 0, warning: 0, error: 0 } as Record<string, number>;
-  for (const entry of entries) if (entry.kind !== "diagnostic") severities[entry.level] = (severities[entry.level] ?? 0) + 1;
-
-  return <RerollCard
-    title="Shared journal"
-    action={<div className="flex items-center gap-2 font-mono text-[10px]">
-      {/* The severity census is the panel's headline: an error the filter is
-          currently hiding has to be visible from the collapsed header. */}
-      {severities.error ? <span className="rounded bg-danger-surface px-1.5 py-0.5 text-danger">{severities.error} error</span> : null}
-      {severities.warning ? <span className="rounded bg-warn-surface px-1.5 py-0.5 text-warn">{severities.warning} warning</span> : null}
-      <span className="text-faint-foreground">{visible.length} shown</span>
-    </div>}
-  >
-    <div className="flex flex-wrap items-center gap-3 text-sm">
-      <label className="flex items-center gap-1.5 text-muted-foreground">Emulator <select aria-label="Journal emulator" value={worker} onChange={event => onWorker(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-foreground"><option value="all">All</option>{names.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
-      <label className="flex items-center gap-1.5 text-muted-foreground">Severity <select aria-label="Journal severity" value={level} onChange={event => setLevel(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-foreground"><option value="all">All</option>{["info", "warning", "error"].map(item => <option key={item} value={item}>{item}</option>)}</select></label>
-      <label className="flex items-center gap-1.5 text-muted-foreground"><input type="checkbox" checked={diagnostics} onChange={event => setDiagnostics(event.target.checked)} /> Diagnostics</label>
-    </div>
-    {visible.length ? <ol className="max-h-96 min-w-0 space-y-1 overflow-y-auto">{visible.map(entry => <li
-      key={entry.sequence}
-      className={cn("grid min-w-0 grid-cols-[auto_1fr] gap-x-2.5 rounded-md border-l-2 bg-well/60 px-2.5 py-1.5 text-sm",
-        entry.level === "error" ? "border-l-danger" : entry.level === "warning" ? "border-l-warn" : "border-l-border-strong")}
-    >
-      <time className="font-mono text-[11px] leading-5 text-faint-foreground">{observed(entry.at)}</time>
-      <div className="min-w-0 break-words [overflow-wrap:anywhere]">
-        <span className="mr-2 font-semibold" style={{ color: entry.color || deviceColor(entry.instance) }}>[{entry.instance}]</span>
-        <span className={cn("mr-2 font-mono text-[10px] uppercase",
-          entry.level === "error" ? "text-danger" : entry.level === "warning" ? "text-warn" : "text-faint-foreground")}>{entry.level}</span>
-        <span className="mr-2 font-mono text-[10px] text-faint-foreground">{entry.kind}</span>
-        {entry.message}
-      </div>
-    </li>)}</ol> : <p className="text-sm text-muted-foreground">No journal entries match these filters.</p>}
-  </RerollCard>;
-}
+function stateLabel(value: string): string { return standingFor(value).label; }
 
 /** The pool's filters, and what each one is for. "Needs you" is the
  *  reason this row exists at all: on a pool of eight emulators the one card
@@ -81,13 +28,14 @@ function Journal({ entries, worker, onWorker }: { entries: RerollJournalEntry[];
  *  cards deleted from the list, and appears only while there are some. */
 type Filter = "all" | "attention" | "live" | "idle" | "hidden";
 
-export default function RerollPage() {
-  const [pool, setPool] = useState<RerollSnapshot | null>(null);
-  const [entries, setEntries] = useState<RerollJournalEntry[]>([]);
-  const [journalError, setJournalError] = useState<string | null>(null);
+export default function RerollPage(): React.JSX.Element {
+  return <Suspense fallback={<p role="status">Loading fleet…</p>}><FleetLivePage /></Suspense>;
+}
+
+function FleetLivePage(): React.JSX.Element {
+  const { pool, setPool, refresh, loading, error: poolError } = useRerollWorkspace();
   const [picker, setPicker] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
-  const [journalWorker, setJournalWorker] = useState("all");
   const [busy, setBusy] = useState(false);
   const [limit, setLimit] = useState(2);
   const [error, setError] = useState<string | null>(null);
@@ -96,37 +44,26 @@ export default function RerollPage() {
   const [confirmingBulk, setConfirmingBulk] = useState(false);
   const [dialog, setDialog] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
-  const { accounts, choose } = useAccountSelection();
-
-  const refresh = useCallback(async () => {
-    const next = await fetchReroll();
-    setPool(next);
-    setLimit(next.concurrency_limit ?? 2);
-    try { setEntries((await fetchRerollJournal()).entries); setJournalError(null); }
-    catch (failure) { setJournalError((failure as Error).message); }
-  }, []);
+  const { accounts } = useAccountSelection();
+  const search = useSearchParams()?.toString() ?? "";
+  const [inspection, setInspection] = useState<{ worker: string; account: string; identity: string } | null>(null);
+  const inspectorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    let active = true;
-    let polling = false;
-    let redirecting = false;
-    const poll = () => {
-      if (polling || redirecting) return;
-      polling = true;
-      void fetchReroll().then(next => { if (active) { setPool(next); setLimit(next.concurrency_limit ?? 2); setError(null); } })
-        .catch((failure: Error) => {
-          if (!active) return;
-          const destination = rerollCoordinatorUrl(failure, window.location.href);
-          if (destination) { redirecting = true; window.location.replace(destination); return; }
-          setError(failure.message);
-        })
-        .finally(() => { polling = false; });
-      void fetchRerollJournal().then(value => { if (active) { setEntries(value.entries); setJournalError(null); } })
-        .catch((failure: Error) => { if (active) setJournalError(failure.message); });
-    };
-    poll();
-    const timer = window.setInterval(poll, 5000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, []);
+    const query = new URLSearchParams(search);
+    setInspection(query.has("worker") ? { worker: query.get("worker")!, account: query.get("account") ?? "", identity: query.get("identity") ?? "" } : null);
+  }, [search]);
+  const inspect = (member: RerollMember): void => {
+    const next = { worker: member.name, account: member.account_key ?? "", identity: member.account_id ?? "" };
+    setInspection(next);
+    window.history.replaceState(null, "", `${window.location.pathname}?${new URLSearchParams(next)}`);
+    window.requestAnimationFrame(() => inspectorRef.current?.scrollIntoView?.({ behavior: "auto", block: "nearest" }));
+  };
+  const closeInspection = (): void => {
+    setInspection(null); window.history.replaceState(null, "", window.location.pathname);
+  };
+
+  const poolLimit = pool?.concurrency_limit;
+  useEffect(() => { if (poolLimit != null) setLimit(poolLimit); }, [poolLimit]);
 
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true); setError(null);
@@ -176,14 +113,17 @@ export default function RerollPage() {
       return true;
     };
     return (view === "hidden" ? hiddenMembers : members.filter(matches)).sort((a, b) =>
-      attentionRank(a.state) - attentionRank(b.state) || a.name.localeCompare(b.name));
+      a.name.localeCompare(b.name));
   }, [members, hiddenMembers, view]);
   // Delete all takes only the cards that carry the delete icon.
   const bulkTargets = view === "hidden" ? shown : shown.filter(deletable);
   const bulk = () => void act(() => (view === "hidden" ? restoreRerollMembers : hideRerollMembers)(
     bulkTargets.map(member => member.name)));
 
-  const accountFor = (member: RerollMember) => accounts.find(account => account.running && account.instance === member.name && account.account_id);
+  const accountFor = (member: RerollMember) => accounts.find(account => verifiedWorkerAccount(member, account));
+  const inspected = inspection && allMembers.find(member => member.name === inspection.worker
+    && (member.account_key ?? "") === inspection.account && (member.account_id ?? "") === inspection.identity);
+
 
   const pressure = pool?.pressure;
   const slots: ("running" | "starting" | "free")[] = pressure
@@ -204,11 +144,12 @@ export default function RerollPage() {
 
   return <div className="mx-auto flex max-w-7xl flex-col gap-4">
     <PageHeader
-      title="Reroll"
+      title="Fleet Live"
       meta={run ? `${run.name} · started ${new Date(run.started_at).toLocaleDateString()} · ${census.total} ${census.total === 1 ? "emulator" : "emulators"}${hiddenMembers.length ? ` · ${hiddenMembers.length} hidden` : ""}` : "No active reroll"}
       action={<Link href="/fleet/history/" className="text-sm text-primary underline">Provisioning history</Link>}
     />
-    {error && <p role="alert" className="rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">{error}</p>}
+    {loading && <p role="status" className="text-sm text-muted-foreground">Loading fleet…</p>}
+    {(error || poolError) && <p role="alert" className="rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">{error || poolError}</p>}
     {pool?.operation && pool.operation.state !== "done" && <p role="status" aria-label="Reroll operation"
       className={cn("rounded-lg border p-3 text-sm", pool.operation.state === "failed" ? "border-danger bg-danger-surface text-danger" : "border-warn/40 bg-warn-surface text-warn")}>
       {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}${failureHint(pool.operation.error) ? ` - ${failureHint(pool.operation.error)}` : ""}` :
@@ -217,25 +158,14 @@ export default function RerollPage() {
           : `Adding ${pool.operation.target ?? "emulators"}… a stopped emulator boots first to check The Tower has never been opened`}
     </p>}
 
-    <RerollCard title="Pool overview" tone={census.attention ? "warn" : census.live ? "live" : undefined}>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="Devices" value={census.total} />
-        <StatTile label="Running" value={census.live} tone={census.live ? "live" : "none"} />
-        <StatTile label="Needs you" value={census.attention} tone={census.attention ? "warn" : "none"}
-          sub={census.attention ? "stopped until you act" : "nothing waiting"} subTone={census.attention ? "warn" : "none"} />
-        <StatTile label="Idle or moving" value={census.idle + census.transit}
-          sub={census.transit ? `${census.transit} in transition` : undefined} />
+    <RerollCard title="Fleet controls" tone={census.attention ? "warn" : census.live ? "live" : undefined}>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
+        <span><strong className="mr-1 text-lg text-foreground">{census.total}</strong> emulators</span>
+        <span><strong className="mr-1 text-lg text-live">{census.live}</strong> running</span>
+        <span><strong className="mr-1 text-lg text-warn">{census.attention}</strong> need attention</span>
+        <span><strong className="mr-1 text-lg text-foreground">{census.idle + census.transit}</strong> idle or moving</span>
+        {pressure && <span className="ml-auto flex items-center gap-2"><Pips states={slots} label={`${pressure.running} of ${pressure.limit} worker slots running`} />{pressure.available} worker slots free</span>}
       </div>
-
-      {/* Worker slots, as slots. "3 running, 1 starting, 0 available of 4"
-          was a sentence a reader had to parse; the pips are the same fact
-          countable in peripheral vision. */}
-      {pressure && <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-well/60 p-2.5">
-        <Pips states={slots} label={`${pressure.running} of ${pressure.limit} worker slots running`} />
-        <span className="font-mono text-[11px] text-muted-foreground">
-          {pressure.running} running · {pressure.starting} in transition or review · {pressure.available} available of {pressure.limit}
-        </span>
-      </div>}
 
       <div className="flex flex-wrap items-center gap-2">
         {run
@@ -267,7 +197,6 @@ export default function RerollPage() {
       </div>}
     </RerollCard>
 
-    {!!pool?.variant_comparison?.length && <VariantComparison rows={pool.variant_comparison} />}
 
     {!!allMembers.length && <RerollCard
       title="Devices"
@@ -293,28 +222,16 @@ export default function RerollPage() {
         </Button>
       </div>}
     >
-      {/* items-start: a stretched grid row gave a short card (a worker still
-          starting, with no plan yet) the height of the tall one beside it,
-          which read as a card with something missing rather than a card with
-          little to say. */}
-      {shown.length ? <div className="grid items-start gap-3 lg:grid-cols-2">{shown.map(member => {
-        const account = accountFor(member);
-        return <DeviceCard
-          key={member.name}
-          member={member}
-          accountKey={member.account_key}
-          accountId={account?.account_id ?? member.account_id}
-          collapsed={!!collapsed[member.name]}
-          onToggle={() => setCollapsed(current => ({ ...current, [member.name]: !current[member.name] }))}
-          onStart={() => void act(() => startReroll(member.name))}
-          onPause={() => void act(() => pauseReroll(member.name))}
-          onRemove={() => void act(() => removeRerollMember(member.name))}
-          onHide={() => void act(() => (member.hidden ? restoreRerollMembers : hideRerollMembers)([member.name]))}
-          onJournal={() => setJournalWorker(member.name)}
-          onOpenAccount={account ? () => choose(account.key) : undefined}
-          busy={busy || operating}
-        />;
-      })}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
+      {shown.length ? <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">{shown.map(member => (
+        <FleetLiveCard key={`${member.name}:${member.account_key}:${member.account_id}`} member={member} account={accountFor(member)} onInspect={() => inspect(member)}
+          actions={<>
+            <Button size="xs" variant="outline" disabled={busy || operating} onClick={() => void act(() => startReroll(member.name))}>Start</Button>
+            <Button size="xs" variant="outline" disabled={busy || operating} onClick={() => void act(() => pauseReroll(member.name))}>Pause</Button>
+            {deletable(member) && <Button size="xs" variant="ghost" disabled={busy || operating}
+              aria-label={member.hidden ? `Restore ${member.name}` : `Delete ${member.name} from the list`}
+              onClick={() => void act(() => (member.hidden ? restoreRerollMembers : hideRerollMembers)([member.name]))}>{member.hidden ? "Restore" : "Hide"}</Button>}
+          </>} />
+      ))}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
       <ConfirmDialog open={confirmingBulk} onOpenChange={setConfirmingBulk}
         title={`Delete ${bulkTargets.length} ${bulkTargets.length === 1 ? "device" : "devices"} from the list?`}
         footer={<><Button variant="outline" onClick={() => setConfirmingBulk(false)}>Cancel</Button>
@@ -323,33 +240,18 @@ export default function RerollPage() {
       </ConfirmDialog>
     </RerollCard>}
 
-    <RerollCard title="Reroll strategy">
-      <p className="text-sm text-muted-foreground">Each worker uses its own verified runs and purchases to choose the next Workshop upgrade. It checks the observed price and coin balance before spending. Below wave 20 it buys Damage and Attack Speed first, one more level of each per Coins/Wave level, then Coins/Wave up to 3, then the Thorns chain with two levels of Defense Absolute. It usually takes the top pick, but sometimes draws the next one down, so accounts differ a little.</p>
-      {/* The same three rungs every device card draws its progress against,
-          so the ladder on a card and the ladder in the explanation cannot
-          drift apart - they are one array in lib/rerollState.ts. */}
-      <ol className="grid gap-2 sm:grid-cols-3">
-        {LADDER.map((step, index) => (
-          <li key={step.id} className="relative overflow-hidden rounded-lg border border-border bg-well/40 p-3">
-            <div className="flex items-center gap-2">
-              <span className="flex size-5 items-center justify-center rounded-full bg-primary/15 font-mono text-[10px] font-bold text-primary">{index + 1}</span>
-              <strong className="text-[13px]">{step.title}</strong>
-              {step.target ? <span className="ml-auto font-mono text-[10px] text-faint-foreground">to W{step.target}</span> : null}
-            </div>
-            <p className="mt-1.5 text-xs font-medium">{step.goal}</p>
-            <p className="mt-1 text-xs text-muted-foreground">{step.blurb}</p>
-            <Meter label={`${step.title} rung`} value={1} max={1} tone={index === 2 ? "warn" : "primary"} className="mt-2.5 h-1" />
-          </li>
-        ))}
-      </ol>
-      <p className="text-sm text-muted-foreground">Each device card shows ten projected Workshop buys. Only the first is executable; every buy still needs a fresh price, balance and screen check. The order updates after confirmed progress.</p>
-    </RerollCard>
-
-    {!!members.length && <SharedWorkshopLedger members={members} />}
-    <PastRerolls refreshKey={run?.number} />
+    <div ref={inspectorRef}>
+      {inspected && <AccountInspector key={`${inspected.name}:${inspected.account_key}:${inspected.account_id}:${inspected.lease_id}`} member={inspected} onClose={closeInspection}>
+        <DeviceCard member={inspected} accountKey={inspected.account_key} accountId={inspected.account_id}
+          collapsed={!!collapsed[inspected.name]} onToggle={() => setCollapsed(current => ({ ...current, [inspected.name]: !current[inspected.name] }))}
+          onStart={() => void act(() => startReroll(inspected.name))} onPause={() => void act(() => pauseReroll(inspected.name))}
+          onRemove={() => void act(() => removeRerollMember(inspected.name))}
+          onHide={() => void act(() => (inspected.hidden ? restoreRerollMembers : hideRerollMembers)([inspected.name]))}
+          onJournal={() => { window.location.href = "/fleet/reroll/history/"; }} busy={busy || operating} />
+      </AccountInspector>}
+      {inspection && !inspected && !loading && <p role="status" className="rounded-lg border border-warn/30 bg-warn-surface p-3 text-sm text-warn">This account attempt is no longer active. Select an emulator to inspect its current account. <button className="underline" onClick={closeInspection}>Dismiss</button></p>}
+    </div>
     <NewRerollDialog open={dialog} onClose={() => setDialog(false)} run={run} members={pool?.members ?? []}
       candidates={pool?.candidates ?? []} busy={busy} error={dialogError} onConfirm={confirmNew} />
-    {journalError && <p role="status" className="text-sm text-muted-foreground">Shared journal unavailable: {journalError}</p>}
-    {!journalError && <Journal entries={entries} worker={journalWorker} onWorker={setJournalWorker} />}
   </div>;
 }

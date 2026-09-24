@@ -321,7 +321,7 @@ export function DeviceCard({
           <p className="text-sm text-muted-foreground">Workshop plan updates when this worker reaches the main menu.</p>
         ) : null}
 
-        <WorkerBattlePurchases accountKey={accountKey} />
+        <WorkerBattlePurchases accountKey={accountKey} expectedAccountId={member.account_id} />
 
         <details className="rounded-lg border border-border">
           <summary className="cursor-pointer px-2.5 py-1.5 text-xs font-medium text-muted-foreground">

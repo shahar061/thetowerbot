@@ -78,3 +78,19 @@ test("failed worker screenshot offers a retry", () => {
   fireEvent.click(screen.getByRole("button", { name: "Retry screen" }));
   expect(screen.getByAltText("Live screen of Air18")).toBeInTheDocument();
 });
+
+for (const pathname of ["/fleet/reroll", "/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/"]) {
+  test(`reroll workspace ${pathname} has no global account picker or runtime gate`, () => {
+    state.pathname = pathname;
+    render(<AccountShell><p>fleet content</p></AccountShell>);
+    expect(screen.queryByRole("combobox", { name: "Game account" })).not.toBeInTheDocument();
+    expect(screen.getByText("fleet content")).toBeInTheDocument();
+    expect(screen.queryByTestId("runtime")).not.toBeInTheDocument();
+  });
+}
+
+test("similar route prefix retains the single-account shell", () => {
+  state.pathname = "/fleet/rerolling/";
+  render(<AccountShell><p>content</p></AccountShell>);
+  expect(screen.getByRole("combobox", { name: "Game account" })).toBeInTheDocument();
+});

@@ -129,17 +129,24 @@ export const fetchRunPurchases = (id: number) =>
   getJson<RunPurchasePayload>(`/api/runs/${id}/purchases`, { cache: "no-store" });
 /** Shared Fleet reads name the worker explicitly; the top account selection
  * must never change which worker's purchases a row belongs to. */
-const workerRead = <T>(path: string, accountKey: string) =>
-  getJson<T>(path, { cache: "no-store", headers: { "x-account-scope": accountKey } }, false);
-export const fetchAccountWorkshopPurchases = (accountKey: string, before?: number) =>
+const workerRead = <T>(path: string, accountKey: string, expectedAccountId?: string): Promise<T> =>
+  getJson<T>(path, { cache: "no-store", headers: {
+    "x-account-scope": accountKey,
+    ...(expectedAccountId ? { "x-expected-account-id": expectedAccountId } : {}),
+  } }, false);
+export const fetchAccountRoadmap = (accountKey: string) =>
+  workerRead<MilestoneRoadmap>("/api/milestone-roadmap", accountKey);
+export const fetchAccountSnapshot = (accountKey: string) =>
+  workerRead<AccountSnapshot>("/api/account", accountKey);
+export const fetchAccountWorkshopPurchases = (accountKey: string, before?: number, expectedAccountId?: string) =>
   workerRead<LedgerPayload>(
     `/api/ledger?kind=WORKSHOP_BUY&limit=100${before !== undefined ? `&before=${before}` : ""}`,
-    accountKey,
+    accountKey, expectedAccountId,
   );
-export const fetchAccountRuns = (accountKey: string) =>
-  workerRead<RunRow[]>("/api/runs?limit=1", accountKey);
-export const fetchAccountRunPurchases = (accountKey: string, runId: number) =>
-  workerRead<RunPurchasePayload>(`/api/runs/${runId}/purchases`, accountKey);
+export const fetchAccountRuns = (accountKey: string, expectedAccountId?: string) =>
+  workerRead<RunRow[]>("/api/runs?limit=1", accountKey, expectedAccountId);
+export const fetchAccountRunPurchases = (accountKey: string, runId: number, expectedAccountId?: string) =>
+  workerRead<RunPurchasePayload>(`/api/runs/${runId}/purchases`, accountKey, expectedAccountId);
 export const fetchUnknown = () => getJson<Snapshot[]>("/api/unknown");
 export const fetchStats = () => getJson<StatsPayload>("/api/stats");
 export const fetchErrors = (limit = 100) => getJson<StoredEvent[]>(`/api/errors?limit=${limit}`);

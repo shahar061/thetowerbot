@@ -1,5 +1,7 @@
 "use client";
 
+import { usePathname } from "next/navigation";
+import { isRerollPath } from "./workspace";
 import { createContext, useContext, useEffect, useReducer, useState } from "react";
 import { feedReducer } from "./eventReducer";
 import { useAccountSelection } from "./AccountSelection";
@@ -26,6 +28,7 @@ const ConnectedContext = createContext(false);
  */
 export function EventStreamProvider({ children }: { children: React.ReactNode }) {
   const { selected } = useAccountSelection();
+  const reroll = isRerollPath(usePathname());
   const [events, dispatch] = useReducer(feedReducer, []);
   const [connected, setConnected] = useState(false);
   const key = selected?.key;
@@ -35,7 +38,7 @@ export function EventStreamProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     dispatch({ kind: "clear" });
     setConnected(false);
-    if (!key || !running || (dashboardUrl && new URL(dashboardUrl).origin !== window.location.origin)) return;
+    if (reroll || !key || !running || (dashboardUrl && new URL(dashboardUrl).origin !== window.location.origin)) return;
     let active = true;
     const source = new EventSource(`/api/events/stream?scope=${encodeURIComponent(key)}`);
     source.onopen = () => { if (active) setConnected(true); };
@@ -44,7 +47,7 @@ export function EventStreamProvider({ children }: { children: React.ReactNode })
       if (active) dispatch({ kind: "event", event: JSON.parse(message.data) as BotEvent });
     };
     return () => { active = false; source.close(); };
-  }, [key, running, dashboardUrl]);
+  }, [key, running, dashboardUrl, reroll]);
 
   return (
     <ConnectedContext.Provider value={connected}>
