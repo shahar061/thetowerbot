@@ -403,10 +403,11 @@ def test_the_opening_paces_attack_against_coins_per_wave() -> None:
     assert caps["defense_absolute"].allowance({}) == 2
 
 
-def test_a_build_without_level_caps_loads_with_none() -> None:
+def test_turtle_keeps_defense_absolute_eligible_for_five_purchases() -> None:
     build = builds.by_id("turtle")
     assert build is not None
-    assert dict(build.level_caps) == {}
+    assert set(build.level_caps) == {"defense_absolute"}
+    assert build.level_caps["defense_absolute"].allowance({}) == 5
 
 
 @pytest.mark.parametrize("cap,match", [
