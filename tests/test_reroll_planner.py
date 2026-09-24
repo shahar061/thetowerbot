@@ -95,6 +95,41 @@ def test_guide_avoids_range_and_prioritizes_turtle_after_wave_20() -> None:
     assert next_decision.upgrade_id in {"defense_absolute", "thorns"}
 
 
+@pytest.mark.parametrize("defense_buys", [1, 2, 3, 4])
+def test_turtle_keeps_investing_in_defense_absolute_before_its_fifth_purchase(
+    defense_buys: int,
+) -> None:
+    decision = choose_next(facts(
+        best_tier_1_wave=20, utility_spent_coins=350,
+        purchases={"unlock_defense_upgrades": 1, "unlock_thorns": 1,
+                   "defense_absolute": defense_buys, "thorns": 7},
+        values={"thorns": 34.},
+    ))
+    assert decision.upgrade_id == "defense_absolute"
+
+
+def test_turtle_returns_to_thorns_after_five_defense_absolute_buys() -> None:
+    decision = choose_next(facts(
+        best_tier_1_wave=20, utility_spent_coins=350,
+        purchases={"unlock_defense_upgrades": 1, "unlock_thorns": 1,
+                   "defense_absolute": 5, "thorns": 7},
+        values={"thorns": 34.},
+    ))
+    assert decision.upgrade_id == "thorns"
+
+
+def test_turtle_buys_affordable_defense_instead_of_saving_for_thorns() -> None:
+    decision = choose_next(facts(
+        best_tier_1_wave=25, utility_spent_coins=350,
+        purchases={"unlock_defense_upgrades": 1, "unlock_thorns": 1,
+                   "defense_absolute": 1, "thorns": 7},
+        values={"thorns": 7.}, wallet_coins=100,
+        prices={"defense_absolute": 75, "thorns": 409},
+    ))
+    assert (decision.upgrade_id, decision.state, decision.price) == (
+        "defense_absolute", "buy", 75)
+
+
 def test_verified_purchase_moves_the_plan_and_unverified_does_not() -> None:
     """Only a ledger-verified purchase moves the plan on.
 

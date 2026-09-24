@@ -104,7 +104,7 @@
     {
       "id": "turtle",
       "name": "Turtle",
-      "note": "The second stage: drop raw attack entirely and let Thorns do the killing while Defense Absolute absorbs the hits. Verbatim from fleet/reroll_planner.py:_TURTLE, which selects it from Tier 1 Wave 20 upward. It is a strict subset of the opening list minus damage, attack_speed, unlock_cash_bonuses, unlock_coin_bonuses and coins_per_wave, and unlock_defense_upgrades is weighted 10 here against the opening's 10.5 - that half point is the only weight that differs between the two, and it is preserved rather than tidied because it changes the order this build ranks in.",
+      "note": "The second stage from Tier 1 Wave 20: Thorns kills enemies while Defense Absolute absorbs hits. The weighted rows follow the original turtle plan, with a five-purchase Defense Absolute cap so its objective remains eligible beyond the first buy. The cap keeps early permanent defense in the plan without making it an unlimited coin sink.",
       "weights": [
         ["unlock_defense_upgrades", 10],
         ["defense_absolute", 16],
@@ -116,6 +116,9 @@
       ],
       "targets": {
         "thorns": 51.0
+      },
+      "level_caps": {
+        "defense_absolute": {"base": 5}
       },
       "focus": {
         "unlock_defense_upgrades": "Unlock Defense Absolute for early survival",
