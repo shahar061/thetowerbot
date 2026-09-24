@@ -63,6 +63,7 @@ import pages
 import screens
 import speed
 import transactions
+import unlocked_screen
 import vision
 from affordability import (
     AffordabilityCheck,
@@ -230,6 +231,9 @@ class TowerBot:
         # Whether this scan's IN_RUN preflight ran the backstop's full read,
         # successful or not; the menu readers run on such a scan too.
         self._battle_backstop_scan = False
+        # Consecutive scans device recovery has blocked while a walk was
+        # armed. See the note beside the recovery gate in run_once.
+        self._recovery_blocked_scans = 0
         self.runs = RunTracker(first_run_id)
         # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
@@ -674,6 +678,17 @@ class TowerBot:
             return False
         return panel_visible(reads.screen, boxes)
 
+    def _any_walk_active(self) -> bool:
+        return (self.collection.active or self.visit.active
+                or self.claim.active or self.milestones_claim.active
+                or self.cards_intro.active)
+
+    def _cancel_walks(self, reason: str, detail: str) -> None:
+        """End whichever walk is armed. Each cancel is idempotent."""
+        for walk in (self.collection, self.visit, self.claim,
+                     self.milestones_claim, self.cards_intro):
+            walk.cancel(reason, detail)
+
     def run_once(self, max_runs: int | None = None) -> bool:
         """One scan pass over the configured actions. True if anything clicked.
 
@@ -699,14 +714,13 @@ class TowerBot:
         # changed (spec P3); battle frames always read their bands fresh. So
         # does any scan with a walk or a shopping visit active: it tapped and
         # now reads what the tap did.
-        acting = (self.collection.active or self.visit.active or self.claim.active
-                  or self.milestones_claim.active or self.cards_intro.active
-                  or self.shopping.active)
+        acting = self._any_walk_active() or self.shopping.active
         reads = ocr.FrameReads(self.screen,
                                reuse=reading.state is not screens.ScreenState.IN_RUN
                                and not acting)
         self._battle_backstop_scan = False
         tutorial_claim = None
+        unlocked = None
         if self.supervisor is not None:
             observed_screen = reading.state.value
             if observed_screen == "UNKNOWN":
@@ -733,6 +747,10 @@ class TowerBot:
                     tutorial_claim = workshop_coin_claim(self.screen, boxes)
                     if tutorial_claim is not None:
                         observed_screen = "WORKSHOP_TUTORIAL_CLAIM"
+                if observed_screen == "UNKNOWN":
+                    unlocked = unlocked_screen.read(self.screen, boxes)
+                    if unlocked is not None:
+                        observed_screen = unlocked_screen.SCREEN_ID
                 online_required, session_conflict = popup_flags(boxes)
                 readable = True
             except Exception:  # noqa: BLE001 - an unreadable modal may cover an anchor
@@ -749,7 +767,30 @@ class TowerBot:
             )
             if recovery is not RecoveryState.READY:
                 self.autopilot.suspend("Device recovery blocked actions")
+                # A blocked pass returns before any walk's advance() runs, so
+                # no walk's own wait budget can ever run out here: an armed
+                # walk would report "running" for as long as recovery stays
+                # blocked - observed for hours behind an unrecognised
+                # full-screen card. Past the limit the walks are ended
+                # instead, the same four cancels the runner makes on a stop.
+                if self._any_walk_active():
+                    self._recovery_blocked_scans += 1
+                    if self._recovery_blocked_scans > config.RECOVERY_BLOCKED_WALK_LIMIT:
+                        self._cancel_walks(
+                            "recovery_blocked",
+                            "Device recovery blocked every scan for too long; "
+                            "the walk was ended without finishing.")
+                        self._recovery_blocked_scans = 0
                 return False
+            self._recovery_blocked_scans = 0
+            if unlocked is not None:
+                if settings.paused:
+                    return False
+                logger.info("Dismissing a content unlock card: %s", unlocked.caption)
+                self.device.click(*unlocked.ok)
+                self.bus.publish(events.Tapped(
+                    action="unlocked:ok", x=unlocked.ok[0], y=unlocked.ok[1], score=1.0))
+                return True
             if tutorial_claim is not None:
                 if settings.paused:
                     return False

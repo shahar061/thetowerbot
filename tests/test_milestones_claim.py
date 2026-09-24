@@ -678,6 +678,71 @@ def test_supervised_1920_claim_walk_uses_live_next_and_claim_positions(
                                (540, 1651), (540, 1626)]
 
 
+class _UnknownBlocks:
+    """The live supervisor's rule that matters here: UNKNOWN never acts."""
+    current_account = 'account-a'
+
+    def observe(self, **evidence: Any) -> Any:
+        from supervisor import RecoveryState
+        return (RecoveryState.BLOCKED if evidence['screen'] == 'UNKNOWN'
+                else RecoveryState.READY)
+
+
+def test_claim_all_paying_an_unlock_card_taps_its_ok(
+        bot_on_main_menu: Any, monkeypatch: Any) -> None:
+    """Claim All on an `Unlock Lab` reward opens the full-screen "Lab
+    unlocked" card instead of the reward modal. No anchor names that card, so
+    recovery used to block on it every pass and the worker froze there for
+    hours; it is now named and its OK tapped."""
+    import ocr
+    from strategy import Shopping
+
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    bot.controls.apply({'tap_jitter_px': 0, 'tap_delay': 0})
+    bot.supervisor = _UnknownBlocks()
+    frames = {name: image(name) for name in (
+        'menu_milestones_entry', 'menu_milestones_claimable', 'menu_content_unlocked')}
+    monkeypatch.setattr(ocr, 'read', lambda *a, **k: recorded(
+        next(name for name, frame in frames.items() if bot._screen is frame)))
+    assert bot.milestones_claim.request()
+    for name in frames:
+        bot._screen = frames[name]
+        bot.run_once()
+    assert bot.device.taps == [MILESTONES_CONTROL, CLAIM_ALL_TAP, (541, 1891)]
+    assert bot.milestones_claim.active
+
+
+def test_a_walk_blocked_by_recovery_is_ended_rather_than_left_running(
+        bot_on_main_menu: Any, monkeypatch: Any) -> None:
+    """A blocked pass never reaches advance(), so the walk's own budget can't
+    end it - some unrecognised card would otherwise hold it 'running' for as
+    long as the card stays up."""
+    import ocr
+    from strategy import Shopping
+    from supervisor import RecoveryState
+
+    class AlwaysBlocks:
+        current_account = 'account-a'
+
+        def observe(self, **evidence: Any) -> RecoveryState:
+            return RecoveryState.BLOCKED
+
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    bot.controls.apply({'tap_jitter_px': 0, 'tap_delay': 0})
+    bot.supervisor = AlwaysBlocks()
+    bot._screen = image('menu_main')
+    monkeypatch.setattr(ocr, 'read', lambda *a, **k: ())
+    assert bot.milestones_claim.request()
+    for _ in range(config.RECOVERY_BLOCKED_WALK_LIMIT):
+        bot.run_once()
+    assert bot.milestones_claim.active
+    bot.run_once()
+    ended = bot.milestones_claim.snapshot()
+    assert ended['status'] == 'failed'
+    assert ended['result']['reason'] == 'recovery_blocked'
+    assert bot.device.taps == []
+
+
 def test_a_pause_cancels_a_half_walked_milestones_claim(
         bot_on_main_menu: Any, monkeypatch: Any) -> None:
     """The third cancel site, in tower_bot's guard block - NOT in the runner,

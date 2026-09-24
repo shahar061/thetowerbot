@@ -153,6 +153,33 @@ def test_pausing_the_bot_ends_a_visit_in_flight(bot: Any, monkeypatch) -> None:
     assert walk_taps(bot) == [CARDS_TAB]
 
 
+def test_recovery_that_keeps_blocking_ends_the_cards_visit(
+        bot: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recovery returns before the visit can spend its own wait budget."""
+    from supervisor import RecoveryState
+
+    class AlwaysBlocks:
+        current_account = 'account-a'
+
+        def observe(self, **evidence: Any) -> RecoveryState:
+            return RecoveryState.BLOCKED
+
+    bot.supervisor = AlwaysBlocks()
+    bot._screen = image('menu_main')
+    monkeypatch.setattr(ocr, 'read', lambda *args, **kwargs: ())
+    assert bot.cards_intro.request()
+    for _ in range(config.RECOVERY_BLOCKED_WALK_LIMIT):
+        bot.run_once()
+    assert bot.cards_intro.active
+
+    bot.run_once()
+
+    result = bot.cards_intro.snapshot()['result']
+    assert result['status'] == 'failed'
+    assert result['reason'] == 'recovery_blocked'
+    assert bot.device.taps == []
+
+
 # --- the popup detector ---------------------------------------------------
 
 @pytest.mark.parametrize('name', ['menu_main', 'menu_cards', 'menu_cards_stocked', 'main_menu'])
