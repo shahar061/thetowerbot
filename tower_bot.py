@@ -31,6 +31,9 @@ from milestones_screen import MilestonesReadings, parse_frame as parse_milestone
 from missions_claim import MissionsClaim
 from missions_screen import MissionsReadings
 from missions_visit import MissionsVisit
+from lab_plan import LabDecision
+from lab_visit import LabVisit
+from labs import LabsState
 from account_state import AccountState, AccountRepository
 from account_screens import ScreenReadings
 
@@ -190,6 +193,11 @@ class TowerBot:
         self.autopilot = BattleAutopilot(autopilot_state, bus, account_state)
         self.shopping.account_state = account_state
         self.reroll_progress = reroll_progress
+        self.lab_visit: LabVisit | None = (LabVisit(templates)
+                                          if reroll_progress is not None else None)
+        self.lab_state: LabsState | None = (LabsState(account_state)
+                                          if reroll_progress is not None else None)
+        self._last_lab_confirmation: tuple[float | None, int, int] | None = None
         self._reroll_shopping_policy = None
         if reroll_progress is not None:
             self.shopping.reroll_observe_price = reroll_progress.observe_price
@@ -755,13 +763,42 @@ class TowerBot:
     def _any_walk_active(self) -> bool:
         return (self.collection.active or self.visit.active
                 or self.claim.active or self.milestones_claim.active
-                or self.cards_intro.active)
+                or self.cards_intro.active
+                or (self.lab_visit is not None and self.lab_visit.active))
 
     def _cancel_walks(self, reason: str, detail: str) -> None:
         """End whichever walk is armed. Each cancel is idempotent."""
         for walk in (self.collection, self.visit, self.claim,
                      self.milestones_claim, self.cards_intro):
             walk.cancel(reason, detail)
+        if self.lab_visit is not None:
+            self.lab_visit.cancel(reason)
+
+    def _finish_lab_visit(self, result: Any) -> None:
+        """Only verified starts become account coin debits."""
+        if self.reroll_progress is None:
+            return
+        decision = result.decision
+        if result.status == "started" and result.confirmed_job is not None:
+            self.reroll_progress.note_lab_observation(LabDecision(
+                "wait_running", job_completes_at=result.confirmed_job.completes_at))
+            if (decision.wallet_coins is not None and decision.price is not None
+                    and result.observed_coin_spend == decision.price):
+                key = (result.confirmed_job.completes_at,
+                       decision.price, decision.wallet_coins)
+                if key != self._last_lab_confirmation:
+                    self._last_lab_confirmation = key
+                    if self.lab_state is not None:
+                        for observation in result.confirmed_readings:
+                            self.lab_state.observe(observation)
+                    self.bus.publish(events.LabResearchStarted(
+                        concept_id="labs.game-speed", price=decision.price,
+                        coins_before=decision.wallet_coins,
+                        coins_after=decision.wallet_coins - decision.price,
+                        completes_at=result.confirmed_job.completes_at))
+        else:
+            self.reroll_progress.note_lab_observation(decision)
+        logger.info("Lab 1 visit ended: %s (%s)", result.status, result.reason)
 
     def run_once(self, max_runs: int | None = None) -> bool:
         """One scan pass over the configured actions. True if anything clicked.
@@ -1003,6 +1040,38 @@ class TowerBot:
                 wallet=None,
             ))
             return False
+
+        # A Lab 1 visit owns the device until it returns to Battle. Its OCR
+        # reader and state machine authorize at most one measured tap here.
+        if self.lab_visit is not None and self.lab_visit.active:
+            self.controls.drain()
+            self.wallet = None
+            self.autopilot.suspend("Lab 1 research visit holds actions")
+            if settings.paused:
+                self.lab_visit.cancel("paused")
+                self.bus.publish(events.Skipped(
+                    action="*", reason="paused", detail="Lab visit cancelled"))
+                acted = False
+            else:
+                try:
+                    lab_boxes = reads.full()
+                except Exception:
+                    lab_boxes = ()
+                result = self.lab_visit.advance(
+                    self.screen, lab_boxes, self.device, time.monotonic())
+                action = self.lab_visit.last_tap
+                acted = action is not None
+                if action is not None:
+                    self.bus.publish(events.Tapped(
+                        action=f"lab:{action[0]}", x=action[1], y=action[2], score=1.0))
+                if result is not None:
+                    self._finish_lab_visit(result)
+            if self.frames is not None:
+                self.frames.set_boxes([])
+            self.bus.publish(events.ScanCompleted(
+                screen=state.value, duration_ms=(time.monotonic() - started) * 1000,
+                wallet=None))
+            return acted
 
         # Account overlays can retain a MAIN_MENU anchor underneath them. This
         # passive reader owns the frame before every possible action path,
@@ -1473,10 +1542,18 @@ class TowerBot:
             self._mail_badge = menu_badges.read_badge(
                 self.screen, self.templates, 'mail') is not None
             self._last_menu_badge_check_at = time.time()
-            # The first Cards visit goes before everything else: it is owed
-            # once, pays gems, and takes a handful of frames.
+            # The first Cards visit is owed once and pays gems. Reroll then
+            # claims rewards, checks Lab 1, and only then enters Workshop.
             if self._offer_cards_intro():
                 logger.info("Armed the first Cards visit from the main menu.")
+            elif self.lab_visit is not None:
+                armed = self._offer_claim(settings)
+                if armed is not None:
+                    logger.info("Armed a %s claim from the main menu.", armed)
+                elif self.reroll_progress.lab_due() and self.lab_visit.request():
+                    logger.info("Armed Lab 1 Game Speed check before Workshop.")
+                else:
+                    self.shopping.begin(shopping_policy, self.runs.completed)
             elif not self.shopping.begin(shopping_policy, self.runs.completed):
                 armed = self._offer_claim(settings)
                 if armed is not None:
@@ -1489,6 +1566,7 @@ class TowerBot:
             and not visiting and not self.shopping.active
             and not self.claim.active and not self.milestones_claim.active
             and not self.cards_intro.active
+            and not (self.lab_visit is not None and self.lab_visit.active)
         ):
             # Navigator taps BATTLE on MAIN_MENU on a cooldown - left alone
             # it would start a run in the middle of a shopping errand.
@@ -1525,7 +1603,10 @@ class TowerBot:
                              and self._menu_badge_check_due(settings))
                          or (state is screens.ScreenState.GAME_OVER
                              and self.reroll_progress is not None
-                             and self.reroll_progress.stats_due())),
+                             and self.reroll_progress.stats_due())
+                         or (state is screens.ScreenState.GAME_OVER
+                             and self.reroll_progress is not None
+                             and self.reroll_progress.lab_due())),
                 # The way off a menu page. NAV_BUTTONS is keyed by
                 # ScreenState, which has no member for one, so the bot could
                 # neither act on the workshop (the loop above gates on

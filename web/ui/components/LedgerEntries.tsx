@@ -13,6 +13,7 @@ const KIND_TONE: Record<string, string> = {
   // balance that moved on its own.
   CLAIM_UNCERTAIN: "bg-warn-surface text-warn",
   WORKSHOP_BUY: "bg-chart-2/15 text-chart-2",
+  LAB: "bg-chart-2/15 text-chart-2",
   CARD_BUY: "bg-chart-2/15 text-chart-2",
   RUN_PAYOUT: "bg-live-surface text-live",
   MISSION_CLAIM: "bg-live-surface text-live",

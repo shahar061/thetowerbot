@@ -564,7 +564,11 @@ def test_every_enabled_capability_declares_replay_coverage_or_an_owned_gap() -> 
     # A gap is work, so it carries an owner and never quietly re-enters
     # 'unsupported' - the screen is read, it is only one state that has no
     # example.
-    assert coverage['gaps'] == {'account.stats.tiers.unavailable': 'B08'}
+    assert coverage['gaps'] == {
+        'account.stats.tiers.unavailable': 'B08',
+        'labs.home.locked': 'B08',
+        'labs.research.affordable': 'L02',
+    }
     assert not gapped & set(capabilities['unsupported'])
 
 

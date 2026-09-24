@@ -23,6 +23,7 @@ from fleet.reroll_planner import (FILLER_SHARE, STARTER_MAX_PRICE, UTILITY_CEILI
 from fleet.reroll_variants import read_variant
 from fleet.workshop_prices import WorkshopPrices, PriceQuote, catalog_price
 from fleet.reroll_survival import prioritize_survival
+from lab_plan import LabCadence, LabDecision
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
@@ -45,6 +46,13 @@ class RerollProgress:
         self._battle_stage: str | None = None
         self._last_stats_attempt = 0.0
         self._last_skip_note: str | None = None
+        self.lab_cadence = LabCadence(self.root, account_id)
+
+    def lab_due(self, now: float | None = None) -> bool:
+        return self.lab_cadence.due(time.time() if now is None else now)
+
+    def note_lab_observation(self, decision: LabDecision, now: float | None = None) -> None:
+        self.lab_cadence.note(decision, time.time() if now is None else now)
 
     def lifetime_record(self) -> dict[str, object] | None:
         return read_lifetime(self.root, self.account_id)

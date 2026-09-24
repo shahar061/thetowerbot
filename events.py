@@ -66,6 +66,17 @@ class BattlePurchased(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class LabResearchStarted(Event):
+    """Lab 1 showed Game Speed running after an exact coin-balance debit."""
+
+    concept_id: str
+    price: int
+    coins_before: int
+    coins_after: int
+    completes_at: float | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class AutopilotDecided(Event):
     """The battle autopilot changed what it is doing, and why.
 

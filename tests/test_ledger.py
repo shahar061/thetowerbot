@@ -11,6 +11,27 @@ import events
 import ledger
 
 
+def test_confirmed_game_speed_research_debits_coins_once() -> None:
+    (line,) = ledger.classify(events.LabResearchStarted(
+        concept_id="labs.game-speed", price=300, coins_before=400,
+        coins_after=100, completes_at=5000., seq=14, ts=1000.))
+    assert (line.kind, line.item, line.currency, line.delta) == (
+        "LAB", "Game Speed", "coins", -300)
+    assert line.observed == 400
+    assert line.detail["coins_after"] == 100
+
+
+def test_game_speed_research_preserves_the_verified_coin_balance(tmp_path: Path) -> None:
+    write, _ = writer(tmp_path)
+    lines = write.lines_for(events.LabResearchStarted(
+        concept_id="labs.game-speed", price=300, coins_before=613,
+        coins_after=313, completes_at=5000., seq=15, ts=1000.))
+    assert len(lines) == 1
+    assert lines[0].kind == "LAB"
+    assert lines[0].balance_after == 313
+    assert "LabResearchStarted" in ledger._REPLAYABLE
+
+
 def test_a_workshop_purchase_debits_coins() -> None:
     (line,) = ledger.classify(
         events.Purchased(item="Health", category="DEFENSE", price=75,
@@ -690,7 +711,7 @@ _LEDGER_TS = Path(__file__).resolve().parent.parent / "web" / "ui" / "lib" / "le
 
 # ledger.KINDS ends with six kinds nothing emits yet. The page deliberately
 # leaves them out: a chip for them could only ever return nothing.
-_RESERVED_KINDS = {"LAB", "CARD_SLOT", "MODULE", "RELIC", "UW", "MANUAL"}
+_RESERVED_KINDS = {"CARD_SLOT", "MODULE", "RELIC", "UW", "MANUAL"}
 
 
 def _ts_strings(opener: str) -> set[str]:
