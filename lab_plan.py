@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+import config
 from lab_screen import LabHomeReading, LabPickerReading
 
 
@@ -18,6 +19,7 @@ class LabDecision:
     price: int | None = None
     wallet_coins: int | None = None
     job_completes_at: float | None = None
+    game_speed_level: int | None = None
 
 
 def decide(slot: LabHomeReading, row: LabPickerReading | None) -> LabDecision:
@@ -40,7 +42,7 @@ def decide(slot: LabHomeReading, row: LabPickerReading | None) -> LabDecision:
     if entry.status == "maxed" or (type(entry.level) is int
                                     and type(entry.max_level) is int
                                     and entry.level >= entry.max_level):
-        return LabDecision("done")
+        return LabDecision("done", game_speed_level=entry.level)
     if type(entry.level) is not int or entry.level < 0:
         return LabDecision("unknown")
     if (entry.cost is None or not math.isfinite(entry.cost) or entry.cost < 0
@@ -51,10 +53,12 @@ def decide(slot: LabHomeReading, row: LabPickerReading | None) -> LabDecision:
     if type(wallet) is not int or wallet < 0:
         return LabDecision("unknown")
     if wallet < price:
-        return LabDecision("wait_coins", price=price, wallet_coins=wallet)
+        return LabDecision("wait_coins", price=price, wallet_coins=wallet,
+                           game_speed_level=entry.level)
     if entry.status != "available" or row.buy_point is None:
         return LabDecision("unknown", price=price, wallet_coins=wallet)
-    return LabDecision("start", price=price, wallet_coins=wallet)
+    return LabDecision("start", price=price, wallet_coins=wallet,
+                       game_speed_level=entry.level)
 
 
 class LabCadence:
@@ -77,12 +81,31 @@ class LabCadence:
         record = self._record()
         if record is None:
             return True
+        # Older cadence files have no level evidence. Revisit a previously
+        # readable picker once so the speed target can be recovered.
+        if (record.get("kind") in {"wait_coins", "done"}
+                and type(record.get("game_speed_level")) is not int):
+            return True
         if record.get("kind") == "done":
             return False
         next_check = record.get("next_check_at")
         return not isinstance(next_check, (int, float)) or now >= next_check
 
+    def speed_target(self) -> float:
+        """Aim at x2.0 only after a later Game Speed row proves Lv.1 finished."""
+        record = self._record()
+        level = record.get("game_speed_level") if record is not None else None
+        ceiling = 2.0 if type(level) is int and level >= 2 else 1.5
+        return max(value for value in config.TARGET_SPEEDS if value <= ceiling)
+
     def note(self, decision: LabDecision, now: float) -> None:
+        previous = self._record()
+        prior_level = previous.get("game_speed_level") if previous is not None else None
+        prior_level = prior_level if type(prior_level) is int and prior_level >= 1 else None
+        new_level = (decision.game_speed_level if type(decision.game_speed_level) is int
+                     and decision.game_speed_level >= 1 else None)
+        observed_level = max((level for level in (prior_level, new_level)
+                              if level is not None), default=None)
         if decision.kind == "done":
             next_check = None
         elif decision.kind == "wait_running" and decision.job_completes_at is not None:
@@ -93,7 +116,8 @@ class LabCadence:
             next_check = now + 300.
         payload = {"account_id": self.account_id, "kind": decision.kind,
                    "next_check_at": next_check, "observed_at": now,
-                   "wallet_coins": decision.wallet_coins, "price": decision.price}
+                   "wallet_coins": decision.wallet_coins, "price": decision.price,
+                   "game_speed_level": observed_level}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
         try:

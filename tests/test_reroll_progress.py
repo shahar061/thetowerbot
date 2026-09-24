@@ -28,7 +28,8 @@ def test_lab_check_cadence_survives_worker_restart(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     assert progress.lab_due(now=1000.)
     progress.note_lab_observation(
-        LabDecision("wait_coins", price=300, wallet_coins=122), now=1000.)
+        LabDecision("wait_coins", price=300, wallet_coins=122,
+                    game_speed_level=1), now=1000.)
     restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
     assert not restarted.lab_due(now=1100.)
     assert restarted.lab_due(now=1300.)

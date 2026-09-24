@@ -116,6 +116,20 @@ def test_finds_a_gem_anywhere_on_the_ring():
         assert floating_gem.find(screen, anchor) is not None, centre
 
 
+def test_finds_gem_centre_at_bottom_of_orbit_without_a_display_cutout():
+    # On this layout the cash HUD begins at y=35. The old search ended at
+    # y=1015 and saw only the top edge of a gem centered near y=1040.
+    screen = frame("in_run_wallet_no_cutout.png")
+    anchor = anchor_of(screen)
+    paint_gem(screen, (540, 1040))
+
+    sighting = floating_gem.find(screen, anchor)
+
+    assert sighting is not None
+    assert abs(sighting.point[0] - 540) <= 6
+    assert abs(sighting.point[1] - 1040) <= 6
+
+
 # -- the negative case ------------------------------------------------------
 
 

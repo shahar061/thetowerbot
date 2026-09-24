@@ -33,6 +33,7 @@ from missions_screen import MissionsReadings
 from missions_visit import MissionsVisit
 from lab_plan import LabDecision
 from lab_visit import LabVisit
+import lab_screen
 from labs import LabsState
 from account_state import AccountState, AccountRepository
 from account_screens import ScreenReadings
@@ -587,7 +588,7 @@ class TowerBot:
             self.screen,
             self.device,
             self.templates,
-            target=(max(config.TARGET_SPEEDS) if self.reroll_progress is not None
+            target=(self.reroll_progress.speed_target() if self.reroll_progress is not None
                     else settings.strategy.target_speed),
             anchor=anchor,
             tuning=settings.strategy,
@@ -781,7 +782,8 @@ class TowerBot:
         decision = result.decision
         if result.status == "started" and result.confirmed_job is not None:
             self.reroll_progress.note_lab_observation(LabDecision(
-                "wait_running", job_completes_at=result.confirmed_job.completes_at))
+                "wait_running", job_completes_at=result.confirmed_job.completes_at,
+                game_speed_level=decision.game_speed_level))
             if (decision.wallet_coins is not None and decision.price is not None
                     and result.observed_coin_spend == decision.price):
                 key = (result.confirmed_job.completes_at,
@@ -857,6 +859,16 @@ class TowerBot:
                     info_dismiss = battle_upgrade_info.dismiss_point(boxes, self.screen.shape)
                     if info_dismiss is not None:
                         observed_screen = "BATTLE_UPGRADE_INFO"
+                # Lab dialogs have no reliable pages.py anchor. While a Lab
+                # visit owns them, name the OCR-verified page even if an
+                # underlying Labs anchor matched through the dialog.
+                if self.lab_visit is not None and self.lab_visit.active:
+                    if lab_screen.read_confirmation(self.screen, boxes).page:
+                        observed_screen = "LAB_CONFIRMATION"
+                    elif lab_screen.read_picker(self.screen, boxes).page:
+                        observed_screen = "LAB_PICKER"
+                    elif lab_screen.read_home(self.screen, boxes).page:
+                        observed_screen = "LABS"
                 if observed_screen == "UNKNOWN":
                     # Recovery preflight runs before MilestonesReadings.scan.
                     # A valid ladder or reward modal must be named here or the
@@ -1462,7 +1474,17 @@ class TowerBot:
                 policy=settings.strategy, now=time.time(),
                 run_id=self.runs.current_id,
             ):
-                clicked = True
+                # The gem tap changed the game after this frame was captured.
+                # A purchase or navigation tap based on the same image would
+                # race it, and the supervisor rightly rejects that second
+                # action until a new frame confirms the first one.
+                if self.frames is not None:
+                    self.frames.set_boxes([])
+                self.bus.publish(events.ScanCompleted(
+                    screen=state.value, duration_ms=(time.monotonic() - started) * 1000,
+                    wallet=self.wallet,
+                ))
+                return True
 
             # The strategy's rows, in the strategy's order - order IS
             # priority. Before, this walked config.ACTIONS and used the
