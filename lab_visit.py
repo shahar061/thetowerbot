@@ -92,6 +92,10 @@ class LabVisit:
         self.last_tap = None
         return True
 
+    def tab_unlocked(self, screen: Image) -> bool:
+        """Return whether the actionable Labs tab is visible on this frame."""
+        return self._match(screen, "nav/tab_labs.png") is not None
+
     def cancel(self, reason: str) -> None:
         self._state = "idle"
         self._outcome = LabVisitResult("cancelled", reason, LabDecision("unknown"))

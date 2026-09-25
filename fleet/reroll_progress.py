@@ -75,10 +75,47 @@ class RerollProgress:
 
     def lab_due(self, now: float | None = None, *,
                 wallet_coins: int | None = None,
-                wallet_gems: int | None = None) -> bool:
+                wallet_gems: int | None = None,
+                lab_unlocked: bool = False) -> bool:
         moment = time.time() if now is None else now
+        if not self.labs_milestone_claimed():
+            return False
+        record, _ = self.lab_cadence.route_observation()
+        if (not lab_unlocked and record is not None and record.get("kind") == "locked"
+                and isinstance(record.get("next_check_at"), (int, float))
+                and moment < record["next_check_at"]):
+            return False
         return (self.lab_cadence.slot2_due(moment, wallet_gems)
                 or self.lab_cadence.due(moment, wallet_coins))
+
+    def note_labs_unavailable(self, now: float | None = None) -> None:
+        self.lab_cadence.note_unavailable(time.time() if now is None else now)
+
+    def labs_milestone_claimed(self) -> bool:
+        """Labs checks are meaningful only after T1 wave 30 and its claim."""
+        path = self.root / "tower_bot.db"
+        if not path.is_file() or db.bound_account(path) != self.account_id:
+            return False
+        with db.reader(path) as connection:
+            best_wave = connection.execute(
+                "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL"
+            ).fetchone()[0]
+            if not isinstance(best_wave, int) or best_wave < 30:
+                return False
+            rows = connection.execute(
+                "SELECT item FROM ledger WHERE kind='MILESTONE_CLAIM' "
+                "AND dry_run=0 AND item IS NOT NULL"
+            ).fetchall()
+        aliases = {"LABS", "UNLOCK LAB", "UNLOCK LABS"}
+        return any(str(row[0]).strip().upper() in aliases for row in rows)
+
+    def initial_workshop_due(self) -> bool:
+        """A new reroll account should visit Workshop for its tutorial grant."""
+        try:
+            _, purchases = self._history()
+        except (OSError, ValueError):
+            return False
+        return not purchases
 
     def note_lab_slot2(self, status: str, wallet_gems: int | None,
                        now: float | None = None) -> None:
@@ -364,6 +401,15 @@ class RerollProgress:
             self.route_policy_revision = route.revision if route is not None else None
             plan = self.decision()
         self._publish(plan)
+        # A fresh reroll account must enter Workshop once to claim its 50-coin
+        # tutorial grant. Keep this first visit bounded to the starter budget;
+        # the buyer still checks the live wallet and price before every tap.
+        if (self.initial_workshop_due() and plan.stage != "strategy_observe"
+                and plan.item is not None and plan.category is not None):
+            return replace(base, enabled=base.enabled,
+                           workshop=(ShoppingRule(plan.item, plan.category),),
+                           allow_unlocks=True, coin_budget=50, coin_budget_pct=None,
+                           cards=replace(base.cards, enabled=False))
         if plan.stage == "strategy_observe":
             ids = self._route_evaluation.trace.observation_ids
             rows = tuple(ShoppingRule(upgrades.by_id(uid).name, upgrades.by_id(uid).category)
