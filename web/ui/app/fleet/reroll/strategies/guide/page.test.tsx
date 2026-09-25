@@ -28,6 +28,12 @@ test("walkthrough scenarios highlight the active block and reason", () => {
   expect(within(workshop).getByRole("status")).toHaveTextContent(/80% of the Thorns price/);
 });
 
+test("Turtle objectives step lists the economy tail after Thorns", () => {
+  render(<StrategyGuidePage />);
+  const workshop = screen.getByRole("region", { name: /Turtle · Workshop/i });
+  expect(within(workshop).getByText("Unlock Defense → Def. Abs (5) → Unlock Thorns → Thorns → 51%, then Cash Bonus · Coins/Kill · Health")).toBeInTheDocument();
+});
+
 test("guide links back to the studio", () => {
   render(<StrategyGuidePage />);
   // Ruling: repo uses trailingSlash: true (web/ui/next.config), so internal links must keep the trailing slash.

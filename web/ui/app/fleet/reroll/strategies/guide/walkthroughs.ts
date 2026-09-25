@@ -5,7 +5,7 @@ export type Walkthrough = { id: string; title: string; lane: string; steps: Walk
 export const WALKTHROUGHS: Walkthrough[] = [
   { id: "turtle-workshop", title: "Turtle · Workshop", lane: "Coins, between runs", steps: [
       { id: "economy", title: "Budget · Early economy", detail: "Save for goal → weighted utility pool, 350 target / 400 ceiling" },
-      { id: "objectives", title: "Save for goal · Objectives", detail: "Unlock Defense → Def. Abs (5) → Unlock Thorns → Thorns → 51%" },
+      { id: "objectives", title: "Save for goal · Objectives", detail: "Unlock Defense → Def. Abs (5) → Unlock Thorns → Thorns → 51%, then Cash Bonus · Coins/Kill · Health" },
       { id: "cheap", title: "While saving for Thorns · Cheap defense", detail: "Def. Abs at ≤ 80% of the Thorns price" },
       { id: "filler", title: "While saving · Filler", detail: "Utility / attack at ≤ 20% of wallet, capped" },
     ], scenarios: [
