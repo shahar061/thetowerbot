@@ -76,6 +76,8 @@ export function patchWorkshop(state: DraftState, worker: string | null, accountI
 export function draftErrors(route: BuildRouteDocument, knownIds: Set<string>): string[] {
   const rule = route.baseline.workshop;
   const errors: string[] = [];
+  if (!Number.isInteger(route.baseline.gems.spend_limit_pct) || route.baseline.gems.spend_limit_pct < 0 || route.baseline.gems.spend_limit_pct > 100)
+    errors.push("Gem spend limit must be between 0 and 100%.");
   if ([rule.coin_spend_limit_pct, rule.draw_chance_pct].some(value => !Number.isInteger(value) || value < 0 || value > 100))
     errors.push("Percentages must be between 0 and 100.");
   if (Object.values(rule.weights).some(value => !Number.isInteger(value) || value < 1))

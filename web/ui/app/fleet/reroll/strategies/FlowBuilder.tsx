@@ -7,6 +7,8 @@ import { fetchBuildRouteRevisions, previewBuildRoute, previewBuildRouteRebind, p
 import { beginDraft, draftErrors, patchWorkshop, resetOverride, scopedWorkshop } from "./RouteDraft";
 import { RouteInspector } from "./RouteInspector";
 import { BattleFlow } from "./BattleFlow";
+import { ResourceBlocks } from "./ResourceBlocks";
+import styles from "./routeCanvas.module.css";
 
 type MemberIdentity = { name: string; account_id?: string | null; hidden?: boolean };
 
@@ -29,6 +31,7 @@ export function FlowBuilder({ saved, catalog, members, onPublished }: {
   const [restoreRevision, setRestoreRevision] = useState<number | null>(null);
   const [focusAfterMove, setFocusAfterMove] = useState<{ id: string; direction: "up" | "down" } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [lane, setLane] = useState<"workshop" | "battle" | "gems" | "labs">("workshop");
   const [scope, setScope] = useState("fleet");
   const [rebind, setRebind] = useState<BuildRouteRebindPreview | null>(null);
   const scopedMember = members.find(member => member.name === scope);
@@ -74,6 +77,20 @@ export function FlowBuilder({ saved, catalog, members, onPublished }: {
     [ids[from], ids[to]] = [ids[to], ids[from]];
     editWorkshop({ priority_ids: ids, mode: "priorities" });
     setFocusAfterMove({ id, direction: direction < 0 ? "down" : "up" });
+  }
+
+  function addPriority(id: string, before?: string): void {
+    if (!byId.has(id)) return;
+    const targetIndex = before ? workshop.priority_ids.indexOf(before) : -1;
+    const ids = workshop.priority_ids.filter(value => value !== id);
+    ids.splice(targetIndex < 0 ? ids.length : Math.min(targetIndex, ids.length), 0, id);
+    editWorkshop({ priority_ids: ids, banned_upgrade_ids: workshop.banned_upgrade_ids.filter(value => value !== id), mode: "priorities" });
+  }
+
+  function addBan(id: string): void {
+    if (!byId.has(id)) return;
+    editWorkshop({ banned_upgrade_ids: [...new Set([...workshop.banned_upgrade_ids, id])].sort(),
+      priority_ids: workshop.priority_ids.filter(value => value !== id) });
   }
 
   async function previewRebind(worker: string, oldAccount: string, newAccount: string): Promise<void> {
@@ -143,7 +160,7 @@ export function FlowBuilder({ saved, catalog, members, onPublished }: {
     } finally { setBusy(false); }
   }
 
-  return <section aria-label="Flow Builder" className="space-y-4">
+  return <section aria-label="Flow Builder" className={`${styles.studio} space-y-4`}>
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-primary/30 bg-card p-4">
       <div><p className="text-xs font-semibold uppercase tracking-widest text-primary">Build Route · draft</p>
         <h2 className="font-heading text-xl font-bold">Design the next decision</h2>
@@ -171,28 +188,31 @@ export function FlowBuilder({ saved, catalog, members, onPublished }: {
     </div>}
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)]">
       <div className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-3" aria-label="Route lanes">
-          <section className="rounded-xl border border-primary/40 bg-card p-3"><h3 className="font-heading font-semibold">Workshop</h3><p className="text-xs text-muted-foreground">Priorities → budget → weighted pick</p></section>
-          <section className="rounded-xl border border-border bg-card p-3"><h3 className="font-heading font-semibold">Gems</h3><p className="text-xs text-muted-foreground">100 gems → second lab · cards planned</p></section>
-          <section className="rounded-xl border border-border bg-card p-3"><h3 className="font-heading font-semibold">Labs</h3><p className="text-xs text-muted-foreground">Slot 1 → Game Speed until max</p></section>
+        <div className="grid gap-2 sm:grid-cols-4" aria-label="Route lanes">
+          {(["workshop", "battle", "gems", "labs"] as const).map(value => <button key={value} type="button" aria-label={`${value === "battle" ? "In-game" : value[0].toUpperCase() + value.slice(1)} lane`}
+            aria-pressed={lane === value} onClick={() => setLane(value)}
+            className={`rounded-xl border p-3 text-left transition-colors ${lane === value ? "border-primary bg-primary/15 shadow-[inset_0_0_0_1px_var(--primary)]" : "border-border bg-card hover:border-primary/50"}`}>
+            <span className="block font-heading font-semibold">{value === "battle" ? "In-game" : value[0].toUpperCase() + value.slice(1)}</span>
+            <span className="text-xs text-muted-foreground">{value === "workshop" ? "Prioritize & ban" : value === "battle" ? "Wave branches" : value === "gems" ? "Reserve & plan" : "Research path"}</span>
+          </button>)}
         </div>
-        <section className="space-y-3 rounded-2xl border border-border bg-card p-4">
+        {lane === "workshop" && <>
+        <section className={`${styles.canvas} space-y-3`}>
           <div className="flex items-center justify-between gap-2"><h3 className="font-heading font-semibold">Workshop priority</h3>
             <select aria-label="Workshop selection mode" value={workshop.mode} onChange={event => editWorkshop({ mode: event.target.value as typeof workshop.mode })} className="rounded-md border border-border bg-background p-1 text-xs"><option value="legacy_planner">Current turtle policy</option><option value="priorities">Route priorities</option></select></div>
           <label className="block text-xs">Strategy scope <select aria-label="Strategy scope" value={scope} onChange={event => setScope(event.target.value)} className="ml-2 rounded-md border border-border bg-background px-2 py-1"><option value="fleet">Entire fleet</option>{members.filter(member => member.account_id).map(member => <option key={member.name} value={member.name}>{member.name} · {member.account_id}</option>)}</select></label>
           {scopedWorker && <p className="text-xs text-muted-foreground">Edits here apply only to {scopedWorker}. Unchanged fields inherit from the fleet route.</p>}
-          <p className="text-xs text-muted-foreground">Drag within this list or use the arrow buttons. The bot checks affordability, unlocks and account evidence again before buying.</p>
-          <ol className="space-y-2">{workshop.priority_ids.map((id, index) => <li key={id} data-testid="priority-row" draggable onDragStart={() => setDragId(id)} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragId && dragId !== id) {
-            const ids = [...workshop.priority_ids]; const to = ids.indexOf(id); ids.splice(ids.indexOf(dragId), 1); ids.splice(to, 0, dragId);
-            editWorkshop({ priority_ids: ids, mode: "priorities" });
-          } setDragId(null); }} onDragEnd={() => setDragId(null)}
-            className="flex select-none items-center gap-2 rounded-lg border border-border bg-background/60 px-3 py-2 text-sm cursor-grab active:cursor-grabbing">
+          <p className="text-xs text-muted-foreground">Drag blocks from the palette into the path, reorder them, or drop them into Never Buy. Buttons provide the same controls without dragging.</p>
+          <ol data-testid="priority-drop" aria-label="Workshop priority path" onDragOver={event => event.preventDefault()}
+            onDrop={event => { event.preventDefault(); if (dragId) addPriority(dragId); setDragId(null); }}
+            className={`${styles.drop} min-h-24 space-y-1`}>{workshop.priority_ids.map((id, index) => <li key={id} data-testid="priority-row" draggable onDragStart={event => { event.stopPropagation(); setDragId(id); }} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); event.stopPropagation(); if (dragId && dragId !== id) addPriority(dragId, id); setDragId(null); }} onDragEnd={() => setDragId(null)}
+            className={`${styles.block} ${styles[(byId.get(id)?.category ?? "UTILITY").toLowerCase()]} flex items-center gap-2 px-3 py-3 text-sm`}>
             <span aria-hidden="true" className="text-muted-foreground">⠿</span><span className="min-w-0 flex-1">{byId.get(id)?.name ?? id}</span>
             <button type="button" data-move-id={id} data-direction="up" onClick={() => move(id, -1)} disabled={index === 0} aria-label={`Move ${byId.get(id)?.name ?? id} up`} className="rounded border border-border px-2 disabled:opacity-40">↑</button>
             <button type="button" data-move-id={id} data-direction="down" onClick={() => move(id, 1)} disabled={index === workshop.priority_ids.length - 1} aria-label={`Move ${byId.get(id)?.name ?? id} down`} className="rounded border border-border px-2 disabled:opacity-40">↓</button>
             <button type="button" onClick={() => editWorkshop({ priority_ids: workshop.priority_ids.filter(value => value !== id) })} aria-label={`Remove ${byId.get(id)?.name ?? id} priority`} className="rounded border border-border px-2">×</button>
           </li>)}</ol>
-          <label className="block text-xs">Add priority <select aria-label="Add priority" value="" onChange={event => { if (event.target.value) editWorkshop({ priority_ids: [...workshop.priority_ids, event.target.value], mode: "priorities" }); }} className="mt-1 w-full rounded-md border border-border bg-background p-2"><option value="">Choose an upgrade…</option>{catalog.filter(item => !workshop.priority_ids.includes(item.id) && !workshop.banned_upgrade_ids.includes(item.id)).map(item => <option key={item.id} value={item.id}>{item.name} · {item.category.toLowerCase()}</option>)}</select></label>
+          {!workshop.priority_ids.length && <p className="text-xs text-muted-foreground">Drop the first upgrade here to begin a route.</p>}
         </section>
         <section className="grid gap-4 rounded-2xl border border-border bg-card p-4 md:grid-cols-2">
           <label className="text-sm font-medium">Spend limit <span className="text-xs text-muted-foreground">· % of observed coins</span><input type="number" aria-label="Spend limit" min={0} max={100} value={workshop.coin_spend_limit_pct} onChange={event => editWorkshop({ coin_spend_limit_pct: Number(event.target.value) })} className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2" /></label>
@@ -200,25 +220,37 @@ export function FlowBuilder({ saved, catalog, members, onPublished }: {
           <p className="md:col-span-2 text-xs text-muted-foreground">Spend limit caps one purchase. Weighted luck decides how often to choose among eligible upgrades; individual weights set their relative odds.</p>
           {workshop.priority_ids.map(id => <label key={id} className="flex items-center justify-between gap-3 text-xs">Weight for {byId.get(id)?.name ?? id}<input type="number" aria-label={`Weight for ${byId.get(id)?.name ?? id}`} min={1} value={workshop.weights[id] ?? 1} onChange={event => editWorkshop({ weights: { ...workshop.weights, [id]: Number(event.target.value) } })} className="w-20 rounded-md border border-border bg-background px-2 py-1" /></label>)}
         </section>
-        <section className="rounded-2xl border border-border bg-card p-4"><h3 className="font-heading font-semibold">Never Buy · {workshop.banned_upgrade_ids.length}</h3>
-          <p className="mt-1 text-xs text-muted-foreground">Banned upgrades and their dependent unlocks leave the candidate pool.</p>
-          <input type="search" aria-label="Search upgrades" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search upgrades" className="mt-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
-          <div className="mt-3 grid max-h-56 gap-1 overflow-y-auto sm:grid-cols-2">{filtered.map(item => <label key={item.id} className="flex items-center gap-2 rounded-md px-2 py-1 text-xs hover:bg-background"><input type="checkbox" aria-label={`Never buy ${item.name}`} checked={workshop.banned_upgrade_ids.includes(item.id)} onChange={event => { const ids = new Set(workshop.banned_upgrade_ids); if (event.target.checked) ids.add(item.id); else ids.delete(item.id); editWorkshop({ banned_upgrade_ids: [...ids].sort() }); }} />{item.name}<span className="ml-auto text-[10px] text-muted-foreground">{item.category.toLowerCase()}</span></label>)}</div>
-        </section>
-        <BattleFlow battle={draft.route.baseline.battle} catalog={catalog} onChange={battle => edit({ ...draft,
-          route: { ...draft.route, baseline: { ...draft.route.baseline, battle } } })} />
-        <section className="grid gap-4 md:grid-cols-2" aria-label="Resource paths">
-          <div className="rounded-2xl border border-border bg-card p-4"><h3 className="font-heading font-semibold">Gem path</h3>
-            <p className="text-xs text-muted-foreground">The first 100 gems stay reserved for lab slot 2.</p>
-            <ol className="mt-3 space-y-2">{draft.route.baseline.gems.steps.map((step, index) => <li key={step} className="flex items-center gap-2 rounded-lg border border-border bg-background/40 p-2 text-xs"><span className="flex-1">{index + 1}. {step.replaceAll("_", " ")}</span><span className="text-muted-foreground">{step === "unlock_lab_slot_2" ? "Automated" : "Planned · not automated"}</span>{index > 1 && <button type="button" aria-label={`Move ${step} up`} onClick={() => { const steps = [...draft.route.baseline.gems.steps]; [steps[index - 1], steps[index]] = [steps[index], steps[index - 1]]; edit({ ...draft, route: { ...draft.route, baseline: { ...draft.route.baseline, gems: { ...draft.route.baseline.gems, steps } } } }); }} className="rounded border border-border px-1">↑</button>}{index > 0 && <button type="button" aria-label={`Remove ${step}`} onClick={() => edit({ ...draft, route: { ...draft.route, baseline: { ...draft.route.baseline, gems: { ...draft.route.baseline.gems, steps: draft.route.baseline.gems.steps.filter(value => value !== step) } } } })} className="rounded border border-border px-1">×</button>}</li>)}</ol>
-            <select aria-label="Add gem path step" value="" onChange={event => { if (!event.target.value) return; edit({ ...draft, route: { ...draft.route, baseline: { ...draft.route.baseline, gems: { ...draft.route.baseline.gems, steps: [...draft.route.baseline.gems.steps, event.target.value] } } } }); }} className="mt-3 w-full rounded border border-border bg-background p-2 text-xs"><option value="">Add planned step…</option>{["unlock_lab_slot_3", "unlock_lab_slot_4", "unlock_lab_slot_5", "card_slot", "cards"].filter(step => !draft.route.baseline.gems.steps.includes(step)).map(step => <option key={step} value={step}>{step.replaceAll("_", " ")} · Planned</option>)}</select>
-          </div>
-          <div className="rounded-2xl border border-border bg-card p-4"><h3 className="font-heading font-semibold">Lab path</h3><p className="text-xs text-muted-foreground">Slot 1 stays on Game Speed until maxed.</p>
-            <ol className="mt-3 space-y-2">{draft.route.baseline.labs.steps.map((step, index) => <li key={step} className="rounded-lg border border-border bg-background/40 p-2 text-xs">{index + 1}. {step.replaceAll("_", " ")} · {step === "research_game_speed" ? "Automated" : "Planned · not automated"}</li>)}</ol>
-            {!draft.route.baseline.labs.steps.includes("slot2_research") && <button type="button" onClick={() => edit({ ...draft, route: { ...draft.route, baseline: { ...draft.route.baseline, labs: { ...draft.route.baseline.labs, steps: [...draft.route.baseline.labs.steps, "slot2_research"] } } } })} className="mt-3 rounded border border-border px-2 py-1 text-xs">Add planned slot 2 research</button>}
-            <label className="mt-3 block text-xs">Execution for planned steps<select aria-label="Execution for planned steps" disabled value="planned" className="ml-2 rounded border border-border bg-background px-2 py-1"><option value="planned">Planned · not automated</option></select></label>
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <h3 className="font-heading font-semibold">Never Buy · {workshop.banned_upgrade_ids.length}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">Drop upgrades here to exclude them and their dependent unlocks.</p>
+          <div data-testid="never-buy-drop" aria-label="Never Buy drop zone" onDragOver={event => event.preventDefault()}
+            onDrop={event => { event.preventDefault(); if (dragId) addBan(dragId); setDragId(null); }} className={`${styles.drop} mt-3 min-h-16 flex flex-wrap gap-2`}>
+            {workshop.banned_upgrade_ids.map(id => <div key={id} draggable onDragStart={() => setDragId(id)} onDragEnd={() => setDragId(null)}
+              className={`${styles.block} ${styles.ban} flex items-center gap-2 px-3 py-2 text-xs`}>
+              <span>{byId.get(id)?.name ?? id}</span><button type="button" aria-label={`Remove ${byId.get(id)?.name ?? id} from Never Buy`}
+                onClick={() => editWorkshop({ banned_upgrade_ids: workshop.banned_upgrade_ids.filter(value => value !== id) })}>×</button></div>)}
           </div>
         </section>
+        <section className="rounded-2xl border border-border bg-card p-4" aria-label="Upgrade block palette">
+          <div className="flex items-center justify-between gap-2"><h3 className="font-heading font-semibold">Upgrade blocks</h3><span className="text-xs text-muted-foreground">Drag or tap to add</span></div>
+          <input type="search" aria-label="Search upgrades" value={search} onChange={event => setSearch(event.target.value)} placeholder="Find an upgrade…" className="mt-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm [user-select:text]" />
+          <div className={`${styles.palette} mt-3 grid gap-2 sm:grid-cols-2`}>
+            {filtered.filter(item => !workshop.priority_ids.includes(item.id) && !workshop.banned_upgrade_ids.includes(item.id)).map(item => <div key={item.id}
+              data-testid={`palette-${item.id}`} draggable onDragStart={() => setDragId(item.id)} onDragEnd={() => setDragId(null)}
+              className={`${styles.block} ${styles[item.category.toLowerCase()]} flex items-center justify-between gap-2 p-3 text-xs`}>
+              <div><strong>{item.name}</strong><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">{item.category}</span></div>
+              <div className="flex gap-1"><button type="button" aria-label={`Add ${item.name} priority`} onClick={() => addPriority(item.id)} className="rounded border border-border px-2 py-1">+ Path</button>
+                <button type="button" aria-label={`Ban ${item.name}`} onClick={() => addBan(item.id)} className="rounded border border-border px-2 py-1">×</button></div>
+            </div>)}
+          </div>
+        </section>
+        </>}
+        {lane === "battle" && <BattleFlow battle={draft.route.baseline.battle} catalog={catalog} onChange={battle => edit({ ...draft,
+          route: { ...draft.route, baseline: { ...draft.route.baseline, battle } } })} />}
+        {(lane === "gems" || lane === "labs") && <ResourceBlocks kind={lane}
+          gems={draft.route.baseline.gems} labs={draft.route.baseline.labs}
+          onGemsChange={gems => edit({ ...draft, route: { ...draft.route, baseline: { ...draft.route.baseline, gems } } })}
+          onLabsChange={labs => edit({ ...draft, route: { ...draft.route, baseline: { ...draft.route.baseline, labs } } })} />}
         {!!Object.keys(draft.route.overrides).length && <section className="rounded-2xl border border-border bg-card p-4"><h3 className="font-heading font-semibold">Account overrides</h3>{Object.entries(draft.route.overrides).map(([worker, override]) => <div key={worker} className="mt-2 flex items-center justify-between gap-2 text-xs"><span>{worker} · {override.account_id}</span><button type="button" onClick={() => edit(resetOverride(draft, worker))} className="rounded border border-border px-2 py-1">Reset override for {worker}</button></div>)}</section>}
       </div>
       <RouteInspector preview={preview} members={members} />

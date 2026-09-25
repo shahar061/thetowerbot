@@ -2,13 +2,16 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { FleetRoutePreview } from "./FleetRoutePreview";
 import type { RerollMember } from "@/lib/fleet";
+import { vi } from "vitest";
+vi.mock("./routeCanvas.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 
 const members: RerollMember[] = [
   { name: "Air_38", endpoint: "", lease_id: "a", state: "running", account_id: "account-a",
     wallet_gems: 75, battle_cash: 20, route_revision_applied: 2,
     reroll_plan: { account_id: "account-a", stage: "opening", goal: "Reach T1 W20", state: "buy",
-      item: "Damage", price: 10, wallet_coins: 50, lifetime_coins: null,
-      reason: "Opening damage", observed_at: 100 } },
+      item: "Damage", upgrade_id: "damage", price: 10, wallet_coins: 50, lifetime_coins: null,
+      reason: "Opening damage", observed_at: 100, confirmed_purchases: { damage: 2 },
+      next_purchases: [{ account_id: "account-a", position: 1, upgrade_id: "cash_per_wave", item: "Cash/Wave", category: "UTILITY", unlock: false, focus: "Economy" }] } },
   { name: "Air_39", endpoint: "", lease_id: "b", state: "paused", account_id: "account-b",
     route_revision_applied: 1,
     reroll_plan: { account_id: "account-b", stage: "turtle", goal: "Reach T1 W60", state: "wait",
@@ -25,6 +28,9 @@ test("compares verified next actions and revision state across the fleet", () =>
   const cards = screen.getAllByRole("article", { name: /Strategy for/ });
   expect(cards).toHaveLength(3);
   expect(within(cards[0]).getByText("Damage")).toBeInTheDocument();
+  expect(within(cards[0]).getByText(/Next level: at least 3/)).toBeInTheDocument();
+  expect(within(cards[0]).getByText(/10 coins · Price source unknown/)).toBeInTheDocument();
+  expect(within(cards[0]).getByText(/Future price unknown/)).toBeInTheDocument();
   expect(within(cards[1]).getByText("40 / 80 coins")).toBeInTheDocument();
   expect(within(cards[1]).getByText("Pending until next spend")).toBeInTheDocument();
   expect(within(cards[2]).getAllByText("Unknown").length).toBeGreaterThan(0);

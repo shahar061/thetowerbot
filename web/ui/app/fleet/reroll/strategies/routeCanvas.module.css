@@ -1,0 +1,23 @@
+.studio { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.studio input, .studio select { user-select: text; -webkit-user-select: text; }
+.canvas { min-height: 290px; border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border)); border-radius: 20px; padding: 20px; background: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--primary) 18%, transparent) 1px, transparent 0) 0 0 / 20px 20px, linear-gradient(135deg, color-mix(in srgb, var(--primary) 7%, var(--card)), var(--card)); }
+.block { position: relative; border: 1px solid color-mix(in srgb, var(--block-color, var(--primary)) 65%, var(--border)); border-left: 5px solid var(--block-color, var(--primary)); border-radius: 12px; background: color-mix(in srgb, var(--block-color, var(--primary)) 10%, var(--card)); box-shadow: 0 7px 22px #0002; cursor: grab; transition: transform .16s ease, box-shadow .16s ease; }
+.block:hover { transform: translateY(-2px); box-shadow: 0 12px 28px #0004; }
+.block:active { cursor: grabbing; }
+.block::before { content: ""; position: absolute; top: -5px; left: 24px; width: 24px; height: 5px; border: 1px solid var(--block-color, var(--primary)); border-bottom: 0; border-radius: 6px 6px 0 0; background: var(--card); }
+.attack { --block-color: #f28f78; }
+.defense { --block-color: #70bde4; }
+.utility { --block-color: #f0c66b; }
+.gem { --block-color: #c18cf1; }
+.lab { --block-color: #6bd4b5; }
+.ban { --block-color: #ef7474; }
+.drop { border: 1px dashed color-mix(in srgb, var(--primary) 55%, var(--border)); border-radius: 16px; padding: 14px; background: color-mix(in srgb, var(--primary) 5%, transparent); }
+.drop:hover { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.connector { height: 20px; width: 3px; margin-left: 34px; background: linear-gradient(var(--primary), transparent); }
+.palette { max-height: 310px; overflow-y: auto; }
+.road { position: relative; padding-left: 28px; }
+.road::before { content: ""; position: absolute; left: 10px; top: 12px; bottom: 20px; width: 2px; background: linear-gradient(var(--primary), color-mix(in srgb, var(--primary) 15%, transparent)); }
+.roadStep { position: relative; }
+.roadStep::before { content: ""; position: absolute; left: -23px; top: 18px; height: 12px; width: 12px; border: 2px solid var(--primary); border-radius: 50%; background: var(--card); }
+.roadStep:first-child::before { background: var(--primary); box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 16%, transparent); }
+@media (prefers-reduced-motion: reduce) { .block { transition: none; } .block:hover { transform: none; } }

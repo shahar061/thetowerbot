@@ -16,6 +16,7 @@ export default function StrategiesPage(): React.JSX.Element {
   const [route, setRoute] = useState<BuildRouteDocument | null>(null);
   const [catalog, setCatalog] = useState<Upgrade[] | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"builder" | "roads">("builder");
   const members = pool?.members ?? [];
   useEffect(() => {
     let active = true;
@@ -34,9 +35,19 @@ export default function StrategiesPage(): React.JSX.Element {
     {error && <p role="alert" className="text-danger">Fleet unavailable: {error}</p>}
     {routeError && <p role="alert" className="text-danger">Build Route unavailable: {routeError}</p>}
     {loading && !pool ? <p role="status">Loading fleet strategies…</p> : !members.some(member => !member.hidden) ? <p className="text-muted-foreground">No visible emulators in this reroll.</p> : null}
-    {!!members.length && <FleetRoutePreview members={members} savedRevision={savedRevision} showHistory />}
-    {route && catalog && <FlowBuilder key={route.revision} saved={route} catalog={catalog} members={members}
-      onPublished={next => { setRoute(next); setSavedRevision(next.revision); }} />}
+    <div role="tablist" aria-label="Strategy Studio views" className="grid grid-cols-2 gap-2 rounded-2xl border border-border bg-card p-2">
+      <button role="tab" aria-selected={tab === "builder"} type="button" onClick={() => setTab("builder")}
+        className={`rounded-xl px-4 py-3 text-left text-sm font-semibold transition-colors ${tab === "builder" ? "bg-primary text-primary-foreground" : "hover:bg-background"}`}>
+        Build route <span className="block text-xs font-normal opacity-75">Arrange the rules</span>
+      </button>
+      <button role="tab" aria-selected={tab === "roads"} type="button" onClick={() => setTab("roads")}
+        className={`rounded-xl px-4 py-3 text-left text-sm font-semibold transition-colors ${tab === "roads" ? "bg-primary text-primary-foreground" : "hover:bg-background"}`}>
+        Fleet roads <span className="block text-xs font-normal opacity-75">See each account&apos;s next step</span>
+      </button>
+    </div>
+    {tab === "roads" && !!members.length && <FleetRoutePreview members={members} savedRevision={savedRevision} showHistory />}
+    <div hidden={tab !== "builder"}>{route && catalog && <FlowBuilder key={route.revision} saved={route} catalog={catalog} members={members}
+      onPublished={next => { setRoute(next); setSavedRevision(next.revision); }} />}</div>
     {!!pool?.variant_comparison?.length && <details className="rounded-xl border border-border bg-card p-4">
       <summary className="cursor-pointer font-medium">Compare opening variants</summary>
       <p className="my-3 text-sm text-muted-foreground">Timing includes accounts that reached Tier 1 Wave 20. Reached counts show incomplete attempts; these samples do not establish a winning strategy.</p>
