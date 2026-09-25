@@ -140,6 +140,17 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
             elif kind == 'fallback':
                 allowed.add('blocks')
                 block['blocks'] = list(walk(block.get('blocks', []), depth + 1))
+            elif kind == 'budget':
+                allowed |= {'metric', 'target', 'ceiling', 'blocks'}
+                if lane != 'workshop':
+                    raise ValueError('budgets are only available in the Workshop')
+                if block.get('metric') != 'utility_spent':
+                    raise ValueError('unknown budget metric')
+                target = number(block.get('target'), 'budget target', 1, 1000000000000)
+                number(block.get('ceiling'), 'budget ceiling', target, 1000000000000)
+                block['blocks'] = list(walk(block.get('blocks', []), depth + 1))
+                if not block['blocks']:
+                    raise ValueError('budget requires at least one block')
             elif kind != 'wait':
                 raise ValueError('unknown strategy block type')
             if set(block) - allowed:
@@ -154,6 +165,18 @@ def template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...]:
     phases = ('starter', 'economy', 'objectives', 'fallback') if lane == 'workshop' else ('battle',)
     return validate_program([{'id': f'{policy}.{phase}', 'type': 'native',
                               'policy': policy, 'phase': phase} for phase in phases], lane)
+
+
+def child_lists(block: Mapping[str, Any]) -> tuple[list[dict[str, Any]], ...]:
+    """Nested block lists, in evaluation order."""
+    kind = block['type']
+    if kind == 'condition':
+        return (block['then'], block['else'])
+    if kind in {'fallback', 'budget', 'while_saving'}:
+        return (block['blocks'],)
+    if kind == 'save_for':
+        return (block['goal'],)
+    return ()
 
 
 def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
@@ -177,10 +200,8 @@ def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
                 result.append(block["upgrade_id"])
             elif block["field"] == "def_abs_coverage":
                 result.extend(("defense_absolute", "defense_percent"))
-            result.extend(program_upgrade_ids(tuple(block["then"])))
-            result.extend(program_upgrade_ids(tuple(block["else"])))
-        elif kind == "fallback":
-            result.extend(program_upgrade_ids(tuple(block["blocks"])))
+        for children in child_lists(block):
+            result.extend(program_upgrade_ids(tuple(children)))
     return tuple(dict.fromkeys(result))
 
 
@@ -248,6 +269,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         price = price_for(uid)
         if price is None or (not ignore_funds and price > ceiling):
             return False
+        if budget_room is not None and price > budget_room:
+            rejected.append(f'{uid}: exceeds budget ceiling')
+            return False
         if lane == 'workshop':
             upgrade = upgrades.by_id(uid)
             if upgrade.unlock and facts.purchases.get(uid, 0):
@@ -259,6 +283,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         return True
 
     native_intents: dict[str, Any] = {}
+    budget_room: int | None = None
     def native_facts(policy: str) -> RerollFacts:
         return RerollFacts(
             facts.account_id, facts.best_tier_1_wave, facts.purchases, facts.values,
@@ -411,7 +436,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         return candidates
 
     def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
-        nonlocal waiting_native
+        nonlocal waiting_native, budget_room
         for index, block in enumerate(items):
             kind, identity = block['type'], block['id']
             if kind == 'wait':
@@ -427,6 +452,22 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     return choice
             elif kind == 'fallback':
                 choice = evaluate(block['blocks'], (items, *ancestors))
+                if choice is not None:
+                    return choice
+            elif kind == 'budget':
+                spent = facts.utility_spent_coins
+                if spent is None:
+                    rejected.append(f'{identity}: utility spend unknown')
+                    return _Choice(identity, reason='Waiting for verified utility spend', wait=True)
+                if spent >= block['target']:
+                    continue
+                outer = budget_room
+                room = block['ceiling'] - spent
+                budget_room = room if outer is None else min(outer, room)
+                try:
+                    choice = evaluate(block['blocks'], (items, *ancestors))
+                finally:
+                    budget_room = outer
                 if choice is not None:
                     return choice
             elif kind == 'native':

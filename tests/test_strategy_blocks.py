@@ -438,3 +438,39 @@ def test_battle_pool_target_is_passed_to_decision() -> None:
     program = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['thorns'], 'selection': 'priority', 'targets': {'thorns': 21}}]
     result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(), None, 'battle')
     assert result.decision.upgrade_id == 'thorns' and result.decision.target == 21
+
+
+def budget(**extra: Any) -> dict[str, Any]:
+    return {'id': 'econ', 'type': 'budget', 'metric': 'utility_spent', 'target': 350, 'ceiling': 400,
+            'blocks': [pool()], **extra}
+
+
+def test_budget_validation() -> None:
+    blocks.validate_program([budget()], 'workshop')
+    for bad in ({'metric': 'gems'}, {'target': 500}, {'blocks': []}, {'target': 0}):
+        with pytest.raises(ValueError):
+            blocks.validate_program([budget(**bad)], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([budget()], 'battle')
+
+
+def test_budget_runs_children_until_target() -> None:
+    running = replace(facts(), utility_spent_coins=300)
+    assert blocks.evaluate_program(route([budget()]), running, None, 'workshop').decision.upgrade_id == 'damage'
+    done = replace(facts(), utility_spent_coins=350)
+    after = [budget(), {'id': 'next', 'type': 'buy', 'upgrade_id': 'attack_speed'}]
+    assert blocks.evaluate_program(route(after), done, None, 'workshop').decision.upgrade_id == 'attack_speed'
+
+
+def test_budget_rejects_items_over_ceiling() -> None:
+    near = replace(facts(), utility_spent_coins=321)  # room 79: damage 80 rejected, attack_speed 81 rejected
+    result = blocks.evaluate_program(route([budget()]), near, None, 'workshop')
+    assert result.status == 'blocked'
+    assert any('exceeds budget ceiling' in item for item in result.trace.rejected)
+
+
+def test_budget_unknown_spend_waits() -> None:
+    unknown = replace(facts(), utility_spent_coins=None)
+    after = [budget(), {'id': 'next', 'type': 'buy', 'upgrade_id': 'attack_speed'}]
+    result = blocks.evaluate_program(route(after), unknown, None, 'workshop')
+    assert result.status == 'blocked' and result.trace.matched_rule_id == 'econ'
