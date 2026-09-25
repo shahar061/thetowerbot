@@ -574,3 +574,15 @@ def test_save_for_records_intent_in_battle_when_unaffordable() -> None:
     assert without_filler.status == 'blocked'
     assert without_filler.trace.matched_rule_id == 'goal'
     assert 'Saving for' in without_filler.trace.reason
+
+
+def test_block_label_validates_and_has_no_evaluation_effect() -> None:
+    labeled = pool(label='Survival starter')
+    blocks.validate_program([labeled], 'workshop')
+    for bad in ('', '   ', 'x' * 61, 5):
+        with pytest.raises(ValueError):
+            blocks.validate_program([pool(label=bad)], 'workshop')
+    unlabeled_result = blocks.evaluate_program(route([pool()]), facts(), None, 'workshop')
+    labeled_result = blocks.evaluate_program(route([labeled]), facts(), None, 'workshop')
+    assert unlabeled_result.decision.upgrade_id == labeled_result.decision.upgrade_id
+    assert unlabeled_result.status == labeled_result.status

@@ -113,3 +113,8 @@ def test_turtle_battle_thorns_step_for_wave() -> None:
 def test_opening_battle_promotes_survival_starters() -> None:
     result = run('opening', 'battle', battle(5, defense_absolute=(4.,)))
     assert result.decision.upgrade_id == 'defense_absolute' and result.decision.target == 10
+
+
+def test_template_blocks_carry_readable_labels() -> None:
+    assert blocks.template_program('turtle', 'workshop')[2]['label'] == 'Cheap defense'
+    assert blocks.template_program('opening', 'workshop')[0]['label'] == 'Survival starter'
