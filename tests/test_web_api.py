@@ -6,6 +6,7 @@ import json
 import threading
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ import events
 from sinks.sse import SseSink
 from sinks.state import BotState
 from web.app import create_app, event_stream, resume_point
+from telegram_settings import TelegramSettingsStore
 
 
 @pytest.fixture
@@ -47,6 +49,53 @@ def test_status_reports_the_live_state_and_the_dropped_count(harness) -> None:
     assert body["wallet"] == 450
     assert body["dropped"] == 3
     assert body["uptime"] >= 0
+
+
+def test_telegram_settings_save_and_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:VERY-SECRET")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "987654321")
+    store = TelegramSettingsStore(tmp_path / "telegram-settings.json")
+    reporter = Mock()
+    app = create_app(state=BotState(), sse=SseSink(), bus=events.EventBus(), db_path=None,
+                     telegram_store=store, telegram_reporter=reporter)
+    client = TestClient(app)
+    loaded = client.get("/api/telegram/settings?mode=single")
+    assert loaded.status_code == 200
+    assert loaded.json()["profile"]["interval_minutes"] == 60
+    assert loaded.json()["configured"] is True
+    assert "VERY-SECRET" not in loaded.text
+
+    profile = {"enabled": True, "interval_minutes": 15, "fields": ["screen"]}
+    saved = client.put("/api/telegram/settings?mode=single", json=profile)
+    assert saved.status_code == 200
+    assert store.load("single").fields == ["screen"]
+    reporter.reconfigure.assert_called_once()
+    preview = client.post("/api/telegram/preview?mode=single", json=profile)
+    assert preview.status_code == 200
+    assert "Screen: BATTLE" in preview.json()["message"]
+    assert "Scans:" not in preview.json()["message"]
+
+
+def test_telegram_api_rejects_invalid_profiles_without_writing(tmp_path: Path) -> None:
+    store = TelegramSettingsStore(tmp_path / "telegram-settings.json")
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=events.EventBus(),
+                                   db_path=None, telegram_store=store))
+    before = store.load("fleet")
+    profile = {"enabled": True, "interval_minutes": 15, "fields": ["screen"]}
+    assert client.put("/api/telegram/settings?mode=fleet", json=profile).status_code == 422
+    assert client.post("/api/telegram/preview?mode=fleet", json=profile).status_code == 422
+    assert client.put("/api/telegram/settings?mode=single", json={**profile, "interval_minutes": 0}).status_code == 422
+    assert client.get("/api/telegram/settings?mode=wrong").status_code == 422
+    assert store.load("fleet") == before
+
+
+def test_telegram_api_reports_corrupt_preferences(tmp_path: Path) -> None:
+    path = tmp_path / "telegram-settings.json"
+    path.write_text("{bad", encoding="utf-8")
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=events.EventBus(),
+                                   db_path=None, telegram_store=TelegramSettingsStore(path)))
+    assert client.get("/api/telegram/settings?mode=single").status_code == 503
+    assert path.read_text(encoding="utf-8") == "{bad"
 
 
 @pytest.mark.parametrize("route", ["/api/stats", "/api/ledger", "/api/workshop-purchases/summary"])

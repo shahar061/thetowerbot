@@ -233,7 +233,7 @@ class RerollSupervisor:
                 "--host", member["endpoint"].rpartition(":")[0],
                 "--port", member["endpoint"].rpartition(":")[2],
                 "--lease-id", member["lease_id"], "--attempt-id", attempt.attempt_id,
-                "--web-port", str(runtime.web_port), "--web",
+                "--web-port", str(runtime.web_port), "--web", "--no-telegram",
                 "--game-package", "com.TechTreeGames.TheTower")
 
     def start(self, name: str) -> Status:

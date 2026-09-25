@@ -25,6 +25,7 @@ import { accountScope } from "./accountScope";
 import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup, RerollSnapshot, RerollJournal, RerollRunSummary } from "./fleet";
 import type { MilestoneRoadmap } from "./milestoneRoadmap";
 import type { AccountMetrics } from "./accountMetrics";
+import type { TelegramMode, TelegramProfile, TelegramSettingsResponse } from "./telegram";
 
 /** An HTTP failure that kept its status code.
  *
@@ -64,6 +65,12 @@ async function getJson<T>(path: string, init?: RequestInit, scoped = true): Prom
 
 export const fetchStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" });
 export const fetchHostStatus = () => getJson<StatusPayload>("/api/status", { cache: "no-store" }, false);
+export const fetchTelegramSettings = (mode: TelegramMode) =>
+  getJson<TelegramSettingsResponse>(`/api/telegram/settings?mode=${mode}`, { cache: "no-store" }, false);
+export const saveTelegramSettings = (mode: TelegramMode, profile: TelegramProfile) =>
+  send<TelegramSettingsResponse>(`/api/telegram/settings?mode=${mode}`, "PUT", profile, "telegram");
+export const previewTelegramMessage = (mode: TelegramMode, profile: TelegramProfile) =>
+  send<{ message: string }>(`/api/telegram/preview?mode=${mode}`, "POST", profile, "telegram");
 export type AccountChoice = { key: string; account_id: string | null; instance: string | null;
   kind: "worker" | "unattributed"; running: boolean; dashboard_url: string | null; run_numbers?: number[] };
 export type AccountCatalog = { accounts: AccountChoice[]; active: string | null };
@@ -221,7 +228,7 @@ export async function patchControl(
   return body as ControlPayload;
 }
 
-type Capability = "control" | "lifecycle" | "strategies" | "autopilot" | "advisor" | "fleet";
+type Capability = "control" | "lifecycle" | "strategies" | "autopilot" | "advisor" | "fleet" | "telegram";
 
 function mutationHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
@@ -235,7 +242,7 @@ function mutationHeaders(): Record<string, string> {
 async function preflight(capability: Capability): Promise<Record<string, string>> {
   let status: StatusPayload;
   try {
-    status = await (capability === "fleet" ? fetchHostStatus() : fetchStatus());
+    status = await (capability === "fleet" || capability === "telegram" ? fetchHostStatus() : fetchStatus());
   } catch {
     throw new ApiError(412, "Unable to verify runtime compatibility; the command was not sent.");
   }

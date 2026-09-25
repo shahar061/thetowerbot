@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import urllib.error
+from pathlib import Path
 
 import pytest
 
 import config
 import telegram_report
 from telegram_report import TelegramConfig, TelegramReporter, render_summary
+from telegram_settings import TelegramSettingsStore, default_profile
 
 
 SETTINGS = TelegramConfig(token="123:SECRET", chat_id="42", interval=0.01)
@@ -193,6 +196,162 @@ def test_a_long_message_is_truncated_to_telegrams_limit() -> None:
     # The header is what says the bot is alive, so it is the part that must
     # never be the bit that got cut.
     assert text.startswith("The Tower bot - running,")
+
+
+def test_selected_single_fields_omit_unselected_lines() -> None:
+    body = render_summary(snapshot(screen="BATTLE", scans=9), fields=["screen"])
+    assert "Screen: BATTLE" in body
+    assert "Scans:" not in body
+    assert body.startswith("The Tower bot - running")
+
+
+def test_selected_missing_wallet_is_unavailable() -> None:
+    assert "Wallet: unavailable" in render_summary(snapshot(wallet=None), fields=["wallet"])
+
+
+def test_fleet_member_with_missing_metrics_does_not_hide_healthy_member() -> None:
+    body = telegram_report.render_fleet_summary({"members": [
+        {"name": "Air18", "state": "running", "tier": 1, "wave": 72},
+        {"name": "Air19", "state": "error", "tier": "bad"},
+    ]}, fields=["tier_wave"])
+    assert "Air18" in body and "Tier 1 Wave 72" in body
+    assert "Air19" in body and "unavailable" in body
+
+
+def test_fleet_lifetime_total_marks_incomplete_evidence() -> None:
+    body = telegram_report.render_fleet_summary({"members": [
+        {"name": "Air18", "state": "running", "lifetime_coins": 14200,
+         "lifetime_coins_incomplete": True},
+    ]}, fields=["lifetime_coins"])
+    assert "Lifetime coins: 14,200 (incomplete)" in body
+
+
+def test_fleet_message_bound_reports_omitted_members() -> None:
+    members = [{"name": f"Air{index}-" + "x" * 100, "state": "running"}
+               for index in range(100)]
+    body = telegram_report.render_fleet_summary({"members": members})
+    assert len(body) <= telegram_report.MAX_MESSAGE_CHARS
+    assert "more emulators" in body
+
+
+def test_preview_uses_renderers_without_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(telegram_report, "post_message", lambda *a, **kw: pytest.fail("sent"))
+    assert "Air18" in telegram_report.render_sample("fleet", default_profile("fleet"))
+    assert "Screen: BATTLE" in telegram_report.render_sample("single", default_profile("single"))
+
+
+def test_coordinator_uses_fleet_digest_when_pool_has_members(tmp_path: Path) -> None:
+    (tmp_path / "reroll-pool.json").write_text('[{"name":"Air18"}]', encoding="utf-8")
+
+    class Fleet:
+        root = tmp_path
+
+        def reroll_snapshot(self) -> dict:
+            return {"members": [{"name": "Air18", "state": "running", "tier": 1, "wave": 72}]}
+
+    reporter = TelegramReporter(FakeState(), SETTINGS, fleet=Fleet(), send=lambda _: None,
+                                preferences=TelegramSettingsStore(tmp_path / "telegram-settings.json"))
+    body = reporter.render()
+    assert body.startswith("Reroll fleet - running, 1 emulators")
+    assert "Tier 1 Wave 72" in body
+    assert "Scans:" not in body
+
+
+def test_disabling_a_running_reporter_stops_future_ticks(tmp_path: Path) -> None:
+    store = TelegramSettingsStore(tmp_path / "telegram-settings.json")
+    sent: list[str] = []
+    reporter = TelegramReporter(FakeState(), SETTINGS, send=sent.append,
+                                preferences=store, interval_override_seconds=0.2)
+    reporter.start()
+    try:
+        deadline = time.monotonic() + 1
+        while not sent and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(sent) == 1
+        store.save("single", store.load("single").model_copy(update={"enabled": False}))
+        reporter.reconfigure()
+        time.sleep(0.3)
+        assert len(sent) == 1
+        store.save("single", store.load("single").model_copy(update={"enabled": True}))
+        reporter.reconfigure()
+        deadline = time.monotonic() + 1
+        while len(sent) == 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(sent) == 2
+    finally:
+        reporter.close()
+
+
+def test_disabling_during_snapshot_collection_discards_prepared_message(tmp_path: Path) -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    class SlowState:
+        def snapshot(self) -> dict:
+            entered.set()
+            assert release.wait(2)
+            return snapshot()
+
+    store = TelegramSettingsStore(tmp_path / "telegram-settings.json")
+    sent: list[str] = []
+    reporter = TelegramReporter(SlowState(), SETTINGS, send=sent.append, preferences=store)
+    thread = threading.Thread(target=reporter.tick)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        store.save("single", store.load("single").model_copy(update={"enabled": False}))
+        reporter.reconfigure()
+    finally:
+        release.set()
+        thread.join(2)
+    assert not thread.is_alive()
+    assert sent == []
+
+
+def test_rapid_disable_and_reenable_restarts_deadline(tmp_path: Path) -> None:
+    store = TelegramSettingsStore(tmp_path / "telegram-settings.json")
+    sent: list[float] = []
+    reporter = TelegramReporter(FakeState(), SETTINGS, send=lambda _: sent.append(time.monotonic()),
+                                preferences=store, interval_override_seconds=0.6)
+    reporter.start()
+    try:
+        deadline = time.monotonic() + 2
+        while not sent and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert len(sent) == 1
+        time.sleep(0.2)
+        store.save("single", store.load("single").model_copy(update={"enabled": False}))
+        store.save("single", store.load("single").model_copy(update={"enabled": True}))
+        time.sleep(0.1)
+        store.save("single", store.load("single"))
+        latest_save_at = time.monotonic()
+        reporter.reconfigure()
+        time.sleep(0.45)
+        assert sent == [sent[0]]
+        deadline = time.monotonic() + 1
+        while len(sent) == 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert len(sent) == 2
+        assert sent[1] >= latest_save_at + 0.6
+    finally:
+        reporter.close()
+
+
+def test_corrupt_shared_settings_pauses_without_killing_reporter(tmp_path: Path) -> None:
+    path = tmp_path / "telegram-settings.json"
+    store = TelegramSettingsStore(path)
+    store.save("single", store.load("single"))
+    sent: list[str] = []
+    reporter = TelegramReporter(FakeState(), SETTINGS, send=sent.append,
+                                preferences=store, interval_override_seconds=0.2)
+    reporter.start()
+    try:
+        path.write_text("{bad", encoding="utf-8")
+        reporter.reconfigure()
+        time.sleep(0.3)
+        assert len(sent) <= 1
+        assert reporter._thread is not None and reporter._thread.is_alive()
+    finally:
+        reporter.close()
 
 
 # --- the reporter ----------------------------------------------------------

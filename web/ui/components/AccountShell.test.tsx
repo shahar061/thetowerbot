@@ -26,6 +26,14 @@ test("empty dashboard points to reroll without showing old live data", () => {
   expect(screen.getByRole("link", { name: "Start a reroll" })).toHaveAttribute("href", "/fleet/reroll/");
 });
 
+test("single settings remains available without a selected account", () => {
+  state.pathname = "/settings/";
+  state.selected = null;
+  render(<AccountShell><p>Telegram settings</p></AccountShell>);
+  expect(screen.getByText("Telegram settings")).toBeInTheDocument();
+  expect(screen.queryByText("No account selected")).not.toBeInTheDocument();
+});
+
 test("archived account shows history but blocks live content", () => {
   state.selected = { key: "worker:Air18", account_id: "ABC12345", instance: "Air18",
     kind: "worker", running: false, dashboard_url: null };
@@ -79,7 +87,7 @@ test("failed worker screenshot offers a retry", () => {
   expect(screen.getByAltText("Live screen of Air18")).toBeInTheDocument();
 });
 
-for (const pathname of ["/fleet/reroll", "/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/"]) {
+for (const pathname of ["/fleet/reroll", "/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/", "/fleet/reroll/settings/"]) {
   test(`reroll workspace ${pathname} has no global account picker or runtime gate`, () => {
     state.pathname = pathname;
     render(<AccountShell><p>fleet content</p></AccountShell>);

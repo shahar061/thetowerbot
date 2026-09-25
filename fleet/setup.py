@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -11,6 +12,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from fleet.dashboard import FleetPolicy
+
+logger = logging.getLogger(__name__)
 
 
 def wait_for_android_boot(connect: Callable[[], Any], *, timeout: float = 180.,
@@ -266,10 +269,14 @@ class FleetSetupService:
             if registration is not None:
                 member["account_id"] = registration.account_id
                 member["account_key"] = registration.key
-                member.update(observed_metrics(self.root / "workers" / member["name"],
-                    account_key=registration.key, account_id=registration.account_id or "",
-                    web_port=registration.web_port or 0,
-                    running=status["state"] == "running"))
+                try:
+                    member.update(observed_metrics(self.root / "workers" / member["name"],
+                        account_key=registration.key, account_id=registration.account_id or "",
+                        web_port=registration.web_port or 0,
+                        running=status["state"] == "running"))
+                except Exception:  # noqa: BLE001 - one worker's evidence must not hide its peers
+                    member["error"] = "metrics unavailable"
+                    logger.exception("reroll metrics unavailable for member %s", member["name"])
             variant = read_variant(self.root / "workers" / member["name"])
             if variant is not None:
                 member["variant"] = variant

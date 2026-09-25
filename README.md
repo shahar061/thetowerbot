@@ -935,12 +935,25 @@ export TELEGRAM_CHAT_ID='987654321'        # from @userinfobot
 ```
 
 There is no `--telegram` flag to forget beside them: both set means on,
-either missing means off. `--telegram-interval 900` or
-`TELEGRAM_SUMMARY_SECONDS=900` changes the pace; `--no-telegram` suppresses
-the digests without unsetting anything. The first one is sent immediately at
-startup rather than an interval later — it doubles as the "bot just came up"
-signal, and it is how you find out you pasted the chat id wrong without
-waiting an hour to do it.
+either missing means off. Open **Settings** at the bottom of the dashboard's
+single emulator or reroll fleet side menu to choose that mode's interval
+(1–1,440 minutes), enable or disable updates, and select the message fields.
+The sample message updates as you edit; it is never sent. Save applies to a
+running reporter without a restart. Settings contain no token or chat ID.
+
+`TELEGRAM_SUMMARY_SECONDS=900` supplies a 15-minute initial default for the
+single emulator profile before it is saved. An explicit
+`--telegram-interval 900` overrides the saved interval for that process; the
+Settings page shows when that override is active. `--no-telegram` suppresses
+sends regardless of saved settings. An
+enabled reporter sends its first message immediately at startup, then follows
+the saved interval. Re-enabling it in Settings schedules the next message at
+the chosen interval, without an immediate extra send.
+
+The coordinator sends one combined reroll fleet message while its pool has
+members. Fleet workers never send individual Telegram digests, even though
+they inherit the same credentials. When the pool is empty, the coordinator
+uses the single emulator profile.
 
 Each digest is plain text:
 
@@ -954,6 +967,14 @@ Runs completed: 3
 Taps: buy_upgrade 91, retry 3
 Skips: unaffordable 40
 Last error: none
+```
+
+With fleet fields enabled, a combined digest might read:
+
+```
+Reroll fleet - running, 2 emulators
+Air18 - running | Tier 1 Wave 72 | Lifetime coins: 14,200 | Milestone: Tier 1 Wave 50
+Air19 - paused | Tier 1 Wave 31 | Lifetime coins unavailable | Milestone unavailable
 ```
 
 **It is one-way, and structurally so.** There is no `getUpdates` loop and no

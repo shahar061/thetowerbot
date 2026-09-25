@@ -37,3 +37,17 @@ test("single mode keeps its tools and clears account strategy on entering fleet"
   view.rerender(<Sidebar />);
   expect(screen.queryByText("single-strategy")).not.toBeInTheDocument();
 });
+
+test.each([
+  ["/settings/", "/settings/", "Live"],
+  ["/fleet/reroll/settings/", "/fleet/reroll/settings/", "Fleet Live"],
+])("settings at %s stays in its workspace", async (pathname, href, homeLabel) => {
+  state.pathname = pathname;
+  render(<Sidebar />);
+  expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", href);
+  expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("link", { name: homeLabel })).toBeInTheDocument();
+  if (pathname === "/settings/") {
+    await waitFor(() => expect(screen.getByText("single-strategy")).toBeInTheDocument());
+  }
+});

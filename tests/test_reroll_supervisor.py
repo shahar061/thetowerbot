@@ -65,6 +65,12 @@ def test_start_all_isolates_workers_and_persists_distinct_identities(tmp_path: P
     assert len(spawned) == 2
 
 
+def test_worker_launch_suppresses_telegram(tmp_path: Path) -> None:
+    make, spawned, _, _ = _harness(tmp_path)
+    make().start("Tiramisu64_20")
+    assert "--no-telegram" in spawned[0]
+
+
 def test_failure_isolated_and_pause_requires_matching_process_identity(tmp_path: Path) -> None:
     make, spawned, live, killed = _harness(tmp_path, fail="Tiramisu64_21")
     supervisor = make()

@@ -60,6 +60,14 @@ def test_worker_overview_includes_persisted_age_and_cps(tmp_path: Path) -> None:
     assert isinstance(result["account_age_days"], int)
 
 
+def test_malformed_lifetime_record_does_not_break_worker_metrics(tmp_path: Path) -> None:
+    bot_db.bind_account(tmp_path / "tower_bot.db", "42")
+    (tmp_path / "reroll-lifetime.json").write_text("[]", encoding="utf-8")
+    result = observed_metrics(tmp_path, account_key="worker:Air18", account_id="42",
+                              web_port=0, running=False)
+    assert "lifetime_coins" not in result
+
+
 def test_visible_unlock_grants_count_once_without_claiming_a_price(tmp_path: Path) -> None:
     db = tmp_path / "tower_bot.db"
     bot_db.bind_account(db, "42")

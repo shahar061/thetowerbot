@@ -22,6 +22,7 @@ from account_state import AccountRevision, AccountState
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 import threading
 import time
 from urllib.request import urlopen
@@ -61,6 +62,8 @@ from runner import BotRunner, RunnerError
 from sinks.sse import SseSink, to_payload
 from sinks.state import BotState
 from strategy import Strategy, StrategyStore
+from telegram_report import ENV_CHAT_ID, ENV_TOKEN, TelegramReporter, render_sample
+from telegram_settings import TelegramProfile, TelegramSettingsError, TelegramSettingsStore, validate_fields
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -300,6 +303,10 @@ def create_app(
     advisor: AdvisorStore | None = None,
     account_state: AccountState | None = None,
     fleet: FleetController | None = None,
+    telegram_store: TelegramSettingsStore | None = None,
+    telegram_reporter: TelegramReporter | None = None,
+    telegram_interval_override: float | None = None,
+    telegram_suppressed: bool = False,
 ) -> FastAPI:
     # See event_stream()'s docstring for why this exists: without it, an
     # open dashboard tab and a shutting-down uvicorn wait on each other
@@ -725,6 +732,8 @@ def create_app(
         runtime_capabilities.append("advisor")
         if fleet is not None:
             runtime_capabilities.append("fleet")
+        if telegram_store is not None:
+            runtime_capabilities.append("telegram")
 
         control_snapshot = controls.snapshot() if controls is not None else None
         strategy = control_snapshot.strategy if control_snapshot is not None else None
@@ -1603,6 +1612,58 @@ def create_app(
         if action == "retry":
             background.add_task(fleet.run_pending, job_id)
         return job
+
+    def _telegram_connection() -> dict[str, Any]:
+        token_present = bool((os.environ.get(ENV_TOKEN) or "").strip())
+        chat_id = (os.environ.get(ENV_CHAT_ID) or "").strip()
+        masked = "*" * len(chat_id) if len(chat_id) <= 4 else "*" * (len(chat_id) - 4) + chat_id[-4:]
+        return {
+            "configured": token_present and bool(chat_id),
+            "token_present": token_present,
+            "chat_id_present": bool(chat_id),
+            "chat_id_masked": masked or None,
+            "suppressed": telegram_suppressed,
+            "interval_overridden": telegram_interval_override is not None,
+            "effective_interval_seconds": telegram_interval_override,
+        }
+
+    @app.get("/api/telegram/settings")
+    async def telegram_settings_get(mode: Literal["single", "fleet"]) -> dict[str, Any]:
+        if telegram_store is None:
+            raise HTTPException(status_code=503, detail="telegram_settings_unavailable")
+        try:
+            profile = await asyncio.to_thread(telegram_store.load, mode)
+        except TelegramSettingsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"mode": mode, "profile": profile.model_dump(), **_telegram_connection()}
+
+    @app.put("/api/telegram/settings")
+    async def telegram_settings_put(
+        mode: Literal["single", "fleet"], profile: TelegramProfile,
+    ) -> dict[str, Any]:
+        if telegram_store is None:
+            raise HTTPException(status_code=503, detail="telegram_settings_unavailable")
+        try:
+            saved = await asyncio.to_thread(telegram_store.save, mode, profile)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except TelegramSettingsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if telegram_reporter is not None:
+            telegram_reporter.reconfigure()
+        return {"mode": mode, "profile": saved.model_dump(), **_telegram_connection()}
+
+    @app.post("/api/telegram/preview")
+    async def telegram_preview(
+        mode: Literal["single", "fleet"], profile: TelegramProfile,
+    ) -> dict[str, str]:
+        if telegram_store is None:
+            raise HTTPException(status_code=503, detail="telegram_settings_unavailable")
+        try:
+            validate_fields(mode, profile)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"message": render_sample(mode, profile)}
 
     @app.api_route("/api/{_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
     def unmatched_api_route(_path: str) -> None:
