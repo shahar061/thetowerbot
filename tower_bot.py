@@ -788,8 +788,7 @@ class TowerBot:
             return
         if result.slot2_status in {"locked", "owned"}:
             self.reroll_progress.note_lab_slot2(result.slot2_status, result.gem_balance)
-        if (result.status == "slot2_unlocked" and result.gems_before is not None
-                and result.observed_gem_spend == 100
+        if (result.gems_before is not None and result.observed_gem_spend == 100
                 and result.gem_balance == result.gems_before - 100):
             self.bus.publish(events.LabSlotUnlocked(
                 slot=2, price=100, gems_before=result.gems_before,
@@ -815,7 +814,8 @@ class TowerBot:
                         completes_at=result.confirmed_job.completes_at))
         else:
             self.reroll_progress.note_lab_observation(decision)
-        logger.info("Lab 1 visit ended: %s (%s)", result.status, result.reason)
+        logger.info("Lab 1 visit ended: %s (%s)%s", result.status, result.reason,
+                    "; Lab 2 unlocked" if result.observed_gem_spend == 100 else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:
         """One scan pass over the configured actions. True if anything clicked.

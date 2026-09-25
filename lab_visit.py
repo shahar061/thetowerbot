@@ -1,4 +1,4 @@
-"""A bounded visit for Lab 2 unlock and Lab 1 Game Speed research."""
+"""A bounded visit for Lab 1 Game Speed research, then the Lab 2 unlock."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ import ocr
 import pages
 import vision
 from labs import LabJob, LabsReading
+
+# Body lines unique to the first-visit LABS info popup, whitespace removed.
+_INTRO_LINES = ("LABSGRANTYOU", "GEMRUSHEFFICIENCY")
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,7 @@ class LabVisit:
         self._slot2_signature: tuple[int, int, tuple[int, int]] | None = None
         self._slot2_reads = 0
         self._slot2_confirm_reads = 0
+        self._slot2_tapped = False
         self.last_tap: tuple[str, int, int] | None = None
 
     @property
@@ -89,6 +93,7 @@ class LabVisit:
         self._slot2_signature = None
         self._slot2_reads = 0
         self._slot2_confirm_reads = 0
+        self._slot2_tapped = False
         self.last_tap = None
         return True
 
@@ -136,11 +141,31 @@ class LabVisit:
         return outcome
 
     def _return(self, outcome: LabVisitResult) -> None:
-        if self._slot2_home is not None and outcome.status != "slot2_unlocked":
+        if self._slot2_home is not None and outcome.observed_gem_spend == 0:
             outcome = replace(outcome, slot2_status=self._slot2_home.slot2_status,
                               gem_balance=self._slot2_home.gem_balance)
         self._outcome = outcome
         self._state = "return"
+
+    def _unlock_lab_two(self, home: LabHomeReading, device: AdbDevice) -> bool:
+        """On the way out, buy Lab 2 once from two matching affordable reads."""
+        if (self._slot2_tapped or home.slot2_status != "locked" or home.slot2_price != 100
+                or home.gem_balance is None or home.gem_balance < 100
+                or home.slot2_point is None):
+            return False
+        self._slot2_home = home
+        signature = (home.slot2_price, home.gem_balance, home.slot2_point)
+        if signature != self._slot2_signature:
+            self._slot2_signature = signature
+            self._slot2_reads = 1
+            return True
+        self._slot2_reads += 1
+        if self._slot2_reads < 2:
+            return True
+        self._tap(device, home.slot2_point, "unlock_lab_two")
+        self._slot2_tapped = True
+        self._state = "confirm_slot2"
+        return True
 
     @staticmethod
     def _recorded_home(screen: Image, home: LabHomeReading) -> LabsReading:
@@ -162,18 +187,28 @@ class LabVisit:
             self._started_at = now
         self._scans += 1
         if self._scans > 24 or now - self._started_at > 90:
-            return self._finish(LabVisitResult("failed", "visit_timeout", LabDecision("unknown")))
+            return self._finish(self._outcome or LabVisitResult(
+                "failed", "visit_timeout", LabDecision("unknown")))
+
+        # The first Labs visit opens an info popup over a still-readable Lab 1
+        # card; close it before any reader can act on the dimmed page.
+        if any("".join(box.text.upper().split()).startswith(_INTRO_LINES) for box in boxes):
+            point = self._match(screen, "nav/labs_close.png")
+            if point is not None:
+                self._tap(device, point, "close_labs_intro")
+            return None
 
         home = self.home_reader(screen, boxes)
         picker = self.picker_reader(screen, boxes)
         confirmation = self.confirmation_reader(screen, boxes)
         if self._scans > 18 and self._state != "return":
+            # A slot-2 unlock runs after Lab 1 already has its outcome.
+            outcome = self._outcome or LabVisitResult("failed", "visit_timeout",
+                                                      LabDecision("unknown"))
             if home.page or picker.page or confirmation.page:
-                self._return(LabVisitResult("failed", "visit_timeout",
-                                             LabDecision("unknown")))
+                self._return(outcome)
             else:
-                return self._finish(LabVisitResult("failed", "visit_timeout",
-                                                    LabDecision("unknown")))
+                return self._finish(outcome)
         if self._state == "open":
             if home.page:
                 self._state = "home"
@@ -190,20 +225,6 @@ class LabVisit:
             if not home.page:
                 return None
             self._slot2_home = home
-            if (home.slot2_status == "locked" and home.slot2_price == 100
-                    and home.gem_balance is not None and home.gem_balance >= 100
-                    and home.slot2_point is not None):
-                signature = (home.slot2_price, home.gem_balance, home.slot2_point)
-                if signature != self._slot2_signature:
-                    self._slot2_signature = signature
-                    self._slot2_reads = 1
-                    return None
-                self._slot2_reads += 1
-                if self._slot2_reads < 2:
-                    return None
-                self._tap(device, home.slot2_point, "unlock_lab_two")
-                self._state = "confirm_slot2"
-                return None
             decision = decide(home, None)
             if decision.kind == "inspect" and home.slot_point is not None:
                 self._slot = home
@@ -223,10 +244,13 @@ class LabVisit:
                     and home.gem_balance == before.gem_balance - 100):
                 self._slot2_confirm_reads += 1
                 if self._slot2_confirm_reads >= 2:
-                    self._return(LabVisitResult(
-                        "slot2_unlocked", "slot_two_confirmed", LabDecision("unknown"),
+                    # Lab 1 already decided this visit's outcome; add the debit.
+                    self._outcome = replace(
+                        self._outcome or LabVisitResult("observed", "unknown",
+                                                        LabDecision("unknown")),
                         slot2_status="owned", gem_balance=home.gem_balance,
-                        gems_before=before.gem_balance, observed_gem_spend=100))
+                        gems_before=before.gem_balance, observed_gem_spend=100)
+                    self._state = "return"
             else:
                 self._slot2_confirm_reads = 0
             return None
@@ -324,6 +348,8 @@ class LabVisit:
                     self._tap(device, point, "close_picker")
                 return None
             if home.page:
+                if self._unlock_lab_two(home, device):
+                    return None
                 point = self._match(screen, "nav/tab_battle.png")
                 if point is not None:
                     self._tap(device, point, "return_to_battle")
