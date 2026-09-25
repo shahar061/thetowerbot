@@ -77,6 +77,25 @@ def test_assignment_takes_precedence_and_replacement_falls_back_safely() -> None
     assert RouteDocument.from_dict(route.to_dict()) == route
 
 
+def test_workshop_blocks_round_trip_through_saved_library(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    baseline = library.read()["templates"][0]["baseline"]
+    workshop_blocks = [
+        {"id": "econ", "type": "budget", "metric": "utility_spent", "target": 350, "ceiling": 400,
+         "blocks": [{"id": "g", "type": "save_for", "goal": [
+             {"id": "g.p", "type": "pool", "upgrade_ids": ["cash_per_wave"], "selection": "priority",
+              "level_caps": {"cash_per_wave": {"base": 2}}}]}]},
+        {"id": "ws", "type": "while_saving", "blocks": [
+            {"id": "f", "type": "pool", "upgrade_ids": ["damage"], "selection": "priority",
+             "wallet_share_pct": 20}]},
+    ]
+    baseline["workshop"].update(mode="blocks", blocks=workshop_blocks)
+    saved = library.save(expected_revision=0, name="Round trip", source_template="opening", baseline=baseline)
+    strategy_id = saved["strategies"][0]["id"]
+    loaded = library.version(strategy_id, 1)
+    assert loaded["baseline"]["workshop"]["blocks"] == workshop_blocks
+
+
 def test_builtin_versions_are_assignable_but_only_version_one_exists(tmp_path: Path) -> None:
     library = StrategyLibrary(tmp_path)
     assert library.version("opening", 1)["builtin"] is True
