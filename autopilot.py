@@ -148,6 +148,8 @@ class BattleAutopilot:
         self.account_state = account_state
         self.bus = bus
         self.pending: tuple[ObservedUpgrade, float] | None = None
+        self._pending_decision_token: str | None = None
+        self._completed_decision_token: str | None = None
         self.search: Search | None = None
         # The last frame's rows as overlay boxes, in the schema
         # frames.set_boxes() takes. Kept here rather than returned from
@@ -365,6 +367,7 @@ class BattleAutopilot:
             was_manual = self._manual is not None
             if confirmed:
                 self.state.verified(after)
+                self._completed_decision_token = self._pending_decision_token
                 self._emit(events.BattlePurchased(item=after.name, upgrade_id=after.upgrade_id,
                                                   price=before.price, value=after.value))
                 self._decide("verified", f"Verified {after.name} upgrade", after.upgrade_id)
@@ -380,8 +383,12 @@ class BattleAutopilot:
                 self._manual = None
             else:
                 self._decide("verifying", f"Checking {before.name} purchase", before.upgrade_id)
-            if not confirmed or was_manual:
+            if not confirmed or was_manual or policy.single_purchase:
                 return False
+        if (policy.single_purchase and policy.decision_token == self._completed_decision_token
+                and not self._manual):
+            self._decide("waiting", "Waiting for the confirmed purchase counter to refresh")
+            return False
         if not observation.category or not observation.rows:
             self._decide("blocked", "Waiting for a readable upgrade panel")
             return False
@@ -455,9 +462,13 @@ class BattleAutopilot:
         if row.price > actual_cash * policy.cash_spend_limit_pct // 100:
             self._decide("saving", f"Saving cash for {row.name}; route spend limit protected", target)
             return False
+        if policy.max_purchase_price is not None and row.price > policy.max_purchase_price:
+            self._decide("saving", "Live upgrade price exceeds the evaluated block limit", target)
+            return False
         tap(device, *row.tap)
         self._mark_tapped(row)
         self.pending = (row, now)
+        self._pending_decision_token = policy.decision_token if policy.single_purchase else None
         self._last_action = now
         self._decide("verifying", f"Checking {row.name} purchase", target)
         self._emit(events.Tapped(action=row.name, x=row.tap[0], y=row.tap[1], score=1,

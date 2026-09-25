@@ -131,6 +131,8 @@ def _changed_rules(before: RouteDocument, after: RouteDocument) -> list[str]:
     if before.baseline.workshop != after.baseline.workshop:
         changed.append(after.baseline.workshop.id)
     if before.baseline.battle != after.baseline.battle:
+        if before.baseline.battle.mode == "blocks" or after.baseline.battle.mode == "blocks":
+            changed.append("battle.blocks")
         changed.extend(branch.id for branch in after.baseline.battle.branches)
     if before.baseline.gems != after.baseline.gems:
         changed.append("gems.path")
@@ -139,4 +141,7 @@ def _changed_rules(before: RouteDocument, after: RouteDocument) -> list[str]:
     for worker in sorted(set(before.overrides) | set(after.overrides)):
         if before.overrides.get(worker) != after.overrides.get(worker):
             changed.append(f"override.{worker}")
+    for worker in sorted(set(before.assignments) | set(after.assignments)):
+        if before.assignments.get(worker) != after.assignments.get(worker):
+            changed.append(f"assignment.{worker}")
     return changed

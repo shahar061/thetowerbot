@@ -45,6 +45,26 @@ test("one-emulator filter preserves fleet comparison access", () => {
   expect(screen.getAllByRole("article", { name: /Strategy for/ })).toHaveLength(3);
 });
 
+test("explains why block strategies do not fabricate future purchases", () => {
+  const member = structuredClone(members[0]);
+  member.reroll_plan!.next_purchases = [];
+  member.reroll_plan!.projection_note = "Future block choices depend on fresh prices and confirmed purchases";
+  render(<FleetRoutePreview members={[member]} savedRevision={2} />);
+  expect(screen.getByText(member.reroll_plan!.projection_note)).toBeInTheDocument();
+  expect(screen.queryByRole("list", { name: "Projected Workshop milestones" })).not.toBeInTheDocument();
+});
+
+test("shows a zero-spend price probe as observation rather than a selected buy", () => {
+  const member = structuredClone(members[0]);
+  member.reroll_plan = { ...member.reroll_plan!, state: "observe_price", stage: "strategy_observe", price: null,
+    item: "Thorns", reason: "Inspect Thorns and Defense Absolute prices without spending", next_purchases: [] };
+  render(<FleetRoutePreview members={[member]} savedRevision={2} />);
+  expect(screen.getByText("Verify Workshop prices")).toBeInTheDocument();
+  expect(screen.queryByText("Next selected buy")).not.toBeInTheDocument();
+  expect(screen.getByText(/No spending during this inspection/)).toBeInTheDocument();
+  expect(screen.getByText("Inspect Thorns and Defense Absolute prices without spending")).toBeInTheDocument();
+});
+
 test("decision inspector explains the selected evidence without inventing battle intent", () => {
   render(<FleetRoutePreview members={members} savedRevision={2} />);
   fireEvent.click(screen.getByRole("button", { name: "Why Damage for Air_38?" }));

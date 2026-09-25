@@ -295,6 +295,29 @@ class BuildRouteRebindPreviewRequest(BuildRoutePreviewRequest):
     new_account_id: str
 
 
+class StrategySaveRequest(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    expected_revision: int
+    name: str
+    source_template: str
+    baseline: dict[str, Any]
+    strategy_id: str | None = None
+
+
+class StrategyWorkerRequest(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    worker: str
+    account_id: str
+
+
+class StrategyAssignRequest(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    expected_revision: int
+    strategy_id: str
+    strategy_version: int
+    workers: list[StrategyWorkerRequest]
+
+
 _CATEGORY_BY_UPGRADE: dict[str, str] = {u.id: u.category for u in upgrades.CATALOG}
 
 
@@ -1462,6 +1485,40 @@ def create_app(
         try:
             return _build_route_capability().read().to_dict()
         except RouteUnavailable as exc:
+            raise _build_route_error(exc) from exc
+
+    def _strategy_library() -> Any:
+        if fleet is None or not callable(getattr(fleet, "strategy_library", None)):
+            raise HTTPException(status_code=503, detail="strategy_library_unavailable")
+        return fleet.strategy_library()
+
+    @app.get("/api/fleet/reroll/strategies")
+    def fleet_strategy_library() -> dict[str, Any]:
+        try:
+            return _strategy_library().read()
+        except RouteUnavailable as exc:
+            raise _build_route_error(exc) from exc
+
+    @app.post("/api/fleet/reroll/strategies")
+    def fleet_strategy_save(body: StrategySaveRequest) -> dict[str, Any]:
+        from fleet.strategy_library import LibraryConflict
+        try:
+            return _strategy_library().save(**body.model_dump())
+        except LibraryConflict as exc:
+            raise HTTPException(status_code=409, detail={
+                "message": "strategy_library_revision_changed", "current_revision": exc.revision}) from exc
+        except (RouteUnavailable, ValueError, TypeError) as exc:
+            raise _build_route_error(exc) from exc
+
+    @app.post("/api/fleet/reroll/strategies/assign")
+    def fleet_strategy_assign(body: StrategyAssignRequest) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "assign_strategy", None)):
+            raise HTTPException(status_code=503, detail="strategy_library_unavailable")
+        try:
+            return fleet.assign_strategy(**body.model_dump()).to_dict()
+        except (RouteConflict, RouteUnavailable, ValueError, TypeError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith("route_account_binding_changed"):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             raise _build_route_error(exc) from exc
 
     @app.get("/api/fleet/reroll/route/revisions")

@@ -168,6 +168,7 @@ class RerollFacts:
     # Confirmed Workshop coin debits on utility; None means the ledger cannot
     # prove the amount, so the bounded opening allocation is not activated.
     utility_spent_coins: int | None = None
+    policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -366,6 +367,12 @@ def _build_for(facts: RerollFacts) -> builds.Build:
     hysteresis - a guard against paying for a respec twice - into a lock on
     whatever this call happened to compute last.
     """
+    if facts.policy is not None:
+        build = builds.by_id(facts.policy)
+        if facts.policy not in {"opening", "turtle"} or build is None:
+            raise ValueError("unknown explicit reroll policy")
+        variant = build.variant(facts.variant)
+        return build if variant is None else replace(build, level_caps=variant.level_caps)
     selection = build_selection.select_build(
         _revision(facts), best_tier_1_wave=facts.best_tier_1_wave)
     build = builds.by_id(selection.build_id)
@@ -522,7 +529,7 @@ def _survival_starter(facts: RerollFacts,
                       excluded: frozenset[str] = frozenset(),
                       spend_ceiling: int | None = None) -> RerollDecision | None:
     """One cheap level per starter row before the bounded utility allocation."""
-    if (facts.best_tier_1_wave or 0) >= 20 or facts.utility_spent_coins is None:
+    if facts.policy == "turtle" or (facts.best_tier_1_wave or 0) >= 20 or facts.utility_spent_coins is None:
         return None
     for uid in STARTER_UPGRADES:
         if uid in excluded:
@@ -616,7 +623,9 @@ def _route_build(build: builds.Build, excluded: frozenset[str],
 
 def choose_next(facts: RerollFacts, *,
                 banned_upgrade_ids: frozenset[str] = frozenset(),
-                priority_ids: tuple[str, ...] = ()) -> RerollDecision:
+                priority_ids: tuple[str, ...] = (),
+                include_starter: bool = True, include_economy: bool = True,
+                include_filler: bool = True) -> RerollDecision:
     """The one next move for this reroll account, with its reasoning attached.
 
     An adapter, not a planner: it keeps the reroll ladder (wave 60 stops
@@ -647,11 +656,11 @@ def choose_next(facts: RerollFacts, *,
     spend_ceiling = (int(facts.wallet_coins * facts.spend_fraction)
                      if facts.spend_fraction is not None and facts.wallet_coins is not None
                      else None)
-    starter = _survival_starter(facts, excluded, spend_ceiling)
+    starter = _survival_starter(facts, excluded, spend_ceiling) if include_starter else None
     if starter is not None:
         return starter
     original_build = _build_for(facts)
-    candidate_build = _economy_build(original_build, facts)
+    candidate_build = _economy_build(original_build, facts) if include_economy else original_build
     build = _route_build(candidate_build, excluded, priority_ids)
     if build is None:
         return RerollDecision(
@@ -709,7 +718,34 @@ def choose_next(facts: RerollFacts, *,
         facts.wallet_coins, facts.lifetime_coins,
         economy_reason + outcome.reason + drawn + _price_share(price, facts.lifetime_coins)
         + _variant_label(build, facts))
-    return _cheap_filler(facts, result, excluded, spend_ceiling)
+    return _cheap_filler(facts, result, excluded, spend_ceiling) if include_filler else result
+
+
+def choose_native_phase(facts: RerollFacts, phase: str, *,
+                        banned_upgrade_ids: frozenset[str] = frozenset(),
+                        reference: RerollDecision | None = None) -> RerollDecision | None:
+    """Execute one removable native group without running the other groups."""
+    excluded = _ban_closure(banned_upgrade_ids)
+    ceiling = (int(facts.wallet_coins * facts.spend_fraction)
+               if facts.wallet_coins is not None and facts.spend_fraction is not None else None)
+    if phase == "starter":
+        return _survival_starter(facts, excluded, ceiling)
+    if phase == "economy":
+        original = _build_for(facts)
+        if _economy_build(original, facts) is original:
+            return None
+        result = choose_next(facts, banned_upgrade_ids=banned_upgrade_ids,
+                             include_starter=False, include_filler=False)
+        return result if result.reason.startswith("Early utility allocation:") else None
+    if phase == "objectives":
+        return choose_next(facts, banned_upgrade_ids=banned_upgrade_ids,
+                           include_starter=False, include_economy=False, include_filler=False)
+    if phase == "fallback":
+        main = reference or choose_next(facts, banned_upgrade_ids=banned_upgrade_ids,
+            include_starter=False, include_economy=False, include_filler=False)
+        result = _cheap_filler(facts, main, excluded, ceiling)
+        return result if result.filler else None
+    raise ValueError("unknown native Workshop phase")
 
 
 def project_next(facts: RerollFacts, *, limit: int = 10,

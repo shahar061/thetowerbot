@@ -52,6 +52,53 @@ class BuildRouteRuntime:
             return None
         return pending if pending.account_id == self.account_id else None
 
+    def purchase_counts(self, lane: str, run_id: int | None = None) -> dict[str, int] | None:
+        """Count confirmed debits/events, never taps or inferred skill levels."""
+        path = self.root / "workers" / self.worker / "tower_bot.db"
+        if db.bound_account(path) != self.account_id:
+            return None
+        counts: dict[str, int] = {}
+        with db.reader(path) as connection:
+            if lane == "battle":
+                if run_id is None:
+                    return None
+                for purchase in db.run_purchases(connection, run_id):
+                    uid = purchase.get("upgrade_id")
+                    if isinstance(uid, str) and upgrades.by_id(uid) is not None:
+                        counts[uid] = counts.get(uid, 0) + 1
+                return counts
+            if lane != "workshop":
+                raise ValueError("unknown purchase count lane")
+            rows = connection.execute(
+                "SELECT item,category,detail FROM ledger WHERE kind='WORKSHOP_BUY' "
+                "AND currency='coins' AND dry_run=0").fetchall()
+        for row in rows:
+            try:
+                verdict = json.loads(row["detail"] or "{}").get("verdict")
+            except (ValueError, TypeError, AttributeError):
+                continue
+            upgrade = upgrades.resolve(row["item"], row["category"])
+            if verdict in {"bought", "free"} and upgrade is not None:
+                counts[upgrade.id] = counts.get(upgrade.id, 0) + 1
+        return counts
+
+    def battle_pending(self, facts: RouteFacts, revision: int) -> PendingDecision | None:
+        path = self.choice_path.with_name("build-route-battle-choice.json")
+        try:
+            pending = PendingDecision(**json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            return None
+        if (pending.account_id == self.account_id and pending.revision == revision
+                and pending.visit_id == facts.visit_id and pending.sequence == facts.decision_sequence):
+            return pending
+        return None
+
+    def remember_battle_pending(self, pending: PendingDecision) -> None:
+        if pending.account_id != self.account_id:
+            raise ValueError("battle choice belongs to another account")
+        from fleet.build_route_store import _write_json_atomic
+        _write_json_atomic(self.choice_path.with_name("build-route-battle-choice.json"), asdict(pending))
+
     def sequence(self) -> int:
         value = self._choice_state().get("sequence")
         return value if type(value) is int and value >= 0 else 0

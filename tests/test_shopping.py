@@ -2127,3 +2127,32 @@ def test_a_guard_that_keeps_refusing_still_ends_the_visit(session, monkeypatch) 
     ended = session._bus.of_type("ShoppingEnded")
     assert len(ended) == 1 and ended[0].aborted
     assert "input refused" in ended[0].reason
+
+
+def test_zero_budget_price_probe_reads_expensive_reference_and_every_row(
+    session, monkeypatch, fake_header,
+) -> None:
+    fake_header['coins'] = 90
+    rows = (
+        dataclasses.replace(_tab_row('damage', 'Damage'), price=100),
+        dataclasses.replace(_tab_row('attack_speed', 'Attack Speed'), price=40),
+        dataclasses.replace(_tab_row('critical_chance', 'Critical Chance'), price=20),
+    )
+    monkeypatch.setattr(shopping_mod, 'observe_frame', lambda *_:
+        Observation('ATTACK', rows, {}, None, 1, 270))
+    observed: list[tuple[str, int | None]] = []
+    neighbors: list[dict[str, int]] = []
+    session.reroll_observe_price = lambda uid, _balance, price: observed.append((uid, price))
+    session.reroll_observe_prices = lambda prices, _balance: neighbors.append(prices)
+    policy = a_policy(armed=True, coin_budget=0, allow_unlocks=False,
+        cards=CardPolicy(enabled=False), workshop=tuple(
+            ShoppingRule(name=row.name, category='ATTACK') for row in rows))
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+    for _ in range(4):
+        session._buy_rows(SimpleNamespace(page='workshop', top_left=None),
+            frame('menu_workshop_attack'), device, policy)
+    assert observed == [('damage',100),('attack_speed',40),('critical_chance',20)]
+    assert neighbors[0] == {'damage':100,'attack_speed':40,'critical_chance':20}
+    assert device.taps == [] and session._pending is None
+    assert session._categories == []

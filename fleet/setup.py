@@ -307,11 +307,59 @@ class FleetSetupService:
         from fleet.build_route_store import BuildRouteStore
         return BuildRouteStore(self.root)
 
+    def strategy_library(self) -> Any:
+        from fleet.strategy_library import StrategyLibrary
+        return StrategyLibrary(self.root)
+
+    def assign_strategy(self, *, expected_revision: int, strategy_id: str,
+                        strategy_version: int, workers: list[dict[str, str]]) -> Any:
+        """Pin one saved version for verified visible accounts in one publication."""
+        from dataclasses import replace
+        import db as bot_db
+        from fleet.build_route import StrategyAssignment
+        from fleet.build_route_store import RouteConflict
+        from web.account_catalog import registered_worker
+
+        saved = self.strategy_library().version(strategy_id, strategy_version)
+        store = self.build_route_store()
+        current = store.read()
+        if current.revision != expected_revision:
+            raise RouteConflict(current)
+        visible = ({member["name"] for member in self._manual_pool().members()}
+                   - self._runs().hidden_names())
+        names = [worker.get("worker") for worker in workers]
+        if not names or len(names) != len(set(names)):
+            raise ValueError("assignment requires distinct visible workers")
+        assignments = dict(current.assignments)
+        overrides = dict(current.overrides)
+        for worker in workers:
+            name, account_id = worker.get("worker"), worker.get("account_id")
+            if not isinstance(name, str) or name not in visible:
+                raise ValueError("assignment requires a visible active pool member")
+            registration = registered_worker(self.root / "workers" / name)
+            if (not account_id or registration is None or registration.account_id != account_id
+                    or bot_db.bound_account(registration.db_path) != account_id):
+                raise ValueError(f"route_account_binding_changed:{name}")
+            assignments[name] = StrategyAssignment.from_dict({
+                "account_id": account_id, "strategy_id": saved["id"],
+                "strategy_version": saved["version"], "strategy_name": saved["name"],
+                "baseline": saved["baseline"],
+            })
+            overrides.pop(name, None)
+        return store.publish(replace(current, assignments=assignments, overrides=overrides),
+                             expected_revision, "operator")
+
     def build_route_validate_bindings(self, route: Any) -> None:
         """Reject a draft bound to an account that has since been replaced."""
         import db as bot_db
         from web.account_catalog import registered_worker
-        for name, override in route.overrides.items():
+        # Assignment publication belongs to assign_strategy: it resolves the
+        # canonical immutable version and verifies visible pool membership.
+        # Ordinary route edits may carry existing snapshots without depending
+        # on library availability, but cannot invent or rewrite them.
+        if route.assignments != self.build_route_store().read().assignments:
+            raise ValueError("strategy assignments must be published through the assignment endpoint")
+        for name, override in {**route.overrides, **route.assignments}.items():
             registration = registered_worker(self.root / "workers" / name)
             if (registration is None or registration.account_id != override.account_id
                     or bot_db.bound_account(registration.db_path) != override.account_id):
@@ -348,9 +396,11 @@ class FleetSetupService:
         from fleet.build_route_eval import (RouteFacts, RouteEvaluation, ResourceEvaluation,
                                             ResourceStep, evaluate, evaluate_battle,
                                             evaluate_resources)
+        from fleet.build_route_runtime import BuildRouteRuntime
         from web.account_catalog import registered_worker
 
         saved = self.build_route_store().read()
+        proposed_document = replace(draft, revision=saved.revision + 1)
         members: list[dict[str, object]] = []
         current_names = {member["name"] for member in self._manual_pool().members()}
         workers = self.root / "workers"
@@ -364,7 +414,8 @@ class FleetSetupService:
                     continue
                 account_id = registration.account_id
                 current_effective = resolve_route(saved, worker_root.name, account_id)
-                proposed_effective = resolve_route(draft, worker_root.name, account_id)
+                proposed_effective = resolve_route(proposed_document, worker_root.name, account_id)
+                runtime = BuildRouteRuntime(self.root, worker_root.name, account_id)
                 def read_facts(filename: str, label: str) -> RouteFacts:
                     try:
                         snapshot = json.loads((worker_root / filename).read_text(encoding="utf-8"))
@@ -380,7 +431,7 @@ class FleetSetupService:
                     if bot_db.bound_account(registration.db_path) != account_id:
                         raise ValueError("worker database belongs to another account")
                     facts = read_facts("build-route-facts.json", "Workshop")
-                    current = evaluate(current_effective, facts, None)
+                    current = evaluate(current_effective, facts, runtime.pending())
                     proposed = evaluate(proposed_effective, facts, None)
                 except (OSError, ValueError, TypeError) as exc:
                     facts = RouteFacts(account_id, worker_root.name)
@@ -390,7 +441,8 @@ class FleetSetupService:
                     if bot_db.bound_account(registration.db_path) != account_id:
                         raise ValueError("worker database belongs to another account")
                     battle_facts = read_facts("build-route-battle-facts.json", "battle")
-                    current_battle = evaluate_battle(current_effective, battle_facts, None)
+                    current_battle = evaluate_battle(current_effective, battle_facts,
+                                                    runtime.battle_pending(battle_facts, saved.revision))
                     proposed_battle = evaluate_battle(proposed_effective, battle_facts, None)
                 except (OSError, ValueError, TypeError) as exc:
                     unknown = RouteEvaluation.unknown(str(exc), RouteFacts(account_id, worker_root.name))

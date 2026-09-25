@@ -142,6 +142,9 @@ class AutopilotPolicy:
     cash_reserve: int = 0
     cash_spend_limit_pct: int = 100
     observe_only: bool = False
+    single_purchase: bool = False
+    decision_token: str | None = None
+    max_purchase_price: int | None = None
     max_scrolls: int = 8
     purpose: Literal["farm", "milestone"] = "farm"
 
@@ -180,6 +183,14 @@ class AutopilotPolicy:
             raise PolicyError("cash_reserve", "cash_reserve may not be negative")
         if type(self.cash_spend_limit_pct) is not int or not 0 <= self.cash_spend_limit_pct <= 100:
             raise PolicyError("cash_spend_limit_pct", "cash_spend_limit_pct must be 0 to 100")
+        if self.max_purchase_price is not None and (type(self.max_purchase_price) is not int or self.max_purchase_price < 0):
+            raise PolicyError("max_purchase_price", "maximum purchase price must be nonnegative")
+        if type(self.single_purchase) is not bool:
+            raise PolicyError("single_purchase", "single_purchase must be a boolean")
+        if self.decision_token is not None and (not isinstance(self.decision_token, str) or not self.decision_token):
+            raise PolicyError("decision_token", "decision_token must be a nonempty string")
+        if self.single_purchase and self.decision_token is None:
+            raise PolicyError("decision_token", "single purchase requires a decision token")
         if type(self.observe_only) is not bool:
             raise PolicyError("observe_only", "observe_only must be a boolean")
         if isinstance(self.max_scrolls, bool) or not isinstance(self.max_scrolls, int):
@@ -202,6 +213,9 @@ class AutopilotPolicy:
             "cash_reserve": self.cash_reserve,
             "cash_spend_limit_pct": self.cash_spend_limit_pct,
             "observe_only": self.observe_only,
+            "single_purchase": self.single_purchase,
+            "decision_token": self.decision_token,
+            "max_purchase_price": self.max_purchase_price,
             "max_scrolls": self.max_scrolls,
             "purpose": self.purpose,
         }

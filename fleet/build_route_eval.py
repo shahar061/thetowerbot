@@ -25,7 +25,7 @@ class PendingDecision:
     candidate_fingerprint: str
     chosen_id: str
     draw_gate: int | None = None
-    eligible_weights: Mapping[str, int] = field(default_factory=dict)
+    eligible_weights: Mapping[str, int | float] = field(default_factory=dict)
     matched_rule_id: str = ""
 
 
@@ -58,6 +58,9 @@ class RouteFacts:
     lab_price: int | None = None
     visit_id: str | None = None
     decision_sequence: int = 0
+    confirmed_purchases: Mapping[str, int] | None = None
+    run_purchases: Mapping[str, int] | None = None
+    price_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,7 @@ class DecisionTrace:
     phase_id: str | None = None
     eligible_odds: Mapping[str, float] = field(default_factory=dict)
     draw_gate: int | None = None
+    observation_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,7 @@ class BattleDecision:
     price: int | None
     battle_cash: int | None
     reason: str
+    target: float | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +165,9 @@ def evaluate(route: EffectiveRoute, facts: RouteFacts,
 def evaluate_battle(route: EffectiveRoute, facts: RouteFacts,
                     pending: PendingDecision | None) -> RouteEvaluation:
     """Choose one in-game row from a verified run, phase and cash budget."""
+    if route.battle.mode == "blocks":
+        from fleet.strategy_blocks import evaluate_program
+        return evaluate_program(route, facts, pending, "battle")
     if facts.account_id == "" or facts.worker == "" or facts.run_id is None or facts.wave is None or facts.battle_cash is None:
         return RouteEvaluation.unknown("Live run, wave or cash is unverified", facts)
     if facts.wave < 1 or facts.battle_cash < 0 or facts.observed_at is None or facts.now is None:
@@ -259,6 +267,9 @@ def select_battle_phase(route: EffectiveRoute, facts: RouteFacts
 def evaluate_workshop(route: EffectiveRoute, facts: RouteFacts,
                       pending: PendingDecision | None) -> RouteEvaluation:
     """Apply hard bans and wallet limits before any Workshop recommendation."""
+    if route.workshop.mode == "blocks":
+        from fleet.strategy_blocks import evaluate_program
+        return evaluate_program(route, facts, pending, "workshop")
     if not facts.account_id or not facts.worker:
         return RouteEvaluation.unknown("Verified account or worker identity is missing", facts)
     if facts.observed_at is None or facts.now is None:

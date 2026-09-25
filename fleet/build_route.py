@@ -60,14 +60,15 @@ class WorkshopRoute:
     coin_spend_limit_pct: int = 100
     draw_chance_pct: int = 0
     weights: dict[str, int] = field(default_factory=dict)
+    blocks: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_dict(cls, value: object) -> WorkshopRoute:
         raw = _mapping(value, "workshop")
         _keys(raw, {"id", "mode", "priority_ids", "banned_upgrade_ids", "coin_spend_limit_pct",
-                    "draw_chance_pct", "weights"})
+                    "draw_chance_pct", "weights", "blocks"})
         mode = raw.get("mode", "legacy_planner")
-        if mode not in {"legacy_planner", "priorities"}:
+        if mode not in {"legacy_planner", "priorities", "blocks"}:
             raise ValueError("unknown Workshop mode")
         priorities = _upgrade_ids(raw.get("priority_ids", []), "Workshop priority")
         banned = _upgrade_ids(raw.get("banned_upgrade_ids", []), "Workshop ban")
@@ -83,7 +84,17 @@ class WorkshopRoute:
             coin_spend_limit_pct=_percent(raw.get("coin_spend_limit_pct", 100), "coin_spend_limit_pct"),
             draw_chance_pct=chance,
             weights=weights,
+            blocks=_blocks(raw.get("blocks", []), "workshop", mode),
         )
+
+
+def _blocks(value: object, lane: str, mode: str) -> tuple[dict[str, Any], ...]:
+    if mode != "blocks" and value:
+        raise ValueError("blocks require blocks mode")
+    if mode != "blocks":
+        return ()
+    from fleet.strategy_blocks import validate_program
+    return validate_program(value, lane)
 
 
 def _rule_id(value: object) -> str:
@@ -166,13 +177,14 @@ class BattleBranch:
 class BattleRoute:
     mode: str = "legacy_policy"
     branches: tuple[BattleBranch, ...] = ()
+    blocks: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_dict(cls, value: object) -> BattleRoute:
         raw = _mapping(value, "battle")
-        _keys(raw, {"mode", "branches"})
+        _keys(raw, {"mode", "branches", "blocks"})
         mode = raw.get("mode", "legacy_policy")
-        if mode not in {"legacy_policy", "phases"}:
+        if mode not in {"legacy_policy", "phases", "blocks"}:
             raise ValueError("unknown battle mode")
         branches_raw = raw.get("branches", [])
         if not isinstance(branches_raw, (list, tuple)):
@@ -189,7 +201,7 @@ class BattleRoute:
                                     any(not phase.priority_ids for phase in branch.phases)
                                     for branch in branches):
             raise ValueError("active battle phases require upgrade priorities")
-        return cls(mode, branches)
+        return cls(mode, branches, _blocks(raw.get("blocks", []), "battle", mode))
 
 
 @dataclass(frozen=True)
@@ -253,6 +265,37 @@ class RouteBaseline:
                    GemRoute.from_dict(raw.get("gems", {})),
                    LabRoute.from_dict(raw.get("labs", {})))
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"workshop": _workshop_dict(self.workshop), "battle": asdict(self.battle),
+                "gems": asdict(self.gems), "labs": asdict(self.labs)}
+
+
+@dataclass(frozen=True)
+class StrategyAssignment:
+    account_id: str
+    strategy_id: str
+    strategy_version: int
+    strategy_name: str
+    baseline: RouteBaseline
+
+    @classmethod
+    def from_dict(cls, value: object) -> StrategyAssignment:
+        raw = _mapping(value, "assignment")
+        _keys(raw, {"account_id", "strategy_id", "strategy_version", "strategy_name", "baseline"})
+        for key in ("account_id", "strategy_id", "strategy_name"):
+            if not isinstance(raw.get(key), str) or not raw[key].strip():
+                raise ValueError(f"assignment requires {key}")
+        version = raw.get("strategy_version")
+        if type(version) is not int or version < 1:
+            raise ValueError("invalid strategy version")
+        return cls(raw["account_id"], raw["strategy_id"], version, raw["strategy_name"],
+                   RouteBaseline.from_dict(raw.get("baseline")))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"account_id": self.account_id, "strategy_id": self.strategy_id,
+                "strategy_version": self.strategy_version, "strategy_name": self.strategy_name,
+                "baseline": self.baseline.to_dict()}
+
 
 @dataclass(frozen=True)
 class AccountOverride:
@@ -301,6 +344,7 @@ class RouteDocument:
     baseline: RouteBaseline
     overrides: dict[str, AccountOverride]
     dependencies: dict[str, tuple[str, ...]]
+    assignments: dict[str, StrategyAssignment] = field(default_factory=dict)
 
     @classmethod
     def compatibility(cls) -> RouteDocument:
@@ -318,7 +362,7 @@ class RouteDocument:
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> RouteDocument:
         raw = _mapping(value, "route")
-        _keys(raw, {"schema", "revision", "authored_at", "baseline", "overrides", "dependencies"})
+        _keys(raw, {"schema", "revision", "authored_at", "baseline", "overrides", "dependencies", "assignments"})
         if raw.get("schema") != 1:
             raise ValueError("unsupported route schema")
         revision = raw.get("revision")
@@ -334,6 +378,11 @@ class RouteDocument:
             raise ValueError("invalid route worker name")
         overrides = {worker: AccountOverride.from_dict(override)
                      for worker, override in overrides_raw.items()}
+        assignments_raw = _mapping(raw.get("assignments", {}), "assignments")
+        if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", worker) is None for worker in assignments_raw):
+            raise ValueError("invalid route worker name")
+        assignments = {worker: StrategyAssignment.from_dict(value)
+                       for worker, value in assignments_raw.items()}
         dependencies_raw = _mapping(raw.get("dependencies", {}), "dependencies")
         dependencies: dict[str, tuple[str, ...]] = {}
         for key, targets in dependencies_raw.items():
@@ -355,7 +404,7 @@ class RouteDocument:
                     raise ValueError("unknown override rule ID")
                 if rule_id == baseline.workshop.id:
                     allowed = {"priority_ids", "banned_upgrade_ids", "coin_spend_limit_pct",
-                               "draw_chance_pct", "weights", "mode"}
+                               "draw_chance_pct", "weights", "mode", "blocks"}
                     _keys(patch, allowed)
                     WorkshopRoute.from_dict({**_workshop_dict(baseline.workshop), **patch})
                 for branch in baseline.battle.branches:
@@ -367,7 +416,7 @@ class RouteDocument:
                             _keys(patch, {"priority_ids", "cash_spend_limit_pct",
                                           "draw_chance_pct", "weights", "emergency_survival"})
                             BattlePhase.from_dict({**asdict(phase), **patch})
-        return cls(1, revision, authored_at, baseline, overrides, dependencies)
+        return cls(1, revision, authored_at, baseline, overrides, dependencies, assignments)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -382,6 +431,7 @@ class RouteDocument:
                                   "patches": value.patches}
                           for worker, value in self.overrides.items()},
             "dependencies": {key: list(value) for key, value in self.dependencies.items()},
+            "assignments": {worker: value.to_dict() for worker, value in self.assignments.items()},
         }
 
 
@@ -391,7 +441,7 @@ def _workshop_dict(rule: WorkshopRoute) -> dict[str, object]:
             "banned_upgrade_ids": sorted(rule.banned_upgrade_ids),
             "coin_spend_limit_pct": rule.coin_spend_limit_pct,
             "draw_chance_pct": rule.draw_chance_pct,
-            "weights": dict(rule.weights)}
+            "weights": dict(rule.weights), "blocks": list(rule.blocks)}
 
 
 @dataclass(frozen=True)
@@ -407,6 +457,13 @@ class EffectiveRoute:
 def resolve_route(route: RouteDocument, worker: str, account_id: str) -> EffectiveRoute:
     """Apply only a patch proven to belong to this worker's current account."""
     baseline = route.baseline
+    assignment = route.assignments.get(worker)
+    if assignment is not None:
+        matches = assignment.account_id == account_id
+        baseline = assignment.baseline if matches else RouteDocument.compatibility().baseline
+        return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
+                              baseline.gems, baseline.labs,
+                              "assigned" if matches else "inactive_account_changed")
     override = route.overrides.get(worker)
     if override is None:
         return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
