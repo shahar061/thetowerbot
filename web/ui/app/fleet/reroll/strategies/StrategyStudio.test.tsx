@@ -290,3 +290,20 @@ test("budget inputs use whole steps with a positive target", () => {
   expect(screen.getByLabelText("Utility target (coins)")).toHaveAttribute("min", "1");
   expect(screen.getByLabelText("Hard ceiling (coins)")).toHaveAttribute("step", "1");
 });
+
+test("selecting a goal pool inserts new blocks after its save-for block", async () => {
+  const goalBaseline = { ...baseline, workshop: { ...baseline.workshop, blocks: [
+    { id: "goal", type: "save_for" as const, goal: [{ id: "goal.pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const }] }] } };
+  const custom = { ...template, id: "custom-1", builtin: false, name: "Mine", baseline: goalBaseline };
+  const mine: StrategyLibrary = { ...library, strategies: [custom] };
+  render(<StrategyStudio library={mine} saved={{ ...route, baseline: goalBaseline }} catalog={catalog} members={members} onPublished={vi.fn()} />);
+  fireEvent.change(screen.getByRole("combobox", { name: "Strategy" }), { target: { value: "custom-1" } });
+  fireEvent.click(within(screen.getByTestId("block-goal.pool")).getAllByRole("button")[0]);
+  fireEvent.click(screen.getByRole("tab", { name: "Flow" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add Save & wait" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  await waitFor(() => expect(api.save).toHaveBeenCalled());
+  const blocks = api.save.mock.calls[0][0].baseline.workshop.blocks;
+  expect(blocks.map((block: { type: string }) => block.type)).toEqual(["save_for", "wait"]);
+  expect(blocks[0].goal).toHaveLength(1);
+});
