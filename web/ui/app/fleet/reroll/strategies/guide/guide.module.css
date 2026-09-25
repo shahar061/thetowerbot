@@ -1,0 +1,39 @@
+.guide h2 { font-size: 20px; font-weight: 650; margin-bottom: 12px; }
+.guide section p { color: var(--muted-foreground); line-height: 1.6; max-width: 72ch; }
+.back { color: var(--primary); font-size: 13px; width: fit-content; }
+.diagram { display: block; width: 100%; max-width: 720px; color: var(--foreground); }
+.node { fill: var(--card); stroke: var(--border); }
+.nodeActive { fill: color-mix(in srgb, var(--primary) 16%, var(--card)); stroke: var(--primary); }
+.nodeText { fill: var(--foreground); font-size: 11px; }
+.caption { fill: var(--muted-foreground); font-size: 11px; }
+.edge, .edgeLoop { stroke: var(--muted-foreground); stroke-width: 1.5; }
+.edgeLoop { stroke-dasharray: 4 4; }
+.arrowHead { fill: var(--muted-foreground); }
+.outcomeText { font-size: 11px; fill: currentColor; }
+/* The buy/save/wait hex accents are mixed 30% with --foreground so they stay
+   legible on both the near-white light --card and the near-black dark --card
+   (plain hex measured ~2.6-3.9:1 contrast against at least one theme; the
+   mix brings every combination to ~4.7:1 or better). */
+.buy { color: color-mix(in srgb, var(--foreground) 30%, #4fa37a); stroke: color-mix(in srgb, var(--foreground) 30%, #4fa37a); }
+.save { color: color-mix(in srgb, var(--foreground) 30%, #c99a3d); stroke: color-mix(in srgb, var(--foreground) 30%, #c99a3d); }
+.pass { color: var(--muted-foreground); stroke: var(--muted-foreground); }
+.wait { color: color-mix(in srgb, var(--foreground) 30%, #b86b6b); stroke: color-mix(in srgb, var(--foreground) 30%, #b86b6b); }
+.legend { display: grid; gap: 6px; margin-top: 12px; font-size: 13px; }
+.legend b { margin-right: 6px; }
+.cards { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.card { border: 1px solid var(--border); border-radius: 14px; background: var(--card); padding: 16px; scroll-margin-top: 80px; min-width: 0; }
+.card:target { outline: 2px solid var(--primary); }
+.card h3 { font-weight: 600; margin-bottom: 8px; }
+.example { font-size: 12px; margin-top: 8px; border-left: 2px solid var(--primary); padding-left: 8px; }
+.walk { border: 1px solid var(--border); border-radius: 14px; background: var(--card); padding: 16px; margin-bottom: 16px; }
+.walk h3 span { color: var(--muted-foreground); font-weight: 400; font-size: 12px; margin-left: 6px; }
+.toggles { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.toggles button { border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px; font-size: 12px; }
+.toggles [aria-pressed=true] { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.route { display: grid; gap: 8px; }
+.route li { display: flex; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; opacity: .6; }
+.route li[data-active=true] { opacity: 1; border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--card)); }
+.route p { font-size: 12px; }
+.stepNo { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--border); font-size: 11px; flex-shrink: 0; }
+.reason { margin-top: 10px; font-size: 13px; }
+.gotchas { list-style: disc; padding-left: 20px; display: grid; gap: 6px; color: var(--muted-foreground); }

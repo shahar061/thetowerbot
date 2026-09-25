@@ -76,7 +76,7 @@ def test_condition_unknown_does_not_take_else_and_bans_cover_children() -> None:
 
 
 def test_native_policy_uses_explicit_template_and_wave_sixty_guard() -> None:
-    program = blocks.template_program('turtle','workshop')
+    program = blocks.native_template_program('turtle','workshop')
     sample = replace(facts(), best_tier_1_wave=1, purchases={'unlock_defense_upgrades':1,'unlock_thorns':1},
                      prices={'defense_absolute':10,'thorns':50},values={'thorns':11})
     result = blocks.evaluate_program(route(program),sample,None,'workshop')
@@ -185,7 +185,7 @@ def test_block_workshop_price_bounds_live_shopping_policy(tmp_path: Path) -> Non
 
 
 def test_native_battle_preserves_target_for_live_value_recheck() -> None:
-    program = blocks.template_program('turtle','battle')
+    program = blocks.native_template_program('turtle','battle')
     sample = replace(facts(),screen='battle',run_id=2,wave=2,battle_cash=100,run_purchases={},
         upgrade_rows={'damage':{'status':'available','value':5,'price':5,'observed_at':90}})
     result = blocks.evaluate_program(route(program,lane='battle'),sample,None,'battle')
@@ -197,7 +197,7 @@ def test_native_battle_preserves_target_for_live_value_recheck() -> None:
 
 
 def test_native_groups_can_be_removed_and_reordered() -> None:
-    native = list(blocks.template_program('opening','workshop'))
+    native = list(blocks.native_template_program('opening','workshop'))
     sample = replace(facts(),best_tier_1_wave=1,purchases={},utility_spent_coins=0,
         prices={'damage':10,'attack_speed':10,'unlock_cash_bonuses':10,'cash_bonus':10,
                 'cash_per_wave':10,'unlock_coin_bonuses':10,'coins_per_kill_bonus':10})
@@ -213,7 +213,7 @@ def test_native_groups_can_be_removed_and_reordered() -> None:
 
 
 def test_native_phase_trace_marks_completion_and_next_phase() -> None:
-    starter, economy, objectives, _fallback = blocks.template_program('opening', 'workshop')
+    starter, economy, objectives, _fallback = blocks.native_template_program('opening', 'workshop')
     sample = replace(facts(), best_tier_1_wave=25, utility_spent_coins=0, wallet_coins=1000)
     result = blocks.evaluate_program(route([starter, economy, objectives]), sample, None, 'workshop')
 
@@ -224,7 +224,7 @@ def test_native_phase_trace_marks_completion_and_next_phase() -> None:
 
 
 def test_unaffordable_native_candidate_waits_without_handoff() -> None:
-    _starter, economy, _objectives, _fallback = blocks.template_program('opening', 'workshop')
+    _starter, economy, _objectives, _fallback = blocks.native_template_program('opening', 'workshop')
     sample = replace(facts(), best_tier_1_wave=25, utility_spent_coins=0,
                      wallet_coins=0, prices={'cash_per_wave': 80})
     result = blocks.evaluate_program(route([economy]), sample, None, 'workshop')
@@ -235,7 +235,7 @@ def test_unaffordable_native_candidate_waits_without_handoff() -> None:
 
 
 def test_missing_native_phase_evidence_waits() -> None:
-    starter, economy, _objectives, _fallback = blocks.template_program('opening', 'workshop')
+    starter, economy, _objectives, _fallback = blocks.native_template_program('opening', 'workshop')
     sample = replace(facts(), best_tier_1_wave=1, utility_spent_coins=None, purchases={}, prices={})
     result = blocks.evaluate_program(route([starter, economy]), sample, None, 'workshop')
 
@@ -260,7 +260,7 @@ def test_weight_decay_preserves_exact_fraction() -> None:
 
 def test_battle_pool_can_compare_to_native_unaffordable_priority() -> None:
     program=[pool(discount_pct=20,reference_upgrade_id='priority',count_scope='run'),
-             *blocks.template_program('turtle','battle')]
+             *blocks.native_template_program('turtle','battle')]
     sample=replace(facts(),screen='battle',run_id=2,wave=2,battle_cash=90,run_purchases={},
         upgrade_rows={'defense_absolute':{'status':'unaffordable','value':0,'price':100,'observed_at':100},
                       'damage':{'status':'available','value':5,'price':80,'observed_at':100}})
@@ -282,7 +282,7 @@ def test_complete_template_matches_native_decision(policy: str, changes: dict[st
     expected=choose_next(RerollFacts(sample.account_id,sample.best_tier_1_wave,sample.purchases,
         sample.values,sample.wallet_coins,sample.lifetime_coins,sample.prices,
         spend_fraction=1,variant=sample.variant,utility_spent_coins=sample.utility_spent_coins,policy=policy))
-    actual=blocks.evaluate_program(route(blocks.template_program(policy,'workshop')),sample,None,'workshop')
+    actual=blocks.evaluate_program(route(blocks.native_template_program(policy,'workshop')),sample,None,'workshop')
     assert actual.decision == expected
 
 
@@ -332,3 +332,318 @@ def test_discount_observation_opens_workshop_with_zero_spend_budget(tmp_path: Pa
     assert policy.enabled and policy.coin_budget == 0 and not policy.allow_unlocks
     assert not policy.cards.enabled
     assert {row.name for row in policy.workshop} == {'Thorns','Damage','Attack Speed'}
+
+
+def battle_facts(**rows: dict[str, Any]) -> RouteFacts:
+    base = {uid: {'status': 'available', 'value': 1.0, 'price': 10, 'observed_at': 100}
+            for uid in ('defense_absolute', 'defense_percent', 'thorns', 'health')}
+    base.update(rows)
+    return RouteFacts('account', 'Air_38', 'battle', 100, 101, run_id=7, wave=30,
+        battle_cash=100, enemy_damage=100.0, upgrade_rows=base, run_purchases={}, visit_id='visit')
+
+
+def when(field: str, op: str, value: float, **extra: Any) -> dict[str, Any]:
+    return {'id': 'when', 'type': 'condition', 'field': field, 'op': op, 'value': value, **extra,
+            'then': [{'id': 'yes', 'type': 'buy', 'upgrade_id': 'defense_absolute'}],
+            'else': [{'id': 'no', 'type': 'buy', 'upgrade_id': 'health'}]}
+
+
+def test_condition_validates_new_fields_and_lanes() -> None:
+    blocks.validate_program([when('def_abs_coverage', 'lt', 1.2)], 'battle')
+    blocks.validate_program([when('upgrade_value', 'gt', 11, upgrade_id='thorns')], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('def_abs_coverage', 'lt', 1.2)], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('upgrade_value', 'gt', 11)], 'battle')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('wallet', 'gte', 5, upgrade_id='thorns')], 'battle')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('wallet', 'eq', 5)], 'battle')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('wallet', 'gte', float('nan'))], 'battle')
+
+
+def test_def_abs_coverage_uses_post_mitigation_damage() -> None:
+    program = [when('def_abs_coverage', 'lt', 1.2)]
+    # 100 damage × (1 - 50%) = 50 remaining; 55 / 50 = 1.1 < 1.2 → then
+    low = battle_facts(defense_absolute={'status': 'available', 'value': 55.0, 'price': 10, 'observed_at': 100},
+                       defense_percent={'status': 'available', 'value': 50.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), low, None, 'battle').decision.upgrade_id == 'defense_absolute'
+    high = replace(low, enemy_damage=10.0)
+    assert blocks.evaluate_program(route(program, lane='battle'), high, None, 'battle').decision.upgrade_id == 'health'
+    immune = battle_facts(defense_percent={'status': 'available', 'value': 100.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), immune, None, 'battle').decision.upgrade_id == 'health'
+
+
+def test_def_abs_coverage_unknown_waits() -> None:
+    program = [when('def_abs_coverage', 'lt', 1.2)]
+    unknown = replace(battle_facts(), enemy_damage=None)
+    assert blocks.evaluate_program(route(program, lane='battle'), unknown, None, 'battle').status == 'blocked'
+
+
+def test_upgrade_value_condition_and_strict_ops() -> None:
+    program = [when('upgrade_value', 'lt', 11, upgrade_id='thorns')]
+    at_eleven = battle_facts(thorns={'status': 'available', 'value': 11.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), at_eleven, None, 'battle').decision.upgrade_id == 'health'
+    below = battle_facts(thorns={'status': 'available', 'value': 10.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), below, None, 'battle').decision.upgrade_id == 'defense_absolute'
+
+
+def test_program_upgrade_ids_include_condition_inputs() -> None:
+    program = blocks.validate_program([when('def_abs_coverage', 'lt', 1.2),
+        {**when('upgrade_value', 'lt', 11, upgrade_id='thorns'), 'id': 'when2',
+         'then': [{'id': 'w', 'type': 'wait'}], 'else': []}], 'battle')
+    ids = blocks.program_upgrade_ids(program)
+    assert {'defense_absolute', 'defense_percent', 'thorns'} <= set(ids)
+
+
+def test_pool_new_options_validate() -> None:
+    blocks.validate_program([pool(targets={'damage': 12.5}, level_caps={'damage': {'base': 2, 'per_level_of': 'coins_per_wave'}},
+                                  price_cap=75, wallet_share_pct=20)], 'workshop')
+    for bad in ({'targets': {'thorns': 1}}, {'targets': {'damage': float('inf')}},
+                {'level_caps': {'damage': {'base': 2, 'step': 2}}}, {'level_caps': {'damage': {'base': 2, 'x': 1}}},
+                {'price_cap': 0}, {'wallet_share_pct': 101}):
+        with pytest.raises(ValueError):
+            blocks.validate_program([pool(**bad)], 'workshop')
+
+
+def test_pool_target_skips_reached_and_unknown_values() -> None:
+    reached = replace(facts(), values={'damage': 12.0})
+    program = [pool(targets={'damage': 12})]
+    assert blocks.evaluate_program(route(program), reached, None, 'workshop').decision.upgrade_id == 'attack_speed'
+    unknown = replace(facts(), values={})
+    result = blocks.evaluate_program(route(program), unknown, None, 'workshop')
+    assert result.decision.upgrade_id == 'damage'
+    assert any('treated as not reached' in item for item in result.trace.rejected)
+
+
+def test_battle_pool_target_unknown_value_is_skipped() -> None:
+    program = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['thorns', 'health'], 'selection': 'priority',
+                'targets': {'thorns': 21}}]
+    rows = battle_facts(thorns={'status': 'available', 'value': None, 'price': 10, 'observed_at': 100})
+    result = blocks.evaluate_program(route(program, lane='battle'), rows, None, 'battle')
+    assert result.decision.upgrade_id == 'health'
+    assert any('target value unknown' in item for item in result.trace.rejected)
+
+
+def test_pool_linked_level_cap() -> None:
+    program = [pool(level_caps={'damage': {'base': 2, 'per_level_of': 'coins_per_wave'}})]
+    capped = replace(facts(), confirmed_purchases={'damage': 2})
+    assert blocks.evaluate_program(route(program), capped, None, 'workshop').decision.upgrade_id == 'attack_speed'
+    raised = replace(facts(), confirmed_purchases={'damage': 2, 'coins_per_wave': 1})
+    assert blocks.evaluate_program(route(program), raised, None, 'workshop').decision.upgrade_id == 'damage'
+
+
+def test_pool_price_cap_and_wallet_share() -> None:
+    assert blocks.evaluate_program(route([pool(price_cap=80)]), facts(), None, 'workshop').decision.upgrade_id == 'damage'
+    assert blocks.evaluate_program(route([pool(price_cap=79)]), facts(), None, 'workshop').status == 'blocked'
+    rich = replace(facts(), wallet_coins=400)  # 20% of 400 = 80
+    assert blocks.evaluate_program(route([pool(wallet_share_pct=20)]), rich, None, 'workshop').decision.upgrade_id == 'damage'
+    poorer = replace(facts(), wallet_coins=399)
+    assert blocks.evaluate_program(route([pool(wallet_share_pct=20)]), poorer, None, 'workshop').status == 'blocked'
+
+
+def test_battle_pool_target_is_passed_to_decision() -> None:
+    program = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['thorns'], 'selection': 'priority', 'targets': {'thorns': 21}}]
+    result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(), None, 'battle')
+    assert result.decision.upgrade_id == 'thorns' and result.decision.target == 21
+
+
+def budget(**extra: Any) -> dict[str, Any]:
+    return {'id': 'econ', 'type': 'budget', 'metric': 'utility_spent', 'target': 350, 'ceiling': 400,
+            'blocks': [pool()], **extra}
+
+
+def test_budget_validation() -> None:
+    blocks.validate_program([budget()], 'workshop')
+    for bad in ({'metric': 'gems'}, {'target': 500}, {'blocks': []}, {'target': 0}):
+        with pytest.raises(ValueError):
+            blocks.validate_program([budget(**bad)], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([budget()], 'battle')
+
+
+def test_budget_runs_children_until_target() -> None:
+    running = replace(facts(), utility_spent_coins=300)
+    assert blocks.evaluate_program(route([budget()]), running, None, 'workshop').decision.upgrade_id == 'damage'
+    done = replace(facts(), utility_spent_coins=350)
+    after = [budget(), {'id': 'next', 'type': 'buy', 'upgrade_id': 'attack_speed'}]
+    assert blocks.evaluate_program(route(after), done, None, 'workshop').decision.upgrade_id == 'attack_speed'
+
+
+def test_budget_rejects_items_over_ceiling() -> None:
+    near = replace(facts(), utility_spent_coins=321)  # room 79: damage 80 rejected, attack_speed 81 rejected
+    result = blocks.evaluate_program(route([budget()]), near, None, 'workshop')
+    assert result.status == 'blocked'
+    assert any('exceeds budget ceiling' in item for item in result.trace.rejected)
+
+
+def test_budget_unknown_spend_waits() -> None:
+    unknown = replace(facts(), utility_spent_coins=None)
+    after = [budget(), {'id': 'next', 'type': 'buy', 'upgrade_id': 'attack_speed'}]
+    result = blocks.evaluate_program(route(after), unknown, None, 'workshop')
+    assert result.status == 'blocked' and result.trace.matched_rule_id == 'econ'
+
+
+def save_goal(ids: list[str], **extra: Any) -> dict[str, Any]:
+    return {'id': 'goal', 'type': 'save_for',
+            'goal': [{'id': 'goal.pool', 'type': 'pool', 'upgrade_ids': ids, 'selection': 'priority', **extra}]}
+
+
+def test_save_for_validation() -> None:
+    blocks.validate_program([save_goal(['thorns'])], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([{'id': 'g', 'type': 'save_for', 'goal': []}], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([{'id': 'g', 'type': 'save_for', 'goal': [{'id': 'w', 'type': 'wait'}]}], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([save_goal(['thorns'], discount_pct=20)], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([{'id': 'ws', 'type': 'while_saving', 'blocks': []}], 'workshop')
+
+
+def test_save_for_buys_goal_when_affordable() -> None:
+    rich = replace(facts(), wallet_coins=200)
+    assert blocks.evaluate_program(route([save_goal(['thorns'])]), rich, None, 'workshop').decision.upgrade_id == 'thorns'
+
+
+def test_save_for_records_intent_and_lower_block_buys() -> None:
+    program = [save_goal(['thorns']), {'id': 'cheap', 'type': 'buy', 'upgrade_id': 'damage'}]
+    result = blocks.evaluate_program(route(program), facts(), None, 'workshop')  # wallet 100, thorns 100 → affordable
+    assert result.decision.upgrade_id == 'thorns'
+    poor = replace(facts(), wallet_coins=90)
+    result = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert result.decision.upgrade_id == 'damage'
+
+
+def test_save_for_result_when_nothing_else_buys() -> None:
+    poor = replace(facts(), wallet_coins=50)
+    result = blocks.evaluate_program(route([save_goal(['thorns'])]), poor, None, 'workshop')
+    assert result.status == 'blocked'
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    assert result.decision.price == 100 and 'Saving for' in result.decision.reason
+
+
+def test_only_one_goal_saves_at_a_time() -> None:
+    poor = replace(facts(), wallet_coins=90)
+    program = [save_goal(['thorns']), {**save_goal(['damage']), 'id': 'goal2',
+               'goal': [{'id': 'goal2.pool', 'type': 'pool', 'upgrade_ids': ['damage'], 'selection': 'priority'}]}]
+    result = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+
+
+def test_satisfied_goal_passes_silently() -> None:
+    done = replace(facts(), values={'thorns': 51.0})
+    program = [save_goal(['thorns'], targets={'thorns': 51}), {'id': 'next', 'type': 'buy', 'upgrade_id': 'damage'}]
+    assert blocks.evaluate_program(route(program), done, None, 'workshop').decision.upgrade_id == 'damage'
+
+
+def test_save_for_ignores_items_over_budget_ceiling() -> None:
+    program = [{'id': 'econ', 'type': 'budget', 'metric': 'utility_spent', 'target': 350, 'ceiling': 400,
+                'blocks': [save_goal(['thorns'])]}, {'id': 'next', 'type': 'buy', 'upgrade_id': 'damage'}]
+    near = replace(facts(), utility_spent_coins=340, wallet_coins=90)  # room 60 < thorns 100
+    result = blocks.evaluate_program(route(program), near, None, 'workshop')
+    assert result.decision.state == 'buy' and result.decision.upgrade_id == 'damage'
+
+
+def test_while_saving_only_runs_during_matching_goal() -> None:
+    poor = replace(facts(), wallet_coins=90)
+    filler = {'id': 'ws', 'type': 'while_saving', 'upgrade_id': 'thorns',
+              'blocks': [{'id': 'fill', 'type': 'buy', 'upgrade_id': 'damage'}]}
+    assert blocks.evaluate_program(route([save_goal(['thorns']), filler]), poor, None, 'workshop').decision.upgrade_id == 'damage'
+    other = [save_goal(['attack_speed']), filler]
+    poorer = replace(facts(), wallet_coins=50)
+    assert blocks.evaluate_program(route(other), poorer, None, 'workshop').decision.state == 'save_coins'
+    rich = replace(facts(), wallet_coins=200)
+    assert blocks.evaluate_program(route([filler]), rich, None, 'workshop').status == 'blocked'
+
+
+def test_save_for_buy_goal_saves_when_unaffordable() -> None:
+    poor = replace(facts(), wallet_coins=50)
+    program = [{'id': 'g', 'type': 'save_for', 'goal': [{'id': 'g.buy', 'type': 'buy', 'upgrade_id': 'thorns'}]}]
+    result = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert result.status == 'blocked'
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    assert result.decision.price == 100
+
+
+def test_while_saving_without_upgrade_id_matches_any_goal() -> None:
+    poor = replace(facts(), wallet_coins=90)
+    filler = {'id': 'ws', 'type': 'while_saving', 'blocks': [{'id': 'fill', 'type': 'buy', 'upgrade_id': 'damage'}]}
+    result = blocks.evaluate_program(route([save_goal(['thorns']), filler]), poor, None, 'workshop')
+    assert result.decision.upgrade_id == 'damage'
+
+
+def test_save_for_records_intent_in_battle_when_unaffordable() -> None:
+    unaffordable = {'thorns': {'status': 'unaffordable', 'value': 1.0, 'price': 500, 'observed_at': 100}}
+    program = [save_goal(['thorns']), {'id': 'ws', 'type': 'while_saving', 'blocks': [{'id': 'fill', 'type': 'buy', 'upgrade_id': 'health'}]}]
+    result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(**unaffordable), None, 'battle')
+    assert result.decision.upgrade_id == 'health'
+    without_filler = blocks.evaluate_program(route([save_goal(['thorns'])], lane='battle'), battle_facts(**unaffordable), None, 'battle')
+    assert without_filler.status == 'blocked'
+    assert without_filler.trace.matched_rule_id == 'goal'
+    assert 'Saving for' in without_filler.trace.reason
+
+
+def test_block_label_validates_and_has_no_evaluation_effect() -> None:
+    labeled = pool(label='Survival starter')
+    blocks.validate_program([labeled], 'workshop')
+    for bad in ('', '   ', 'x' * 61, 5):
+        with pytest.raises(ValueError):
+            blocks.validate_program([pool(label=bad)], 'workshop')
+    unlabeled_result = blocks.evaluate_program(route([pool()]), facts(), None, 'workshop')
+    labeled_result = blocks.evaluate_program(route([labeled]), facts(), None, 'workshop')
+    assert unlabeled_result.decision.upgrade_id == labeled_result.decision.upgrade_id
+    assert unlabeled_result.status == labeled_result.status
+
+
+def test_pool_limit_skips_are_traced() -> None:
+    result = blocks.evaluate_program(route([pool(price_cap=79)]), facts(), None, 'workshop')
+    assert 'cheap: damage over price cap' in result.trace.rejected
+    assert 'cheap: attack_speed over price cap' in result.trace.rejected
+    poorer = replace(facts(), wallet_coins=399)
+    result = blocks.evaluate_program(route([pool(wallet_share_pct=20)]), poorer, None, 'workshop')
+    assert 'cheap: damage over wallet share' in result.trace.rejected
+    capped = replace(facts(), confirmed_purchases={'damage': 1, 'attack_speed': 1})
+    result = blocks.evaluate_program(route([pool(max_purchases=1)]), capped, None, 'workshop')
+    assert 'cheap: damage max purchases reached' in result.trace.rejected
+    result = blocks.evaluate_program(route([pool(level_caps={'damage': {'base': 1}, 'attack_speed': {'base': 1}})]),
+                                     capped, None, 'workshop')
+    assert 'cheap: damage level cap reached' in result.trace.rejected
+    reached = replace(facts(), values={'damage': 12.0})
+    result = blocks.evaluate_program(route([pool(targets={'damage': 12})]), reached, None, 'workshop')
+    assert 'cheap: damage target reached' in result.trace.rejected
+    result = blocks.evaluate_program(route([pool(discount_pct=20, reference_upgrade_id='thorns')]),
+                                     replace(facts(), prices={'damage': 90, 'attack_speed': 81, 'thorns': 100}),
+                                     None, 'workshop')
+    assert 'cheap: damage over discount limit' in result.trace.rejected
+
+
+def test_battle_goal_with_price_cap_saves_for_unaffordable_item() -> None:
+    unaffordable = {'thorns': {'status': 'unaffordable', 'value': 1.0, 'price': 400, 'observed_at': 100}}
+    program = [save_goal(['thorns'], price_cap=500)]
+    result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(**unaffordable), None, 'battle')
+    assert result.status == 'blocked' and result.trace.matched_rule_id == 'goal'
+    assert 'Saving for' in result.trace.reason
+
+
+def test_goal_wallet_share_does_not_block_saving() -> None:
+    poor = replace(facts(), wallet_coins=90)  # 20% of 90 = 18 < thorns 100
+    result = blocks.evaluate_program(route([save_goal(['thorns'], wallet_share_pct=20)]), poor, None, 'workshop')
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    over_share = replace(facts(), wallet_coins=200)  # affordable, but 100 > 20% of 200
+    result = blocks.evaluate_program(route([save_goal(['thorns'], wallet_share_pct=20)]), over_share, None, 'workshop')
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    within_share = replace(facts(), wallet_coins=500)
+    result = blocks.evaluate_program(route([save_goal(['thorns'], wallet_share_pct=20)]), within_share, None, 'workshop')
+    assert result.decision.state == 'buy' and result.decision.upgrade_id == 'thorns'
+
+
+def test_def_abs_coverage_with_locked_defense_percent_uses_zero() -> None:
+    program = [when('def_abs_coverage', 'lt', 1.2)]
+    locked = battle_facts(defense_absolute={'status': 'available', 'value': 100.0, 'price': 10, 'observed_at': 100},
+                          defense_percent={'status': 'locked', 'value': None, 'price': None, 'observed_at': 100})
+    covered = replace(locked, enemy_damage=50.0)  # 100 / 50 = 2.0
+    assert blocks.evaluate_program(route(program, lane='battle'), covered, None, 'battle').decision.upgrade_id == 'health'
+    exposed = replace(locked, enemy_damage=100.0)  # 100 / 100 = 1.0
+    assert blocks.evaluate_program(route(program, lane='battle'), exposed, None, 'battle').decision.upgrade_id == 'defense_absolute'

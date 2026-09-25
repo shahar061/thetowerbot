@@ -4,6 +4,7 @@ import type { BuildRouteDocument } from "@/lib/buildRoute";
 import type { StrategyLibrary } from "@/lib/strategyStudio";
 import { StrategyStudio } from "./StrategyStudio";
 import { StrategyCanvas } from "./StrategyCanvas";
+import { StrategyBlockInspector } from "./StrategyBlockInspector";
 
 vi.mock("./studio.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 const api = vi.hoisted(() => ({ save: vi.fn(), assign: vi.fn(), preview: vi.fn() }));
@@ -138,4 +139,171 @@ test("keeps draft after save failure and prevents assigning unsaved changes", as
   expect(await screen.findByRole("alert")).toHaveTextContent("Library changed");
   expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
   expect(screen.getByRole("combobox", { name: "Strategy" })).toHaveDisplayValue("Balanced turtle · draft");
+});
+
+test("canvas renders nested budget and save-for containers with chips", () => {
+  const blocks = [{ id: "econ", type: "budget" as const, metric: "utility_spent" as const, target: 350, ceiling: 400, blocks: [
+    { id: "goal", type: "save_for" as const, goal: [{ id: "pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const,
+      targets: { thorns: 51 }, level_caps: { thorns: { base: 5 } } }] }] }];
+  render(<StrategyCanvas blocks={blocks} names={new Map([["thorns", "Thorn Damage"]])} selected={null} locked
+    target={{ parent: null, branch: "root", index: 0 }} onSelect={() => {}} onTarget={() => {}} onDrop={() => {}} onMove={() => {}} onDrag={() => {}} />);
+  expect(screen.getByText("Budget · 350/400 utility coins")).toBeInTheDocument();
+  expect(screen.getByText("Within budget")).toBeInTheDocument();
+  expect(screen.getByText("Goal")).toBeInTheDocument();
+  expect(screen.getByText("Thorn Damage → 51")).toBeInTheDocument();
+  expect(screen.getByText("Thorn Damage ≤ 5")).toBeInTheDocument();
+});
+
+test("legacy native blocks are badged", () => {
+  render(<StrategyCanvas blocks={[{ id: "n", type: "native", policy: "turtle", phase: "battle" }]} names={new Map()} selected={null} locked
+    target={{ parent: null, branch: "root", index: 0 }} onSelect={() => {}} onTarget={() => {}} onDrop={() => {}} onMove={() => {}} onDrag={() => {}} />);
+  expect(screen.getByText(/LEGACY BUILT-IN/)).toBeInTheDocument();
+});
+
+test("inspector edits pool target and links to the guide", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("link", { name: /learn more/i })).toHaveAttribute("href", "/fleet/reroll/strategies/guide/#block-pool");
+  fireEvent.click(screen.getByRole("button", { name: "Add target for Thorn Damage" }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ targets: { thorns: 1 } }));
+});
+
+test("studio header links to the guide", () => {
+  render(<StrategyStudio library={library} saved={route} catalog={catalog} members={members} onPublished={() => {}} />);
+  expect(screen.getByRole("link", { name: /how it works/i })).toHaveAttribute("href", "/fleet/reroll/strategies/guide/");
+});
+
+test("inspector Block name field edits and clears the block label", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Block name"), { target: { value: "Cheap stuff" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ label: "Cheap stuff" }));
+  onChange.mockClear();
+  fireEvent.change(screen.getByLabelText("Block name"), { target: { value: "   " } });
+  const [[cleared]] = onChange.mock.calls;
+  expect(cleared).not.toHaveProperty("label");
+});
+
+test("Price cap add button defaults to a valid price cap", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  const priceCapHeading = screen.getByText("Price cap").closest("div")!;
+  fireEvent.click(within(priceCapHeading).getByRole("button", { name: "Add cap" }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ price_cap: 1 }));
+});
+
+test("switching Account fact to Upgrade value picks a defined upgrade", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "c", type: "condition", field: "best_tier_1_wave", op: "gte", value: 50, then: [], else: [] }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Account fact"), { target: { value: "upgrade_value" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ field: "upgrade_value", upgrade_id: "damage" }));
+});
+
+test("Upgrade value condition select has a leading disabled placeholder option", () => {
+  render(<StrategyBlockInspector block={{ id: "c", type: "condition", field: "upgrade_value", op: "gte", value: 50, upgrade_id: "damage", then: [], else: [] }} lane="workshop"
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("option", { name: /select an upgrade/i })).toBeInTheDocument();
+});
+
+test("level cap grows-with select sets per_level_of on the base cap", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p2", type: "pool", upgrade_ids: ["damage"], selection: "priority", level_caps: { damage: { base: 5 } } }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Cap grows with for Damage"), { target: { value: "cash_per_wave" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ level_caps: { damage: { base: 5, per_level_of: "cash_per_wave" } } }));
+});
+
+test("level cap grows-with select back to Fixed cap clears per_level_of", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p3", type: "pool", upgrade_ids: ["damage"], selection: "priority", level_caps: { damage: { base: 5, per_level_of: "cash_per_wave" } } }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Cap grows with for Damage"), { target: { value: "" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ level_caps: { damage: { base: 5 } } }));
+});
+
+test("the In-game palette does not offer Budget", () => {
+  setup();
+  fireEvent.click(screen.getByRole("tab", { name: "Flow" }));
+  expect(screen.getByRole("button", { name: "Add Budget" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "In-game" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Flow" }));
+  expect(screen.queryByRole("button", { name: "Add Budget" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add Save for goal" })).toBeInTheDocument();
+});
+
+test("a save-for goal branch is not a drop target", () => {
+  const onTarget = vi.fn();
+  const blocks = [{ id: "goal", type: "save_for" as const, goal: [{ id: "pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const }] },
+    { id: "ws", type: "while_saving" as const, blocks: [] }];
+  render(<StrategyCanvas blocks={blocks} names={new Map()} selected={null} locked={false}
+    target={{ parent: null, branch: "root", index: 0 }} onSelect={() => {}} onTarget={onTarget} onDrop={() => {}} onMove={() => {}} onDrag={() => {}} />);
+  expect(screen.getByText("Goal")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Add to Goal" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Insert into goal/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add to While saving" })).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: /Insert into blocks/ })).toHaveLength(1);
+});
+
+test("inspector hides Add discount for a save-for goal pool", () => {
+  const block = { id: "pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const };
+  const { rerender } = render(<StrategyBlockInspector block={block} lane="workshop" isGoal
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.queryByRole("button", { name: "Add discount" })).not.toBeInTheDocument();
+  rerender(<StrategyBlockInspector block={block} lane="workshop"
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("button", { name: "Add discount" })).toBeInTheDocument();
+});
+
+test("studio marks a selected save-for goal pool as a goal", () => {
+  const goalRoute: BuildRouteDocument = { ...route, baseline: { ...baseline, workshop: { ...baseline.workshop, blocks: [
+    { id: "goal", type: "save_for", goal: [{ id: "goal.pool", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }] },
+    { id: "free", type: "pool", upgrade_ids: ["damage"], selection: "priority" }] } } };
+  const goalLibrary: StrategyLibrary = { ...library, templates: [{ ...template, baseline: goalRoute.baseline }, library.templates[1]] };
+  render(<StrategyStudio library={goalLibrary} saved={goalRoute} catalog={catalog} members={members} onPublished={vi.fn()} />);
+  fireEvent.click(within(screen.getByTestId("block-goal.pool")).getAllByRole("button")[0]);
+  expect(screen.queryByRole("button", { name: "Add discount" })).not.toBeInTheDocument();
+  fireEvent.click(within(screen.getByTestId("block-free")).getAllByRole("button")[0]);
+  expect(screen.getByRole("button", { name: "Add discount" })).toBeInTheDocument();
+});
+
+test("integer inputs use whole steps and ignore a cleared field", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "weighted", price_cap: 50,
+    wallet_share_pct: 20, max_purchases: 3, discount_pct: 20, decay_pct: 10, weight_floor: 1, weights: { thorns: 2 },
+    level_caps: { thorns: { base: 2 } } }} lane="workshop" catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  for (const label of ["Maximum price (coins)", "Maximum % of wallet", "Maximum confirmed purchases per upgrade", "Minimum discount (%)",
+    "Reduce weight after each buy (%)", "Minimum weight", "Weight for Thorn Damage", "Level cap for Thorn Damage"]) {
+    expect(screen.getByLabelText(label)).toHaveAttribute("step", "1");
+  }
+  fireEvent.change(screen.getByLabelText("Maximum price (coins)"), { target: { value: "" } });
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+test("budget inputs use whole steps with a positive target", () => {
+  render(<StrategyBlockInspector block={{ id: "b", type: "budget", metric: "utility_spent", target: 350, ceiling: 400, blocks: [] }}
+    lane="workshop" catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByLabelText("Utility target (coins)")).toHaveAttribute("step", "1");
+  expect(screen.getByLabelText("Utility target (coins)")).toHaveAttribute("min", "1");
+  expect(screen.getByLabelText("Hard ceiling (coins)")).toHaveAttribute("step", "1");
+});
+
+test("selecting a goal pool inserts new blocks after its save-for block", async () => {
+  const goalBaseline = { ...baseline, workshop: { ...baseline.workshop, blocks: [
+    { id: "goal", type: "save_for" as const, goal: [{ id: "goal.pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const }] }] } };
+  const custom = { ...template, id: "custom-1", builtin: false, name: "Mine", baseline: goalBaseline };
+  const mine: StrategyLibrary = { ...library, strategies: [custom] };
+  render(<StrategyStudio library={mine} saved={{ ...route, baseline: goalBaseline }} catalog={catalog} members={members} onPublished={vi.fn()} />);
+  fireEvent.change(screen.getByRole("combobox", { name: "Strategy" }), { target: { value: "custom-1" } });
+  fireEvent.click(within(screen.getByTestId("block-goal.pool")).getAllByRole("button")[0]);
+  fireEvent.click(screen.getByRole("tab", { name: "Flow" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add Save & wait" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  await waitFor(() => expect(api.save).toHaveBeenCalled());
+  const blocks = api.save.mock.calls[0][0].baseline.workshop.blocks;
+  expect(blocks.map((block: { type: string }) => block.type)).toEqual(["save_for", "wait"]);
+  expect(blocks[0].goal).toHaveLength(1);
 });
