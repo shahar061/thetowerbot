@@ -43,6 +43,7 @@ import knowledge
 import milestone_roadmap
 import objectives
 import upgrades
+import workshop_levels
 from fleet.account_metrics import account_metrics
 from concepts import REGISTRY
 from runtime_identity import API_VERSION, PROCESS_IDENTITY, read_frontend_identity
@@ -1315,6 +1316,25 @@ def create_app(
                 raise HTTPException(409, "selected_account_changed")
             return {"account_id": account_id,
                     "items": db.workshop_purchase_summary(conn)}
+
+    @app.get("/api/workshop-levels")
+    def workshop_levels_state(request: Request) -> dict:
+        # Levels are inferred from the latest revision's Workshop stat reads;
+        # an upgrade never read is listed as "unseen", not omitted.
+        path = _history_path(request)
+        if path is None:
+            return {"account_id": None, "upgrades": workshop_levels.workshop_state(None)}
+        with db.reader(path) as conn:
+            account_id = db.connection_account(conn)
+            row = conn.execute("SELECT detail FROM account_revisions ORDER BY id DESC LIMIT 1").fetchone()
+        expected = request.headers.get("x-expected-account-id")
+        if expected is not None and expected != account_id:
+            raise HTTPException(409, "selected_account_changed")
+        revision = json.loads(row["detail"]) if row is not None else {}
+        # A revision stamped with another account predates a replacement.
+        stats = (revision.get("workshop_stats")
+                 if revision.get("account_id") in (None, account_id) else None)
+        return {"account_id": account_id, "upgrades": workshop_levels.workshop_state(stats)}
 
     @app.get("/api/errors")
     def errors(request: Request, limit: int = 100) -> list[dict]:

@@ -9,14 +9,18 @@ const OUTCOMES: Record<GuideBlockType, Outcome[]> = {
 const OUTCOME_TEXT: Record<Outcome, string> = { buy: "Buy → refresh", save: "Save → keep looking", pass: "Pass → next block", wait: "Wait → stop" };
 
 export function DecisionLoop(): React.JSX.Element {
-  const nodes = ["Refresh facts", "Shared rules", "Walk blocks top-down", "First block that acts wins", "One confirmed purchase"];
+  // Each label is pre-split into lines: SVG <text> never wraps, and single-line
+  // labels overflowed the 112-wide boxes into their neighbours.
+  const nodes = [["Refresh", "facts"], ["Shared", "rules"], ["Walk blocks", "top-down"], ["First block", "that acts wins"], ["One confirmed", "purchase"]];
   return <svg role="img" aria-label="Decision loop" viewBox="0 0 640 220" width="100%" className={styles.diagram}>
     <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" className={styles.arrowHead} /></marker></defs>
     {nodes.map((label, index) => {
       const x = 12 + index * 126;
-      return <g key={label}>
+      return <g key={label.join(" ")}>
         <rect x={x} y={70} width={112} height={56} rx={12} className={index === 3 ? styles.nodeActive : styles.node} />
-        <text x={x + 56} y={102} textAnchor="middle" className={styles.nodeText}>{label}</text>
+        <text x={x + 56} y={94} textAnchor="middle" className={styles.nodeText}>
+          {label.map((line, lineIndex) => <tspan key={line} x={x + 56} dy={lineIndex === 0 ? 0 : 14}>{line}</tspan>)}
+        </text>
         {index < nodes.length - 1 && <line x1={x + 112} y1={98} x2={x + 126} y2={98} className={styles.edge} markerEnd="url(#arrow)" />}
       </g>;
     })}

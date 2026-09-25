@@ -366,6 +366,28 @@ export interface WorkshopPurchaseSummary {
   items: { category: string; item: string; count: number }[];
 }
 
+/** A level inferred from the Workshop stat value the bot last read. */
+export type WorkshopLevelStatus = "exact" | "ambiguous" | "unmatched" | "maxed" | "unseen";
+
+export interface WorkshopLevelRow {
+  id: string;
+  name: string;
+  category: string;
+  max_level: number;
+  value: number | null;
+  raw_value: string | null;
+  observed_at: number | null;
+  status: WorkshopLevelStatus;
+  level_min: number | null;
+  level_max: number | null;
+  next_coins: number | null;
+}
+
+export interface WorkshopLevels {
+  account_id: string | null;
+  upgrades: WorkshopLevelRow[];
+}
+
 export interface MilestoneBenchmark {
   tier: number;
   wave: number;

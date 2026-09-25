@@ -16,6 +16,7 @@ test.each(["/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progres
   expect(screen.getByRole("link", { name: "Single emulator" })).toHaveAttribute("href", "/");
   expect(screen.getByRole("link", { name: "Strategy Studio" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Progression" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Workshop" })).toHaveAttribute("href", "/fleet/reroll/workshop/");
   expect(screen.getByRole("link", { name: "History" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Guide" })).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Control" })).not.toBeInTheDocument();

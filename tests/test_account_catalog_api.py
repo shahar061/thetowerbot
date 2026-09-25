@@ -238,7 +238,7 @@ def _replace_account(worker_db: Path, account_id: str) -> None:
 
 @pytest.mark.parametrize("route", ["/api/runs", "/api/ledger", "/api/runs/1/purchases",
                                     "/api/account", "/api/milestone-roadmap", "/api/stats",
-                                    "/api/workshop-purchases/summary"])
+                                    "/api/workshop-purchases/summary", "/api/workshop-levels"])
 def test_scoped_read_rejects_replaced_account(tmp_path: Path, route: str) -> None:
     root = tmp_path / "fleet"
     path = _worker(root, "Tiramisu64_18", "ACCOUNT_A")
