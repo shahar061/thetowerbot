@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Dialog } from "@base-ui/react/dialog";
-import { ArrowDown, Copy, FlaskConical, Gem, GitBranch, Hammer, LockKeyhole, Maximize2, Minimize2, Monitor, Plus, Save, Shield, Sparkles, Swords, X } from "lucide-react";
+import { ArrowDown, BookOpen, Copy, FlaskConical, Gem, GitBranch, Hammer, LockKeyhole, Maximize2, Minimize2, Monitor, Plus, Save, Shield, Sparkles, Swords, X } from "lucide-react";
 import { assignFleetStrategy, previewBuildRoute, saveFleetStrategy } from "@/lib/api";
 import type { BuildRouteDocument, BuildRoutePreview } from "@/lib/buildRoute";
 import type { SpendingLane, StrategyBlock, StrategyDefinition, StrategyLibrary, StrategyWorker } from "@/lib/strategyStudio";
@@ -182,7 +183,8 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
         {!!choices.filter(item => !item.builtin).length && <optgroup label="Your strategies">{choices.filter(item => !item.builtin).map(item => <option key={item.id} value={item.id}>{item.name}{(drafts[item.id] ?? item).dirty ? " · draft" : ` · v${item.version}`}</option>)}</optgroup>}
       </select></label>
       <span className={styles.version}>{locked ? <LockKeyhole size={13} /> : <GitBranch size={13} />}{locked ? "Protected template" : strategy.dirty ? "Unsaved changes" : `Saved · v${strategy.version}`}</span>
-      <div className={styles.toolbarActions}><button className={styles.button} type="button" disabled={busy} onClick={startScratch}><Plus size={15} />Create from scratch</button>
+      <div className={styles.toolbarActions}><Link className={styles.button} href="/fleet/reroll/strategies/guide/"><BookOpen size={15} />How it works</Link>
+        <button className={styles.button} type="button" disabled={busy} onClick={startScratch}><Plus size={15} />Create from scratch</button>
         <button className={styles.button} type="button" disabled={busy} onClick={() => startCopy()}><Copy size={15} />Create copy</button>
         {!locked && <button className={styles.primaryButton} type="button" disabled={busy || !strategy.dirty} onClick={() => void save()}><Save size={15} />Save strategy</button>}
         <button className={locked ? styles.primaryButton : styles.button} type="button" disabled={busy || strategy.dirty || !activeMembers.length} onClick={() => { setTargets(activeMembers.map(member => member.name)); setAssignOpen(true); setError(""); }}><Monitor size={15} />Assign</button></div>

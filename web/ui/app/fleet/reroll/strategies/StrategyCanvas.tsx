@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ChevronDown, ChevronUp, GitBranch, GripVertical, Pause, Plus, ShoppingBag, Sparkles } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronUp, GitBranch, GripVertical, Pause, PiggyBank, Plus, ShoppingBag, Sparkles, Wallet } from "lucide-react";
 import type { StrategyBlock } from "@/lib/strategyStudio";
 import { blockDetail, blockTitle, childGroups, type BlockTarget } from "./strategyBlocks";
 import styles from "./studio.module.css";
@@ -30,8 +30,10 @@ export function StrategyCanvas({ blocks, names, selected, locked, target, onSele
     {!blocks.length && <div className={styles.emptyPath}><strong>No purchases configured</strong>{!parent && <p>Choose a block from the side palette to add the first step.</p>}</div>}
     {blocks.map((block, index) => {
       const title = blockTitle(block, names);
-      const Icon = block.type === "condition" ? GitBranch : block.type === "wait" ? Pause : block.type === "pool" ? Sparkles : ShoppingBag;
-      const kind = block.type === "condition" || block.type === "pool" ? "logic" : block.type === "fallback" || block.type === "wait" ? "flow" : "buy";
+      const Icon = block.type === "budget" ? Wallet : block.type === "save_for" || block.type === "while_saving" ? PiggyBank :
+        block.type === "condition" ? GitBranch : block.type === "wait" ? Pause : block.type === "pool" ? Sparkles : ShoppingBag;
+      const kind = block.type === "condition" || block.type === "pool" ? "logic"
+        : block.type === "fallback" || block.type === "wait" || block.type === "budget" || block.type === "save_for" || block.type === "while_saving" ? "flow" : "buy";
       const nextBlock = blocks[index + 1];
       return <div key={block.id}>
         {insertion(index)}
@@ -40,8 +42,12 @@ export function StrategyCanvas({ blocks, names, selected, locked, target, onSele
           onDragStart={event => { event.stopPropagation(); onDrag({ id: block.id }); event.dataTransfer?.setData("text/plain", block.id); }}
           onDragEnd={() => onDrag(null)}>
           <button type="button" aria-pressed={selected === block.id} onClick={() => onSelect(block.id)} className={styles.blockMain}>
-            <span className={styles.blockKind}><Icon size={14} />{block.type === "native" ? "BUILT-IN POLICY" : kind.toUpperCase()}<GripVertical size={14} className={styles.grip} /></span>
+            <span className={styles.blockKind}><Icon size={14} />{block.type === "native" ? "LEGACY BUILT-IN" : kind.toUpperCase()}<GripVertical size={14} className={styles.grip} /></span>
             <strong>{title}</strong><span className={styles.blockDetail}>{blockDetail(block)}</span>
+            {block.type === "pool" && (block.targets || block.level_caps) && <span className={styles.chips}>
+              {Object.entries(block.targets ?? {}).map(([id, value]) => <span key={`t-${id}`}>{names.get(id) ?? id} → {value}</span>)}
+              {Object.entries(block.level_caps ?? {}).map(([id, cap]) => <span key={`c-${id}`}>{names.get(id) ?? id} ≤ {cap.base}{cap.per_level_of ? ` + ${cap.step ?? 1}/${names.get(cap.per_level_of) ?? cap.per_level_of}` : ""}</span>)}
+            </span>}
             {block.type === "native" && block.phase === "objectives" && <span className={styles.chips}>{block.policy === "turtle"
               ? <><span>Def. Abs · base target 5 buys</span><span>Thorns · 51% stat</span></>
               : <><span>Damage + Attack Speed</span><span>Unlocks + economy</span></>}</span>}

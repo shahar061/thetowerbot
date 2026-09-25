@@ -4,6 +4,7 @@ import type { BuildRouteDocument } from "@/lib/buildRoute";
 import type { StrategyLibrary } from "@/lib/strategyStudio";
 import { StrategyStudio } from "./StrategyStudio";
 import { StrategyCanvas } from "./StrategyCanvas";
+import { StrategyBlockInspector } from "./StrategyBlockInspector";
 
 vi.mock("./studio.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 const api = vi.hoisted(() => ({ save: vi.fn(), assign: vi.fn(), preview: vi.fn() }));
@@ -138,4 +139,49 @@ test("keeps draft after save failure and prevents assigning unsaved changes", as
   expect(await screen.findByRole("alert")).toHaveTextContent("Library changed");
   expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
   expect(screen.getByRole("combobox", { name: "Strategy" })).toHaveDisplayValue("Balanced turtle · draft");
+});
+
+test("canvas renders nested budget and save-for containers with chips", () => {
+  const blocks = [{ id: "econ", type: "budget" as const, metric: "utility_spent" as const, target: 350, ceiling: 400, blocks: [
+    { id: "goal", type: "save_for" as const, goal: [{ id: "pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const,
+      targets: { thorns: 51 }, level_caps: { thorns: { base: 5 } } }] }] }];
+  render(<StrategyCanvas blocks={blocks} names={new Map([["thorns", "Thorn Damage"]])} selected={null} locked
+    target={{ parent: null, branch: "root", index: 0 }} onSelect={() => {}} onTarget={() => {}} onDrop={() => {}} onMove={() => {}} onDrag={() => {}} />);
+  expect(screen.getByText("Budget · 350/400 utility coins")).toBeInTheDocument();
+  expect(screen.getByText("Within budget")).toBeInTheDocument();
+  expect(screen.getByText("Goal")).toBeInTheDocument();
+  expect(screen.getByText("Thorn Damage → 51")).toBeInTheDocument();
+  expect(screen.getByText("Thorn Damage ≤ 5")).toBeInTheDocument();
+});
+
+test("legacy native blocks are badged", () => {
+  render(<StrategyCanvas blocks={[{ id: "n", type: "native", policy: "turtle", phase: "battle" }]} names={new Map()} selected={null} locked
+    target={{ parent: null, branch: "root", index: 0 }} onSelect={() => {}} onTarget={() => {}} onDrop={() => {}} onMove={() => {}} onDrag={() => {}} />);
+  expect(screen.getByText(/LEGACY BUILT-IN/)).toBeInTheDocument();
+});
+
+test("inspector edits pool target and links to the guide", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("link", { name: /learn more/i })).toHaveAttribute("href", "/fleet/reroll/strategies/guide/#block-pool");
+  fireEvent.click(screen.getByRole("button", { name: "Add target for Thorn Damage" }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ targets: { thorns: 0 } }));
+});
+
+test("studio header links to the guide", () => {
+  render(<StrategyStudio library={library} saved={route} catalog={catalog} members={members} onPublished={() => {}} />);
+  expect(screen.getByRole("link", { name: /how it works/i })).toHaveAttribute("href", "/fleet/reroll/strategies/guide/");
+});
+
+test("inspector Block name field edits and clears the block label", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Block name"), { target: { value: "Cheap stuff" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ label: "Cheap stuff" }));
+  onChange.mockClear();
+  fireEvent.change(screen.getByLabelText("Block name"), { target: { value: "   " } });
+  const [[cleared]] = onChange.mock.calls;
+  expect(cleared).not.toHaveProperty("label");
 });
