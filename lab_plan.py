@@ -1,4 +1,4 @@
-"""Pure slot-one research choice and account-bound revisit timing."""
+"""Pure research choice and account-bound lab revisit timing."""
 
 from __future__ import annotations
 
@@ -62,22 +62,26 @@ def decide(slot: LabHomeReading, row: LabPickerReading | None) -> LabDecision:
 
 
 class LabCadence:
-    """A restart-safe check clock bound to exactly one account."""
+    """Restart-safe research and slot-two checks bound to one account."""
 
     def __init__(self, root: Path, account_id: str) -> None:
         self.path = Path(root) / "lab-slot1-cadence.json"
+        self.slot2_path = Path(root) / "lab-slot2-cadence.json"
         self.account_id = account_id
 
-    def _record(self) -> dict[str, object] | None:
+    def _read(self, path: Path) -> dict[str, object] | None:
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         if not isinstance(data, dict) or data.get("account_id") != self.account_id:
             return None
         return data
 
-    def due(self, now: float) -> bool:
+    def _record(self) -> dict[str, object] | None:
+        return self._read(self.path)
+
+    def due(self, now: float, wallet_coins: int | None = None) -> bool:
         record = self._record()
         if record is None:
             return True
@@ -88,8 +92,42 @@ class LabCadence:
             return True
         if record.get("kind") == "done":
             return False
+        if record.get("kind") == "wait_coins" and type(record.get("price")) is int:
+            price = record["price"]
+            if type(wallet_coins) is int:
+                return wallet_coins >= price
+            # A death screen has no trustworthy coin counter. Recheck only
+            # occasionally if visits to the menu do not happen naturally.
+            observed = record.get("observed_at")
+            return isinstance(observed, (int, float)) and now >= observed + 3600
         next_check = record.get("next_check_at")
         return not isinstance(next_check, (int, float)) or now >= next_check
+
+    def slot2_owned(self) -> bool:
+        record = self._read(self.slot2_path)
+        return record is not None and record.get("status") == "owned"
+
+    def slot2_due(self, now: float, wallet_gems: int | None = None) -> bool:
+        record = self._read(self.slot2_path)
+        if record is None:
+            return True
+        if record.get("status") == "owned":
+            return False
+        if type(wallet_gems) is int:
+            if wallet_gems < 100:
+                return False
+            previous = record.get("wallet_gems")
+            if type(previous) is int and previous < 100:
+                return True
+        observed = record.get("observed_at")
+        return not isinstance(observed, (int, float)) or now >= observed + 3600
+
+    def note_slot2(self, status: str, wallet_gems: int | None, now: float) -> None:
+        if status not in {"locked", "owned"}:
+            return
+        self._write(self.slot2_path, {"account_id": self.account_id,
+                                      "status": status, "wallet_gems": wallet_gems,
+                                      "observed_at": now})
 
     def speed_target(self) -> float:
         """Aim at x2.0 only after a later Game Speed row proves Lv.1 finished."""
@@ -118,14 +156,18 @@ class LabCadence:
                    "next_check_at": next_check, "observed_at": now,
                    "wallet_coins": decision.wallet_coins, "price": decision.price,
                    "game_speed_level": observed_level}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
+        self._write(self.path, payload)
+
+    @staticmethod
+    def _write(path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
             with temporary.open("x", encoding="utf-8") as output:
                 json.dump(payload, output, sort_keys=True)
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())
-            os.replace(temporary, self.path)
+            os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)

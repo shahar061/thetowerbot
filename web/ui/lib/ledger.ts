@@ -12,6 +12,7 @@ import type { LedgerLine, LedgerPayload } from "@/lib/types";
 export const LEDGER_EVENTS = new Set([
   "RunEnded",
   "LabResearchStarted",
+  "LabSlotUnlocked",
   "Purchased",
   "PurchaseSkipped",
   "ShoppingStarted",

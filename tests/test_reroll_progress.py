@@ -30,9 +30,19 @@ def test_lab_check_cadence_survives_worker_restart(tmp_path: Path) -> None:
     progress.note_lab_observation(
         LabDecision("wait_coins", price=300, wallet_coins=122,
                     game_speed_level=1), now=1000.)
+    progress.note_lab_slot2("locked", 65, now=1000.)
     restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
-    assert not restarted.lab_due(now=1100.)
-    assert restarted.lab_due(now=1300.)
+    assert not restarted.lab_due(now=1100., wallet_coins=122, wallet_gems=65)
+    assert restarted.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
+
+
+def test_reroll_holds_card_gems_until_second_lab_is_owned(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    base = Strategy.from_config().shopping
+    enabled = replace(base, cards=replace(base.cards, enabled=True, gem_floor=0))
+    assert not progress.shopping_policy(enabled).cards.enabled
+    progress.note_lab_slot2("owned", 19, now=1000.)
+    assert progress.shopping_policy(enabled).cards.enabled
 
 
 def worker_without_verified_utility_debits(tmp_path: Path) -> RerollProgress:

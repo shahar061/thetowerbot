@@ -48,8 +48,17 @@ class RerollProgress:
         self._last_skip_note: str | None = None
         self.lab_cadence = LabCadence(self.root, account_id)
 
-    def lab_due(self, now: float | None = None) -> bool:
-        return self.lab_cadence.due(time.time() if now is None else now)
+    def lab_due(self, now: float | None = None, *,
+                wallet_coins: int | None = None,
+                wallet_gems: int | None = None) -> bool:
+        moment = time.time() if now is None else now
+        return (self.lab_cadence.slot2_due(moment, wallet_gems)
+                or self.lab_cadence.due(moment, wallet_coins))
+
+    def note_lab_slot2(self, status: str, wallet_gems: int | None,
+                       now: float | None = None) -> None:
+        self.lab_cadence.note_slot2(status, wallet_gems,
+                                    time.time() if now is None else now)
 
     def speed_target(self) -> float:
         return self.lab_cadence.speed_target()
@@ -206,6 +215,10 @@ class RerollProgress:
         return result
 
     def shopping_policy(self, base: Shopping) -> Shopping:
+        # Reserve the first 100 gems for the second lab even when a custom
+        # reroll policy enables card spending.
+        if not self.lab_cadence.slot2_owned():
+            base = replace(base, cards=replace(base.cards, enabled=False))
         # The reroll planner selects one item; a visit-wide percentage cap
         # otherwise rejects an affordable unlock after the planner selects it.
         self._spend_fraction = None

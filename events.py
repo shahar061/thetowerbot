@@ -77,6 +77,14 @@ class LabResearchStarted(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class LabSlotUnlocked(Event):
+    slot: int
+    price: int
+    gems_before: int
+    gems_after: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class AutopilotDecided(Event):
     """The battle autopilot changed what it is doing, and why.
 

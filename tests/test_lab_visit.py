@@ -198,3 +198,38 @@ def test_changed_price_resets_confirmation_and_timeout_records_no_purchase() -> 
     assert result is not None
     assert result.status == "failed"
     assert result.observed_coin_spend == 0
+
+
+def test_second_lab_unlock_requires_stable_price_and_verified_gem_debit() -> None:
+    from lab_screen import read_home
+
+    image = frame("menu_labs_slot1_idle")
+    original = boxes("menu_labs_slot1_idle")
+    locked = tuple(ocr.TextBox("119", box.confidence, box.rect)
+                   if box.text == "65" else box for box in original)
+    price = next(box for box in locked if box.text == "100")
+    gem = next(box for box in locked if box.text == "119")
+    owned = tuple(box for box in locked if box.text not in {"Unlock Znd lab", "100", "119"}) + (
+        ocr.TextBox("19", gem.confidence, gem.rect),
+        ocr.TextBox("Lab Offline", .99, config.Rect(394, 832, 291, 52)),
+        ocr.TextBox("Lab 3", .99, config.Rect(25, 1046, 97, 39)),
+        ocr.TextBox("Unlock 3rd lab", .99, config.Rect(351, 1174, 378, 51)),
+    )
+    assert read_home(image, locked).slot2_price == 100
+    assert read_home(image, owned).slot2_status == "owned"
+    visit, device = setup()
+    visit.request()
+    with patch("lab_visit.tap", side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        visit.advance(image, locked, device, 10.)
+        assert device.taps == []
+        visit.advance(image, locked, device, 11.)
+        assert len(device.taps) == 1
+        assert device.taps[0] == (price.rect.x + price.rect.w // 2,
+                                  price.rect.y + price.rect.h // 2)
+        visit.advance(image, owned, device, 12.)
+        visit.advance(image, owned, device, 13.)
+        visit.advance(image, owned, device, 14.)
+        result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 15.)
+    assert result is not None
+    assert result.status == "slot2_unlocked"
+    assert result.observed_gem_spend == 100
