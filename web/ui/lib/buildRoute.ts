@@ -10,6 +10,9 @@ export type RouteTrace = {
   spend_ceiling: number | null;
   branch_id: string | null;
   phase_id: string | null;
+  phase_state: "active" | "waiting" | "complete" | "blocked" | null;
+  next_phase_id: string | null;
+  transition_reason: string | null;
   eligible_odds: Record<string, number>;
   draw_gate: number | null;
 };
@@ -84,5 +87,9 @@ export type BuildRoutePreview = {
     current: RouteEvaluation; proposed: RouteEvaluation;
     current_battle?: RouteEvaluation; proposed_battle?: RouteEvaluation;
     current_resources?: { gem_step: ResourceStep; lab_step: ResourceStep };
-    proposed_resources?: { gem_step: ResourceStep; lab_step: ResourceStep } }[];
+    proposed_resources?: { gem_step: ResourceStep; lab_step: ResourceStep };
+    evidence?: Record<"workshop" | "battle" | "resources", {
+      source: string; observed_at: number | null; reason: string | null;
+      status: "verified" | "stale" | "unknown";
+    }> }[];
 };

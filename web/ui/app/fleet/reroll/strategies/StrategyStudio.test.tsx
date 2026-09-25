@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { BuildRouteDocument } from "@/lib/buildRoute";
+import type { StrategyLibrary } from "@/lib/strategyStudio";
 import { StrategyStudio } from "./StrategyStudio";
+import { StrategyCanvas } from "./StrategyCanvas";
 
 vi.mock("./studio.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 const api = vi.hoisted(() => ({ save: vi.fn(), assign: vi.fn(), preview: vi.fn() }));
@@ -16,8 +18,10 @@ const baseline: BuildRouteDocument["baseline"] = {
   labs: { slot1_research: "game_speed", steps: ["research_game_speed"] },
 };
 const route: BuildRouteDocument = { schema: 1, revision: 4, authored_at: null, baseline, overrides: {}, dependencies: {} };
-const template = { id: "turtle", name: "Turtle", version: 1, source_template: "turtle", builtin: true, baseline };
-const library = { revision: 0, templates: [template, { ...template, id: "opening", name: "Opening", source_template: "opening" }], strategies: [] };
+const template = { id: "turtle", name: "Turtle", version: 1, source_template: "turtle" as const, builtin: true, baseline };
+const library: StrategyLibrary = { revision: 0,
+  templates: [template, { ...template, id: "opening", name: "Opening", source_template: "opening" }],
+  strategies: [] };
 const catalog = [
   { id: "damage", name: "Damage", category: "ATTACK" as const, aliases: [], unlock: false },
   { id: "thorns", name: "Thorn Damage", category: "DEFENSE" as const, aliases: [], unlock: false },
@@ -30,7 +34,7 @@ const members = [{ name: "Air_38", account_id: "account-a" }, { name: "Air_39", 
 beforeEach(() => {
   vi.clearAllMocks();
   api.save.mockImplementation(async (input) => ({ ...library, revision: 1, strategies: [{ ...template,
-    id: "custom-1", builtin: false, name: input.name, baseline: input.baseline }] }));
+    id: "custom-1", builtin: false, name: input.name, source_template: input.source_template, baseline: input.baseline }] }));
   api.assign.mockResolvedValue({ ...route, revision: 5 });
   api.preview.mockResolvedValue({ saved_revision: 4, proposed_revision: 5, members: [] });
 });
@@ -53,6 +57,15 @@ test("shows protected native blocks, requiring a copy before editing", () => {
   expect(api.save).not.toHaveBeenCalled();
 });
 
+test("shows explicit handoff conditions between native phases", () => {
+  render(<StrategyCanvas blocks={[
+    { id: "opening.economy", type: "native", policy: "opening", phase: "economy" },
+    { id: "opening.objectives", type: "native", policy: "opening", phase: "objectives" },
+  ]} names={new Map()} selected={null} locked onSelect={vi.fn()} onTarget={vi.fn()} onDrop={vi.fn()}
+  onMove={vi.fn()} onDrag={vi.fn()} target={{ parent: null, branch: "root", index: 0 }} />);
+  expect(screen.getByText("When the utility allocation is reached → Upgrade objectives")).toBeInTheDocument();
+});
+
 test("copies template, edits a cheap pool, and saves without activating it", async () => {
   setup(); copy();
   fireEvent.click(screen.getByRole("button", { name: "Add Cheap pool" }));
@@ -65,6 +78,25 @@ test("copies template, edits a cheap pool, and saves without activating it", asy
   expect(api.assign).not.toHaveBeenCalled();
   expect(template.baseline.workshop.blocks).toHaveLength(1);
   expect(await screen.findByText("Saved · v1")).toBeInTheDocument();
+});
+
+test("creates and saves a non-spending scratch strategy", async () => {
+  setup();
+  fireEvent.click(screen.getByRole("button", { name: "Create from scratch" }));
+  expect(screen.getByRole("dialog", { name: "Create strategy from scratch" })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Strategy name"), { target: { value: "My blank route" } });
+  fireEvent.click(screen.getByRole("button", { name: "Create blank strategy" }));
+
+  expect(screen.getByText("No purchases configured")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  await waitFor(() => expect(api.save).toHaveBeenCalledWith(expect.objectContaining({
+    name: "My blank route", source_template: "scratch",
+    baseline: expect.objectContaining({
+      workshop: expect.objectContaining({ mode: "blocks", blocks: [] }),
+      battle: expect.objectContaining({ mode: "blocks", blocks: [], branches: [] }),
+    }),
+  }), 0));
+  expect(api.assign).not.toHaveBeenCalled();
 });
 
 test("assigns the saved version only to selected visible current accounts", async () => {

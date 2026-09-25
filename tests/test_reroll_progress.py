@@ -10,6 +10,7 @@ from pathlib import Path
 import db
 import pytest
 from account_state import AccountState
+from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.reroll_planner import RerollFacts, choose_next
 from fleet.reroll_progress import RerollProgress
 from lab_plan import LabDecision
@@ -281,6 +282,27 @@ def test_stats_summary_persists_game_start_and_recent_coin_rate(tmp_path: Path) 
     saved = json.loads((progress.root / "reroll-lifetime.json").read_text())
     assert saved["game_started"] == "2026-08-29"
     assert saved["recent_coins_per_hour"] == 720
+
+
+def test_read_only_route_facts_do_not_persist_lifetime_summary(tmp_path: Path) -> None:
+    root = tmp_path / "workers" / "Tiramisu64_20"
+    root.mkdir(parents=True)
+    db.bind_account(root / "tower_bot.db", "ACCOUNT-A")
+    progress = RerollProgress(root, "ACCOUNT-A", AccountState(), read_only=True)
+
+    class Readings:
+        def snapshot(self) -> dict:
+            return {"revision": {}, "screen_readings": {"readings": [{
+                "screen_id": "account.stats.summary", "observed_at": time.time(),
+                "fields": [{"key": "coins_earned", "status": "observed", "raw_value": "1500"}],
+            }]}}
+
+    progress.account_state = Readings()
+    progress.route_runtime = BuildRouteRuntime(tmp_path, root.name, "ACCOUNT-A")
+    facts = progress.route_facts()
+
+    assert facts.lifetime_coins == 1500
+    assert not (root / "reroll-lifetime.json").exists()
 
 
 def test_unreadable_game_start_or_rate_does_not_create_a_fake_stat(tmp_path: Path) -> None:

@@ -74,6 +74,9 @@ class DecisionTrace:
     spend_ceiling: int | None = None
     branch_id: str | None = None
     phase_id: str | None = None
+    phase_state: str | None = None
+    next_phase_id: str | None = None
+    transition_reason: str | None = None
     eligible_odds: Mapping[str, float] = field(default_factory=dict)
     draw_gate: int | None = None
     observation_ids: tuple[str, ...] = ()

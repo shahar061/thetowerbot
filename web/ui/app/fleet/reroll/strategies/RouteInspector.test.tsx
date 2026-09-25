@@ -9,7 +9,8 @@ function evaluation(account_id: string): RouteEvaluation {
     account_id, revision: 1, status: "unknown", decision: null, evidence_at: null,
     trace: { matched_rule_id: "", reason: "No fresh facts", evidence_age_seconds: null,
       price_source: "unknown", variant: null, rejected: [], spend_ceiling: null,
-      branch_id: null, phase_id: null, eligible_odds: {}, draw_gate: null },
+      branch_id: null, phase_id: null, phase_state: null, next_phase_id: null,
+      transition_reason: null, eligible_odds: {}, draw_gate: null },
   };
 }
 
@@ -40,6 +41,39 @@ test("decision preview shows only current visible accounts, including paused mem
 test("decision preview explains when no current fleet account can be compared", () => {
   render(<RouteInspector preview={preview} members={[]} />);
   expect(screen.getByText("No current fleet emulators to compare.")).toBeInTheDocument();
+});
+
+test("shows evidence health and provenance independently for each lane", () => {
+  const lanePreview: BuildRoutePreview = { ...preview, members: [{ worker: "Air_39",
+    account_id: "new-account", current: evaluation("new-account"), proposed: evaluation("new-account"),
+    evidence: {
+      workshop: { status: "verified", source: "account revision + price memory + ledger",
+        observed_at: 1_790_351_800, reason: null },
+      battle: { status: "unknown", source: "route snapshot", observed_at: null,
+        reason: "Waiting for first verified battle observation" },
+      resources: { status: "stale", source: "account-bound lab cadence",
+        observed_at: 1_790_351_700, reason: "Observation is stale" },
+    },
+  }] };
+  render(<RouteInspector preview={lanePreview} members={members} />);
+  const lanes = screen.getByLabelText("Evidence by lane");
+  expect(lanes).toBeInTheDocument();
+  expect(lanes.textContent).toContain("account revision + price memory + ledger");
+  expect(lanes.textContent).toContain("Waiting for first verified battle observation");
+  expect(lanes.textContent).toContain("Observation is stale");
+});
+
+test("shows the active workshop phase and the reason the next phase has not started", () => {
+  const current = evaluation("new-account");
+  current.trace.phase_id = "economy";
+  current.trace.phase_state = "waiting";
+  current.trace.next_phase_id = "opening.objectives";
+  current.trace.transition_reason = "Waiting for an affordable utility upgrade to reach the allocation.";
+  const phasePreview: BuildRoutePreview = { ...preview, members: [{ worker: "Air_39",
+    account_id: "new-account", current, proposed: current }] };
+  render(<RouteInspector preview={phasePreview} members={members} />);
+  expect(screen.getAllByText(/Early Economy · waiting/)).toHaveLength(2);
+  expect(screen.getAllByText(/Waiting for an affordable utility upgrade/)).toHaveLength(2);
 });
 
 test("unobserved accounts show one compact waiting state", () => {

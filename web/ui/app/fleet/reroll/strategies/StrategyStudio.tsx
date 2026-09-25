@@ -36,6 +36,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
   const [resourceDrag, setResourceDrag] = useState<string | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
+  const [copyMode, setCopyMode] = useState<"copy" | "scratch">("copy");
   const [copyName, setCopyName] = useState("");
   const [pendingAdd, setPendingAdd] = useState<{ preset: BlockPreset; upgrade?: string; target: BlockTarget } | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -83,13 +84,24 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     const base = `${strategy.name} copy`;
     let name = base, number = 2;
     while (choices.some(item => item.name.toLowerCase() === name.toLowerCase())) name = `${base} ${number++}`;
-    setCopyName(name); setPendingAdd(add ?? null); setCopyOpen(true); setError("");
+    setCopyMode("copy"); setCopyName(name); setPendingAdd(add ?? null); setCopyOpen(true); setError("");
+  }
+  function startScratch(): void {
+    let name = "New strategy", number = 2;
+    while (choices.some(item => item.name.toLowerCase() === name.toLowerCase())) name = `New strategy ${number++}`;
+    setCopyMode("scratch"); setCopyName(name); setPendingAdd(null); setCopyOpen(true); setError("");
   }
   function createCopy(): void {
     const name = copyName.trim();
     if (!name || choices.some(item => item.name.toLowerCase() === name.toLowerCase())) { setError("Choose a unique strategy name."); return; }
+    const baseline = structuredClone(copyMode === "scratch" ? saved.baseline : strategy.baseline);
+    if (copyMode === "scratch") {
+      baseline.workshop = { ...baseline.workshop, mode: "blocks", blocks: [] };
+      baseline.battle = { ...baseline.battle, mode: "blocks", blocks: [], branches: [] };
+    }
     const draft: Draft = { ...structuredClone(strategy), id: `draft.${crypto.randomUUID()}`, name, version: 0,
-      source_template: strategy.source_template || strategy.id, builtin: false, dirty: true };
+      source_template: copyMode === "scratch" ? "scratch" : strategy.source_template || strategy.id,
+      baseline, builtin: false, dirty: true };
     if (pendingAdd && programLane) {
       const block = makeBlock(pendingAdd.preset, programLane, pendingAdd.upgrade);
       draft.baseline = { ...draft.baseline, [programLane]: { ...draft.baseline[programLane], mode: "blocks", blocks: insertBlock(draft.baseline[programLane].blocks ?? [], block, pendingAdd.target) } };
@@ -170,7 +182,8 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
         {!!choices.filter(item => !item.builtin).length && <optgroup label="Your strategies">{choices.filter(item => !item.builtin).map(item => <option key={item.id} value={item.id}>{item.name}{(drafts[item.id] ?? item).dirty ? " · draft" : ` · v${item.version}`}</option>)}</optgroup>}
       </select></label>
       <span className={styles.version}>{locked ? <LockKeyhole size={13} /> : <GitBranch size={13} />}{locked ? "Protected template" : strategy.dirty ? "Unsaved changes" : `Saved · v${strategy.version}`}</span>
-      <div className={styles.toolbarActions}><button className={styles.button} type="button" disabled={busy} onClick={() => startCopy()}><Copy size={15} />Create copy</button>
+      <div className={styles.toolbarActions}><button className={styles.button} type="button" disabled={busy} onClick={startScratch}><Plus size={15} />Create from scratch</button>
+        <button className={styles.button} type="button" disabled={busy} onClick={() => startCopy()}><Copy size={15} />Create copy</button>
         {!locked && <button className={styles.primaryButton} type="button" disabled={busy || !strategy.dirty} onClick={() => void save()}><Save size={15} />Save strategy</button>}
         <button className={locked ? styles.primaryButton : styles.button} type="button" disabled={busy || strategy.dirty || !activeMembers.length} onClick={() => { setTargets(activeMembers.map(member => member.name)); setAssignOpen(true); setError(""); }}><Monitor size={15} />Assign</button></div>
     </div>
@@ -227,12 +240,12 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     {preview && <div className={styles.preview}><p className={styles.hint}>Hypothetical fleet-wide assignment · compare before choosing which emulators to assign.</p><RouteInspector preview={preview} members={members} /></div>}
     <div className={styles.assignmentsSummary}><h3>Fleet assignments</h3>{activeMembers.map(member => { const assignment = saved.assignments?.[member.name]; return <div key={member.name}><Monitor size={15} /><strong>{member.name}</strong><span>{assignment && assignment.account_id === member.account_id ? `${assignment.strategy_name} · v${assignment.strategy_version}` : assignment ? "Account changed · assignment inactive" : "Current fleet route"}</span></div>; })}</div>
     <Dialog.Root open={copyOpen || assignOpen} onOpenChange={open => { if (!open && !busy) { setCopyOpen(false); setAssignOpen(false); } }}><Dialog.Portal><Dialog.Backdrop className={styles.modalBackdrop} /><Dialog.Popup className={`${styles.studio} ${styles.modal}`}>
-      <div className={styles.modalHeading}><Dialog.Title>{copyOpen ? "Create your strategy" : "Assign saved strategy"}</Dialog.Title><button className={styles.iconButton} disabled={busy} type="button" aria-label="Close dialog" onClick={() => { setCopyOpen(false); setAssignOpen(false); }}><X size={18} /></button></div>
-      {copyOpen ? <><Dialog.Description className={styles.hint}>Start from {strategy.name}. The original stays protected.</Dialog.Description><label className={styles.fields}>Strategy name<input autoFocus maxLength={80} value={copyName} onChange={event => setCopyName(event.target.value)} onKeyDown={event => { if (event.key === "Enter") createCopy(); }} /></label></>
+      <div className={styles.modalHeading}><Dialog.Title>{copyOpen ? copyMode === "scratch" ? "Create strategy from scratch" : "Create your strategy" : "Assign saved strategy"}</Dialog.Title><button className={styles.iconButton} disabled={busy} type="button" aria-label="Close dialog" onClick={() => { setCopyOpen(false); setAssignOpen(false); }}><X size={18} /></button></div>
+      {copyOpen ? <><Dialog.Description className={styles.hint}>{copyMode === "scratch" ? "Start with empty, non-spending purchase lanes. Add blocks, then save before assigning." : `Start from ${strategy.name}. The original stays protected.`}</Dialog.Description><label className={styles.fields}>Strategy name<input autoFocus maxLength={80} value={copyName} onChange={event => setCopyName(event.target.value)} onKeyDown={event => { if (event.key === "Enter") createCopy(); }} /></label></>
         : <><Dialog.Description className={styles.hint}>{strategy.name} · v{strategy.version}. Applies at the next safe decision.</Dialog.Description><button type="button" disabled={busy} className={styles.allFleet} aria-pressed={activeMembers.every(member => targets.includes(member.name))} onClick={() => setTargets(targets.length === activeMembers.length ? [] : activeMembers.map(member => member.name))}><Monitor size={17} />Entire current fleet</button>
           <div className={styles.memberChoices}>{activeMembers.map(member => <button key={member.name} type="button" aria-pressed={targets.includes(member.name)} onClick={() => setTargets(targets.includes(member.name) ? targets.filter(name => name !== member.name) : [...targets, member.name])}><Monitor size={17} /><strong>{member.name}</strong><span>{member.account_id}</span></button>)}</div></>}
       {error && <p className={styles.error} role="alert">{error}</p>}
-      <div className={styles.modalActions}><button type="button" className={styles.button} disabled={busy} onClick={() => { setCopyOpen(false); setAssignOpen(false); }}>Cancel</button><button type="button" className={styles.primaryButton} disabled={busy || (!copyOpen && !targets.length)} onClick={() => { if (copyOpen) createCopy(); else void assign(); }}>{copyOpen ? "Create editable copy" : `Assign to ${targets.length} emulator${targets.length === 1 ? "" : "s"}`}</button></div>
+      <div className={styles.modalActions}><button type="button" className={styles.button} disabled={busy} onClick={() => { setCopyOpen(false); setAssignOpen(false); }}>Cancel</button><button type="button" className={styles.primaryButton} disabled={busy || (!copyOpen && !targets.length)} onClick={() => { if (copyOpen) createCopy(); else void assign(); }}>{copyOpen ? copyMode === "scratch" ? "Create blank strategy" : "Create editable copy" : `Assign to ${targets.length} emulator${targets.length === 1 ? "" : "s"}`}</button></div>
     </Dialog.Popup></Dialog.Portal></Dialog.Root>
   </section>;
 }

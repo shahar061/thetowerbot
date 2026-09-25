@@ -154,13 +154,18 @@ class _Choice:
     wait: bool = False
     target: float | None = None
     observation_ids: tuple[str, ...] = ()
+    phase_id: str | None = None
+    phase_state: str | None = None
+    next_phase_id: str | None = None
+    transition_reason: str | None = None
 
 
 def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     """Evaluate one bounded program. No writes, devices, clocks or random state."""
     from fleet.build_route_eval import (BattleDecision, DecisionTrace, PendingDecision,
                                         RouteEvaluation)
-    from fleet.reroll_planner import RerollDecision, RerollFacts, _ban_closure, choose_native_phase
+    from fleet.reroll_planner import (RerollDecision, RerollFacts, _ban_closure,
+                                      choose_native_phase, native_phase_progress)
     wallet = facts.wallet_coins if lane == 'workshop' else facts.battle_cash
     if (not facts.account_id or not facts.worker or type(wallet) is not int or wallet < 0
             or facts.observed_at is None or facts.now is None):
@@ -213,13 +218,17 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         return True
 
     native_intents: dict[str, Any] = {}
-    def native_decision(policy: str, phase: str) -> Any:
-        return choose_native_phase(RerollFacts(
+    def native_facts(policy: str) -> RerollFacts:
+        return RerollFacts(
             facts.account_id, facts.best_tier_1_wave, facts.purchases, facts.values,
             wallet, facts.lifetime_coins, facts.prices,
             spend_fraction=route.workshop.coin_spend_limit_pct / 100,
             variant=facts.variant, utility_spent_coins=facts.utility_spent_coins,
-            policy=policy), phase, banned_upgrade_ids=route.workshop.banned_upgrade_ids,
+            policy=policy)
+
+    def native_decision(policy: str, phase: str) -> Any:
+        return choose_native_phase(native_facts(policy), phase,
+            banned_upgrade_ids=route.workshop.banned_upgrade_ids,
             reference=native_intents.get(policy))
 
     def priority_reference(scopes: tuple[Any, ...], current: str) -> str | None:
@@ -296,10 +305,15 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         return None
 
     waiting_native: _Choice | None = None
+    completed_native_phases: list[str] = []
+
+    def phase_title(phase: str) -> str:
+        return {"starter": "Survival Starter", "economy": "Early Economy",
+                "objectives": "Upgrade objectives", "fallback": "Cheap fallback"}.get(phase, phase)
 
     def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
         nonlocal waiting_native
-        for block in items:
+        for index, block in enumerate(items):
             kind, identity = block['type'], block['id']
             if kind == 'wait':
                 return _Choice(identity, reason='Wait block reached', wait=True)
@@ -328,9 +342,31 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     if phase == 'objectives' and policy in native_intents:
                         continue
                     decision = native_decision(policy, phase)
+                    progress, progress_reason = native_phase_progress(native_facts(policy), phase,
+                        policy, decision, banned_upgrade_ids=route.workshop.banned_upgrade_ids)
+                    next_phase = next((candidate for candidate in items[index + 1:]
+                        if candidate['type'] == 'native'), None)
                     if decision is None:
+                        if progress == 'waiting':
+                            return _Choice(identity, reason=progress_reason, wait=True,
+                                phase_id=phase, phase_state='waiting',
+                                next_phase_id=next_phase['id'] if next_phase else None,
+                                transition_reason=progress_reason)
+                        if progress == 'blocked':
+                            return _Choice(identity, reason=progress_reason, wait=True,
+                                phase_id=phase, phase_state='blocked',
+                                next_phase_id=next_phase['id'] if next_phase else None,
+                                transition_reason=progress_reason)
+                        completed_native_phases.append(phase_title(phase))
                         continue
-                    choice = _Choice(identity, decision.upgrade_id, decision.reason, native=decision)
+                    current_state = "waiting" if progress == "waiting" else "active"
+                    handoff = (f"{', '.join(completed_native_phases)} complete → "
+                               f"{phase_title(phase)} {current_state}"
+                               if completed_native_phases else progress_reason)
+                    choice = _Choice(identity, decision.upgrade_id, decision.reason, native=decision,
+                        phase_id=phase, phase_state=progress,
+                        next_phase_id=next_phase['id'] if next_phase else None,
+                        transition_reason=handoff)
                     if decision.state == 'save_coins' and phase != 'starter':
                         native_intents[policy] = decision
                         waiting_native = choice
@@ -410,12 +446,18 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     if active_pending and (choice is None or (choice.pending != pending and not choice.observation_ids)):
         choice = _Choice(pending.matched_rule_id, reason="Pending block choice awaits valid evidence", wait=True)
     if choice is None:
-        choice = _Choice('blocks', reason='No eligible block purchase; waiting for price, funds or conditions', wait=True)
+        choice = _Choice('blocks', reason='No eligible block purchase; waiting for price, funds or conditions', wait=True,
+            phase_id=completed_native_phases[-1] if completed_native_phases else None,
+            phase_state='complete' if completed_native_phases else 'waiting',
+            transition_reason=(f"{', '.join(completed_native_phases)} complete; waiting for the next eligible decision."
+                               if completed_native_phases else None))
     weights = choice.weights or {}
     odds = {uid: weight / sum(weights.values()) for uid, weight in weights.items()}
     trace = DecisionTrace(choice.block_id, choice.reason, age,
         'worker price evidence' if lane == 'workshop' else 'cached same-run battle rows (up to 60s)', facts.variant,
-        tuple(rejected), ceiling, eligible_odds=odds, observation_ids=choice.observation_ids)
+        tuple(rejected), ceiling, phase_id=choice.phase_id, phase_state=choice.phase_state,
+        next_phase_id=choice.next_phase_id, transition_reason=choice.transition_reason,
+        eligible_odds=odds, observation_ids=choice.observation_ids)
     if choice.observation_ids:
         upgrade = upgrades.by_id(choice.upgrade_id)
         decision = RerollDecision(facts.account_id, "strategy_observe", "Verify cheap-pool prices",
