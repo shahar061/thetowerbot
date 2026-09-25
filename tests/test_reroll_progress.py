@@ -26,6 +26,16 @@ def worker(tmp_path: Path, account_id: str = "ACCOUNT-A") -> RerollProgress:
 
 def test_lab_check_cadence_survives_worker_restart(tmp_path: Path) -> None:
     progress = worker(tmp_path)
+    assert not progress.lab_due(now=1000.)
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        run_id = 1
+        db.start_run(connection, run_id, started_at=900.)
+        db.finish_run(connection, run_id, started_at=900., ended_at=950.,
+                      wave=30, coins=0, tier=1, abandoned=False,
+                      scan_count=1, tap_count=0)
+        connection.execute(
+            "INSERT INTO ledger(ts, kind, item, dry_run) "
+            "VALUES(951, 'MILESTONE_CLAIM', 'Unlock Lab', 0)")
     assert progress.lab_due(now=1000.)
     progress.note_lab_observation(
         LabDecision("wait_coins", price=300, wallet_coins=122,
@@ -34,6 +44,16 @@ def test_lab_check_cadence_survives_worker_restart(tmp_path: Path) -> None:
     restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
     assert not restarted.lab_due(now=1100., wallet_coins=122, wallet_gems=65)
     assert restarted.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
+    restarted.note_labs_unavailable(now=1301.)
+    assert not restarted.lab_due(now=1400., wallet_coins=300, wallet_gems=65)
+    assert restarted.lab_due(now=1901., wallet_coins=300, wallet_gems=65)
+
+
+def test_first_workshop_visit_is_due_until_a_purchase_is_confirmed(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert progress.initial_workshop_due()
+    complete_starter(progress)
+    assert not progress.initial_workshop_due()
 
 
 def test_reroll_holds_card_gems_until_second_lab_is_owned(tmp_path: Path) -> None:

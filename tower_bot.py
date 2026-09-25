@@ -683,6 +683,12 @@ class TowerBot:
             return False
         return self.cards_intro.request()
 
+    def _menu_tab_unlocked(self, tab: str) -> bool:
+        """Check the unlocked icon before a reroll visit navigates to a tab."""
+        match = vision.locate_template(
+            self.screen, self.templates.get(f"nav/tab_{tab}.png"), .94)
+        return match is not None
+
     def _offer_claim(self, settings: Any) -> str | None:
         """Offer the one claim the cadence says is owed, if any.
 
@@ -1589,20 +1595,39 @@ class TowerBot:
             if self.reroll_progress is not None:
                 self.reroll_progress.note_menu_wallet(menu_coins)
                 self.reroll_progress.resource_evaluation(menu_coins, menu_gems)
-            # The first Cards visit is owed once and pays gems. Reroll then
-            # claims rewards, checks Labs, and only then enters Workshop.
-            if self._offer_cards_intro():
+            # The Workshop tutorial grants 50 coins. Visit it first on a fresh
+            # account so the first affordable upgrade can use that grant.
+            initial_workshop = (self.reroll_progress is not None
+                                and self.reroll_progress.initial_workshop_due()
+                                and self._menu_tab_unlocked("workshop"))
+            if initial_workshop and self.shopping.begin(
+                    shopping_policy, self.runs.completed):
+                logger.info("Starting the first Workshop visit for the tutorial coin grant.")
+            # The first Cards visit is owed once and pays gems. After Workshop,
+            # reroll claims rewards and checks Labs only when the tab is unlocked.
+            elif self._offer_cards_intro():
                 logger.info("Armed the first Cards visit from the main menu.")
             elif self.lab_visit is not None:
                 armed = self._offer_claim(settings)
                 if armed is not None:
                     logger.info("Armed a %s claim from the main menu.", armed)
-                elif self.reroll_progress.lab_due(
-                    wallet_coins=menu_coins, wallet_gems=menu_gems,
-                ) and self.lab_visit.request():
-                    logger.info("Armed Labs check before Workshop.")
                 else:
-                    self.shopping.begin(shopping_policy, self.runs.completed)
+                    # Do not even inspect the Labs tab until the account has
+                    # reached T1 wave 30 and the Labs milestone is claimed.
+                    labs_eligible = self.reroll_progress.labs_milestone_claimed()
+                    if (labs_eligible and self.lab_visit.tab_unlocked(self.screen)
+                            and self.reroll_progress.lab_due(
+                                wallet_coins=menu_coins, wallet_gems=menu_gems,
+                                lab_unlocked=True,
+                            ) and self.lab_visit.request()):
+                        logger.info("Armed Labs check after the Labs milestone unlock.")
+                    elif (labs_eligible and self.reroll_progress.lab_due(
+                            wallet_coins=menu_coins, wallet_gems=menu_gems)
+                            and not self.lab_visit.tab_unlocked(self.screen)):
+                        self.reroll_progress.note_labs_unavailable()
+                    else:
+                        if self._menu_tab_unlocked("workshop"):
+                            self.shopping.begin(shopping_policy, self.runs.completed)
             elif not self.shopping.begin(shopping_policy, self.runs.completed):
                 armed = self._offer_claim(settings)
                 if armed is not None:
@@ -1646,6 +1671,7 @@ class TowerBot:
                 tuning=settings.strategy,
                 go_home=((self.shopping.due(shopping_policy, self.runs.completed)
                           and (self.reroll_progress is None
+                               or self.reroll_progress.initial_workshop_due()
                                or self.reroll_progress.workshop_worthwhile()))
                          or self._claim_owed(settings)
                          or (state is screens.ScreenState.GAME_OVER

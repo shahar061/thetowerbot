@@ -126,6 +126,15 @@ class LabCadence:
         observed = record.get("observed_at")
         return not isinstance(observed, (int, float)) or now >= observed + 3600
 
+    def note_unavailable(self, now: float) -> None:
+        """Back off Lab visits while the Labs tab is visibly locked."""
+        self._write(self.path, {
+            "account_id": self.account_id,
+            "kind": "locked",
+            "observed_at": now,
+            "next_check_at": now + 600.,
+        })
+
     def note_slot2(self, status: str, wallet_gems: int | None, now: float) -> None:
         if status not in {"locked", "owned"}:
             return
