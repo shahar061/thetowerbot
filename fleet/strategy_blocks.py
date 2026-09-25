@@ -595,27 +595,22 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     rejected.append(f'{identity}: another goal is already saving')
                     continue
                 goal = block['goal'][0]
-                if goal['type'] == 'pool' and goal.get('selection', 'priority') == 'weighted':
+                weighted = goal['type'] == 'pool' and goal.get('selection', 'priority') == 'weighted'
+                if weighted:
                     choice = evaluate(block['goal'], (items, *ancestors))
                     if choice is not None:
                         return choice
-                    pick = top_pick(goal)
-                    if pick is None:
-                        continue
-                    uid, price = pick
-                else:
-                    # A priority goal acts on its top pick only: never fall
-                    # through to a lower, merely affordable item.
-                    pick = top_pick(goal)
-                    if pick is None:
-                        continue
-                    uid, price = pick
-                    share = goal.get('wallet_share_pct') if goal['type'] == 'pool' else None
-                    if (price_for(uid) is not None and price <= ceiling
-                            and (share is None or price * 100 <= wallet * share)):
-                        targets = goal.get('targets', {}) if goal['type'] == 'pool' else {}
-                        return _Choice(goal['id'], uid, f'Save for goal: buy {upgrades.by_id(uid).name}',
-                                       target=targets.get(uid))
+                pick = top_pick(goal)
+                if pick is None:
+                    continue
+                uid, price = pick
+                # A priority goal acts on its top pick only: never fall
+                # through to a lower, merely affordable item.
+                share = goal.get('wallet_share_pct')
+                if (not weighted and price_for(uid) is not None and price <= ceiling
+                        and (share is None or price * 100 <= wallet * share)):
+                    return _Choice(goal['id'], uid, f'Save for goal: buy {upgrades.by_id(uid).name}',
+                                   target=goal.get('targets', {}).get(uid))
                 name = upgrades.by_id(uid).name
                 saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
                                  wait=True, save_price=price)
