@@ -23,7 +23,7 @@ test("compares effective account plans in stable worker order with separate batt
   expect(within(columns[0]).getByText(/Phase: Opening/)).toBeInTheDocument();
   expect(within(columns[0]).getByText("Evidence for one")).toBeInTheDocument();
   expect(within(columns[1]).getByText("Defense Absolute")).toBeInTheDocument();
-  expect(screen.getAllByText(/Live battle intent is unavailable/)).toHaveLength(2);
+  expect(screen.getByText(/Live battle intent unavailable/)).toBeInTheDocument();
 });
 
 test("rejects a plan for a replaced account and omits hidden workers", () => {

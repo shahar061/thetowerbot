@@ -26,6 +26,7 @@ import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup, RerollSnapshot,
 import type { MilestoneRoadmap } from "./milestoneRoadmap";
 import type { AccountMetrics } from "./accountMetrics";
 import type { TelegramMode, TelegramProfile, TelegramSettingsResponse } from "./telegram";
+import type { BuildRouteDocument, BuildRoutePreview, BuildRouteRevisions, BuildRouteRebindPreview } from "./buildRoute";
 
 /** An HTTP failure that kept its status code.
  *
@@ -79,6 +80,23 @@ export const fetchMilestoneRoadmap = () => getJson<MilestoneRoadmap>("/api/miles
 export const fetchAccountMetrics = () => getJson<AccountMetrics>("/api/account-metrics", { cache: "no-store" });
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
 export const fetchReroll = () => getJson<RerollSnapshot>("/api/fleet/reroll", { cache: "no-store" }, false);
+export const fetchBuildRoute = () => getJson<BuildRouteDocument>("/api/fleet/reroll/route", { cache: "no-store" }, false);
+export const previewBuildRoute = (route: BuildRouteDocument, expectedRevision: number) =>
+  send<BuildRoutePreview>("/api/fleet/reroll/route/preview", "POST",
+    { route, expected_revision: expectedRevision }, "fleet");
+export const publishBuildRoute = (route: BuildRouteDocument, expectedRevision: number) =>
+  send<BuildRouteDocument>("/api/fleet/reroll/route", "PUT",
+    { route, expected_revision: expectedRevision, actor: "strategy_studio" }, "fleet");
+export const fetchBuildRouteRevisions = () =>
+  getJson<BuildRouteRevisions>("/api/fleet/reroll/route/revisions", { cache: "no-store" }, false);
+export const rollbackBuildRoute = (revision: number, expectedRevision: number) =>
+  send<BuildRouteDocument>("/api/fleet/reroll/route/rollback", "POST",
+    { revision, expected_revision: expectedRevision, actor: "strategy_studio" }, "fleet");
+export const previewBuildRouteRebind = (route: BuildRouteDocument, expectedRevision: number,
+  worker: string, oldAccountId: string, newAccountId: string) =>
+  send<BuildRouteRebindPreview>("/api/fleet/reroll/route/rebind-preview", "POST",
+    { route, expected_revision: expectedRevision, worker,
+      old_account_id: oldAccountId, new_account_id: newAccountId }, "fleet");
 export const setRerollConcurrency = (limit: number) =>
   send<RerollSnapshot>("/api/fleet/reroll/concurrency", "PATCH", { limit }, "fleet");
 export const addRerollMembers = (names: string[]) =>

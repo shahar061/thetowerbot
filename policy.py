@@ -140,6 +140,8 @@ class AutopilotPolicy:
     economy_until_wave: int = 20
     survival_buffer: float = 1.2
     cash_reserve: int = 0
+    cash_spend_limit_pct: int = 100
+    observe_only: bool = False
     max_scrolls: int = 8
     purpose: Literal["farm", "milestone"] = "farm"
 
@@ -176,6 +178,10 @@ class AutopilotPolicy:
             raise PolicyError("cash_reserve", "cash_reserve must be an integer")
         if self.cash_reserve < 0:
             raise PolicyError("cash_reserve", "cash_reserve may not be negative")
+        if type(self.cash_spend_limit_pct) is not int or not 0 <= self.cash_spend_limit_pct <= 100:
+            raise PolicyError("cash_spend_limit_pct", "cash_spend_limit_pct must be 0 to 100")
+        if type(self.observe_only) is not bool:
+            raise PolicyError("observe_only", "observe_only must be a boolean")
         if isinstance(self.max_scrolls, bool) or not isinstance(self.max_scrolls, int):
             raise PolicyError("max_scrolls", "max_scrolls must be an integer")
         if self.max_scrolls < 0:
@@ -194,6 +200,8 @@ class AutopilotPolicy:
             "economy_until_wave": self.economy_until_wave,
             "survival_buffer": self.survival_buffer,
             "cash_reserve": self.cash_reserve,
+            "cash_spend_limit_pct": self.cash_spend_limit_pct,
+            "observe_only": self.observe_only,
             "max_scrolls": self.max_scrolls,
             "purpose": self.purpose,
         }
@@ -496,6 +504,15 @@ def choose(
     if not policy.enabled:
         return Decision("disabled", "Autopilot is disabled.")
     rules = policy.effective_rules()
+    cash = _number(combat, "cash")
+    if cash is not None and policy.cash_spend_limit_pct < 100:
+        ceiling = int(cash * policy.cash_spend_limit_pct / 100)
+        observations = {
+            uid: ({**row, "status": "unaffordable"}
+                  if _number(row, "price") is not None and _number(row, "price") > ceiling
+                  else row)
+            for uid, row in observations.items()
+        }
     if policy.preset == "turtle":
         return _choose_turtle(policy, rules, observations, combat)
     if policy.preset == "health":

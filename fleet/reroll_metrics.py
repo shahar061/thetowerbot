@@ -54,6 +54,35 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
     db_path = Path(worker_root) / "tower_bot.db"
     account_bound = db_path.is_file() and bot_db.bound_account(db_path) == account_id
     if account_bound:
+        from fleet.build_route_runtime import BuildRouteRuntime
+        from fleet.build_route_store import RouteUnavailable
+        route_runtime = BuildRouteRuntime(Path(worker_root).parent.parent,
+                                          Path(worker_root).name, account_id)
+        try:
+            route_runtime.current()
+            applied = route_runtime.applied_revision()
+            if applied is not None:
+                result["route_revision_applied"] = applied
+                try:
+                    battle = json.loads((Path(worker_root) / "build-route-battle.json").read_text())
+                    if (battle.get("account_id") == account_id
+                            and battle.get("revision") == applied
+                            and isinstance(battle.get("evidence_at"), (int, float))
+                            and 0 <= time.time() - battle["evidence_at"] <= 10):
+                        result["battle_evaluation"] = battle
+                except (OSError, ValueError, TypeError, AttributeError):
+                    pass
+                try:
+                    resources = json.loads((Path(worker_root) / "build-route-resources.json").read_text())
+                    if (resources.get("account_id") == account_id
+                            and resources.get("revision") == applied
+                            and isinstance(resources.get("observed_at"), (int, float))
+                            and 0 <= time.time() - resources["observed_at"] <= 600):
+                        result["resource_evaluation"] = resources
+                except (OSError, ValueError, TypeError, AttributeError):
+                    pass
+        except RouteUnavailable as exc:
+            result["route_error"] = exc.reason
         try:
             with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=.1) as db:
                 db.row_factory = sqlite3.Row

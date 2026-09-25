@@ -54,6 +54,24 @@ def test_missing_currency_never_authorizes_a_tap() -> None:
     assert "cash" in bot.state.snapshot()["reason"].lower()
 
 
+def test_route_observation_mode_keeps_rows_without_tapping() -> None:
+    bot, device, frame, observation, policy = parts()
+    bot.step(frame, device, replace(policy, observe_only=True),
+             cash=100, observation=observation)
+    assert device.actions == []
+    assert any(row["upgrade_id"] == "damage" for row in
+               bot.state.snapshot()["observations"])
+
+
+def test_route_cash_share_is_checked_again_at_tap() -> None:
+    bot, device, frame, observation, policy = parts()
+    row = next(row for row in observation.rows if row.upgrade_id == "damage")
+    assert row.price is not None
+    bot.step(frame, device, replace(policy, cash_spend_limit_pct=10),
+             cash=row.price * 5, observation=observation)
+    assert device.actions == []
+
+
 def test_reserve_and_target_prevent_spending() -> None:
     bot, device, frame, observation, policy = parts()
     bot.step(frame, device, replace(policy, cash_reserve=95), cash=100, observation=observation)

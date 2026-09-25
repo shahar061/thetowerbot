@@ -50,6 +50,8 @@ from advisor import AdvisorStore
 from web.advisor import advisor_router
 from web.account_catalog import AccountChoice, account_choices
 from fleet.reroll_runs import run_numbers_from
+from fleet.build_route import RouteDocument
+from fleet.build_route_store import RouteConflict, RouteUnavailable
 from autopilot import AutopilotState
 from policy import PRESETS, preset_rules
 from progression import compare_tiers, rates as progression_rates
@@ -270,6 +272,27 @@ class RerollNewRunRequest(BaseModel):
 
 class RerollConcurrencyRequest(BaseModel):
     limit: int
+
+
+class BuildRoutePreviewRequest(BaseModel):
+    route: dict[str, Any]
+    expected_revision: int
+
+
+class BuildRoutePublishRequest(BuildRoutePreviewRequest):
+    actor: str
+
+
+class BuildRouteRollbackRequest(BaseModel):
+    revision: int
+    expected_revision: int
+    actor: str
+
+
+class BuildRouteRebindPreviewRequest(BuildRoutePreviewRequest):
+    worker: str
+    old_account_id: str
+    new_account_id: str
 
 
 _CATEGORY_BY_UPGRADE: dict[str, str] = {u.id: u.category for u in upgrades.CATALOG}
@@ -1420,6 +1443,84 @@ def create_app(
             return fleet.reroll_snapshot()
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    def _build_route_capability() -> Any:
+        if fleet is None or not callable(getattr(fleet, "build_route_store", None)):
+            raise HTTPException(status_code=503, detail="build_route_unavailable")
+        return fleet.build_route_store()
+
+    def _build_route_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, RouteConflict):
+            return HTTPException(status_code=409, detail={
+                "message": "route_revision_changed", "current_revision": exc.current.revision})
+        if isinstance(exc, RouteUnavailable):
+            return HTTPException(status_code=503, detail=exc.reason)
+        return HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/fleet/reroll/route")
+    def fleet_build_route() -> dict[str, Any]:
+        try:
+            return _build_route_capability().read().to_dict()
+        except RouteUnavailable as exc:
+            raise _build_route_error(exc) from exc
+
+    @app.get("/api/fleet/reroll/route/revisions")
+    def fleet_build_route_revisions() -> dict[str, Any]:
+        try:
+            return {"revisions": [route.to_dict() for route in _build_route_capability().revisions()]}
+        except RouteUnavailable as exc:
+            raise _build_route_error(exc) from exc
+
+    @app.post("/api/fleet/reroll/route/preview")
+    def fleet_build_route_preview(body: BuildRoutePreviewRequest) -> dict[str, object]:
+        store = _build_route_capability()
+        if not callable(getattr(fleet, "build_route_preview", None)):
+            raise HTTPException(status_code=503, detail="build_route_preview_unavailable")
+        try:
+            saved = store.read()
+            if saved.revision != body.expected_revision:
+                raise RouteConflict(saved)
+            return fleet.build_route_preview(RouteDocument.from_dict(body.route))
+        except (RouteConflict, RouteUnavailable, ValueError, TypeError) as exc:
+            raise _build_route_error(exc) from exc
+
+    @app.put("/api/fleet/reroll/route")
+    def fleet_build_route_publish(body: BuildRoutePublishRequest) -> dict[str, Any]:
+        store = _build_route_capability()
+        try:
+            draft = RouteDocument.from_dict(body.route)
+            if callable(getattr(fleet, "build_route_validate_bindings", None)):
+                fleet.build_route_validate_bindings(draft)
+            return store.publish(draft, body.expected_revision, body.actor).to_dict()
+        except (RouteConflict, RouteUnavailable, ValueError, TypeError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith("route_account_binding_changed"):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _build_route_error(exc) from exc
+
+    @app.post("/api/fleet/reroll/route/rebind-preview")
+    def fleet_build_route_rebind_preview(body: BuildRouteRebindPreviewRequest) -> dict[str, object]:
+        store = _build_route_capability()
+        if not callable(getattr(fleet, "build_route_rebind_preview", None)):
+            raise HTTPException(status_code=503, detail="build_route_rebind_preview_unavailable")
+        try:
+            saved = store.read()
+            if saved.revision != body.expected_revision:
+                raise RouteConflict(saved)
+            return fleet.build_route_rebind_preview(
+                RouteDocument.from_dict(body.route), body.worker,
+                body.old_account_id, body.new_account_id)
+        except (RouteConflict, RouteUnavailable, ValueError, TypeError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith("route_account_binding_changed"):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _build_route_error(exc) from exc
+
+    @app.post("/api/fleet/reroll/route/rollback")
+    def fleet_build_route_rollback(body: BuildRouteRollbackRequest) -> dict[str, Any]:
+        try:
+            return _build_route_capability().rollback(
+                body.revision, body.expected_revision, body.actor).to_dict()
+        except (RouteConflict, RouteUnavailable, ValueError, TypeError) as exc:
+            raise _build_route_error(exc) from exc
 
     @app.post("/api/fleet/reroll/members")
     def fleet_reroll_add(body: RerollAddRequest) -> dict[str, Any]:
