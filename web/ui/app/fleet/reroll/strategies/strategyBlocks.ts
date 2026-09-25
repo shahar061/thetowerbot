@@ -15,6 +15,10 @@ export const BLOCK_PRESETS: { id: BlockPreset; label: string; detail: string; gr
   { id: "wait", label: "Save & wait", detail: "Stop buying on this path", group: "Flow" },
   { id: "buy", label: "Buy upgrade", detail: "One affordable purchase", group: "Buy" },
 ];
+/** Budget counts Workshop utility spend, so the In-game palette omits it. */
+export function presetsForLane(lane: ProgramLane): typeof BLOCK_PRESETS {
+  return lane === "battle" ? BLOCK_PRESETS.filter(item => item.id !== "budget") : BLOCK_PRESETS;
+}
 
 export function makeBlock(preset: BlockPreset, lane: ProgramLane, upgradeId = "defense_absolute"): StrategyBlock {
   const id = `block.${crypto.randomUUID()}`;
@@ -28,9 +32,11 @@ export function makeBlock(preset: BlockPreset, lane: ProgramLane, upgradeId = "d
     case "cap": return { id, type: "pool", upgrade_ids: [upgradeId], selection: "priority", max_purchases: 8, count_scope: scope };
     case "weighted": return { id, type: "pool", upgrade_ids: ["defense_absolute", "cash_per_wave", "damage"], selection: "weighted",
       weights: { defense_absolute: 8, cash_per_wave: 4, damage: 2 }, decay_pct: 20, weight_floor: 1, count_scope: scope };
-    case "budget": return { id, type: "budget", metric: "utility_spent", target: 350, ceiling: 400, blocks: [] };
+    case "budget": return { id, type: "budget", metric: "utility_spent", target: 350, ceiling: 400,
+      blocks: [{ id: `${id}.pool`, type: "pool", upgrade_ids: ["cash_per_wave"], selection: "priority", count_scope: "account" }] };
     case "save_for": return { id, type: "save_for", goal: [{ id: `${id}.goal`, type: "pool", upgrade_ids: [upgradeId], selection: "priority" }] };
-    case "while_saving": return { id, type: "while_saving", blocks: [] };
+    case "while_saving": return { id, type: "while_saving",
+      blocks: [{ id: `${id}.pool`, type: "pool", upgrade_ids: ["damage"], selection: "priority", wallet_share_pct: 20, count_scope: scope }] };
   }
 }
 export const nativeDetails = {

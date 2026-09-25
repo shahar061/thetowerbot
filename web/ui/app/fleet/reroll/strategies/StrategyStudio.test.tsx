@@ -224,3 +224,13 @@ test("level cap grows-with select back to Fixed cap clears per_level_of", () => 
   fireEvent.change(screen.getByLabelText("Cap grows with for Damage"), { target: { value: "" } });
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ level_caps: { damage: { base: 5 } } }));
 });
+
+test("the In-game palette does not offer Budget", () => {
+  setup();
+  fireEvent.click(screen.getByRole("tab", { name: "Flow" }));
+  expect(screen.getByRole("button", { name: "Add Budget" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "In-game" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Flow" }));
+  expect(screen.queryByRole("button", { name: "Add Budget" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add Save for goal" })).toBeInTheDocument();
+});

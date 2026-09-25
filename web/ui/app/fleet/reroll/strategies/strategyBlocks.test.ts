@@ -20,7 +20,13 @@ test("tree helpers reach blocks nested in budget and save_for", () => {
 test("new presets build valid blocks", () => {
   expect(makeBlock("budget", "workshop")).toMatchObject({ type: "budget", metric: "utility_spent", target: 350, ceiling: 400 });
   expect(makeBlock("save_for", "workshop")).toMatchObject({ type: "save_for", goal: [{ type: "pool" }] });
-  expect(makeBlock("while_saving", "battle")).toMatchObject({ type: "while_saving", blocks: [] });
+  const budget = makeBlock("budget", "workshop");
+  expect(budget).toMatchObject({ blocks: [{ id: `${budget.id}.pool`, type: "pool", upgrade_ids: ["cash_per_wave"],
+    selection: "priority", count_scope: "account" }] });
+  const saving = makeBlock("while_saving", "battle");
+  expect(saving).toMatchObject({ type: "while_saving", blocks: [{ id: `${saving.id}.pool`, type: "pool", upgrade_ids: ["damage"],
+    selection: "priority", wallet_share_pct: 20, count_scope: "run" }] });
+  expect(makeBlock("while_saving", "workshop")).toMatchObject({ blocks: [{ count_scope: "account" }] });
   expect(BLOCK_PRESETS.map(item => item.id)).toEqual(expect.arrayContaining(["budget", "save_for", "while_saving"]));
 });
 

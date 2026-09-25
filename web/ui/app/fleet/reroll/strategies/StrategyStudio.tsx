@@ -8,7 +8,7 @@ import { assignFleetStrategy, previewBuildRoute, saveFleetStrategy } from "@/lib
 import type { BuildRouteDocument, BuildRoutePreview } from "@/lib/buildRoute";
 import type { SpendingLane, StrategyBlock, StrategyDefinition, StrategyLibrary, StrategyWorker } from "@/lib/strategyStudio";
 import type { Upgrade } from "@/lib/types";
-import { BLOCK_PRESETS, ROOT_END, findBlock, insertBlock, locateBlock, makeBlock, updateBlock, type BlockPreset, type BlockTarget } from "./strategyBlocks";
+import { ROOT_END, presetsForLane, findBlock, insertBlock, locateBlock, makeBlock, updateBlock, type BlockPreset, type BlockTarget } from "./strategyBlocks";
 import { StrategyCanvas, type BlockDrag } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
 import { RouteInspector } from "./RouteInspector";
@@ -197,7 +197,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
         <div className={styles.paletteHeading}><h3>Blocks</h3><span>drag to connect</span></div>
         {programLane ? <>
           <div className={styles.smallTabs} role="tablist" aria-label="Block categories">{(["Logic", "Flow", "Buy"] as const).map(group => <button key={group} role="tab" type="button" aria-selected={category === group} onClick={() => setCategory(group)}>{group}</button>)}</div>
-          {BLOCK_PRESETS.filter(item => item.group === category).map(item => <div key={item.id} className={`${styles.paletteBlock} ${styles[item.group.toLowerCase()]}`} draggable onDragStart={event => { setDrag({ preset: item.id }); event.dataTransfer?.setData("text/plain", item.id); }} onDragEnd={() => setDrag(null)}>
+          {presetsForLane(programLane).filter(item => item.group === category).map(item => <div key={item.id} className={`${styles.paletteBlock} ${styles[item.group.toLowerCase()]}`} draggable onDragStart={event => { setDrag({ preset: item.id }); event.dataTransfer?.setData("text/plain", item.id); }} onDragEnd={() => setDrag(null)}>
             <span><strong>{item.label}</strong><small>{item.detail}</small></span><button type="button" aria-label={`Add ${item.label}`} onClick={() => add(item.id)}><Plus size={16} /></button></div>)}
           {category === "Buy" && <>
             <input className={styles.search} type="search" aria-label="Search upgrade blocks" placeholder="Find upgrade…" value={search} onChange={event => setSearch(event.target.value)} />
