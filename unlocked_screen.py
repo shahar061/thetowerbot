@@ -49,6 +49,12 @@ class Unlocked:
     ok: tuple[int, int]
 
 
+def is_labs_unlock(caption: str) -> bool:
+    """Recognize the Labs unlock caption despite OCR spacing/case changes."""
+    normalized = re.sub(r'[^a-z]', '', caption.casefold())
+    return normalized in {'labunlocked', 'labsunlocked'}
+
+
 def _trusted(box: TextBox) -> bool:
     return (math.isfinite(box.confidence) and box.confidence >= _MIN_CONFIDENCE
             and box.rect.w > 0 and box.rect.h > 0)

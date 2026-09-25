@@ -945,6 +945,10 @@ class TowerBot:
                 return False
             self._recovery_blocked_scans = 0
             if unlocked is not None:
+                if (self.reroll_progress is not None
+                        and unlocked_screen.is_labs_unlock(unlocked.caption)):
+                    self.reroll_progress.note_lab_unlocked(
+                        "unlock_card", caption=unlocked.caption)
                 if settings.paused:
                     return False
                 logger.info("Dismissing a content unlock card: %s", unlocked.caption)
@@ -1612,19 +1616,19 @@ class TowerBot:
                 if armed is not None:
                     logger.info("Armed a %s claim from the main menu.", armed)
                 else:
-                    # Do not even inspect the Labs tab until the account has
-                    # reached T1 wave 30 and the Labs milestone is claimed.
-                    labs_eligible = self.reroll_progress.labs_milestone_claimed()
-                    if (labs_eligible and self.lab_visit.tab_unlocked(self.screen)
+                    # Persist only an explicit lock or unlocked-tab match.
+                    # An ambiguous frame remains unknown and never authorizes
+                    # a tap into Labs.
+                    labs_tab_status = self.lab_visit.tab_status(self.screen)
+                    if labs_tab_status == "unlocked":
+                        self.reroll_progress.note_lab_unlocked("labs_tab")
+                    elif labs_tab_status == "locked":
+                        self.reroll_progress.note_lab_locked("labs_tab")
+                    if (labs_tab_status == "unlocked"
                             and self.reroll_progress.lab_due(
                                 wallet_coins=menu_coins, wallet_gems=menu_gems,
-                                lab_unlocked=True,
                             ) and self.lab_visit.request()):
-                        logger.info("Armed Labs check after the Labs milestone unlock.")
-                    elif (labs_eligible and self.reroll_progress.lab_due(
-                            wallet_coins=menu_coins, wallet_gems=menu_gems)
-                            and not self.lab_visit.tab_unlocked(self.screen)):
-                        self.reroll_progress.note_labs_unavailable()
+                        logger.info("Armed Labs check from the confirmed unlocked tab.")
                     else:
                         if self._menu_tab_unlocked("workshop"):
                             self.shopping.begin(shopping_policy, self.runs.completed)

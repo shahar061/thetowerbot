@@ -45,6 +45,21 @@ def setup() -> tuple[LabVisit, Device]:
     return LabVisit(vision.TemplateCache(Path("templates"))), Device()
 
 
+def test_lab_tab_state_distinguishes_visible_lock_from_unlocked_tab() -> None:
+    visit, _ = setup()
+
+    assert visit.tab_status(frame("main_menu")) == "locked"
+    assert visit.tab_status(frame("menu_main_labs_unlocked")) == "unlocked"
+
+
+def test_unreadable_lab_tab_stays_unknown() -> None:
+    visit, _ = setup()
+    unreadable = frame("main_menu")
+    unreadable[:] = 0
+
+    assert visit.tab_status(unreadable) == "unknown"
+
+
 def affordable(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:
     reading = read_picker(screen, text)
     if not reading.page:

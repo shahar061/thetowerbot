@@ -42,6 +42,12 @@ def test_any_feature_name_is_read_the_same_way() -> None:
         assert found is not None and found.caption == caption.strip()
 
 
+def test_lab_unlock_caption_normalization_handles_missing_space_and_split_ocr() -> None:
+    for caption in ("Lab unlocked", "Labunlocked", "LABS UNLOCKED"):
+        assert unlocked_screen.is_labs_unlock(caption)
+    assert not unlocked_screen.is_labs_unlock("Cards unlocked")
+
+
 def test_recorded_two_line_tournament_card_is_read_with_its_ok_centre() -> None:
     assert unlocked_screen.read(TOURNAMENT_FRAME, TOURNAMENT_BOXES) == unlocked_screen.Unlocked(
         'Tournament unlocked', (541, 1891))

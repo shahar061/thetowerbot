@@ -20,9 +20,12 @@ unlocked", OK.
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import screens
 from strategy import Shopping
 from tests.conftest import _shopping_bot
+from supervisor import RecoveryState
 
 
 def stuck_bot():
@@ -75,6 +78,21 @@ def test_a_reward_modal_is_claimed_before_it_is_skipped():
     assert config.NAV_DISMISS.index("nav/claim_reward.png") < config.NAV_DISMISS.index(
         "nav/skip.png"
     )
+
+
+def test_lab_unlock_ocr_is_saved_before_the_card_is_dismissed():
+    bot = stuck_bot()
+    progress = Mock()
+    bot.reroll_progress = progress
+    supervisor = Mock()
+    supervisor.current_account = "account-a"
+    supervisor.observe.return_value = RecoveryState.READY
+    bot.supervisor = supervisor
+
+    bot.run_once()
+
+    progress.note_lab_unlocked.assert_called_once_with(
+        "unlock_card", caption="Lab unlocked")
 
 
 def test_nothing_taps_underneath_a_walk_that_is_still_reading():

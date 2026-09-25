@@ -73,19 +73,61 @@ def test_due_visit_starts_before_battle_navigation(bot_on_main_menu) -> None:
 
 
 def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
-    bot = bot_on_main_menu(a_policy())
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("menu_main_labs_unlocked", state=tower_bot.screens.ScreenState.MAIN_MENU,
+                        policy=a_policy(), auto_navigate=True)
     progress = Mock()
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.lab_due.return_value = True
+    progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
 
     bot.run_once()
 
     assert bot.lab_visit.active
+    progress.note_lab_unlocked.assert_called_once_with("labs_tab")
     assert not bot.shopping.active
     assert navigated(bot.bus) == []
+
+
+def test_reroll_does_not_open_labs_without_a_visible_unlocked_tab(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy()
+    progress.stats_due.return_value = False
+    progress.initial_workshop_due.return_value = False
+    progress.lab_due.return_value = True
+    bot.reroll_progress = progress
+    bot.lab_visit = LabVisit(bot.templates)
+
+    bot.run_once()
+
+    assert not bot.lab_visit.active
+    progress.note_lab_unlocked.assert_not_called()
+    progress.note_lab_locked.assert_called_once_with("labs_tab")
+    progress.lab_due.assert_not_called()
+
+
+def test_reroll_does_not_open_labs_when_the_tab_is_unreadable(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot._screen[:] = 0
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy()
+    progress.stats_due.return_value = False
+    progress.initial_workshop_due.return_value = False
+    progress.lab_due.return_value = True
+    bot.reroll_progress = progress
+    bot.lab_visit = LabVisit(bot.templates)
+
+    bot.run_once()
+
+    assert not bot.lab_visit.active
+    progress.note_lab_unlocked.assert_not_called()
+    progress.note_lab_locked.assert_not_called()
+    progress.lab_due.assert_not_called()
 
 
 def test_reroll_workshop_resumes_when_lab_check_not_due(bot_on_main_menu) -> None:
