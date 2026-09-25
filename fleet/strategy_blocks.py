@@ -62,7 +62,8 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 uid(block.get('upgrade_id'))
             elif kind == 'pool':
                 allowed |= {'upgrade_ids', 'selection', 'weights', 'discount_pct', 'reference_upgrade_id',
-                            'max_purchases', 'count_scope', 'decay_pct', 'weight_floor'}
+                            'max_purchases', 'count_scope', 'decay_pct', 'weight_floor',
+                            'targets', 'level_caps', 'price_cap', 'wallet_share_pct'}
                 ids = block.get('upgrade_ids')
                 if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
                     raise ValueError('pool requires 1 to 30 upgrades')
@@ -92,6 +93,30 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     uid(reference)
                 if 'reference_upgrade_id' in block and 'discount_pct' not in block:
                     raise ValueError('price reference requires a discount')
+                targets = block.get('targets', {})
+                if not isinstance(targets, dict) or set(targets) - set(ids):
+                    raise ValueError('pool targets must name pool upgrades')
+                for target in targets.values():
+                    if (isinstance(target, bool) or not isinstance(target, (int, float))
+                            or not math.isfinite(target) or target < 0):
+                        raise ValueError('pool target must be a finite number')
+                caps = block.get('level_caps', {})
+                if not isinstance(caps, dict) or set(caps) - set(ids):
+                    raise ValueError('pool level caps must name pool upgrades')
+                for cap in caps.values():
+                    if not isinstance(cap, dict) or set(cap) - {'base', 'per_level_of', 'step'}:
+                        raise ValueError('unknown level cap field')
+                    number(cap.get('base'), 'level cap base', 0, 100000)
+                    if 'per_level_of' in cap:
+                        if not isinstance(cap['per_level_of'], str) or upgrades.by_id(cap['per_level_of']) is None:
+                            raise ValueError('unknown level cap upgrade')
+                        number(cap.get('step', 1), 'level cap step', 1, 1000)
+                    elif 'step' in cap:
+                        raise ValueError('level cap step requires per_level_of')
+                if 'price_cap' in block:
+                    number(block['price_cap'], 'price_cap', 1, 1000000000000)
+                if 'wallet_share_pct' in block:
+                    number(block['wallet_share_pct'], 'wallet_share_pct', 1, 100)
             elif kind == 'condition':
                 allowed |= {'field', 'op', 'value', 'then', 'else', 'upgrade_id'}
                 field = block.get('field')
@@ -216,12 +241,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             price = row.get('price')
         return price if type(price) is int and price >= 0 else None
 
-    def eligible(uid: str) -> bool:
+    def eligible(uid: str, *, ignore_funds: bool = False) -> bool:
         if uid in excluded:
             rejected.append(f'{uid}: blocked by Never Buy')
             return False
         price = price_for(uid)
-        if price is None or price > ceiling:
+        if price is None or (not ignore_funds and price > ceiling):
             return False
         if lane == 'workshop':
             upgrade = upgrades.by_id(uid)
@@ -348,6 +373,43 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             return math.inf if remaining <= 0 else absolute / remaining
         return getattr(facts, field)
 
+    def pool_candidates(block: Mapping[str, Any], identity: str, reference_price: int | None,
+                        *, ignore_funds: bool = False) -> dict[str, float]:
+        candidates: dict[str, float] = {}
+        for uid in block['upgrade_ids']:
+            count = (counts or {}).get(uid, 0)
+            if 'max_purchases' in block and count >= block['max_purchases']:
+                continue
+            cap = block.get('level_caps', {}).get(uid)
+            if cap is not None:
+                limit = cap['base'] + (cap.get('step', 1) * (counts or {}).get(cap['per_level_of'], 0)
+                                       if 'per_level_of' in cap else 0)
+                if count >= limit:
+                    continue
+            target = block.get('targets', {}).get(uid)
+            if target is not None:
+                value = upgrade_value(uid)
+                if value is None:
+                    rejected.append(f'{identity}: {uid} target value unknown')
+                    continue
+                if upgrades.target_reached(uid, value, float(target)):
+                    continue
+            if not eligible(uid, ignore_funds=ignore_funds):
+                continue
+            price = price_for(uid)
+            if 'price_cap' in block and price > block['price_cap']:
+                continue
+            if 'wallet_share_pct' in block and price * 100 > wallet * block['wallet_share_pct']:
+                continue
+            if 'discount_pct' in block and not observed_quote(uid):
+                continue
+            if reference_price is not None and price * 100 > reference_price * (100 - block['discount_pct']):
+                continue
+            base = block.get('weights', {}).get(uid, 1)
+            candidates[uid] = max(block.get('weight_floor', 1),
+                                  base * ((100 - block.get('decay_pct', 0)) / 100) ** count)
+        return candidates
+
     def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
         nonlocal waiting_native
         for index, block in enumerate(items):
@@ -413,7 +475,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 if eligible(block['upgrade_id']):
                     return _Choice(identity, block['upgrade_id'], 'First affordable eligible upgrade')
             elif kind == 'pool':
-                needs_counts = 'max_purchases' in block or block.get('decay_pct', 0) > 0
+                needs_counts = 'max_purchases' in block or 'level_caps' in block or block.get('decay_pct', 0) > 0
                 if needs_counts and counts is None:
                     rejected.append(f'{identity}: confirmed purchase counts unavailable')
                     continue
@@ -429,20 +491,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         if observation is not None:
                             return observation
                         continue
-                candidates: dict[str, float] = {}
-                for uid in block['upgrade_ids']:
-                    count = (counts or {}).get(uid, 0)
-                    if 'max_purchases' in block and count >= block['max_purchases']:
-                        continue
-                    if not eligible(uid):
-                        continue
-                    if 'discount_pct' in block and not observed_quote(uid):
-                        continue
-                    if reference_price is not None and price_for(uid) * 100 > reference_price * (100 - block['discount_pct']):
-                        continue
-                    base = block.get('weights', {}).get(uid, 1)
-                    weight = max(block.get('weight_floor', 1), base * ((100 - block.get('decay_pct', 0)) / 100) ** count)
-                    candidates[uid] = weight
+                candidates = pool_candidates(block, identity, reference_price)
                 if not candidates:
                     if 'discount_pct' in block:
                         observation = observe_prices(identity, block['upgrade_ids'])
@@ -472,7 +521,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             facts.decision_sequence, hashlib.sha256(repr(candidates).encode()).hexdigest(),
                             chosen, None, candidates, identity)
                 return _Choice(identity, chosen, 'Eligible pool after price, cap and affordability filters',
-                               weights=candidates if selected else None, pending=selected)
+                               weights=candidates if selected else None, pending=selected,
+                               target=block.get('targets', {}).get(chosen))
         return None
 
     choice = evaluate(program) or waiting_native

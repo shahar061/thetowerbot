@@ -395,3 +395,46 @@ def test_program_upgrade_ids_include_condition_inputs() -> None:
          'then': [{'id': 'w', 'type': 'wait'}], 'else': []}], 'battle')
     ids = blocks.program_upgrade_ids(program)
     assert {'defense_absolute', 'defense_percent', 'thorns'} <= set(ids)
+
+
+def test_pool_new_options_validate() -> None:
+    blocks.validate_program([pool(targets={'damage': 12.5}, level_caps={'damage': {'base': 2, 'per_level_of': 'coins_per_wave'}},
+                                  price_cap=75, wallet_share_pct=20)], 'workshop')
+    for bad in ({'targets': {'thorns': 1}}, {'targets': {'damage': float('inf')}},
+                {'level_caps': {'damage': {'base': 2, 'step': 2}}}, {'level_caps': {'damage': {'base': 2, 'x': 1}}},
+                {'price_cap': 0}, {'wallet_share_pct': 101}):
+        with pytest.raises(ValueError):
+            blocks.validate_program([pool(**bad)], 'workshop')
+
+
+def test_pool_target_skips_reached_and_unknown_values() -> None:
+    reached = replace(facts(), values={'damage': 12.0})
+    program = [pool(targets={'damage': 12})]
+    assert blocks.evaluate_program(route(program), reached, None, 'workshop').decision.upgrade_id == 'attack_speed'
+    unknown = replace(facts(), values={})
+    result = blocks.evaluate_program(route(program), unknown, None, 'workshop')
+    assert result.decision.upgrade_id == 'attack_speed'
+    assert any('target value unknown' in item for item in result.trace.rejected)
+
+
+def test_pool_linked_level_cap() -> None:
+    program = [pool(level_caps={'damage': {'base': 2, 'per_level_of': 'coins_per_wave'}})]
+    capped = replace(facts(), confirmed_purchases={'damage': 2})
+    assert blocks.evaluate_program(route(program), capped, None, 'workshop').decision.upgrade_id == 'attack_speed'
+    raised = replace(facts(), confirmed_purchases={'damage': 2, 'coins_per_wave': 1})
+    assert blocks.evaluate_program(route(program), raised, None, 'workshop').decision.upgrade_id == 'damage'
+
+
+def test_pool_price_cap_and_wallet_share() -> None:
+    assert blocks.evaluate_program(route([pool(price_cap=80)]), facts(), None, 'workshop').decision.upgrade_id == 'damage'
+    assert blocks.evaluate_program(route([pool(price_cap=79)]), facts(), None, 'workshop').status == 'blocked'
+    rich = replace(facts(), wallet_coins=400)  # 20% of 400 = 80
+    assert blocks.evaluate_program(route([pool(wallet_share_pct=20)]), rich, None, 'workshop').decision.upgrade_id == 'damage'
+    poorer = replace(facts(), wallet_coins=399)
+    assert blocks.evaluate_program(route([pool(wallet_share_pct=20)]), poorer, None, 'workshop').status == 'blocked'
+
+
+def test_battle_pool_target_is_passed_to_decision() -> None:
+    program = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['thorns'], 'selection': 'priority', 'targets': {'thorns': 21}}]
+    result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(), None, 'battle')
+    assert result.decision.upgrade_id == 'thorns' and result.decision.target == 21
