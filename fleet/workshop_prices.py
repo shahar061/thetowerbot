@@ -24,6 +24,11 @@ def catalog_price(upgrade_id: str, level: int) -> int | None:
     return prices[level] if type(level) is int and 0 <= level < len(prices) else None
 
 
+def lists_price(upgrade_id: str, price: int) -> bool:
+    """Is `price` what the catalog says some level of this upgrade costs?"""
+    return price in CATALOG["upgrades"].get(upgrade_id, {}).get("next_coins", [])
+
+
 @dataclass(frozen=True)
 class PriceQuote:
     price: int
