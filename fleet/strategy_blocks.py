@@ -547,12 +547,14 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                   base * ((100 - block.get('decay_pct', 0)) / 100) ** count)
         return candidates
 
-    def unaffordable_pick(goal: Mapping[str, Any]) -> tuple[str, int] | None:
+    def top_pick(goal: Mapping[str, Any]) -> tuple[str, int] | None:
+        """First goal item passing every filter except wallet affordability."""
         if goal['type'] == 'buy':
             uid = goal['upgrade_id']
             return (uid, price_for(uid, reference=True)) if eligible(uid, ignore_funds=True) else None
         needs_counts = 'max_purchases' in goal or 'level_caps' in goal or goal.get('decay_pct', 0) > 0
         if needs_counts and counts is None:
+            rejected.append(f"{goal['id']}: confirmed purchase counts unavailable")
             return None
         uid = next(iter(pool_candidates(goal, goal['id'], None, ignore_funds=True)), None)
         return (uid, price_for(uid, reference=True)) if uid else None
@@ -576,13 +578,26 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 if saving is not None:
                     rejected.append(f'{identity}: another goal is already saving')
                     continue
-                choice = evaluate(block['goal'], (items, *ancestors))
-                if choice is not None:
-                    return choice
-                pick = unaffordable_pick(block['goal'][0])
-                if pick is None:
-                    continue
-                uid, price = pick
+                goal = block['goal'][0]
+                if goal['type'] == 'pool' and goal.get('selection', 'priority') == 'weighted':
+                    choice = evaluate(block['goal'], (items, *ancestors))
+                    if choice is not None:
+                        return choice
+                    pick = top_pick(goal)
+                    if pick is None:
+                        continue
+                    uid, price = pick
+                else:
+                    # A priority goal acts on its top pick only: never fall
+                    # through to a lower, merely affordable item.
+                    pick = top_pick(goal)
+                    if pick is None:
+                        continue
+                    uid, price = pick
+                    if price_for(uid) is not None and price <= ceiling:
+                        targets = goal.get('targets', {}) if goal['type'] == 'pool' else {}
+                        return _Choice(goal['id'], uid, f'Save for goal: buy {upgrades.by_id(uid).name}',
+                                       target=targets.get(uid))
                 name = upgrades.by_id(uid).name
                 saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
                                  wait=True, save_price=price)

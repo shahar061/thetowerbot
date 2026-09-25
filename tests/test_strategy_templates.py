@@ -79,7 +79,29 @@ def test_turtle_cheap_defense_only_while_saving_for_thorns() -> None:
     result = run('turtle', 'workshop', saving)
     assert result.trace.matched_rule_id == 'turtle.cheap_defense.pool' and result.decision.upgrade_id == 'defense_absolute'
     pricey = replace(saving, prices={'defense_absolute': 330, 'thorns': 409})  # 330 > 80% of 409
-    assert run('turtle', 'workshop', pricey).decision.state == 'save_coins'
+    result = run('turtle', 'workshop', pricey)
+    assert result.decision.state == 'save_coins' and result.trace.matched_rule_id == 'turtle.objectives'
+
+
+REALISTIC_PRICES = {'thorns': 409, 'defense_absolute': 254, 'cash_bonus': 50, 'coins_per_kill_bonus': 60,
+                    'health': 40, 'cash_per_wave': 45, 'damage': 70, 'attack_speed': 70}
+
+
+def test_turtle_priority_goal_does_not_fall_through_to_cheaper_objective() -> None:
+    owned = {'unlock_defense_upgrades': 1, 'unlock_thorns': 1}
+    saving = workshop(utility_spent_coins=360, wallet_coins=300, purchases=owned,
+                      confirmed_purchases={'defense_absolute': 5}, values={'thorns': 7.},
+                      prices=REALISTIC_PRICES)
+    result = run('turtle', 'workshop', saving)
+    assert result.trace.matched_rule_id != 'turtle.objectives.pool'
+    assert result.trace.matched_rule_id == 'turtle.cheap_defense.pool'
+    assert result.decision.upgrade_id == 'defense_absolute'  # 254 <= 80% of 409
+    pricey = replace(saving, prices={**REALISTIC_PRICES, 'defense_absolute': 330})
+    result = run('turtle', 'workshop', pricey)
+    assert result.trace.matched_rule_id != 'turtle.objectives.pool'
+    assert ((result.trace.matched_rule_id == 'turtle.filler.pool' and result.decision.state == 'buy'
+             and result.decision.price <= 60)
+            or (result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'))
 
 
 def test_turtle_battle_emergency_defense() -> None:
@@ -97,12 +119,13 @@ def test_turtle_battle_waits_when_defense_percent_unknown() -> None:
     sample = battle(50)
     rows = dict(sample.upgrade_rows)
     rows.pop('defense_percent')
-    assert run('turtle', 'battle', replace(sample, upgrade_rows=rows)).status == 'blocked'
+    result = run('turtle', 'battle', replace(sample, upgrade_rows=rows))
+    assert result.status == 'blocked' and result.trace.matched_rule_id == 'turtle.battle.emergency'
 
 
 def test_turtle_battle_economy_early() -> None:
     result = run('turtle', 'battle', battle(15, cash_per_wave=(5.,)))
-    assert result.decision.upgrade_id == 'cash_per_wave'
+    assert result.trace.matched_rule_id == 'turtle.battle.economy' and result.decision.upgrade_id == 'cash_per_wave'
 
 
 def test_turtle_battle_thorns_step_for_wave() -> None:
@@ -112,6 +135,7 @@ def test_turtle_battle_thorns_step_for_wave() -> None:
 
 def test_opening_battle_promotes_survival_starters() -> None:
     result = run('opening', 'battle', battle(5, defense_absolute=(4.,)))
+    assert result.trace.matched_rule_id == 'opening.battle.starters'
     assert result.decision.upgrade_id == 'defense_absolute' and result.decision.target == 10
 
 
