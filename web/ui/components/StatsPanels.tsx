@@ -94,7 +94,7 @@ export function StatsPanels({ stats, compact = false, view = "all", recentWaveWi
               />
             ) : null}
             <Line
-              type="monotone" dataKey="wave" dot={stats.runs.length === 1}
+              type="monotone" dataKey="wave" dot={stats.runs.length === 1} connectNulls
               stroke={WAVE} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
             />
           </LineChart>
@@ -109,7 +109,7 @@ export function StatsPanels({ stats, compact = false, view = "all", recentWaveWi
             <YAxis tick={{ fontSize: 11 }} />
             <Tooltip {...TOOLTIP_STYLE} />
             <Line
-              type="monotone" dataKey="duration" dot={false}
+              type="monotone" dataKey="duration" dot={false} connectNulls
               stroke={DURATION} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
             />
           </LineChart>
