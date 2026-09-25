@@ -94,7 +94,28 @@ class LabVisit:
 
     def tab_unlocked(self, screen: Image) -> bool:
         """Return whether the actionable Labs tab is visible on this frame."""
-        return self._match(screen, "nav/tab_labs.png") is not None
+        return self.tab_status(screen) == "unlocked"
+
+    def tab_status(self, screen: Image) -> str:
+        """Read Labs as locked, unlocked, or unknown without tapping it."""
+        unlocked = self._match(screen, "nav/tab_labs.png") is not None
+        locked = self._locked_tab_match(screen)
+        if unlocked == locked:
+            return "unknown"
+        return "unlocked" if unlocked else "locked"
+
+    def _locked_tab_match(self, screen: Image) -> bool:
+        """Check the locked flask slot only, not other locked menu tabs."""
+        height, width = screen.shape[:2]
+        template = self.templates.get("nav/tab_labs_locked.png")
+        template_height, template_width = template.shape[:2]
+        # This slot origin is measured from the portrait main-menu fixtures.
+        x = round(width * (765 / 1080))
+        y = round(height * (2264 / 2400))
+        region = screen[y:y + template_height, x:x + template_width]
+        if region.shape[:2] != (template_height, template_width):
+            return False
+        return vision.locate_template(region, template, .94) is not None
 
     def cancel(self, reason: str) -> None:
         self._state = "idle"

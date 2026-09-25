@@ -78,39 +78,28 @@ class RerollProgress:
 
     def lab_due(self, now: float | None = None, *,
                 wallet_coins: int | None = None,
-                wallet_gems: int | None = None,
-                lab_unlocked: bool = False) -> bool:
+                wallet_gems: int | None = None) -> bool:
         moment = time.time() if now is None else now
-        if not self.labs_milestone_claimed():
-            return False
-        record, _ = self.lab_cadence.route_observation()
-        if (not lab_unlocked and record is not None and record.get("kind") == "locked"
-                and isinstance(record.get("next_check_at"), (int, float))
-                and moment < record["next_check_at"]):
+        if not self.lab_unlocked():
             return False
         return (self.lab_cadence.slot2_due(moment, wallet_gems)
                 or self.lab_cadence.due(moment, wallet_coins))
 
-    def note_labs_unavailable(self, now: float | None = None) -> None:
-        self.lab_cadence.note_unavailable(time.time() if now is None else now)
+    def lab_unlocked(self) -> bool:
+        """Whether this account has positive, persisted Labs unlock evidence."""
+        return self.lab_cadence.unlocked()
 
-    def labs_milestone_claimed(self) -> bool:
-        """Labs checks are meaningful only after T1 wave 30 and its claim."""
-        path = self.root / "tower_bot.db"
-        if not path.is_file() or db.bound_account(path) != self.account_id:
-            return False
-        with db.reader(path) as connection:
-            best_wave = connection.execute(
-                "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL"
-            ).fetchone()[0]
-            if not isinstance(best_wave, int) or best_wave < 30:
-                return False
-            rows = connection.execute(
-                "SELECT item FROM ledger WHERE kind='MILESTONE_CLAIM' "
-                "AND dry_run=0 AND item IS NOT NULL"
-            ).fetchall()
-        aliases = {"LABS", "UNLOCK LAB", "UNLOCK LABS"}
-        return any(str(row[0]).strip().upper() in aliases for row in rows)
+    def note_lab_locked(self, source: str, *, now: float | None = None) -> None:
+        if self.read_only:
+            return
+        self.lab_cadence.note_locked(source, time.time() if now is None else now)
+
+    def note_lab_unlocked(self, source: str, *, caption: str | None = None,
+                          now: float | None = None) -> None:
+        if self.read_only:
+            return
+        self.lab_cadence.note_unlocked(
+            source, time.time() if now is None else now, caption=caption)
 
     def initial_workshop_due(self) -> bool:
         """A new reroll account should visit Workshop for its tutorial grant."""

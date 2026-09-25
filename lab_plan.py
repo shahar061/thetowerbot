@@ -67,6 +67,7 @@ class LabCadence:
     def __init__(self, root: Path, account_id: str) -> None:
         self.path = Path(root) / "lab-slot1-cadence.json"
         self.slot2_path = Path(root) / "lab-slot2-cadence.json"
+        self.unlock_path = Path(root) / "lab-unlock.json"
         self.account_id = account_id
 
     def _read(self, path: Path) -> dict[str, object] | None:
@@ -80,6 +81,49 @@ class LabCadence:
 
     def _record(self) -> dict[str, object] | None:
         return self._read(self.path)
+
+    def unlocked(self) -> bool:
+        record = self._read(self.unlock_path)
+        return record is not None and record.get("status") == "unlocked"
+
+    def locked(self) -> bool:
+        record = self._read(self.unlock_path)
+        return record is not None and record.get("status") == "locked"
+
+    def note_locked(self, source: str, now: float) -> None:
+        """Persist an explicit lock observation without undoing an unlock."""
+        if source != "labs_tab":
+            raise ValueError("unsupported Labs lock evidence source")
+        previous = self._read(self.unlock_path)
+        if previous is not None and previous.get("status") == "unlocked":
+            return
+        if previous is not None and previous.get("status") == "locked":
+            return
+        self._write(self.unlock_path, {
+            "account_id": self.account_id,
+            "status": "locked",
+            "source": source,
+            "observed_at": now,
+        })
+
+    def note_unlocked(self, source: str, now: float,
+                      caption: str | None = None) -> None:
+        """Persist a positive Labs-unlocked observation for this account."""
+        if source not in {"unlock_card", "labs_tab", "labs_page"}:
+            raise ValueError("unsupported Labs unlock evidence source")
+        previous = self._read(self.unlock_path)
+        if previous is not None and previous.get("status") == "unlocked":
+            return
+        payload: dict[str, object] = {
+            "account_id": self.account_id,
+            "status": "unlocked",
+            "source": source,
+            "observed_at": now,
+        }
+        if caption is not None:
+            payload["caption"] = caption
+        payload["confirmed_at"] = now
+        self._write(self.unlock_path, payload)
 
     def due(self, now: float, wallet_coins: int | None = None) -> bool:
         record = self._record()
@@ -125,15 +169,6 @@ class LabCadence:
                 return True
         observed = record.get("observed_at")
         return not isinstance(observed, (int, float)) or now >= observed + 3600
-
-    def note_unavailable(self, now: float) -> None:
-        """Back off Lab visits while the Labs tab is visibly locked."""
-        self._write(self.path, {
-            "account_id": self.account_id,
-            "kind": "locked",
-            "observed_at": now,
-            "next_check_at": now + 600.,
-        })
 
     def note_slot2(self, status: str, wallet_gems: int | None, now: float) -> None:
         if status not in {"locked", "owned"}:
