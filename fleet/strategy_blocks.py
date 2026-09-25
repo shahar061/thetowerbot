@@ -502,7 +502,13 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if field == 'upgrade_value':
             return upgrade_value(block['upgrade_id'])
         if field == 'def_abs_coverage':
-            absolute, percent = upgrade_value('defense_absolute'), upgrade_value('defense_percent')
+            rows = facts.upgrade_rows  # def_abs_coverage is Battle-only
+            # No Defense Absolute to buy yet, so the emergency check does not apply.
+            if rows.get('defense_absolute', {}).get('status') == 'locked':
+                return math.inf
+            absolute = upgrade_value('defense_absolute')
+            locked_percent = rows.get('defense_percent', {}).get('status') == 'locked'
+            percent = 0.0 if locked_percent else upgrade_value('defense_percent')
             damage = facts.enemy_damage
             if absolute is None or percent is None or damage is None:
                 return None

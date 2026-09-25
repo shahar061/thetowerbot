@@ -638,3 +638,12 @@ def test_goal_wallet_share_does_not_block_saving() -> None:
     result = blocks.evaluate_program(route([save_goal(['thorns'], wallet_share_pct=20)]), within_share, None, 'workshop')
     assert result.decision.state == 'buy' and result.decision.upgrade_id == 'thorns'
 
+
+def test_def_abs_coverage_with_locked_defense_percent_uses_zero() -> None:
+    program = [when('def_abs_coverage', 'lt', 1.2)]
+    locked = battle_facts(defense_absolute={'status': 'available', 'value': 100.0, 'price': 10, 'observed_at': 100},
+                          defense_percent={'status': 'locked', 'value': None, 'price': None, 'observed_at': 100})
+    covered = replace(locked, enemy_damage=50.0)  # 100 / 50 = 2.0
+    assert blocks.evaluate_program(route(program, lane='battle'), covered, None, 'battle').decision.upgrade_id == 'health'
+    exposed = replace(locked, enemy_damage=100.0)  # 100 / 100 = 1.0
+    assert blocks.evaluate_program(route(program, lane='battle'), exposed, None, 'battle').decision.upgrade_id == 'defense_absolute'

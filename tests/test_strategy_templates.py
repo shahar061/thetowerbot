@@ -128,6 +128,14 @@ def test_turtle_battle_economy_early() -> None:
     assert result.trace.matched_rule_id == 'turtle.battle.economy' and result.decision.upgrade_id == 'cash_per_wave'
 
 
+def test_turtle_battle_skips_emergency_while_defense_absolute_locked() -> None:
+    sample = battle(15, cash_per_wave=(5.,))
+    rows = {**sample.upgrade_rows, 'defense_absolute': {'status': 'locked', 'value': None, 'price': None,
+                                                         'observed_at': 100}}
+    result = run('turtle', 'battle', replace(sample, upgrade_rows=rows, enemy_damage=500.0))
+    assert result.trace.matched_rule_id == 'turtle.battle.economy' and result.decision.upgrade_id == 'cash_per_wave'
+
+
 def test_turtle_battle_thorns_step_for_wave() -> None:
     result = run('turtle', 'battle', battle(50, thorns=(15.,)))
     assert result.trace.matched_rule_id == 'turtle.battle.thorns21' and result.decision.target == 21
