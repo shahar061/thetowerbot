@@ -76,7 +76,7 @@ def test_condition_unknown_does_not_take_else_and_bans_cover_children() -> None:
 
 
 def test_native_policy_uses_explicit_template_and_wave_sixty_guard() -> None:
-    program = blocks.template_program('turtle','workshop')
+    program = blocks.native_template_program('turtle','workshop')
     sample = replace(facts(), best_tier_1_wave=1, purchases={'unlock_defense_upgrades':1,'unlock_thorns':1},
                      prices={'defense_absolute':10,'thorns':50},values={'thorns':11})
     result = blocks.evaluate_program(route(program),sample,None,'workshop')
@@ -185,7 +185,7 @@ def test_block_workshop_price_bounds_live_shopping_policy(tmp_path: Path) -> Non
 
 
 def test_native_battle_preserves_target_for_live_value_recheck() -> None:
-    program = blocks.template_program('turtle','battle')
+    program = blocks.native_template_program('turtle','battle')
     sample = replace(facts(),screen='battle',run_id=2,wave=2,battle_cash=100,run_purchases={},
         upgrade_rows={'damage':{'status':'available','value':5,'price':5,'observed_at':90}})
     result = blocks.evaluate_program(route(program,lane='battle'),sample,None,'battle')
@@ -197,7 +197,7 @@ def test_native_battle_preserves_target_for_live_value_recheck() -> None:
 
 
 def test_native_groups_can_be_removed_and_reordered() -> None:
-    native = list(blocks.template_program('opening','workshop'))
+    native = list(blocks.native_template_program('opening','workshop'))
     sample = replace(facts(),best_tier_1_wave=1,purchases={},utility_spent_coins=0,
         prices={'damage':10,'attack_speed':10,'unlock_cash_bonuses':10,'cash_bonus':10,
                 'cash_per_wave':10,'unlock_coin_bonuses':10,'coins_per_kill_bonus':10})
@@ -213,7 +213,7 @@ def test_native_groups_can_be_removed_and_reordered() -> None:
 
 
 def test_native_phase_trace_marks_completion_and_next_phase() -> None:
-    starter, economy, objectives, _fallback = blocks.template_program('opening', 'workshop')
+    starter, economy, objectives, _fallback = blocks.native_template_program('opening', 'workshop')
     sample = replace(facts(), best_tier_1_wave=25, utility_spent_coins=0, wallet_coins=1000)
     result = blocks.evaluate_program(route([starter, economy, objectives]), sample, None, 'workshop')
 
@@ -224,7 +224,7 @@ def test_native_phase_trace_marks_completion_and_next_phase() -> None:
 
 
 def test_unaffordable_native_candidate_waits_without_handoff() -> None:
-    _starter, economy, _objectives, _fallback = blocks.template_program('opening', 'workshop')
+    _starter, economy, _objectives, _fallback = blocks.native_template_program('opening', 'workshop')
     sample = replace(facts(), best_tier_1_wave=25, utility_spent_coins=0,
                      wallet_coins=0, prices={'cash_per_wave': 80})
     result = blocks.evaluate_program(route([economy]), sample, None, 'workshop')
@@ -235,7 +235,7 @@ def test_unaffordable_native_candidate_waits_without_handoff() -> None:
 
 
 def test_missing_native_phase_evidence_waits() -> None:
-    starter, economy, _objectives, _fallback = blocks.template_program('opening', 'workshop')
+    starter, economy, _objectives, _fallback = blocks.native_template_program('opening', 'workshop')
     sample = replace(facts(), best_tier_1_wave=1, utility_spent_coins=None, purchases={}, prices={})
     result = blocks.evaluate_program(route([starter, economy]), sample, None, 'workshop')
 
@@ -260,7 +260,7 @@ def test_weight_decay_preserves_exact_fraction() -> None:
 
 def test_battle_pool_can_compare_to_native_unaffordable_priority() -> None:
     program=[pool(discount_pct=20,reference_upgrade_id='priority',count_scope='run'),
-             *blocks.template_program('turtle','battle')]
+             *blocks.native_template_program('turtle','battle')]
     sample=replace(facts(),screen='battle',run_id=2,wave=2,battle_cash=90,run_purchases={},
         upgrade_rows={'defense_absolute':{'status':'unaffordable','value':0,'price':100,'observed_at':100},
                       'damage':{'status':'available','value':5,'price':80,'observed_at':100}})
@@ -282,7 +282,7 @@ def test_complete_template_matches_native_decision(policy: str, changes: dict[st
     expected=choose_next(RerollFacts(sample.account_id,sample.best_tier_1_wave,sample.purchases,
         sample.values,sample.wallet_coins,sample.lifetime_coins,sample.prices,
         spend_fraction=1,variant=sample.variant,utility_spent_coins=sample.utility_spent_coins,policy=policy))
-    actual=blocks.evaluate_program(route(blocks.template_program(policy,'workshop')),sample,None,'workshop')
+    actual=blocks.evaluate_program(route(blocks.native_template_program(policy,'workshop')),sample,None,'workshop')
     assert actual.decision == expected
 
 

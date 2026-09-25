@@ -176,10 +176,94 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
     return walk(value, 0)
 
 
-def template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...]:
+def native_template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...]:
     phases = ('starter', 'economy', 'objectives', 'fallback') if lane == 'workshop' else ('battle',)
     return validate_program([{'id': f'{policy}.{phase}', 'type': 'native',
                               'policy': policy, 'phase': phase} for phase in phases], lane)
+
+
+_ECONOMY_WEIGHTS = {'unlock_cash_bonuses': 100, 'cash_per_wave': 200, 'unlock_coin_bonuses': 80,
+                    'coins_per_kill_bonus': 150, 'cash_bonus': 60}
+_FILLER_CAPS = {'cash_per_wave': 5, 'coins_per_kill_bonus': 5, 'cash_bonus': 5, 'damage': 3, 'attack_speed': 3}
+
+
+def _pool(identity: str, ids: list[str], **extra: Any) -> dict[str, Any]:
+    return {'id': identity, 'type': 'pool', 'upgrade_ids': ids, 'selection': 'priority', **extra}
+
+
+def _capped(base: int) -> dict[str, int]:
+    return {'base': base}
+
+
+def _workshop_template(policy: str) -> list[dict[str, Any]]:
+    economy = {'id': f'{policy}.economy', 'type': 'budget', 'metric': 'utility_spent', 'target': 350, 'ceiling': 400,
+               'blocks': [{'id': f'{policy}.economy.goal', 'type': 'save_for', 'goal': [
+                   _pool(f'{policy}.economy.pool', list(_ECONOMY_WEIGHTS), selection='weighted', weights=_ECONOMY_WEIGHTS,
+                         level_caps={'cash_per_wave': _capped(2), 'coins_per_kill_bonus': _capped(3)})]}]}
+    filler = {'id': f'{policy}.filler', 'type': 'while_saving', 'blocks': [
+        _pool(f'{policy}.filler.pool', list(_FILLER_CAPS), wallet_share_pct=20,
+              level_caps={uid: _capped(cap) for uid, cap in _FILLER_CAPS.items()})]}
+    if policy == 'opening':
+        attack_cap = {'base': 2, 'per_level_of': 'coins_per_wave'}
+        return [
+            _pool('opening.starter', ['damage', 'attack_speed', 'health', 'unlock_defense_upgrades', 'defense_absolute'],
+                  price_cap=75, max_purchases=1),
+            economy,
+            {'id': 'opening.objectives', 'type': 'save_for', 'goal': [_pool('opening.objectives.pool',
+                ['damage', 'attack_speed', 'unlock_defense_upgrades', 'unlock_cash_bonuses', 'unlock_coin_bonuses',
+                 'coins_per_wave', 'defense_absolute', 'unlock_thorns', 'thorns'],
+                level_caps={'damage': attack_cap, 'attack_speed': attack_cap,
+                            'coins_per_wave': _capped(3), 'defense_absolute': _capped(2)},
+                targets={'thorns': 51})]},
+            filler,
+        ]
+    return [
+        economy,
+        {'id': 'turtle.objectives', 'type': 'save_for', 'goal': [_pool('turtle.objectives.pool',
+            ['unlock_defense_upgrades', 'defense_absolute', 'unlock_thorns', 'thorns',
+             'cash_bonus', 'coins_per_kill_bonus', 'health'],
+            level_caps={'defense_absolute': _capped(5)}, targets={'thorns': 51})]},
+        {'id': 'turtle.cheap_defense', 'type': 'while_saving', 'upgrade_id': 'thorns', 'blocks': [
+            _pool('turtle.cheap_defense.pool', ['defense_absolute'], discount_pct=20, reference_upgrade_id='thorns')]},
+        filler,
+    ]
+
+
+def _battle_template(policy: str) -> list[dict[str, Any]]:
+    economy = {'cash_per_wave': 10, 'coins_per_kill_bonus': 1.25, 'cash_bonus': 1.25}
+    if policy == 'opening':
+        starters = {'defense_absolute': 10, 'thorns': 11, 'damage': 12, 'attack_speed': 1.10, 'health': 20}
+        return [
+            _pool('opening.battle.starters', list(starters), targets=starters),
+            _pool('opening.battle.priorities', [*economy, 'defense_absolute', 'thorns', 'health',
+                  'coins_per_wave', 'damage', 'attack_speed'],
+                  targets={**economy, 'thorns': 51, 'coins_per_wave': 10}),
+        ]
+    thorns = {'id': 'turtle.battle.wave40', 'type': 'condition', 'field': 'wave', 'op': 'lte', 'value': 40,
+              'then': [_pool('turtle.battle.thorns11', ['thorns'], targets={'thorns': 11})],
+              'else': [{'id': 'turtle.battle.wave80', 'type': 'condition', 'field': 'wave', 'op': 'lte', 'value': 80,
+                        'then': [_pool('turtle.battle.thorns21', ['thorns'], targets={'thorns': 21})],
+                        'else': [{'id': 'turtle.battle.wave160', 'type': 'condition', 'field': 'wave', 'op': 'lte', 'value': 160,
+                                  'then': [_pool('turtle.battle.thorns34', ['thorns'], targets={'thorns': 34})],
+                                  'else': [_pool('turtle.battle.thorns51', ['thorns'], targets={'thorns': 51})]}]}]}
+    return [
+        {'id': 'turtle.battle.emergency', 'type': 'condition', 'field': 'def_abs_coverage', 'op': 'lt', 'value': 1.2,
+         'then': [{'id': 'turtle.battle.emergency.paths', 'type': 'fallback', 'blocks': [
+             _pool('turtle.battle.emergency.buy', ['defense_absolute']),
+             {'id': 'turtle.battle.emergency.wait', 'type': 'wait'}]}], 'else': []},
+        {'id': 'turtle.battle.early', 'type': 'condition', 'field': 'wave', 'op': 'lte', 'value': 20,
+         'then': [_pool('turtle.battle.economy', list(economy), targets=economy)], 'else': []},
+        thorns,
+        _pool('turtle.battle.survival', ['health', 'damage', 'attack_speed']),
+    ]
+
+
+def template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...]:
+    """Built-in strategies as ordinary, readable blocks."""
+    if policy not in {'opening', 'turtle'}:
+        raise ValueError('unknown template policy')
+    program = _workshop_template(policy) if lane == 'workshop' else _battle_template(policy)
+    return validate_program(program, lane)
 
 
 def child_lists(block: Mapping[str, Any]) -> tuple[list[dict[str, Any]], ...]:
