@@ -412,16 +412,17 @@ def workshop_purchase_summary(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def stats_progress(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Full-history Tier 1 benchmarks, confirmed at the end of a run.
+def stats_progress(conn: sqlite3.Connection,
+                   targets: tuple[tuple[int, int], ...] = ((1, 20), (1, 30), (1, 60), (1, 100))) -> dict[str, Any]:
+    """Full-history wave benchmarks, confirmed at the end of a run.
 
     Recorded play counts completed runs on every tier. It excludes gaps
     between runs; elapsed time includes them. Neither claims the precise
     moment within a run at which a wave was crossed.
     """
-    benchmarks = [dict(tier=1, wave=wave, run_id=None, reached_at=None,
+    benchmarks = [dict(tier=tier, wave=wave, run_id=None, reached_at=None,
                        play_seconds=None, elapsed_seconds=None)
-                  for wave in (20, 30, 60, 100)]
+                  for tier, wave in dict.fromkeys(targets)]
     total = 0
     played = 0.0
     first_started: float | None = None
@@ -433,11 +434,13 @@ def stats_progress(conn: sqlite3.Connection) -> dict[str, Any]:
         if first_started is None:
             first_started = row["started_at"]
         played += max(0.0, row["ended_at"] - row["started_at"])
-        if row["tier"] != 1 or row["wave"] is None:
+        if row["tier"] is None or row["wave"] is None:
             continue
-        best = row["wave"] if best is None else max(best, row["wave"])
+        if row["tier"] == 1:
+            best = row["wave"] if best is None else max(best, row["wave"])
         for milestone in benchmarks:
-            if milestone["run_id"] is None and row["wave"] >= milestone["wave"]:
+            if (milestone["run_id"] is None and row["tier"] == milestone["tier"]
+                    and row["wave"] >= milestone["wave"]):
                 milestone.update(run_id=row["id"], reached_at=row["ended_at"],
                                  play_seconds=played,
                                  elapsed_seconds=max(0.0, row["ended_at"] - first_started))

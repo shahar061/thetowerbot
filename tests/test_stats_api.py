@@ -92,6 +92,12 @@ def test_progress_uses_all_history_and_first_reaching_run(tmp_path) -> None:
         assert row["reached_at"] == 230
     assert progress["benchmarks"][3]["play_seconds"] is None
 
+    with db.reader(path) as conn:
+        custom = db.stats_progress(conn, targets=((1, 30), (2, 90)))
+    assert [(row["tier"], row["wave"], row["run_id"], row["play_seconds"])
+            for row in custom["benchmarks"]] == [
+                (1, 30, 2, 40.0), (2, 90, 1, 10.0)]
+
 
 def test_progress_distinguishes_unknown_wave_and_unreached_milestones(tmp_path) -> None:
     path = tmp_path / "history.db"

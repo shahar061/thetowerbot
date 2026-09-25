@@ -12,6 +12,7 @@ export type MilestoneNode = {
   source_url: string;
   status: MilestoneStatus;
   progress: { current: number; target: number } | null;
+  wave_gate?: { tier: number; wave: number; run_id: number; reached_at: number; play_seconds: number; elapsed_seconds: number } | null;
 };
 
 export type MilestoneRoadmap = {

@@ -522,8 +522,17 @@ def create_app(
         best_waves: dict[int, int] = {}
         claimed_rewards: set[str] = set()
         verified: set[str] = set()
+        catalog = milestone_roadmap.load_catalog()
+        wave_gates: dict[tuple[int, int], dict[str, Any]] = {}
         if path is not None:
             with db.reader(path) as conn:
+                targets = tuple((node.tier, node.wave) for node in catalog
+                                if node.tier is not None and node.wave is not None)
+                wave_gates = {
+                    (record["tier"], record["wave"]): record
+                    for record in db.stats_progress(conn, targets=targets)["benchmarks"]
+                    if record["run_id"] is not None
+                }
                 best_waves = {int(row["tier"]): int(row["wave"]) for row in conn.execute(
                     "SELECT tier, MAX(wave) AS wave FROM runs "
                     "WHERE ended_at IS NOT NULL AND tier IS NOT NULL AND wave IS NOT NULL "
@@ -566,9 +575,11 @@ def create_app(
                                 if mapped:
                                     verified.add(mapped)
         nodes = milestone_roadmap.project(
-            milestone_roadmap.load_catalog(), best_waves=best_waves,
+            catalog, best_waves=best_waves,
             claimed_rewards=claimed_rewards, verified=verified,
         )
+        for node in nodes:
+            node["wave_gate"] = wave_gates.get((node["tier"], node["wave"]))
         return {"schema_version": 1, "account_id": choice.account_id if choice else None,
                 "best_waves": best_waves, "nodes": nodes}
 

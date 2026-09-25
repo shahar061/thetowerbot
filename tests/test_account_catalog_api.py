@@ -100,6 +100,10 @@ def test_milestone_roadmap_reads_only_selected_account_evidence(tmp_path: Path) 
     assert by_id(first_data)["tier.unlock.2"]["status"] == "verified"
     assert by_id(first_data)["tournaments.unlocked"]["status"] == "claimable"
     assert by_id(second_data)["labs.unlocked"]["status"] == "in_progress"
+    assert by_id(first_data)["labs.unlocked"]["wave_gate"]["play_seconds"] == 1.0
+    assert by_id(first_data)["labs.unlocked"]["wave_gate"]["elapsed_seconds"] == 1.0
+    assert by_id(second_data)["labs.unlocked"]["wave_gate"] is None
+    assert by_id(first_data)["cards.available"]["wave_gate"] is None
     assert client.get("/api/milestone-roadmap", headers={
         "x-account-scope": "worker:missing"}).status_code == 404
 

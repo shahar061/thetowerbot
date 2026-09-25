@@ -29,13 +29,15 @@ test("rejects another account's roadmap and never fetches unverified membership"
 });
 
 test("uses only real prerequisites and keeps claimable, unknown and per-worker progress separate", () => {
+  const first = { tier: 1, wave: 20, run_id: 1, reached_at: 120, play_seconds: 120, elapsed_seconds: 150 };
   const graph = buildFleetGraph([
-    { member: workers[0], roadmap: roadmap(), error: null },
+    { member: workers[0], roadmap: { ...roadmap(), nodes: [{ ...parent, wave_gate: first }, { ...parent, id: "child", title: "Second lab", requires: ["parent", "unlisted"], status: "locked" }] }, error: null },
     { member: workers[1], roadmap: { ...roadmap("200"), nodes: [{ ...parent, status: "unknown", progress: { current: 5, target: 20 } }] }, error: null },
   ]);
   const node = graph.nodes.find((node) => node.id === "parent")!;
   expect(node.accounts.map((account) => account.status)).toEqual(["claimable", "unknown"]);
   expect(node.accounts.map((account) => account.progress?.current)).toEqual([24, 5]);
+  expect(node.accounts.map((account) => account.wave_gate?.play_seconds ?? null)).toEqual([120, null]);
   expect(node.verified).toBe(0);
   expect(graph.edges).toEqual([{ from: "parent", to: "child" }]);
   expect(graph.nodes.find((node) => node.id === "child")!.accounts[1].status).toBe("unknown");

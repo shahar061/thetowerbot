@@ -2,7 +2,7 @@ import type { RerollMember } from "@/lib/fleet";
 import type { MilestoneNode, MilestoneRoadmap, MilestoneStatus } from "@/lib/milestoneRoadmap";
 
 export type WorkerRoadmap = { member: RerollMember; roadmap: MilestoneRoadmap | null; error: string | null };
-export type NodeAccount = { member: RerollMember; status: MilestoneStatus; progress: MilestoneNode["progress"]; requires: string[]; missing: string[]; error: string | null };
+export type NodeAccount = { member: RerollMember; status: MilestoneStatus; progress: MilestoneNode["progress"]; wave_gate: MilestoneNode["wave_gate"]; requires: string[]; missing: string[]; error: string | null };
 export type AtlasNode = MilestoneNode & { x: number; y: number; accounts: NodeAccount[]; verified: number };
 export type FleetGraph = { nodes: AtlasNode[]; edges: { from: string; to: string }[]; groups: { name: string; x: number; y: number; width: number; height: number; count: number }[]; width: number; height: number };
 export const STATUS_LABELS: Record<MilestoneStatus, string> = { unknown: "Unknown", locked: "Locked", in_progress: "In progress", claimable: "Claimable", claimed: "Claimed", verified: "Verified", available: "Available" };
@@ -59,7 +59,7 @@ export function buildFleetGraph(workers: WorkerRoadmap[]): FleetGraph {
       const radius = 230 * ring;
       const accounts: NodeAccount[] = workers.map(({ member, roadmap, error }) => {
         const own = roadmap?.nodes.find((entry) => entry.id === node.id);
-        return { member, status: own?.status ?? "unknown", progress: own?.progress ?? null, requires: own?.requires ?? node.requires,
+        return { member, status: own?.status ?? "unknown", progress: own?.progress ?? null, wave_gate: own?.wave_gate ?? null, requires: own?.requires ?? node.requires,
           missing: (own?.requires ?? node.requires).filter((id) => !roadmap?.nodes.some((entry) => entry.id === id && ["verified", "claimed", "available"].includes(entry.status))), error };
       });
       nodes.push({ ...node, x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius, accounts, verified: accounts.filter((account) => account.status === "verified").length });
