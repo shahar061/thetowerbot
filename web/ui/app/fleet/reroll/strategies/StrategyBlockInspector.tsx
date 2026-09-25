@@ -64,12 +64,16 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, onChange,
         {block.type === "condition" && <>
           <label>Account fact<select value={block.field} onChange={event => {
             const field = event.target.value as typeof block.field;
-            if (block.field === "upgrade_value" && field !== "upgrade_value") { const { upgrade_id: _drop, ...rest } = block; onChange({ ...rest, field }); return; }
+            if (field === "upgrade_value") { onChange({ ...block, field, upgrade_id: available[0]?.id }); return; }
+            if (block.field === "upgrade_value") { const { upgrade_id: _drop, ...rest } = block; onChange({ ...rest, field }); return; }
             onChange({ ...block, field });
           }}>
             <option value="best_tier_1_wave">Highest Tier 1 wave</option>{lane === "battle" && <option value="wave">Current wave</option>}<option value="wallet">Available {lane === "battle" ? "cash" : "coins"}</option>
             <option value="upgrade_value">Upgrade value</option>{lane === "battle" && <option value="def_abs_coverage">Def. Abs coverage</option>}</select></label>
-          {block.field === "upgrade_value" && <label>Upgrade<select value={block.upgrade_id ?? ""} onChange={event => onChange({ ...block, upgrade_id: event.target.value })}>{available.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+          {block.field === "upgrade_value" && <label>Upgrade<select value={block.upgrade_id ?? ""} onChange={event => onChange({ ...block, upgrade_id: event.target.value })}>
+            <option value="" disabled>Select an upgrade…</option>
+            {available.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select></label>}
           <label>Comparison<select value={block.op} onChange={event => onChange({ ...block, op: event.target.value as "gte" | "lte" | "gt" | "lt" })}>
             <option value="gte">At least (≥)</option><option value="gt">More than (&gt;)</option><option value="lte">At most (≤)</option><option value="lt">Less than (&lt;)</option></select></label>
           <label>Threshold<input type="number" step="any" min={0} value={block.value} onChange={event => onChange({ ...block, value: Number(event.target.value) })} /></label>
@@ -91,7 +95,15 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, onChange,
               : <input aria-label={`Target for ${names.get(id) ?? id}`} type="number" step="any" min={0} value={block.targets[id]} onChange={event => onChange({ ...block, targets: { ...block.targets, [id]: Number(event.target.value) } })} />}
             {block.level_caps?.[id] === undefined
               ? <button type="button" aria-label={`Add level cap for ${names.get(id) ?? id}`} onClick={() => onChange({ ...block, level_caps: { ...block.level_caps, [id]: { base: 1 } } })}>Cap</button>
-              : <input aria-label={`Level cap for ${names.get(id) ?? id}`} type="number" min={0} value={block.level_caps[id].base} onChange={event => onChange({ ...block, level_caps: { ...block.level_caps, [id]: { ...block.level_caps![id], base: Number(event.target.value) } } })} />}
+              : <><input aria-label={`Level cap for ${names.get(id) ?? id}`} type="number" min={0} value={block.level_caps[id].base} onChange={event => onChange({ ...block, level_caps: { ...block.level_caps, [id]: { ...block.level_caps![id], base: Number(event.target.value) } } })} />
+                <select aria-label={`Cap grows with for ${names.get(id) ?? id}`} value={block.level_caps[id].per_level_of ?? ""} onChange={event => {
+                  const cap = block.level_caps![id];
+                  const perLevelOf = event.target.value;
+                  onChange({ ...block, level_caps: { ...block.level_caps, [id]: perLevelOf ? { base: cap.base, per_level_of: perLevelOf } : { base: cap.base } } });
+                }}>
+                  <option value="">Fixed cap</option>
+                  {available.filter(item => item.id !== id).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select></>}
           </div>)}</div>
           <div className={styles.fieldHeading}>Price rule<button type="button" onClick={() => onChange({ ...block, discount_pct: block.discount_pct === undefined ? 20 : undefined, reference_upgrade_id: block.discount_pct === undefined ? "priority" : undefined })}>{block.discount_pct === undefined ? "Add discount" : "Remove"}</button></div>
           {block.discount_pct !== undefined && <>
@@ -99,8 +111,8 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, onChange,
             <label>Minimum discount (%)<input type="number" min={0} max={100} value={block.discount_pct} onChange={event => onChange({ ...block, discount_pct: Number(event.target.value) })} /></label>
             <div className={styles.priceExample}>Reference price 100 → pay at most <b>{100 - block.discount_pct}</b></div>
           </>}
-          <div className={styles.fieldHeading}>Price cap<button type="button" onClick={() => onChange({ ...block, price_cap: block.price_cap === undefined ? 0 : undefined })}>{block.price_cap === undefined ? "Add cap" : "Remove"}</button></div>
-          {block.price_cap !== undefined && <label>Maximum price (coins)<input type="number" min={0} value={block.price_cap} onChange={event => onChange({ ...block, price_cap: Number(event.target.value) })} /></label>}
+          <div className={styles.fieldHeading}>Price cap<button type="button" onClick={() => onChange({ ...block, price_cap: block.price_cap === undefined ? 1 : undefined })}>{block.price_cap === undefined ? "Add cap" : "Remove"}</button></div>
+          {block.price_cap !== undefined && <label>Maximum price (coins)<input type="number" min={1} step={1} value={block.price_cap} onChange={event => onChange({ ...block, price_cap: Number(event.target.value) })} /></label>}
           <div className={styles.fieldHeading}>Wallet share<button type="button" onClick={() => onChange({ ...block, wallet_share_pct: block.wallet_share_pct === undefined ? 20 : undefined })}>{block.wallet_share_pct === undefined ? "Add limit" : "Remove"}</button></div>
           {block.wallet_share_pct !== undefined && <label>Maximum % of wallet<input type="number" min={1} max={100} value={block.wallet_share_pct} onChange={event => onChange({ ...block, wallet_share_pct: Number(event.target.value) })} /></label>}
           <div className={styles.fieldHeading}>Purchase cap<button type="button" onClick={() => onChange({ ...block, max_purchases: block.max_purchases === undefined ? 8 : undefined })}>{block.max_purchases === undefined ? "Add cap" : "Remove"}</button></div>

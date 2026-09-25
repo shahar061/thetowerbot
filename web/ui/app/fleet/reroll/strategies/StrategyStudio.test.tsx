@@ -185,3 +185,42 @@ test("inspector Block name field edits and clears the block label", () => {
   const [[cleared]] = onChange.mock.calls;
   expect(cleared).not.toHaveProperty("label");
 });
+
+test("Price cap add button defaults to a valid price cap", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  const priceCapHeading = screen.getByText("Price cap").closest("div")!;
+  fireEvent.click(within(priceCapHeading).getByRole("button", { name: "Add cap" }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ price_cap: 1 }));
+});
+
+test("switching Account fact to Upgrade value picks a defined upgrade", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "c", type: "condition", field: "best_tier_1_wave", op: "gte", value: 50, then: [], else: [] }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Account fact"), { target: { value: "upgrade_value" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ field: "upgrade_value", upgrade_id: "damage" }));
+});
+
+test("Upgrade value condition select has a leading disabled placeholder option", () => {
+  render(<StrategyBlockInspector block={{ id: "c", type: "condition", field: "upgrade_value", op: "gte", value: 50, upgrade_id: "damage", then: [], else: [] }} lane="workshop"
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("option", { name: /select an upgrade/i })).toBeInTheDocument();
+});
+
+test("level cap grows-with select sets per_level_of on the base cap", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p2", type: "pool", upgrade_ids: ["damage"], selection: "priority", level_caps: { damage: { base: 5 } } }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Cap grows with for Damage"), { target: { value: "cash_per_wave" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ level_caps: { damage: { base: 5, per_level_of: "cash_per_wave" } } }));
+});
+
+test("level cap grows-with select back to Fixed cap clears per_level_of", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p3", type: "pool", upgrade_ids: ["damage"], selection: "priority", level_caps: { damage: { base: 5, per_level_of: "cash_per_wave" } } }} lane="workshop"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Cap grows with for Damage"), { target: { value: "" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ level_caps: { damage: { base: 5 } } }));
+});
