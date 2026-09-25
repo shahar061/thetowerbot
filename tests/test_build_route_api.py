@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import time
 from dataclasses import asdict
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -20,8 +21,12 @@ from sinks.state import BotState
 from web.app import create_app
 
 
-def _client(root: Path) -> TestClient:
+def _client(root: Path, *, active_names: tuple[str, ...] = ()) -> TestClient:
     fleet = FleetSetupService(root, qualification_root=root / "qualifications")
+    if active_names:
+        fleet._reroll_pool = SimpleNamespace(members=lambda: [
+            {"name": name} for name in active_names])
+        fleet._reroll_runs = SimpleNamespace(hidden_names=lambda: set())
     return TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
                                  db_path=None, fleet=fleet))
 
@@ -37,6 +42,7 @@ def test_read_and_preview_compatibility_route_without_persisting(tmp_path: Path)
     assert preview.json()["saved_revision"] == 0
     assert preview.json()["members"] == []
     assert not (tmp_path / "build-route.json").exists()
+    assert not (tmp_path / "reroll-runs.json").exists()
 
 
 def test_publish_conflict_returns_current_revision(tmp_path: Path) -> None:
@@ -78,20 +84,38 @@ def test_route_api_is_unavailable_without_fleet_capability() -> None:
     assert client.get("/api/fleet/reroll/route").status_code == 503
 
 
-def _registered_worker(root: Path, account_id: str, db_account_id: str) -> None:
-    worker = root / "workers" / "Air_38"
+def _registered_worker(root: Path, account_id: str, db_account_id: str,
+                       worker_name: str = "Air_38") -> None:
+    worker = root / "workers" / worker_name
     checkpoints = worker / "checkpoints"
     checkpoints.mkdir(parents=True)
     endpoint = "127.0.0.1:5555"
     lease_id = "lease"
     binding = checkpoints / f"{uuid4().hex}.json"
-    binding.write_text(json.dumps({"worker_id": "Air_38", "account_id": account_id,
+    binding.write_text(json.dumps({"worker_id": worker_name, "account_id": account_id,
                                    "endpoint": endpoint, "lease_id": lease_id}))
     (worker / "fleet-registration.json").write_text(json.dumps({
-        "state": "registered", "instance": "Air_38", "account_id": account_id,
+        "state": "registered", "instance": worker_name, "account_id": account_id,
         "web_port": 8081, "binding": str(binding), "endpoint": endpoint,
         "lease_id": lease_id}))
     db.bind_account(worker / "tower_bot.db", db_account_id)
+
+
+def test_preview_only_includes_current_pool_members(tmp_path: Path) -> None:
+    for name in ("Air_18", "Air_39", "Air_40"):
+        _registered_worker(tmp_path, name, name, name)
+    service = FleetSetupService(tmp_path, qualification_root=tmp_path / "qualifications")
+    service._reroll_pool = SimpleNamespace(members=lambda: [
+        {"name": "Air_39"}, {"name": "Air_40"}])
+    preview = service.build_route_preview(RouteDocument.compatibility())
+
+    assert [(member["worker"], member["account_id"])
+            for member in preview["members"]] == [
+                ("Air_39", "Air_39"), ("Air_40", "Air_40")]
+    assert preview["members"][0]["current"]["trace"]["reason"] == (
+        "Waiting for first verified Workshop observation")
+    assert preview["members"][0]["current_battle"]["trace"]["reason"] == (
+        "Waiting for first verified battle observation")
 
 
 def test_publish_rejects_override_when_worker_database_changed_accounts(tmp_path: Path) -> None:
@@ -131,7 +155,7 @@ def test_preview_compares_resource_path_with_same_verified_facts(tmp_path: Path)
                    wallet_gems=20, lab_slot2_owned=True, game_speed_maxed=True))))
     draft = RouteDocument.compatibility().to_dict()
     draft["baseline"]["gems"]["steps"] = ["unlock_lab_slot_2", "cards"]
-    preview = _client(tmp_path).post("/api/fleet/reroll/route/preview", json={
+    preview = _client(tmp_path, active_names=("Air_38",)).post("/api/fleet/reroll/route/preview", json={
         "route": draft, "expected_revision": 0})
     assert preview.status_code == 200
     member = preview.json()["members"][0]
