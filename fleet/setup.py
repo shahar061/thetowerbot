@@ -341,7 +341,7 @@ class FleetSetupService:
         }
 
     def build_route_preview(self, draft: Any) -> dict[str, object]:
-        """Evaluate only account-bound worker evidence; never spend or persist."""
+        """Evaluate current pool members only; never spend or persist."""
         from dataclasses import asdict, replace
         import db as bot_db
         from fleet.build_route import resolve_route
@@ -352,10 +352,12 @@ class FleetSetupService:
 
         saved = self.build_route_store().read()
         members: list[dict[str, object]] = []
+        current_names = {member["name"] for member in self._manual_pool().members()}
         workers = self.root / "workers"
         if workers.is_dir():
             for worker_root in sorted(workers.iterdir()):
-                if not worker_root.is_dir() or worker_root.is_symlink():
+                if (worker_root.name not in current_names or not worker_root.is_dir()
+                        or worker_root.is_symlink()):
                     continue
                 registration = registered_worker(worker_root)
                 if registration is None or registration.account_id is None:
@@ -363,8 +365,13 @@ class FleetSetupService:
                 account_id = registration.account_id
                 current_effective = resolve_route(saved, worker_root.name, account_id)
                 proposed_effective = resolve_route(draft, worker_root.name, account_id)
-                def read_facts(filename: str) -> RouteFacts:
-                    snapshot = json.loads((worker_root / filename).read_text(encoding="utf-8"))
+                def read_facts(filename: str, label: str) -> RouteFacts:
+                    try:
+                        snapshot = json.loads((worker_root / filename).read_text(encoding="utf-8"))
+                    except FileNotFoundError:
+                        raise ValueError(f"Waiting for first verified {label} observation") from None
+                    except (OSError, json.JSONDecodeError):
+                        raise ValueError(f"{label} observation unavailable") from None
                     if (not isinstance(snapshot, dict) or snapshot.get("account_id") != account_id
                             or snapshot.get("worker") != worker_root.name):
                         raise ValueError("worker fact snapshot belongs to another account")
@@ -372,7 +379,7 @@ class FleetSetupService:
                 try:
                     if bot_db.bound_account(registration.db_path) != account_id:
                         raise ValueError("worker database belongs to another account")
-                    facts = read_facts("build-route-facts.json")
+                    facts = read_facts("build-route-facts.json", "Workshop")
                     current = evaluate(current_effective, facts, None)
                     proposed = evaluate(proposed_effective, facts, None)
                 except (OSError, ValueError, TypeError) as exc:
@@ -382,7 +389,7 @@ class FleetSetupService:
                 try:
                     if bot_db.bound_account(registration.db_path) != account_id:
                         raise ValueError("worker database belongs to another account")
-                    battle_facts = read_facts("build-route-battle-facts.json")
+                    battle_facts = read_facts("build-route-battle-facts.json", "battle")
                     current_battle = evaluate_battle(current_effective, battle_facts, None)
                     proposed_battle = evaluate_battle(proposed_effective, battle_facts, None)
                 except (OSError, ValueError, TypeError) as exc:
@@ -391,7 +398,7 @@ class FleetSetupService:
                 try:
                     if bot_db.bound_account(registration.db_path) != account_id:
                         raise ValueError("worker database belongs to another account")
-                    resource_facts = read_facts("build-route-resource-facts.json")
+                    resource_facts = read_facts("build-route-resource-facts.json", "resource")
                     if (resource_facts.observed_at is None or
                             resource_facts.now - resource_facts.observed_at > 600):
                         raise ValueError("resource evidence is stale")

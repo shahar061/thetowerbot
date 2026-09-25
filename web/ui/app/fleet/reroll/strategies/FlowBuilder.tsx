@@ -8,7 +8,7 @@ import { beginDraft, draftErrors, patchWorkshop, resetOverride, scopedWorkshop }
 import { RouteInspector } from "./RouteInspector";
 import { BattleFlow } from "./BattleFlow";
 
-type MemberIdentity = { name: string; account_id?: string | null };
+type MemberIdentity = { name: string; account_id?: string | null; hidden?: boolean };
 
 function errorText(error: unknown, fallback: string): string {
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
@@ -221,7 +221,7 @@ export function FlowBuilder({ saved, catalog, members, onPublished }: {
         </section>
         {!!Object.keys(draft.route.overrides).length && <section className="rounded-2xl border border-border bg-card p-4"><h3 className="font-heading font-semibold">Account overrides</h3>{Object.entries(draft.route.overrides).map(([worker, override]) => <div key={worker} className="mt-2 flex items-center justify-between gap-2 text-xs"><span>{worker} · {override.account_id}</span><button type="button" onClick={() => edit(resetOverride(draft, worker))} className="rounded border border-border px-2 py-1">Reset override for {worker}</button></div>)}</section>}
       </div>
-      <RouteInspector preview={preview} />
+      <RouteInspector preview={preview} members={members} />
     </div>
     {history && <section aria-label="Route history" className="rounded-xl border border-border bg-card p-4"><h3 className="font-heading font-semibold">Route history</h3><div className="mt-2 flex flex-wrap gap-2">{history.map(item => <button key={item.revision} type="button" onClick={() => setRestoreRevision(item.revision)} className="rounded-md border border-border px-2 py-1 text-xs">Restore revision {item.revision}</button>)}</div></section>}
     {restoreRevision !== null && <div role="dialog" aria-label="Confirm route restore" className="rounded-xl border border-primary bg-card p-4"><p>Restore revision {restoreRevision} as a new revision?</p><div className="mt-3 flex gap-2"><button type="button" onClick={() => void restore()} disabled={busy} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground">Confirm restore</button><button type="button" onClick={() => setRestoreRevision(null)} className="rounded-md border border-border px-3 py-2 text-sm">Cancel</button></div></div>}
