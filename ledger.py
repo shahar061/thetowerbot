@@ -28,6 +28,8 @@ from typing import Any
 
 import db
 import events
+import upgrades
+from fleet import workshop_prices
 
 COINS = "coins"
 GEMS = "gems"
@@ -558,6 +560,71 @@ def backfill(conn: sqlite3.Connection) -> int:
             db.insert_ledger(conn, line.as_row())
             written += 1
     return written
+
+
+def repair_unproven_buys(conn: sqlite3.Connection) -> int:
+    """Put the price back on bought lines the old journal rule left at '?'.
+
+    The journal once demanded a wallet drop of exactly the price, and the
+    header abbreviates balances ("2.61K"), so real buys were left with no
+    amount - and the next reading's UNEXPLAINED line swallowed their cost.
+    The price is proven after all when the attributed catalog lists it for
+    the item, or when that next reading lands within the header's
+    abbreviation of before-minus-price. It then moves onto the buy, the
+    balances between are derived again, and the UNEXPLAINED line keeps only
+    the residual. Its balance_after is a reading, so nothing after it
+    changes. Idempotent: a repaired line no longer has a NULL delta.
+    """
+    from transactions import abbreviation_slack
+
+    buys = conn.execute(
+        "SELECT id, item, category, currency, price, observed FROM ledger "
+        "WHERE kind = 'WORKSHOP_BUY' AND delta IS NULL AND dry_run = 0 "
+        "AND price > 0 AND observed IS NOT NULL "
+        "AND json_extract(detail, '$.verdict') = 'bought' ORDER BY id"
+    ).fetchall()
+    repaired = 0
+    with conn:
+        for buy_id, item, category, currency, price, observed in buys:
+            upgrade = upgrades.resolve(item, category)
+            in_catalog = upgrade is not None and workshop_prices.lists_price(upgrade.id, price)
+            balance = observed - price
+            running: int | None = balance
+            derived: list[tuple[int, int | None]] = []
+            for line_id, kind, delta, reading in conn.execute(
+                "SELECT id, kind, delta, observed FROM ledger "
+                "WHERE currency = ? AND dry_run = 0 AND id > ? ORDER BY id",
+                (currency, buy_id),
+            ).fetchall():
+                if reading is not None:
+                    break
+                running = None if running is None or delta is None else running + delta
+                derived.append((line_id, running))
+            else:
+                # No reading since: only the catalog can vouch for the price.
+                if not in_catalog:
+                    continue
+                kind = None
+            if kind is not None:
+                if kind != "UNEXPLAINED":
+                    # A reading the stale chain matched exactly: with the
+                    # price applied it would need a line that does not exist.
+                    continue
+                close = running is not None and abs(reading - running) <= (
+                    abbreviation_slack(observed) + abbreviation_slack(reading))
+                if not (in_catalog or close):
+                    continue
+                residual = delta + price
+                if residual:
+                    conn.execute("UPDATE ledger SET delta = ? WHERE id = ?", (residual, line_id))
+                else:
+                    conn.execute("DELETE FROM ledger WHERE id = ?", (line_id,))
+            conn.execute("UPDATE ledger SET delta = ?, balance_after = ? WHERE id = ?",
+                         (-price, balance, buy_id))
+            conn.executemany("UPDATE ledger SET balance_after = ? WHERE id = ?",
+                             [(value, line_id) for line_id, value in derived])
+            repaired += 1
+    return repaired
 
 
 def _decode_event(row: Any) -> dict[str, Any]:

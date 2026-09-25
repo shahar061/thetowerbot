@@ -2267,6 +2267,9 @@ def prepare_store(
         written = ledger.backfill(conn)
         if written:
             logger.info("Backfilled %d ledger line(s) from stored events", written)
+        repaired = ledger.repair_unproven_buys(conn)
+        if repaired:
+            logger.info("Proved the price of %d bought ledger line(s)", repaired)
         removed = db.prune_events(conn, retention_days)
         if removed:
             logger.info("Pruned %d events older than %d days", removed, retention_days)

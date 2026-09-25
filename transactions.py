@@ -29,6 +29,19 @@ from typing import Any
 import db
 import events
 import ledger
+import upgrades
+from fleet import workshop_prices
+
+
+def abbreviation_slack(value: int) -> int:
+    """How far the real balance behind a header reading can be from it.
+
+    The header shows three significant digits once a balance reaches four:
+    "2.61K" parses to exactly 2610 but stands for anything near it. A
+    reading under 1000 is shown in full and hides nothing.
+    """
+    digits = len(str(abs(value)))
+    return 0 if digits <= 3 else 10 ** (digits - 3)
 
 
 class Stage(str, Enum):
@@ -267,6 +280,7 @@ class TransactionJournal:
             wallet_before=row["wallet_before"],
             wallet_after=wallet_after,
             effect_changed=effect_changed,
+            price_in_catalog=_price_in_catalog(row),
         )
         conn = self._connect()
         try:
@@ -452,8 +466,12 @@ def judge(
     wallet_before: int | None,
     wallet_after: int | None,
     effect_changed: bool | None,
+    price_in_catalog: bool = False,
 ) -> Outcome:
     """The whole confirmation rule, kept pure so it needs no database.
+
+    `price_in_catalog` says the read price is one the attributed catalog
+    lists for this item - a second, independent source for the same number.
 
     Nothing here ever turns missing evidence into a number. `UNPROVEN` is
     the default because it is the only verdict that stays true when the
@@ -482,6 +500,24 @@ def judge(
             verdict=Verdict.BOUGHT,
             spent=price,
             reason="the item changed and the wallet fell by its price",
+        )
+
+    slack = (None if wallet_before is None or wallet_after is None
+             else abbreviation_slack(wallet_before) + abbreviation_slack(wallet_after))
+    if (effect_changed and drop is not None and drop > 0 and price is not None
+            and (price_in_catalog or slack < price and abs(drop - price) <= slack)):
+        # One level was bought, and it costs one price. A drop that misses
+        # it by no more than the header's abbreviation hides ("2.61K" is
+        # any balance near 2610) is that price; a price misread by a digit
+        # misses by far more. A price no bigger than the slack cannot be
+        # told apart from rounding at all. The catalog vouching for the read price
+        # settles it whatever the wallet did. Any residual - rounding, or
+        # income mid-purchase - is priced by the next balance reading.
+        return Outcome(
+            key=key,
+            verdict=Verdict.BOUGHT,
+            spent=price,
+            reason="the item changed and the wallet fell by about its price",
         )
 
     if effect_changed and drop is not None and drop > 0:
@@ -514,6 +550,14 @@ def judge(
         spent=None,
         reason="the evidence after the action did not settle what happened",
     )
+
+
+def _price_in_catalog(row: Any) -> bool:
+    """Does the attributed catalog list this transaction's read price?"""
+    if row["currency"] != "coins" or row["price"] is None:
+        return False
+    upgrade = upgrades.resolve(row["item"], row["category"])
+    return upgrade is not None and workshop_prices.lists_price(upgrade.id, row["price"])
 
 
 def _transaction(row: Any) -> Transaction:

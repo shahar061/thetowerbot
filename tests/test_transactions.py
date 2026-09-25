@@ -259,3 +259,66 @@ def test_a_changed_item_with_an_unmoved_wallet_is_not_a_debit_of_its_price() -> 
 
     assert outcome.verdict == transactions.Verdict.UNPROVEN
     assert outcome.spent is None
+
+
+@pytest.mark.parametrize(("before", "price", "after"), [
+    (2610, 2470, 141),  # "2.61K" was a coin over 2610
+    (3080, 2230, 849),  # "3.08K" was a coin under 3080
+])
+def test_a_drop_within_the_header_abbreviation_proves_the_price(
+    before: int, price: int, after: int,
+) -> None:
+    """Over 1000 the header shows "2.61K", which parses to exactly 2610 but
+    hides the last digit. A drop that misses the price by no more than that
+    hidden digit is the price; a price misread by a digit misses by far more."""
+    outcome = transactions.judge(
+        "k", price=price, wallet_before=before, wallet_after=after, effect_changed=True,
+    )
+
+    assert outcome.verdict == transactions.Verdict.BOUGHT
+    assert outcome.spent == price
+
+
+def test_a_drop_far_from_the_price_still_leaves_the_amount_unknown() -> None:
+    outcome = transactions.judge(
+        "k", price=1000, wallet_before=2000, wallet_after=1100, effect_changed=True,
+    )
+
+    assert outcome.verdict == transactions.Verdict.BOUGHT
+    assert outcome.spent is None
+
+
+def test_a_price_the_catalog_lists_for_the_item_proves_the_price(tmp_path) -> None:
+    """Thorns costs 961 at one level in the attributed catalog. The row
+    changed and coins left, so that level was bought - however much income
+    the run paid into the wallet while the purchase was in flight."""
+    journal = transactions.TransactionJournal(tmp_path / "bot.db")
+    txn = journal.open(_intent(item="Thorns", category="DEFENSE", price=961,
+                               wallet_before=1080))
+    journal.record_action(txn.key, at=1.0)
+
+    outcome = journal.resolve(txn.key, wallet_after=500, effect_changed=True, ts=2.0)
+
+    assert outcome.verdict == transactions.Verdict.BOUGHT
+    assert outcome.spent == 961
+
+
+def test_a_price_the_catalog_does_not_list_is_not_proven_by_it(tmp_path) -> None:
+    journal = transactions.TransactionJournal(tmp_path / "bot.db")
+    txn = journal.open(_intent(item="Thorns", category="DEFENSE", price=960,
+                               wallet_before=1080))
+    journal.record_action(txn.key, at=1.0)
+
+    outcome = journal.resolve(txn.key, wallet_after=500, effect_changed=True, ts=2.0)
+
+    assert outcome.spent is None
+
+
+def test_exact_readings_leave_no_room_for_a_near_miss() -> None:
+    """Both readings under 1000 are shown in full, so a drop a few coins off
+    the price is not rounding - the amount stays unknown."""
+    outcome = transactions.judge(
+        "k", price=700, wallet_before=900, wallet_after=205, effect_changed=True,
+    )
+
+    assert outcome.spent is None

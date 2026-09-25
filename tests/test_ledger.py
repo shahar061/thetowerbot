@@ -747,3 +747,76 @@ def test_the_page_offers_a_filter_for_every_kind_the_ledger_emits() -> None:
 
 def test_the_page_refetches_on_every_event_that_writes_a_ledger_line() -> None:
     assert _ts_strings("export const LEDGER_EVENTS = new Set([") == set(ledger._REPLAYABLE)
+
+
+def _unproven_buy_then_reading(tmp_path: Path, *, reading: int) -> sqlite3.Connection:
+    """A buy the journal left without an amount, then the next coin reading."""
+    write, conn = writer(tmp_path)
+    for event in (
+        events.Purchased(item="Thorns", category="DEFENSE", price=2470,
+                         coins_before=2610, dry_run=False, verdict="bought",
+                         spent=None, seq=1, ts=1.0),
+        events.PurchaseSkipped(item="Thorns", reason="unaffordable",
+                               coins_before=reading, seq=2, ts=3.0),
+    ):
+        for line in write.lines_for(event):
+            db.insert_ledger(conn, line.as_row())
+    return conn
+
+
+def _coin_lines(conn: sqlite3.Connection) -> list[tuple]:
+    return [tuple(row) for row in conn.execute(
+        "SELECT kind, delta, balance_after FROM ledger WHERE currency = 'coins' ORDER BY id"
+    ).fetchall()]
+
+
+def test_repair_moves_the_price_back_onto_a_buy_the_next_reading_confirms(
+    tmp_path: Path,
+) -> None:
+    """History written before the journal accepted a near-exact drop: the
+    buy says '?', and the UNEXPLAINED line after it swallowed its whole
+    cost. The reading proves the price, so the price goes back on the buy
+    and only the coin of income stays unexplained."""
+    conn = _unproven_buy_then_reading(tmp_path, reading=141)
+    assert _coin_lines(conn)[:2] == [("WORKSHOP_BUY", None, None),
+                                     ("UNEXPLAINED", -2469, 141)]
+
+    assert ledger.repair_unproven_buys(conn) == 1
+
+    assert _coin_lines(conn) == [("WORKSHOP_BUY", -2470, 140),
+                                 ("UNEXPLAINED", 1, 141),
+                                 ("BUY_SKIPPED", 0, 141)]
+    assert ledger.repair_unproven_buys(conn) == 0
+
+
+def test_repair_leaves_a_buy_the_next_reading_does_not_confirm(tmp_path: Path) -> None:
+    conn = _unproven_buy_then_reading(tmp_path, reading=600)
+    before = _coin_lines(conn)
+
+    assert ledger.repair_unproven_buys(conn) == 0
+    assert _coin_lines(conn) == before
+
+
+def test_repair_trusts_a_catalog_price_across_an_unreadable_payout(tmp_path: Path) -> None:
+    """No reading follows closely enough to check the wallet, but 399 is
+    what the attributed catalog says a Defense Absolute level costs. The
+    later reading's UNEXPLAINED line gives that cost back."""
+    write, conn = writer(tmp_path)
+    for event in (
+        events.Purchased(item="Defense Absolute", category="DEFENSE", price=399,
+                         coins_before=1220, dry_run=False, verdict="bought",
+                         spent=None, seq=1, ts=1.0),
+        events.RunEnded(run_id=1, coins=None, duration=60.0, seq=2, ts=2.0),
+        events.PurchaseSkipped(item="Thorns", reason="unaffordable",
+                               coins_before=1840, seq=3, ts=3.0),
+    ):
+        for line in write.lines_for(event):
+            db.insert_ledger(conn, line.as_row())
+    assert _coin_lines(conn)[2] == ("UNEXPLAINED", 620, 1840)
+
+    assert ledger.repair_unproven_buys(conn) == 1
+
+    assert _coin_lines(conn) == [("WORKSHOP_BUY", -399, 821),
+                                 ("RUN_PAYOUT", None, None),
+                                 ("UNEXPLAINED", 1019, 1840),
+                                 ("BUY_SKIPPED", 0, 1840)]
