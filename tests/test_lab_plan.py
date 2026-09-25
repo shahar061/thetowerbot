@@ -81,7 +81,8 @@ def test_account_bound_lab_cadence_survives_restart(tmp_path: Path) -> None:
     assert first.due(now=1000.)
     first.note(decide(idle(), row(balance=122, status="unavailable", point=None)), now=1000.)
     assert not LabCadence(root, "ACCOUNT-A").due(now=1100.)
-    assert LabCadence(root, "ACCOUNT-A").due(now=1300.)
+    assert not LabCadence(root, "ACCOUNT-A").due(now=1300.)
+    assert LabCadence(root, "ACCOUNT-A").due(now=4600.)
     assert LabCadence(root, "ACCOUNT-B").due(now=1100.)
 
 
@@ -123,3 +124,30 @@ def test_legacy_lab_record_gets_one_new_level_check(tmp_path: Path) -> None:
     }))
 
     assert LabCadence(root, "ACCOUNT-A").due(now=1000.)
+
+
+def test_known_research_price_waits_for_coins_without_reopening_labs(tmp_path: Path) -> None:
+    from lab_plan import LabCadence, decide
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    cadence.note(decide(idle(), row(balance=122, status="unavailable", point=None)), 1000.)
+    assert not cadence.due(2000., wallet_coins=299)
+    assert cadence.due(2000., wallet_coins=300)
+    assert not cadence.due(2000.)  # Game Over has no fresh menu wallet.
+    assert cadence.due(5000.)  # Infrequent recovery check for unreadable wallets.
+
+
+def test_slot_two_reservation_is_account_bound(tmp_path: Path) -> None:
+    from lab_plan import LabCadence
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    assert cadence.slot2_due(1000.)
+    cadence.note_slot2("locked", 65, 1000.)
+    assert not LabCadence(tmp_path, "ACCOUNT-A").slot2_due(1100., wallet_gems=99)
+    assert LabCadence(tmp_path, "ACCOUNT-A").slot2_due(1100., wallet_gems=100)
+    cadence.note_slot2("locked", 100, 1150.)
+    assert not cadence.slot2_due(1200., wallet_gems=100)
+    assert LabCadence(tmp_path, "ACCOUNT-B").slot2_due(1100.)
+    cadence.note_slot2("owned", 19, 1200.)
+    assert cadence.slot2_owned()
+    assert not cadence.slot2_due(100_000.)

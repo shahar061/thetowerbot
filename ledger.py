@@ -134,6 +134,13 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
     base: dict[str, Any] = {"ts": event.ts, "seq": event.seq}
 
     match event:
+        case events.LabSlotUnlocked():
+            return (LedgerLine(
+                kind="LAB", item=f"Lab slot {event.slot}", category="SLOT",
+                currency=GEMS, delta=-event.price, price=event.price,
+                observed=event.gems_before,
+                detail={"slot": event.slot, "gems_after": event.gems_after}, **base,
+            ),)
         case events.LabResearchStarted():
             return (LedgerLine(
                 kind="LAB", item=("Game Speed" if event.concept_id == "labs.game-speed"
@@ -480,6 +487,7 @@ class LedgerWriter:
 _REPLAYABLE: dict[str, type[events.Event]] = {
     "RunEnded": events.RunEnded,
     "LabResearchStarted": events.LabResearchStarted,
+    "LabSlotUnlocked": events.LabSlotUnlocked,
     "Purchased": events.Purchased,
     "PurchaseSkipped": events.PurchaseSkipped,
     "ShoppingStarted": events.ShoppingStarted,

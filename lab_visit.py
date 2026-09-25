@@ -1,8 +1,8 @@
-"""A bounded, evidence-led visit to Lab 1 for Game Speed research."""
+"""A bounded visit for Lab 2 unlock and Lab 1 Game Speed research."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import time
 from typing import Callable
@@ -25,6 +25,10 @@ class LabVisitResult:
     confirmed_job: LabJob | None = None
     observed_coin_spend: int = 0
     confirmed_readings: tuple[LabsReading, ...] = ()
+    slot2_status: str = "unknown"
+    gem_balance: int | None = None
+    gems_before: int | None = None
+    observed_gem_spend: int = 0
 
 
 class LabVisit:
@@ -55,6 +59,10 @@ class LabVisit:
         self._confirmed_reading: LabHomeReading | None = None
         self._confirmed_frame: LabsReading | None = None
         self._outcome: LabVisitResult | None = None
+        self._slot2_home: LabHomeReading | None = None
+        self._slot2_signature: tuple[int, int, tuple[int, int]] | None = None
+        self._slot2_reads = 0
+        self._slot2_confirm_reads = 0
         self.last_tap: tuple[str, int, int] | None = None
 
     @property
@@ -77,6 +85,10 @@ class LabVisit:
         self._confirmed_reading = None
         self._confirmed_frame = None
         self._outcome = None
+        self._slot2_home = None
+        self._slot2_signature = None
+        self._slot2_reads = 0
+        self._slot2_confirm_reads = 0
         self.last_tap = None
         return True
 
@@ -99,6 +111,9 @@ class LabVisit:
         return outcome
 
     def _return(self, outcome: LabVisitResult) -> None:
+        if self._slot2_home is not None and outcome.status != "slot2_unlocked":
+            outcome = replace(outcome, slot2_status=self._slot2_home.slot2_status,
+                              gem_balance=self._slot2_home.gem_balance)
         self._outcome = outcome
         self._state = "return"
 
@@ -149,6 +164,21 @@ class LabVisit:
         if self._state == "home":
             if not home.page:
                 return None
+            self._slot2_home = home
+            if (home.slot2_status == "locked" and home.slot2_price == 100
+                    and home.gem_balance is not None and home.gem_balance >= 100
+                    and home.slot2_point is not None):
+                signature = (home.slot2_price, home.gem_balance, home.slot2_point)
+                if signature != self._slot2_signature:
+                    self._slot2_signature = signature
+                    self._slot2_reads = 1
+                    return None
+                self._slot2_reads += 1
+                if self._slot2_reads < 2:
+                    return None
+                self._tap(device, home.slot2_point, "unlock_lab_two")
+                self._state = "confirm_slot2"
+                return None
             decision = decide(home, None)
             if decision.kind == "inspect" and home.slot_point is not None:
                 self._slot = home
@@ -157,6 +187,23 @@ class LabVisit:
             else:
                 self._return(LabVisitResult("observed", decision.kind, decision,
                                              confirmed_job=home.job))
+            return None
+
+        if self._state == "confirm_slot2":
+            before = self._slot2_home
+            if before is None or before.gem_balance is None:
+                return self._finish(LabVisitResult("failed", "missing_gem_balance",
+                                                    LabDecision("unknown")))
+            if (home.page and home.slot2_status == "owned"
+                    and home.gem_balance == before.gem_balance - 100):
+                self._slot2_confirm_reads += 1
+                if self._slot2_confirm_reads >= 2:
+                    self._return(LabVisitResult(
+                        "slot2_unlocked", "slot_two_confirmed", LabDecision("unknown"),
+                        slot2_status="owned", gem_balance=home.gem_balance,
+                        gems_before=before.gem_balance, observed_gem_spend=100))
+            else:
+                self._slot2_confirm_reads = 0
             return None
 
         if self._state == "picker":

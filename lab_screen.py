@@ -24,6 +24,10 @@ class LabHomeReading:
     slot_point: tuple[int, int] | None
     coin_balance: int | None = None
     slots_owned: int | None = None
+    gem_balance: int | None = None
+    slot2_status: str = "unknown"
+    slot2_price: int | None = None
+    slot2_point: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,14 @@ def _coin_balance(boxes: tuple[ocr.TextBox, ...], width: int, height: int) -> in
     return values[0] if len(values) == 1 else None
 
 
+def _gem_balance(boxes: tuple[ocr.TextBox, ...], width: int, height: int) -> int | None:
+    candidates = [ocr.parse_number(box.text) for box in boxes
+                  if _trusted(box) and width * .35 < box.rect.x < width * .55
+                  and box.rect.y < height * .043]
+    values = [value for value in candidates if value is not None]
+    return values[0] if len(values) == 1 else None
+
+
 def _enabled_card_border(screen: Image, name: ocr.TextBox) -> bool:
     # On the recorded picker, a disabled Game Speed card has a pink border
     # (BGR 138,138,255); an affordable card has a bright white border.
@@ -98,6 +110,35 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
                         and _normalized(box.text) in ("UNLOCK2NDLAB", "UNLOCKZNDLAB")
                         for box in boxes)
     slots_owned = 1 if second_locked else None
+    gem_balance = _gem_balance(boxes, width, height)
+    lab2_labels = [box for box in boxes if _trusted(box)
+                   and _normalized(box.text) == "LAB2"
+                   and height * .22 < box.rect.y < height * .34]
+    unlock_labels = [box for box in boxes if _trusted(box)
+                     and _normalized(box.text) in ("UNLOCK2NDLAB", "UNLOCKZNDLAB")
+                     and height * .28 < box.rect.y < height * .4]
+    third_labels = [box for box in boxes if _trusted(box)
+                    and _normalized(box.text) == "LAB3"
+                    and height * .38 < box.rect.y < height * .52]
+    third_unlocks = [box for box in boxes if _trusted(box)
+                     and _normalized(box.text) == "UNLOCK3RDLAB"
+                     and height * .44 < box.rect.y < height * .57]
+    slot2_status = "unknown"
+    slot2_price = None
+    slot2_point = None
+    if len(lab2_labels) == len(unlock_labels) == 1:
+        slot2_status = "locked"
+        prices = [box for box in boxes if _trusted(box)
+                  and unlock_labels[0].rect.y < box.rect.y < height * .41
+                  and width * .43 < box.rect.x < width * .65
+                  and ocr.parse_number(box.text) is not None]
+        if len(prices) == 1:
+            slot2_price = ocr.parse_number(prices[0].text)
+            slot2_point = (prices[0].rect.x + prices[0].rect.w // 2,
+                           prices[0].rect.y + prices[0].rect.h // 2)
+    elif len(lab2_labels) == len(third_labels) == len(third_unlocks) == 1:
+        slot2_status = "owned"
+        slots_owned = 2
 
     next_slot = min((box.rect.y for box in boxes if _trusted(box)
                      and box.text.strip().lower() == "lab 2"
@@ -109,9 +150,11 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
     if len(offline) == 1 and not jobs:
         return LabHomeReading(True, "idle", None,
                               (width // 2, (slot[0].rect.y + next_slot) // 2),
-                              balance, slots_owned)
+                              balance, slots_owned, gem_balance, slot2_status,
+                              slot2_price, slot2_point)
     if len(jobs) != 1 or offline:
-        return LabHomeReading(True, "unknown", None, None, balance, slots_owned)
+        return LabHomeReading(True, "unknown", None, None, balance, slots_owned,
+                              gem_balance, slot2_status, slot2_price, slot2_point)
 
     match = _NAME_LEVEL.fullmatch(jobs[0].text.strip())
     assert match is not None
@@ -122,11 +165,13 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
     timers = [_duration_seconds(box.text) for box in within]
     remaining = [value for value in timers if value is not None]
     if len(identities) != 1 or len(remaining) != 1:
-        return LabHomeReading(True, "unknown", None, None, balance, slots_owned)
+        return LabHomeReading(True, "unknown", None, None, balance, slots_owned,
+                              gem_balance, slot2_status, slot2_price, slot2_point)
     job = LabJob(1, identities[0], jobs[0].text, time.time() + remaining[0],
                  remaining[0], None, "unknown", "researching", jobs[0].confidence,
                  tuple(jobs[0].rect))
-    return LabHomeReading(True, "researching", job, None, balance, slots_owned)
+    return LabHomeReading(True, "researching", job, None, balance, slots_owned,
+                          gem_balance, slot2_status, slot2_price, slot2_point)
 
 
 def read_picker(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabPickerReading:

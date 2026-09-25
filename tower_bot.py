@@ -89,7 +89,7 @@ from navigate import Navigator
 from runner import BotRunner, RunnerError
 from supervisor import DeviceSupervisor, RecoveryState
 from runs import RunTracker
-from shopping import ShoppingSession
+from shopping import ShoppingSession, header_numbers
 from snapshots import SnapshotWriter
 from sinks.log import LogSink
 from sinks.sse import SseSink
@@ -776,9 +776,17 @@ class TowerBot:
             self.lab_visit.cancel(reason)
 
     def _finish_lab_visit(self, result: Any) -> None:
-        """Only verified starts become account coin debits."""
+        """Record only verified research and lab-slot purchases."""
         if self.reroll_progress is None:
             return
+        if result.slot2_status in {"locked", "owned"}:
+            self.reroll_progress.note_lab_slot2(result.slot2_status, result.gem_balance)
+        if (result.status == "slot2_unlocked" and result.gems_before is not None
+                and result.observed_gem_spend == 100
+                and result.gem_balance == result.gems_before - 100):
+            self.bus.publish(events.LabSlotUnlocked(
+                slot=2, price=100, gems_before=result.gems_before,
+                gems_after=result.gem_balance))
         decision = result.decision
         if result.status == "started" and result.confirmed_job is not None:
             self.reroll_progress.note_lab_observation(LabDecision(
@@ -1053,12 +1061,12 @@ class TowerBot:
             ))
             return False
 
-        # A Lab 1 visit owns the device until it returns to Battle. Its OCR
+        # A Labs visit owns the device until it returns to Battle. Its OCR
         # reader and state machine authorize at most one measured tap here.
         if self.lab_visit is not None and self.lab_visit.active:
             self.controls.drain()
             self.wallet = None
-            self.autopilot.suspend("Lab 1 research visit holds actions")
+            self.autopilot.suspend("Labs visit holds actions")
             if settings.paused:
                 self.lab_visit.cancel("paused")
                 self.bus.publish(events.Skipped(
@@ -1564,16 +1572,21 @@ class TowerBot:
             self._mail_badge = menu_badges.read_badge(
                 self.screen, self.templates, 'mail') is not None
             self._last_menu_badge_check_at = time.time()
+            menu_anchor = pages.classify_page(self.screen, self.templates).top_left
+            menu_coins, menu_gems = header_numbers(
+                self.screen, "MAIN_MENU", menu_anchor)
             # The first Cards visit is owed once and pays gems. Reroll then
-            # claims rewards, checks Lab 1, and only then enters Workshop.
+            # claims rewards, checks Labs, and only then enters Workshop.
             if self._offer_cards_intro():
                 logger.info("Armed the first Cards visit from the main menu.")
             elif self.lab_visit is not None:
                 armed = self._offer_claim(settings)
                 if armed is not None:
                     logger.info("Armed a %s claim from the main menu.", armed)
-                elif self.reroll_progress.lab_due() and self.lab_visit.request():
-                    logger.info("Armed Lab 1 Game Speed check before Workshop.")
+                elif self.reroll_progress.lab_due(
+                    wallet_coins=menu_coins, wallet_gems=menu_gems,
+                ) and self.lab_visit.request():
+                    logger.info("Armed Labs check before Workshop.")
                 else:
                     self.shopping.begin(shopping_policy, self.runs.completed)
             elif not self.shopping.begin(shopping_policy, self.runs.completed):

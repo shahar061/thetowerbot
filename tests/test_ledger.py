@@ -21,6 +21,16 @@ def test_confirmed_game_speed_research_debits_coins_once() -> None:
     assert line.detail["coins_after"] == 100
 
 
+def test_confirmed_lab_slot_unlock_debits_gems() -> None:
+    (line,) = ledger.classify(events.LabSlotUnlocked(
+        slot=2, price=100, gems_before=119, gems_after=19,
+        seq=15, ts=1000.))
+    assert (line.kind, line.category, line.currency, line.delta) == (
+        "LAB", "SLOT", "gems", -100)
+    assert line.observed == 119
+    assert line.detail["gems_after"] == 19
+
+
 def test_game_speed_research_preserves_the_verified_coin_balance(tmp_path: Path) -> None:
     write, _ = writer(tmp_path)
     lines = write.lines_for(events.LabResearchStarted(
