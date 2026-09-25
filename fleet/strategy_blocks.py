@@ -284,7 +284,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if uid in excluded:
             rejected.append(f'{uid}: blocked by Never Buy')
             return False
-        price = price_for(uid)
+        price = price_for(uid, reference=ignore_funds)
         if price is None or (not ignore_funds and price > ceiling):
             return False
         if budget_room is not None and price > budget_room:
@@ -457,12 +457,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     def unaffordable_pick(goal: Mapping[str, Any]) -> tuple[str, int] | None:
         if goal['type'] == 'buy':
             uid = goal['upgrade_id']
-            return (uid, price_for(uid)) if eligible(uid, ignore_funds=True) else None
+            return (uid, price_for(uid, reference=True)) if eligible(uid, ignore_funds=True) else None
         needs_counts = 'max_purchases' in goal or 'level_caps' in goal or goal.get('decay_pct', 0) > 0
         if needs_counts and counts is None:
             return None
         uid = next(iter(pool_candidates(goal, goal['id'], None, ignore_funds=True)), None)
-        return (uid, price_for(uid)) if uid else None
+        return (uid, price_for(uid, reference=True)) if uid else None
 
     def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
         nonlocal waiting_native, budget_room, saving

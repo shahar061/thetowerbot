@@ -547,3 +547,30 @@ def test_while_saving_only_runs_during_matching_goal() -> None:
     assert blocks.evaluate_program(route(other), poorer, None, 'workshop').decision.state == 'save_coins'
     rich = replace(facts(), wallet_coins=200)
     assert blocks.evaluate_program(route([filler]), rich, None, 'workshop').status == 'blocked'
+
+
+def test_save_for_buy_goal_saves_when_unaffordable() -> None:
+    poor = replace(facts(), wallet_coins=50)
+    program = [{'id': 'g', 'type': 'save_for', 'goal': [{'id': 'g.buy', 'type': 'buy', 'upgrade_id': 'thorns'}]}]
+    result = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert result.status == 'blocked'
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    assert result.decision.price == 100
+
+
+def test_while_saving_without_upgrade_id_matches_any_goal() -> None:
+    poor = replace(facts(), wallet_coins=90)
+    filler = {'id': 'ws', 'type': 'while_saving', 'blocks': [{'id': 'fill', 'type': 'buy', 'upgrade_id': 'damage'}]}
+    result = blocks.evaluate_program(route([save_goal(['thorns']), filler]), poor, None, 'workshop')
+    assert result.decision.upgrade_id == 'damage'
+
+
+def test_save_for_records_intent_in_battle_when_unaffordable() -> None:
+    unaffordable = {'thorns': {'status': 'unaffordable', 'value': 1.0, 'price': 500, 'observed_at': 100}}
+    program = [save_goal(['thorns']), {'id': 'ws', 'type': 'while_saving', 'blocks': [{'id': 'fill', 'type': 'buy', 'upgrade_id': 'health'}]}]
+    result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(**unaffordable), None, 'battle')
+    assert result.decision.upgrade_id == 'health'
+    without_filler = blocks.evaluate_program(route([save_goal(['thorns'])], lane='battle'), battle_facts(**unaffordable), None, 'battle')
+    assert without_filler.status == 'blocked'
+    assert without_filler.trace.matched_rule_id == 'goal'
+    assert 'Saving for' in without_filler.trace.reason
