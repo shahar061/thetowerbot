@@ -413,7 +413,16 @@ def test_pool_target_skips_reached_and_unknown_values() -> None:
     assert blocks.evaluate_program(route(program), reached, None, 'workshop').decision.upgrade_id == 'attack_speed'
     unknown = replace(facts(), values={})
     result = blocks.evaluate_program(route(program), unknown, None, 'workshop')
-    assert result.decision.upgrade_id == 'attack_speed'
+    assert result.decision.upgrade_id == 'damage'
+    assert any('treated as not reached' in item for item in result.trace.rejected)
+
+
+def test_battle_pool_target_unknown_value_is_skipped() -> None:
+    program = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['thorns', 'health'], 'selection': 'priority',
+                'targets': {'thorns': 21}}]
+    rows = battle_facts(thorns={'status': 'available', 'value': None, 'price': 10, 'observed_at': 100})
+    result = blocks.evaluate_program(route(program, lane='battle'), rows, None, 'battle')
+    assert result.decision.upgrade_id == 'health'
     assert any('target value unknown' in item for item in result.trace.rejected)
 
 
@@ -586,3 +595,46 @@ def test_block_label_validates_and_has_no_evaluation_effect() -> None:
     labeled_result = blocks.evaluate_program(route([labeled]), facts(), None, 'workshop')
     assert unlabeled_result.decision.upgrade_id == labeled_result.decision.upgrade_id
     assert unlabeled_result.status == labeled_result.status
+
+
+def test_pool_limit_skips_are_traced() -> None:
+    result = blocks.evaluate_program(route([pool(price_cap=79)]), facts(), None, 'workshop')
+    assert 'cheap: damage over price cap' in result.trace.rejected
+    assert 'cheap: attack_speed over price cap' in result.trace.rejected
+    poorer = replace(facts(), wallet_coins=399)
+    result = blocks.evaluate_program(route([pool(wallet_share_pct=20)]), poorer, None, 'workshop')
+    assert 'cheap: damage over wallet share' in result.trace.rejected
+    capped = replace(facts(), confirmed_purchases={'damage': 1, 'attack_speed': 1})
+    result = blocks.evaluate_program(route([pool(max_purchases=1)]), capped, None, 'workshop')
+    assert 'cheap: damage max purchases reached' in result.trace.rejected
+    result = blocks.evaluate_program(route([pool(level_caps={'damage': {'base': 1}, 'attack_speed': {'base': 1}})]),
+                                     capped, None, 'workshop')
+    assert 'cheap: damage level cap reached' in result.trace.rejected
+    reached = replace(facts(), values={'damage': 12.0})
+    result = blocks.evaluate_program(route([pool(targets={'damage': 12})]), reached, None, 'workshop')
+    assert 'cheap: damage target reached' in result.trace.rejected
+    result = blocks.evaluate_program(route([pool(discount_pct=20, reference_upgrade_id='thorns')]),
+                                     replace(facts(), prices={'damage': 90, 'attack_speed': 81, 'thorns': 100}),
+                                     None, 'workshop')
+    assert 'cheap: damage over discount limit' in result.trace.rejected
+
+
+def test_battle_goal_with_price_cap_saves_for_unaffordable_item() -> None:
+    unaffordable = {'thorns': {'status': 'unaffordable', 'value': 1.0, 'price': 400, 'observed_at': 100}}
+    program = [save_goal(['thorns'], price_cap=500)]
+    result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(**unaffordable), None, 'battle')
+    assert result.status == 'blocked' and result.trace.matched_rule_id == 'goal'
+    assert 'Saving for' in result.trace.reason
+
+
+def test_goal_wallet_share_does_not_block_saving() -> None:
+    poor = replace(facts(), wallet_coins=90)  # 20% of 90 = 18 < thorns 100
+    result = blocks.evaluate_program(route([save_goal(['thorns'], wallet_share_pct=20)]), poor, None, 'workshop')
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    over_share = replace(facts(), wallet_coins=200)  # affordable, but 100 > 20% of 200
+    result = blocks.evaluate_program(route([save_goal(['thorns'], wallet_share_pct=20)]), over_share, None, 'workshop')
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    within_share = replace(facts(), wallet_coins=500)
+    result = blocks.evaluate_program(route([save_goal(['thorns'], wallet_share_pct=20)]), within_share, None, 'workshop')
+    assert result.decision.state == 'buy' and result.decision.upgrade_id == 'thorns'
+

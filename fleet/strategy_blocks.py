@@ -516,31 +516,41 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         for uid in block['upgrade_ids']:
             count = (counts or {}).get(uid, 0)
             if 'max_purchases' in block and count >= block['max_purchases']:
+                rejected.append(f'{identity}: {uid} max purchases reached')
                 continue
             cap = block.get('level_caps', {}).get(uid)
             if cap is not None:
                 limit = cap['base'] + (cap.get('step', 1) * (counts or {}).get(cap['per_level_of'], 0)
                                        if 'per_level_of' in cap else 0)
                 if count >= limit:
+                    rejected.append(f'{identity}: {uid} level cap reached')
                     continue
             target = block.get('targets', {}).get(uid)
             if target is not None:
                 value = upgrade_value(uid)
-                if value is None:
+                if value is None and lane == 'battle':
                     rejected.append(f'{identity}: {uid} target value unknown')
                     continue
-                if upgrades.target_reached(uid, value, float(target)):
+                if value is None:
+                    rejected.append(f'{identity}: {uid} target value unverified; treated as not reached')
+                elif upgrades.target_reached(uid, value, float(target)):
+                    rejected.append(f'{identity}: {uid} target reached')
                     continue
             if not eligible(uid, ignore_funds=ignore_funds):
                 continue
-            price = price_for(uid)
+            price = price_for(uid, reference=ignore_funds)
             if 'price_cap' in block and price > block['price_cap']:
+                rejected.append(f'{identity}: {uid} over price cap')
                 continue
-            if 'wallet_share_pct' in block and price * 100 > wallet * block['wallet_share_pct']:
+            # Wallet share is a funds limit, so a saving goal may exceed it.
+            if (not ignore_funds and 'wallet_share_pct' in block
+                    and price * 100 > wallet * block['wallet_share_pct']):
+                rejected.append(f'{identity}: {uid} over wallet share')
                 continue
             if 'discount_pct' in block and not observed_quote(uid):
                 continue
             if reference_price is not None and price * 100 > reference_price * (100 - block['discount_pct']):
+                rejected.append(f'{identity}: {uid} over discount limit')
                 continue
             base = block.get('weights', {}).get(uid, 1)
             candidates[uid] = max(block.get('weight_floor', 1),
@@ -594,7 +604,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     if pick is None:
                         continue
                     uid, price = pick
-                    if price_for(uid) is not None and price <= ceiling:
+                    share = goal.get('wallet_share_pct') if goal['type'] == 'pool' else None
+                    if (price_for(uid) is not None and price <= ceiling
+                            and (share is None or price * 100 <= wallet * share)):
                         targets = goal.get('targets', {}) if goal['type'] == 'pool' else {}
                         return _Choice(goal['id'], uid, f'Save for goal: buy {upgrades.by_id(uid).name}',
                                        target=targets.get(uid))
