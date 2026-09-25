@@ -332,3 +332,66 @@ def test_discount_observation_opens_workshop_with_zero_spend_budget(tmp_path: Pa
     assert policy.enabled and policy.coin_budget == 0 and not policy.allow_unlocks
     assert not policy.cards.enabled
     assert {row.name for row in policy.workshop} == {'Thorns','Damage','Attack Speed'}
+
+
+def battle_facts(**rows: dict[str, Any]) -> RouteFacts:
+    base = {uid: {'status': 'available', 'value': 1.0, 'price': 10, 'observed_at': 100}
+            for uid in ('defense_absolute', 'defense_percent', 'thorns', 'health')}
+    base.update(rows)
+    return RouteFacts('account', 'Air_38', 'battle', 100, 101, run_id=7, wave=30,
+        battle_cash=100, enemy_damage=100.0, upgrade_rows=base, run_purchases={}, visit_id='visit')
+
+
+def when(field: str, op: str, value: float, **extra: Any) -> dict[str, Any]:
+    return {'id': 'when', 'type': 'condition', 'field': field, 'op': op, 'value': value, **extra,
+            'then': [{'id': 'yes', 'type': 'buy', 'upgrade_id': 'defense_absolute'}],
+            'else': [{'id': 'no', 'type': 'buy', 'upgrade_id': 'health'}]}
+
+
+def test_condition_validates_new_fields_and_lanes() -> None:
+    blocks.validate_program([when('def_abs_coverage', 'lt', 1.2)], 'battle')
+    blocks.validate_program([when('upgrade_value', 'gt', 11, upgrade_id='thorns')], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('def_abs_coverage', 'lt', 1.2)], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('upgrade_value', 'gt', 11)], 'battle')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('wallet', 'gte', 5, upgrade_id='thorns')], 'battle')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('wallet', 'eq', 5)], 'battle')
+    with pytest.raises(ValueError):
+        blocks.validate_program([when('wallet', 'gte', float('nan'))], 'battle')
+
+
+def test_def_abs_coverage_uses_post_mitigation_damage() -> None:
+    program = [when('def_abs_coverage', 'lt', 1.2)]
+    # 100 damage × (1 - 50%) = 50 remaining; 55 / 50 = 1.1 < 1.2 → then
+    low = battle_facts(defense_absolute={'status': 'available', 'value': 55.0, 'price': 10, 'observed_at': 100},
+                       defense_percent={'status': 'available', 'value': 50.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), low, None, 'battle').decision.upgrade_id == 'defense_absolute'
+    high = replace(low, enemy_damage=10.0)
+    assert blocks.evaluate_program(route(program, lane='battle'), high, None, 'battle').decision.upgrade_id == 'health'
+    immune = battle_facts(defense_percent={'status': 'available', 'value': 100.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), immune, None, 'battle').decision.upgrade_id == 'health'
+
+
+def test_def_abs_coverage_unknown_waits() -> None:
+    program = [when('def_abs_coverage', 'lt', 1.2)]
+    unknown = replace(battle_facts(), enemy_damage=None)
+    assert blocks.evaluate_program(route(program, lane='battle'), unknown, None, 'battle').status == 'blocked'
+
+
+def test_upgrade_value_condition_and_strict_ops() -> None:
+    program = [when('upgrade_value', 'lt', 11, upgrade_id='thorns')]
+    at_eleven = battle_facts(thorns={'status': 'available', 'value': 11.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), at_eleven, None, 'battle').decision.upgrade_id == 'health'
+    below = battle_facts(thorns={'status': 'available', 'value': 10.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), below, None, 'battle').decision.upgrade_id == 'defense_absolute'
+
+
+def test_program_upgrade_ids_include_condition_inputs() -> None:
+    program = blocks.validate_program([when('def_abs_coverage', 'lt', 1.2),
+        {**when('upgrade_value', 'lt', 11, upgrade_id='thorns'), 'id': 'when2',
+         'then': [{'id': 'w', 'type': 'wait'}], 'else': []}], 'battle')
+    ids = blocks.program_upgrade_ids(program)
+    assert {'defense_absolute', 'defense_percent', 'thorns'} <= set(ids)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import operator
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -11,6 +12,8 @@ import upgrades
 
 MAX_BLOCKS = 80
 MAX_DEPTH = 6
+
+COMPARISONS = {'gte': operator.ge, 'lte': operator.le, 'gt': operator.gt, 'lt': operator.lt}
 
 
 def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
@@ -90,14 +93,23 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 if 'reference_upgrade_id' in block and 'discount_pct' not in block:
                     raise ValueError('price reference requires a discount')
             elif kind == 'condition':
-                allowed |= {'field', 'op', 'value', 'then', 'else'}
-                if block.get('field') not in {'best_tier_1_wave', 'wave', 'wallet'}:
+                allowed |= {'field', 'op', 'value', 'then', 'else', 'upgrade_id'}
+                field = block.get('field')
+                if field not in {'best_tier_1_wave', 'wave', 'wallet', 'upgrade_value', 'def_abs_coverage'}:
                     raise ValueError('unknown condition fact')
-                if lane == 'workshop' and block.get('field') == 'wave':
-                    raise ValueError('current wave is only available in battle')
-                if block.get('op') not in {'gte', 'lte'}:
+                if lane == 'workshop' and field in {'wave', 'def_abs_coverage'}:
+                    raise ValueError(f'{field} is only available in battle')
+                if field == 'upgrade_value':
+                    if not isinstance(block.get('upgrade_id'), str) or upgrades.by_id(block['upgrade_id']) is None:
+                        raise ValueError('unknown condition upgrade')
+                elif 'upgrade_id' in block:
+                    raise ValueError('only upgrade value conditions name an upgrade')
+                if block.get('op') not in COMPARISONS:
                     raise ValueError('unknown condition comparison')
-                number(block.get('value'), 'condition value', 0, 1000000000000)
+                raw = block.get('value')
+                if (isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw)
+                        or not 0 <= raw <= 1000000000000):
+                    raise ValueError('condition value must be a number between 0 and 1000000000000')
                 block['then'] = list(walk(block.get('then', []), depth + 1))
                 block['else'] = list(walk(block.get('else', []), depth + 1))
             elif kind == 'fallback':
@@ -136,6 +148,10 @@ def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
                            "defense_absolute", "thorns", "health", "coins_per_wave",
                            "damage", "attack_speed"))
         elif kind == "condition":
+            if block["field"] == "upgrade_value":
+                result.append(block["upgrade_id"])
+            elif block["field"] == "def_abs_coverage":
+                result.extend(("defense_absolute", "defense_percent"))
             result.extend(program_upgrade_ids(tuple(block["then"])))
             result.extend(program_upgrade_ids(tuple(block["else"])))
         elif kind == "fallback":
@@ -311,6 +327,27 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         return {"starter": "Survival Starter", "economy": "Early Economy",
                 "objectives": "Upgrade objectives", "fallback": "Cheap fallback"}.get(phase, phase)
 
+    def upgrade_value(uid: str) -> float | None:
+        raw = facts.upgrade_rows.get(uid, {}).get('value') if lane == 'battle' else facts.values.get(uid)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            return None
+        return float(raw)
+
+    def condition_value(block: Mapping[str, Any]) -> float | None:
+        field = block['field']
+        if field == 'wallet':
+            return wallet
+        if field == 'upgrade_value':
+            return upgrade_value(block['upgrade_id'])
+        if field == 'def_abs_coverage':
+            absolute, percent = upgrade_value('defense_absolute'), upgrade_value('defense_percent')
+            damage = facts.enemy_damage
+            if absolute is None or percent is None or damage is None:
+                return None
+            remaining = damage * max(0.0, 1.0 - percent / 100.0)
+            return math.inf if remaining <= 0 else absolute / remaining
+        return getattr(facts, field)
+
     def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
         nonlocal waiting_native
         for index, block in enumerate(items):
@@ -318,11 +355,11 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             if kind == 'wait':
                 return _Choice(identity, reason='Wait block reached', wait=True)
             if kind == 'condition':
-                value = wallet if block['field'] == 'wallet' else getattr(facts, block['field'])
+                value = condition_value(block)
                 if value is None:
                     rejected.append(f'{identity}: condition evidence unknown')
                     return _Choice(identity, reason='Condition evidence unknown; decision paused', wait=True)
-                matched = value >= block['value'] if block['op'] == 'gte' else value <= block['value']
+                matched = COMPARISONS[block['op']](value, block['value'])
                 choice = evaluate(block['then'] if matched else block['else'], (items, *ancestors))
                 if choice is not None:
                     return choice
