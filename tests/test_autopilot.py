@@ -363,3 +363,27 @@ def test_step_hands_its_reads_to_observe_frame(monkeypatch: pytest.MonkeyPatch) 
                         lambda screen, context, **kwargs: (seen.update(kwargs), observation)[1])
     bot.step(frame, device, policy, cash=100, reads=reads)
     assert seen["reads"] is reads
+
+
+def test_block_purchase_waits_for_confirmed_counter_refresh() -> None:
+    bot, device, frame, observation, policy = parts()
+    policy = replace(policy, single_purchase=True, decision_token='route:1:run:2:count:0')
+    bot.step(frame, device, policy, cash=100, observation=observation)
+    changed = replace(observation, observed_at=102, rows=tuple(
+        replace(row, price=12, value=4, observed_at=102) if row.upgrade_id == 'damage' else row
+        for row in observation.rows))
+    bot.step(frame, device, policy, cash=90, observation=changed)
+    assert bot.state.snapshot()['verified_purchases'] == 1
+    assert len(device.actions) == 1
+    bot.step(frame, device, policy, cash=90, observation=replace(changed,observed_at=103))
+    assert len(device.actions) == 1
+    bot.step(frame, device, replace(policy,decision_token='route:1:run:2:count:1'),
+             cash=90, observation=replace(changed,observed_at=104))
+    assert len(device.actions) == 2
+
+
+def test_route_price_limit_is_rechecked_against_live_row() -> None:
+    bot, device, frame, observation, policy = parts()
+    row = next(row for row in observation.rows if row.upgrade_id == 'damage')
+    bot.step(frame,device,replace(policy,max_purchase_price=row.price-1),cash=100,observation=observation)
+    assert device.actions == []

@@ -60,6 +60,7 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
         const plan = member.account_id && member.reroll_plan?.account_id === member.account_id ? member.reroll_plan : null;
         const evaluation = member.workshop_evaluation?.account_id === member.account_id ? member.workshop_evaluation ?? null : null;
         const item = evaluation?.decision?.item ?? plan?.item ?? null;
+        const inspectingPrices = (evaluation?.decision?.state ?? plan?.state) === "observe_price";
         const upgradeId = evaluation?.decision?.upgrade_id ?? plan?.upgrade_id ?? null;
         const confirmed = plan?.confirmed_purchases && upgradeId ? plan.confirmed_purchases[upgradeId] ?? 0 : null;
         const price = evaluation?.decision?.price ?? plan?.price ?? null;
@@ -86,11 +87,13 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
             {plan || evaluation ? <>
               <div className={styles.road}>
                 <div className={`${styles.roadStep} rounded-xl border border-primary/40 bg-primary/10 p-3`}>
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-primary">Next selected buy</span>
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-primary">{inspectingPrices ? "Verify Workshop prices" : "Next selected buy"}</span>
                   <p className="font-heading text-lg font-semibold">{item ?? "Waiting"}</p>
+                  {inspectingPrices ? <><p className="text-xs">No spending during this inspection</p><p className="text-xs text-muted-foreground">{reason}</p></> : <>
                   <p className="font-mono text-xs">{wallet !== null && price !== null ? `${wallet} / ${price} coins` : "Price or wallet unknown"}</p>
                   <p className="text-xs text-muted-foreground">{price !== null ? `${price} coins · ${priceSource === "observed" ? "Observed price" : priceSource === "catalog_estimate" ? "Estimated price; checked before buying" : "Price source unknown; checked before buying"}` : "Next price unknown"}</p>
                   <p className="text-xs text-muted-foreground">{confirmed !== null ? `Next level: at least ${confirmed + 1} · ${confirmed} recorded purchases` : "Next level unknown · purchase history unavailable"}</p>
+                  </>}
                 </div>
                 {!!plan?.next_purchases?.length && <ol className="mt-3 space-y-2" aria-label="Projected Workshop milestones">
                   {plan.next_purchases.map(step => <li key={`${step.position}:${step.upgrade_id}`} className={`${styles.roadStep} rounded-lg border border-border bg-background/40 p-3 text-xs`}>
@@ -98,6 +101,7 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
                     <p className="font-semibold">{step.item}</p><p className="text-muted-foreground">{step.focus} · Future price unknown · {plan.confirmed_purchases?.[step.upgrade_id] ? `Recorded level at least ${plan.confirmed_purchases[step.upgrade_id]}` : "Level unknown"}</p>
                   </li>)}
                 </ol>}
+                {plan?.projection_note && <p className="mt-3 text-xs text-muted-foreground">{plan.projection_note}</p>}
               </div>
               {item && <button type="button" onClick={() => setSelection({ worker: member.name, accountId: member.account_id!, item, reason,
                 revision: savedRevision, observedAt: evaluation?.evidence_at ?? plan?.observed_at ?? null, evaluation })}

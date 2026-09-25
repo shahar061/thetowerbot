@@ -299,6 +299,10 @@ class RerollProgress:
             variant=read_variant(self.root), utility_spent_coins=self._utility_spent(),
             visit_id=f"after-run:{last_run}",
             decision_sequence=self.route_runtime.sequence(),
+            confirmed_purchases=self.route_runtime.purchase_counts("workshop"),
+            price_evidence={uid: {"source": quote.source,
+                "observed_at": self.price_memory.entries.get(uid, {}).get("observed_at")}
+                for uid, quote in quotes.items()},
         )
 
     def shopping_policy(self, base: Shopping) -> Shopping:
@@ -360,6 +364,12 @@ class RerollProgress:
             self.route_policy_revision = route.revision if route is not None else None
             plan = self.decision()
         self._publish(plan)
+        if plan.stage == "strategy_observe":
+            ids = self._route_evaluation.trace.observation_ids
+            rows = tuple(ShoppingRule(upgrades.by_id(uid).name, upgrades.by_id(uid).category)
+                         for uid in ids)
+            return replace(base, workshop=rows, allow_unlocks=False, coin_budget=0, coin_budget_pct=None,
+                           cards=replace(base.cards, enabled=False))
         if plan.item is None or plan.category is None:
             return replace(base, enabled=False, workshop=())
         if not self.workshop_worthwhile():
@@ -369,6 +379,8 @@ class RerollProgress:
             effective = resolve_route(route, self.root.name, self.account_id)
             ceiling = plan.wallet_coins * effective.workshop.coin_spend_limit_pct // 100
             budget = ceiling if budget is None else min(budget, ceiling)
+        if plan.stage == "strategy" and plan.price is not None:
+            budget = plan.price if budget is None else min(budget, plan.price)
         if plan.starter:
             budget = STARTER_MAX_PRICE if budget is None else min(budget, STARTER_MAX_PRICE)
         elif plan.filler:
@@ -382,7 +394,7 @@ class RerollProgress:
                        and plan.price is not None
                        else int(plan.wallet_coins * FILLER_SHARE))
             budget = ceiling if budget is None else min(budget, ceiling)
-        else:
+        elif plan.stage != "strategy":
             spent = self._utility_spent()
             if (plan.category == "UTILITY" and spent is not None
                     and spent < UTILITY_TARGET_COINS):
@@ -404,7 +416,8 @@ class RerollProgress:
                 self.route_error = exc.reason
                 return replace(base, enabled=False, rules=())
             self.route_error = None
-        if route is not None and route.baseline.battle.mode == "phases":
+        effective = resolve_route(route, self.root.name, self.account_id) if route is not None else None
+        if effective is not None and effective.battle.mode in {"phases", "blocks"}:
             from web.account_catalog import registered_worker
             registration = registered_worker(self.root)
             if (registration is None or registration.account_id != self.account_id
@@ -413,6 +426,7 @@ class RerollProgress:
                 return replace(base, enabled=False, rules=())
             moment = time.time()
             best, _ = self._history()
+            counts = self.route_runtime.purchase_counts("battle", run_id)
             facts = RouteFacts(
                 self.account_id, self.root.name, "battle", moment, moment,
                 best_tier_1_wave=best, run_id=run_id, wave=wave, battle_cash=cash,
@@ -420,13 +434,31 @@ class RerollProgress:
                 battle_max_health=(combat or {}).get("max_health"),
                 enemy_damage=(combat or {}).get("enemy_damage"),
                 upgrade_rows=observations or {},
-                visit_id=f"battle:{run_id}:{wave}" if run_id is not None and wave is not None else None,
+                visit_id=(f"battle:{run_id}" if effective.battle.mode == "blocks" else
+                          f"battle:{run_id}:{wave}") if run_id is not None and wave is not None else None,
+                run_purchases=counts, decision_sequence=sum((counts or {}).values()),
             )
             effective = resolve_route(route, self.root.name, self.account_id)
-            evaluation = evaluate_battle(effective, facts, None)
+            pending = (self.route_runtime.battle_pending(facts, route.revision)
+                       if effective.battle.mode == "blocks" else None)
+            evaluation = evaluate_battle(effective, facts, pending)
+            if evaluation.pending is not None and evaluation.pending != pending:
+                self.route_runtime.remember_battle_pending(evaluation.pending)
             self.route_runtime.publish_battle_evaluation(evaluation, facts)
             if wave is None or cash is None or run_id is None:
                 return replace(base, enabled=False, rules=())
+            if effective.battle.mode == "blocks":
+                from fleet.strategy_blocks import program_upgrade_ids
+                self.route_runtime.acknowledge(route.revision, self.account_id)
+                observe_only = evaluation.status != "observed" or evaluation.decision is None
+                ids = (program_upgrade_ids(effective.battle.blocks) if observe_only else
+                       (evaluation.decision.upgrade_id,))
+                return replace(base, enabled=True, preset="manual", purpose="milestone",
+                    rules=tuple(UpgradeRule(uid, target=(evaluation.decision.target if not observe_only else None))
+                                for uid in ids),
+                    cash_spend_limit_pct=100, observe_only=observe_only, single_purchase=True,
+                    decision_token=f"{self.account_id}:{route.revision}:{run_id}:{facts.decision_sequence}",
+                    max_purchase_price=evaluation.decision.price if not observe_only else None)
             _, phase = select_battle_phase(effective, facts)
             if phase is None:
                 return replace(base, enabled=False, rules=())
@@ -587,6 +619,11 @@ class RerollProgress:
         self.price_memory.save()
 
     def observe_price(self, upgrade_id: str, wallet: int | None, price: int | None) -> None:
+        if self._route_evaluation is not None:
+            plan = self._route_evaluation.decision
+            if plan is not None and upgrade_id == plan.upgrade_id:
+                self.observe_prices({upgrade_id: price}, wallet)
+            return
         if upgrade_id != self.decision().upgrade_id:
             return
         self.observe_prices({upgrade_id: price}, wallet)
@@ -619,6 +656,7 @@ class RerollProgress:
         values, _ = self._account_readings()
         banned: frozenset[str] = frozenset()
         priorities: tuple[str, ...] = ()
+        block_program = False
         if self.route_runtime is not None:
             try:
                 route = self.route_runtime.current()
@@ -627,13 +665,16 @@ class RerollProgress:
             if route is not None and route.revision > 0:
                 workshop = resolve_route(route, self.root.name, self.account_id).workshop
                 banned = workshop.banned_upgrade_ids
+                block_program = workshop.mode == "blocks"
                 if workshop.mode == "priorities":
                     priorities = workshop.priority_ids
-        preview = project_next(RerollFacts(self.account_id, best, purchases, values,
+        preview = () if block_program else project_next(RerollFacts(self.account_id, best, purchases, values,
                                            variant=read_variant(self.root),
                                            utility_spent_coins=self._utility_spent()),
                                banned_upgrade_ids=banned, priority_ids=priorities)
         payload = {**asdict(decision), "observed_at": now,
+                   "projection_note": ("Future block choices depend on fresh prices and confirmed purchases"
+                                       if block_program else None),
                    "confirmed_purchases": purchases,
                    "price_source": (self._quotes[decision.upgrade_id].source
                                     if decision.upgrade_id in self._quotes else None),

@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import StrategiesPage from "./page";
 import type { RerollSnapshot } from "@/lib/fleet";
 vi.mock("./routeCanvas.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
+vi.mock("./studio.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 
 let pool: RerollSnapshot;
 vi.mock("../RerollWorkspace", () => ({ useRerollWorkspace: () => ({ pool, loading: false, error: null }) }));

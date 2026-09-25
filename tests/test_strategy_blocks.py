@@ -1,0 +1,301 @@
+"""Executable strategy blocks share the worker and preview decision path."""
+from dataclasses import replace
+from types import SimpleNamespace
+from pathlib import Path
+from typing import Any
+import pytest
+
+from fleet.build_route_eval import RouteFacts
+from fleet import strategy_blocks as blocks
+
+
+def route(program: list[dict[str, Any]], *, lane: str='workshop', bans: tuple[str, ...]=()) -> SimpleNamespace:
+    workshop = SimpleNamespace(id='workshop.default', mode='blocks', blocks=tuple(program),
+        banned_upgrade_ids=frozenset(bans), coin_spend_limit_pct=100)
+    battle = SimpleNamespace(mode='blocks', blocks=tuple(program))
+    return SimpleNamespace(revision=1, workshop=workshop, battle=battle)
+
+
+def facts() -> RouteFacts:
+    return RouteFacts('account', 'Air_38', 'workshop', 100, 101,
+        best_tier_1_wave=25, wallet_coins=100,
+        prices={'damage':80, 'attack_speed':81, 'thorns':100},
+        purchases={'unlock_defense_upgrades':1, 'unlock_thorns':1},
+        confirmed_purchases={}, utility_spent_coins=400, visit_id='visit',
+        price_evidence={uid:{'source':'observed','observed_at':99} for uid in ('damage','attack_speed','thorns')})
+
+
+def pool(**extra: Any) -> dict[str, Any]:
+    return {'id':'cheap', 'type':'pool', 'upgrade_ids':['damage','attack_speed'],
+            'selection':'priority', **extra}
+
+
+def test_program_rejects_unknown_unbounded_and_wrong_scope() -> None:
+    with pytest.raises(ValueError):
+        blocks.validate_program([{'id':'x','type':'repeat'}], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([pool(count_scope='run')], 'workshop')
+    nested = [{'id':'leaf','type':'wait'}]
+    for index in range(12):
+        nested = [{'id':f'f{index}','type':'fallback','blocks':nested}]
+    with pytest.raises(ValueError):
+        blocks.validate_program(nested,'workshop')
+
+
+def test_cheap_pool_inclusive_threshold_and_unknown_reference() -> None:
+    program = [pool(discount_pct=20, reference_upgrade_id='thorns')]
+    result = blocks.evaluate_program(route(program), facts(), None, 'workshop')
+    assert result.decision.upgrade_id == 'damage'
+    unknown = replace(facts(), prices={'damage':1})
+    assert blocks.evaluate_program(route(program), unknown, None, 'workshop').decision.state == 'observe_price'
+
+
+def test_caps_and_decay_use_confirmed_purchases_and_keep_pending() -> None:
+    program = [pool(selection='weighted', weights={'damage':8,'attack_speed':4},
+                    decay_pct=50, weight_floor=1, max_purchases=3)]
+    first = blocks.evaluate_program(route(program), facts(), None, 'workshop')
+    assert first.trace.eligible_odds == {'damage':2/3,'attack_speed':1/3}
+    repeated = blocks.evaluate_program(route(program), replace(facts(), wallet_coins=99),first.pending,'workshop')
+    assert repeated.pending == first.pending
+    confirmed = replace(facts(), confirmed_purchases={'damage':1}, decision_sequence=1)
+    changed = blocks.evaluate_program(route(program), confirmed,None,'workshop')
+    assert changed.trace.eligible_odds == {'damage':.5,'attack_speed':.5}
+    capped = replace(facts(), confirmed_purchases={'damage':3})
+    assert blocks.evaluate_program(route(program),capped,None,'workshop').decision.upgrade_id == 'attack_speed'
+    unknown = replace(facts(),confirmed_purchases=None)
+    assert blocks.evaluate_program(route(program),unknown,None,'workshop').status == 'blocked'
+
+
+def test_condition_unknown_does_not_take_else_and_bans_cover_children() -> None:
+    program = [{'id':'when','type':'condition','field':'best_tier_1_wave','op':'gte','value':50,
+                'then':[{'id':'buy','type':'buy','upgrade_id':'damage'}],
+                'else':[{'id':'alt','type':'buy','upgrade_id':'attack_speed'}]}]
+    assert blocks.evaluate_program(route(program),replace(facts(),best_tier_1_wave=None),None,'workshop').status == 'blocked'
+    banned = [{'id':'buy','type':'buy','upgrade_id':'thorns'}]
+    assert blocks.evaluate_program(route(banned,bans=['unlock_defense_upgrades']),facts(),None,'workshop').status == 'blocked'
+
+
+def test_native_policy_uses_explicit_template_and_wave_sixty_guard() -> None:
+    program = blocks.template_program('turtle','workshop')
+    sample = replace(facts(), best_tier_1_wave=1, purchases={'unlock_defense_upgrades':1,'unlock_thorns':1},
+                     prices={'defense_absolute':10,'thorns':50},values={'thorns':11})
+    result = blocks.evaluate_program(route(program),sample,None,'workshop')
+    assert result.decision.stage == 'turtle'
+    assert blocks.evaluate_program(route(program),replace(sample,best_tier_1_wave=60),None,'workshop').decision.state == 'needs_operator'
+
+
+def test_battle_counts_are_run_scoped_and_prices_must_be_fresh() -> None:
+    program = [pool(selection='weighted',decay_pct=50,max_purchases=2,count_scope='run')]
+    sample = replace(facts(),screen='battle',run_id=2,wave=5,battle_cash=100,
+        run_purchases={'damage':2},upgrade_rows={uid:{'status':'available','value':1,'price':5,'observed_at':100}
+                                                for uid in ('damage','attack_speed')})
+    result = blocks.evaluate_program(route(program,lane='battle'),sample,None,'battle')
+    assert result.decision.upgrade_id == 'attack_speed'
+    assert blocks.evaluate_program(route(program,lane='battle'),replace(sample,now=103),None,'battle').status == 'unknown'
+
+
+def test_purchase_counters_ignore_taps_failed_and_observed_unlocks(tmp_path: Path) -> None:
+    import json
+    import db
+    from fleet.build_route_runtime import BuildRouteRuntime
+    root = tmp_path / 'workers' / 'Air_38'
+    root.mkdir(parents=True)
+    db.bind_account(root/'tower_bot.db','account')
+    with db.connect(root/'tower_bot.db') as conn:
+        for verdict in ('bought','free','uncertain'):
+            conn.execute("INSERT INTO ledger(ts,kind,item,category,currency,dry_run,detail) VALUES(1,'WORKSHOP_BUY','Damage','ATTACK','coins',0,?)",(json.dumps({'verdict':verdict}),))
+        conn.execute("INSERT INTO events(seq,run_id,ts,type,detail) VALUES(1,2,1,'BattlePurchased',?)",(json.dumps({'upgrade_id':'damage'}),))
+        conn.execute("INSERT INTO events(seq,run_id,ts,type,detail) VALUES(2,1,1,'BattlePurchased',?)",(json.dumps({'upgrade_id':'damage'}),))
+        conn.execute("INSERT INTO events(seq,run_id,ts,type,action) VALUES(3,2,1,'Tapped','Damage')")
+    runtime = BuildRouteRuntime(tmp_path,'Air_38','account')
+    assert runtime.purchase_counts('workshop') == {'damage':2}
+    assert runtime.purchase_counts('battle',2) == {'damage':1}
+
+
+def test_dynamic_priority_reference_uses_unaffordable_first_target() -> None:
+    program = [{'id':'top','type':'buy','upgrade_id':'thorns'}, pool(
+        discount_pct=20, reference_upgrade_id='priority')]
+    sample = replace(facts(),wallet_coins=90)
+    assert blocks.evaluate_program(route(program),sample,None,'workshop').decision.upgrade_id == 'damage'
+
+
+def test_pending_weighted_draw_cannot_skip_to_another_block_on_missing_price() -> None:
+    program = [pool(selection='weighted'), {'id':'later','type':'buy','upgrade_id':'thorns'}]
+    first = blocks.evaluate_program(route(program),facts(),None,'workshop')
+    missing = replace(facts(),prices={'thorns':50})
+    result = blocks.evaluate_program(route(program),missing,first.pending,'workshop')
+    assert result.status == 'blocked'
+    assert result.decision is None
+
+
+def test_assigned_battle_blocks_reach_live_policy_and_count_purchase(tmp_path: Path) -> None:
+    import json
+    import time
+    import db
+    from account_state import AccountState
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    from fleet.build_route_runtime import BuildRouteRuntime
+    from fleet.reroll_progress import RerollProgress
+    from policy import AutopilotPolicy
+    from tests.test_build_route_integration import _registered
+    root = _registered(tmp_path,'Air_38','account')
+    raw = RouteDocument.compatibility().to_dict()
+    baseline = RouteDocument.compatibility().to_dict()['baseline']
+    baseline['battle'].update(mode='blocks',blocks=[pool(max_purchases=1,count_scope='run')])
+    raw['assignments']={'Air_38':{'account_id':'account','strategy_id':'test','strategy_name':'Test',
+        'strategy_version':1,'baseline':baseline}}
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw),0,'operator')
+    progress = RerollProgress(root,'account',AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path,'Air_38','account')
+    rows={uid:{'status':'available','value':1,'price':5,'observed_at':time.time()}
+          for uid in ('damage','attack_speed')}
+    first=progress.battle_policy(AutopilotPolicy(enabled=True),rows,run_id=2,wave=2,cash=100)
+    assert first.rules[0].upgrade_id == 'damage'
+    assert first.single_purchase and first.max_purchase_price == 5
+    with db.connect(root/'tower_bot.db') as conn:
+        conn.execute("INSERT INTO events(seq,run_id,ts,type,detail) VALUES(1,2,1,'BattlePurchased',?)",(json.dumps({'upgrade_id':'damage'}),))
+    second=progress.battle_policy(AutopilotPolicy(enabled=True),rows,run_id=2,wave=2,cash=95)
+    assert second.rules[0].upgrade_id == 'attack_speed'
+    assert second.decision_token != first.decision_token
+
+
+def test_block_workshop_price_bounds_live_shopping_policy(tmp_path: Path) -> None:
+    import time
+    from account_state import AccountState
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    from fleet.build_route_runtime import BuildRouteRuntime
+    from fleet.reroll_progress import RerollProgress
+    from strategy import Strategy
+    from tests.test_build_route_integration import _registered
+    root = _registered(tmp_path,'Air_38','account')
+    raw = RouteDocument.compatibility().to_dict()
+    raw['baseline']['workshop'].update(mode='blocks',blocks=[pool(discount_pct=20,reference_upgrade_id='thorns')])
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw),0,'operator')
+    progress = RerollProgress(root,'account',AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path,'Air_38','account')
+    progress._publish = lambda decision: None
+    moment=time.time()
+    sample=replace(facts(),now=moment,observed_at=moment)
+    progress.route_facts=lambda: sample
+    policy=progress.shopping_policy(replace(Strategy.from_config().shopping,enabled=True,armed=True,coin_budget=None))
+    assert policy.workshop[0].name == 'Damage'
+    assert policy.coin_budget == 80
+
+
+def test_native_battle_preserves_target_for_live_value_recheck() -> None:
+    program = blocks.template_program('turtle','battle')
+    sample = replace(facts(),screen='battle',run_id=2,wave=2,battle_cash=100,run_purchases={},
+        upgrade_rows={'damage':{'status':'available','value':5,'price':5,'observed_at':90}})
+    result = blocks.evaluate_program(route(program,lane='battle'),sample,None,'battle')
+    assert result.decision.upgrade_id == 'damage'
+    assert result.decision.target == 12
+    assert 'cached' in result.trace.price_source
+    expired = replace(sample,upgrade_rows={'damage':{'status':'available','value':5,'price':5,'observed_at':40}})
+    assert blocks.evaluate_program(route(program,lane='battle'),expired,None,'battle').status == 'blocked'
+
+
+def test_native_groups_can_be_removed_and_reordered() -> None:
+    native = list(blocks.template_program('opening','workshop'))
+    sample = replace(facts(),best_tier_1_wave=1,purchases={},utility_spent_coins=0,
+        prices={'damage':10,'attack_speed':10,'unlock_cash_bonuses':10,'cash_bonus':10,
+                'cash_per_wave':10,'unlock_coin_bonuses':10,'coins_per_kill_bonus':10})
+    full = blocks.evaluate_program(route(native),sample,None,'workshop')
+    assert full.decision.starter
+    economy_first = blocks.evaluate_program(route([native[1],native[0],native[2],native[3]]),sample,None,'workshop')
+    assert not economy_first.decision.starter
+    assert economy_first.decision.reason.startswith('Early utility allocation:')
+    objectives_only = blocks.evaluate_program(route([native[2]]),sample,None,'workshop')
+    assert objectives_only.decision.upgrade_id is not None
+    assert not objectives_only.decision.starter
+    assert not objectives_only.decision.reason.startswith('Early utility allocation:')
+
+
+def test_unknown_condition_halts_following_sibling_buy() -> None:
+    program = [{'id':'guard','type':'condition','field':'best_tier_1_wave','op':'gte','value':50,
+                'then':[],'else':[]}, {'id':'buy','type':'buy','upgrade_id':'damage'}]
+    result=blocks.evaluate_program(route(program),replace(facts(),best_tier_1_wave=None),None,'workshop')
+    assert result.status == 'blocked' and result.decision is None
+
+
+def test_weight_decay_preserves_exact_fraction() -> None:
+    program=[pool(selection='weighted',weights={'damage':8,'attack_speed':4},decay_pct=20)]
+    result=blocks.evaluate_program(route(program),replace(facts(),confirmed_purchases={'damage':1}),None,'workshop')
+    assert result.trace.eligible_odds['damage'] == pytest.approx(6.4/10.4)
+
+
+def test_battle_pool_can_compare_to_native_unaffordable_priority() -> None:
+    program=[pool(discount_pct=20,reference_upgrade_id='priority',count_scope='run'),
+             *blocks.template_program('turtle','battle')]
+    sample=replace(facts(),screen='battle',run_id=2,wave=2,battle_cash=90,run_purchases={},
+        upgrade_rows={'defense_absolute':{'status':'unaffordable','value':0,'price':100,'observed_at':100},
+                      'damage':{'status':'available','value':5,'price':80,'observed_at':100}})
+    result=blocks.evaluate_program(route(program,lane='battle'),sample,None,'battle')
+    assert result.trace.matched_rule_id == 'cheap'
+    assert result.decision.upgrade_id == 'damage'
+
+
+@pytest.mark.parametrize('policy,changes', [
+    ('opening',{'best_tier_1_wave':1,'purchases':{},'utility_spent_coins':0,'prices':{'damage':10}}),
+    ('opening',{'best_tier_1_wave':1,'purchases':{'damage':1,'attack_speed':1,'health':1,'unlock_defense_upgrades':1,'defense_absolute':1},'utility_spent_coins':0,'prices':{'unlock_cash_bonuses':40}}),
+    ('opening',{'best_tier_1_wave':1,'purchases':{'damage':1,'attack_speed':1,'health':1,'unlock_defense_upgrades':1,'defense_absolute':1},'utility_spent_coins':0,'wallet_coins':20,'prices':{'unlock_cash_bonuses':40,'damage':3}}),
+    ('opening',{'best_tier_1_wave':1,'purchases':{},'utility_spent_coins':400,'prices':{'damage':10,'attack_speed':12}}),
+    ('turtle',{'utility_spent_coins':350,'purchases':{'unlock_defense_upgrades':1,'unlock_thorns':1,'defense_absolute':5,'thorns':7},'values':{'thorns':7.},'wallet_coins':300,'prices':{'defense_absolute':254,'thorns':409}}),
+])
+def test_complete_template_matches_native_decision(policy: str, changes: dict[str, Any]) -> None:
+    from fleet.reroll_planner import RerollFacts, choose_next
+    sample=replace(facts(),**changes)
+    expected=choose_next(RerollFacts(sample.account_id,sample.best_tier_1_wave,sample.purchases,
+        sample.values,sample.wallet_coins,sample.lifetime_coins,sample.prices,
+        spend_fraction=1,variant=sample.variant,utility_spent_coins=sample.utility_spent_coins,policy=policy))
+    actual=blocks.evaluate_program(route(blocks.template_program(policy,'workshop')),sample,None,'workshop')
+    assert actual.decision == expected
+
+
+def test_discount_requires_observed_quote_but_not_wall_clock_freshness() -> None:
+    program=[pool(discount_pct=20,reference_upgrade_id='thorns')]
+    sample=replace(facts(),price_evidence={uid:{'source':'observed','observed_at':1}
+        for uid in ('damage','attack_speed','thorns')})
+    result=blocks.evaluate_program(route(program),sample,None,'workshop')
+    assert result.decision.state == 'buy'
+    estimate=replace(sample,price_evidence={**sample.price_evidence,'thorns':{'source':'catalog_estimate','observed_at':1}})
+    needed=blocks.evaluate_program(route(program),estimate,None,'workshop')
+    assert needed.decision.state == 'observe_price'
+    assert needed.decision.stage == 'strategy_observe'
+    assert 'thorns' in needed.trace.observation_ids
+
+
+def test_nested_discount_uses_nearest_sibling_priority() -> None:
+    program=[{'id':'group','type':'fallback','blocks':[
+        {'id':'top','type':'buy','upgrade_id':'thorns'},pool(discount_pct=20,reference_upgrade_id='priority')]}]
+    result=blocks.evaluate_program(route(program),replace(facts(),wallet_coins=90),None,'workshop')
+    assert result.decision.upgrade_id == 'damage'
+
+
+def test_discount_observation_opens_workshop_with_zero_spend_budget(tmp_path: Path) -> None:
+    import time
+    from account_state import AccountState
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    from fleet.build_route_runtime import BuildRouteRuntime
+    from fleet.reroll_progress import RerollProgress
+    from strategy import Strategy
+    from tests.test_build_route_integration import _registered
+    root = _registered(tmp_path,'Air_38','account')
+    raw = RouteDocument.compatibility().to_dict()
+    raw['baseline']['workshop'].update(mode='blocks',blocks=[pool(discount_pct=20,reference_upgrade_id='thorns')])
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw),0,'operator')
+    progress = RerollProgress(root,'account',AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path,'Air_38','account')
+    progress._publish = lambda decision: None
+    moment=time.time()
+    sample=replace(facts(),now=moment,observed_at=moment,price_evidence={})
+    progress.route_facts=lambda: sample
+    base = Strategy.from_config().shopping
+    progress.lab_cadence.slot2_owned = lambda: True
+    policy=progress.shopping_policy(replace(base,enabled=True,armed=True,coin_budget=None,
+        cards=replace(base.cards,enabled=True)))
+    assert policy.enabled and policy.coin_budget == 0 and not policy.allow_unlocks
+    assert not policy.cards.enabled
+    assert {row.name for row in policy.workshop} == {'Thorns','Damage','Attack Speed'}

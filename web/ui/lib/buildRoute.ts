@@ -1,3 +1,5 @@
+import type { StrategyAssignment, StrategyBlock } from "./strategyStudio";
+
 export type RouteTrace = {
   matched_rule_id: string;
   reason: string;
@@ -45,14 +47,15 @@ export type BuildRouteDocument = {
   baseline: {
     workshop: {
       id: string;
-      mode: "legacy_planner" | "priorities";
+      mode: "legacy_planner" | "priorities" | "blocks";
+      blocks?: StrategyBlock[];
       priority_ids: string[];
       banned_upgrade_ids: string[];
       coin_spend_limit_pct: number;
       draw_chance_pct: number;
       weights: Record<string, number>;
     };
-    battle: { mode: "legacy_policy" | "phases"; branches: {
+    battle: { mode: "legacy_policy" | "phases" | "blocks"; blocks?: StrategyBlock[]; branches: {
       id: string; min_best_tier_1_wave: number | null; phases: {
         id: string; start_wave: number; end_wave: number | null; priority_ids: string[];
         cash_spend_limit_pct: number; draw_chance_pct: number; weights: Record<string, number>;
@@ -64,6 +67,7 @@ export type BuildRouteDocument = {
   };
   overrides: Record<string, { account_id: string; patches: Record<string, Record<string, unknown>> }>;
   dependencies: Record<string, string[]>;
+  assignments?: Record<string, StrategyAssignment>;
 };
 
 export type BuildRouteRevisions = { revisions: BuildRouteDocument[] };
