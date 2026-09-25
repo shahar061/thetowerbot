@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import pytest
 
 import config
 import events
@@ -688,12 +689,11 @@ class _UnknownBlocks:
                 else RecoveryState.READY)
 
 
+@pytest.mark.parametrize('unlock_fixture', (
+    'menu_content_unlocked', 'menu_tournament_unlocked'))
 def test_claim_all_paying_an_unlock_card_taps_its_ok(
-        bot_on_main_menu: Any, monkeypatch: Any) -> None:
-    """Claim All on an `Unlock Lab` reward opens the full-screen "Lab
-    unlocked" card instead of the reward modal. No anchor names that card, so
-    recovery used to block on it every pass and the worker froze there for
-    hours; it is now named and its OK tapped."""
+        bot_on_main_menu: Any, monkeypatch: Any, unlock_fixture: str) -> None:
+    """A Lab or Tournament unlock card is named before recovery gates taps."""
     import ocr
     from strategy import Shopping
 
@@ -701,7 +701,7 @@ def test_claim_all_paying_an_unlock_card_taps_its_ok(
     bot.controls.apply({'tap_jitter_px': 0, 'tap_delay': 0})
     bot.supervisor = _UnknownBlocks()
     frames = {name: image(name) for name in (
-        'menu_milestones_entry', 'menu_milestones_claimable', 'menu_content_unlocked')}
+        'menu_milestones_entry', 'menu_milestones_claimable', unlock_fixture)}
     monkeypatch.setattr(ocr, 'read', lambda *a, **k: recorded(
         next(name for name, frame in frames.items() if bot._screen is frame)))
     assert bot.milestones_claim.request()
