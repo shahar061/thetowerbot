@@ -302,6 +302,113 @@ class FleetSetupService:
         snapshot["variant_comparison"] = compare(self.root / "workers", variants)
         return snapshot
 
+    def build_route_store(self) -> Any:
+        """One coordinator-owned route store shared by all local workers."""
+        from fleet.build_route_store import BuildRouteStore
+        return BuildRouteStore(self.root)
+
+    def build_route_validate_bindings(self, route: Any) -> None:
+        """Reject a draft bound to an account that has since been replaced."""
+        import db as bot_db
+        from web.account_catalog import registered_worker
+        for name, override in route.overrides.items():
+            registration = registered_worker(self.root / "workers" / name)
+            if (registration is None or registration.account_id != override.account_id
+                    or bot_db.bound_account(registration.db_path) != override.account_id):
+                raise ValueError(f"route_account_binding_changed:{name}")
+
+    def build_route_rebind_preview(self, route: Any, worker: str,
+                                   old_account_id: str, new_account_id: str) -> dict[str, object]:
+        """Show the inherited-to-rebound diff without changing the draft."""
+        from dataclasses import asdict
+        import db as bot_db
+        from fleet.build_route import resolve_route
+        from web.account_catalog import registered_worker
+
+        override = route.overrides.get(worker)
+        registration = registered_worker(self.root / "workers" / worker)
+        if (override is None or override.account_id != old_account_id
+                or registration is None or registration.account_id != new_account_id
+                or bot_db.bound_account(registration.db_path) != new_account_id
+                or old_account_id == new_account_id):
+            raise ValueError(f"route_account_binding_changed:{worker}")
+        return {
+            "worker": worker, "old_account_id": old_account_id,
+            "new_account_id": new_account_id,
+            "patched_rules": sorted(override.patches),
+            "old_effective": asdict(resolve_route(route, worker, old_account_id)),
+            "new_effective": asdict(resolve_route(route, worker, new_account_id)),
+        }
+
+    def build_route_preview(self, draft: Any) -> dict[str, object]:
+        """Evaluate only account-bound worker evidence; never spend or persist."""
+        from dataclasses import asdict, replace
+        import db as bot_db
+        from fleet.build_route import resolve_route
+        from fleet.build_route_eval import (RouteFacts, RouteEvaluation, ResourceEvaluation,
+                                            ResourceStep, evaluate, evaluate_battle,
+                                            evaluate_resources)
+        from web.account_catalog import registered_worker
+
+        saved = self.build_route_store().read()
+        members: list[dict[str, object]] = []
+        workers = self.root / "workers"
+        if workers.is_dir():
+            for worker_root in sorted(workers.iterdir()):
+                if not worker_root.is_dir() or worker_root.is_symlink():
+                    continue
+                registration = registered_worker(worker_root)
+                if registration is None or registration.account_id is None:
+                    continue
+                account_id = registration.account_id
+                current_effective = resolve_route(saved, worker_root.name, account_id)
+                proposed_effective = resolve_route(draft, worker_root.name, account_id)
+                def read_facts(filename: str) -> RouteFacts:
+                    snapshot = json.loads((worker_root / filename).read_text(encoding="utf-8"))
+                    if (not isinstance(snapshot, dict) or snapshot.get("account_id") != account_id
+                            or snapshot.get("worker") != worker_root.name):
+                        raise ValueError("worker fact snapshot belongs to another account")
+                    return replace(RouteFacts(**snapshot), now=time.time())
+                try:
+                    if bot_db.bound_account(registration.db_path) != account_id:
+                        raise ValueError("worker database belongs to another account")
+                    facts = read_facts("build-route-facts.json")
+                    current = evaluate(current_effective, facts, None)
+                    proposed = evaluate(proposed_effective, facts, None)
+                except (OSError, ValueError, TypeError) as exc:
+                    facts = RouteFacts(account_id, worker_root.name)
+                    current = RouteEvaluation.unknown(str(exc), facts)
+                    proposed = RouteEvaluation.unknown(str(exc), facts)
+                try:
+                    if bot_db.bound_account(registration.db_path) != account_id:
+                        raise ValueError("worker database belongs to another account")
+                    battle_facts = read_facts("build-route-battle-facts.json")
+                    current_battle = evaluate_battle(current_effective, battle_facts, None)
+                    proposed_battle = evaluate_battle(proposed_effective, battle_facts, None)
+                except (OSError, ValueError, TypeError) as exc:
+                    unknown = RouteEvaluation.unknown(str(exc), RouteFacts(account_id, worker_root.name))
+                    current_battle = proposed_battle = unknown
+                try:
+                    if bot_db.bound_account(registration.db_path) != account_id:
+                        raise ValueError("worker database belongs to another account")
+                    resource_facts = read_facts("build-route-resource-facts.json")
+                    if (resource_facts.observed_at is None or
+                            resource_facts.now - resource_facts.observed_at > 600):
+                        raise ValueError("resource evidence is stale")
+                    current_resources = evaluate_resources(current_effective, resource_facts)
+                    proposed_resources = evaluate_resources(proposed_effective, resource_facts)
+                except (OSError, ValueError, TypeError) as exc:
+                    unknown_step = ResourceStep("unknown", "unknown", str(exc))
+                    current_resources = proposed_resources = ResourceEvaluation(unknown_step, unknown_step)
+                members.append({"worker": worker_root.name, "account_id": account_id,
+                                "current": asdict(current), "proposed": asdict(proposed),
+                                "current_battle": asdict(current_battle),
+                                "proposed_battle": asdict(proposed_battle),
+                                "current_resources": asdict(current_resources),
+                                "proposed_resources": asdict(proposed_resources)})
+        return {"saved_revision": saved.revision, "proposed_revision": saved.revision + 1,
+                "members": members}
+
     def reroll_add(self, names: list[str]) -> dict[str, Any]:
         """Runs in the background: a stopped emulator is booted to check its Tower."""
         runs = self._runs()

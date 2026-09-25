@@ -468,16 +468,20 @@ def _economy_build(build: builds.Build, facts: RerollFacts) -> builds.Build:
                    }))
 
 
-def _cheap_filler(facts: RerollFacts, main: RerollDecision) -> RerollDecision:
+def _cheap_filler(facts: RerollFacts, main: RerollDecision,
+                  excluded: frozenset[str] = frozenset(),
+                  spend_ceiling: int | None = None) -> RerollDecision:
     """Look for one small purchase while saving for an unaffordable goal."""
     wallet = facts.wallet_coins
     if (main.state != "save_coins" or wallet is None
             or main.price is None or main.price <= wallet):
         return main
     if (main.stage == "turtle" and main.upgrade_id == "thorns"
+            and "defense_absolute" not in excluded
             and facts.purchases.get("unlock_defense_upgrades", 0) > 0):
         price = facts.prices.get("defense_absolute")
         if (price is not None and 0 <= price <= wallet
+                and (spend_ceiling is None or price <= spend_ceiling)
                 and price <= int(main.price * DEFENSE_FALLBACK_THORNS_SHARE)):
             upgrade = upgrades.by_id("defense_absolute")
             assert upgrade is not None
@@ -493,7 +497,8 @@ def _cheap_filler(facts: RerollFacts, main: RerollDecision) -> RerollDecision:
     owned = {upgrade_id for upgrade_id, count in facts.purchases.items() if count > 0}
     ceiling = int(wallet * FILLER_SHARE)
     for upgrade_id, cap in _FILLER_CAPS.items():
-        if upgrade_id == main.upgrade_id or facts.purchases.get(upgrade_id, 0) >= cap:
+        if (upgrade_id in excluded or upgrade_id == main.upgrade_id
+                or facts.purchases.get(upgrade_id, 0) >= cap):
             continue
         gate = _GATED_BY.get(upgrade_id)
         if gate is not None and gate not in owned:
@@ -501,7 +506,8 @@ def _cheap_filler(facts: RerollFacts, main: RerollDecision) -> RerollDecision:
         upgrade = upgrades.by_id(upgrade_id)
         assert upgrade is not None
         price = facts.prices.get(upgrade_id)
-        if price is None or price < 0 or price > ceiling:
+        if (price is None or price < 0 or price > ceiling
+                or (spend_ceiling is not None and price > spend_ceiling)):
             continue
         state = "buy"
         reason = (f"Saving for {main.item} ({main.price} coins); {upgrade.name} "
@@ -512,18 +518,23 @@ def _cheap_filler(facts: RerollFacts, main: RerollDecision) -> RerollDecision:
     return main
 
 
-def _survival_starter(facts: RerollFacts) -> RerollDecision | None:
+def _survival_starter(facts: RerollFacts,
+                      excluded: frozenset[str] = frozenset(),
+                      spend_ceiling: int | None = None) -> RerollDecision | None:
     """One cheap level per starter row before the bounded utility allocation."""
     if (facts.best_tier_1_wave or 0) >= 20 or facts.utility_spent_coins is None:
         return None
     for uid in STARTER_UPGRADES:
+        if uid in excluded:
+            continue
         if facts.purchases.get(uid, 0) > 0:
             continue
         gate = _GATED_BY.get(uid)
         if gate and facts.purchases.get(gate, 0) == 0:
             continue
         price = facts.prices.get(uid)
-        if price is not None and price > STARTER_MAX_PRICE:
+        if (price is not None and (price > STARTER_MAX_PRICE
+                                   or (spend_ceiling is not None and price > spend_ceiling))):
             continue
         upgrade = upgrades.by_id(uid)
         assert upgrade is not None
@@ -566,7 +577,46 @@ def _draw(plan: director.Plan, facts: RerollFacts) -> tuple[director.Plan, str]:
             f" This was drawn at {share:.0%} odds over the top pick, {top_name}.")
 
 
-def choose_next(facts: RerollFacts) -> RerollDecision:
+def _ban_closure(banned: frozenset[str]) -> frozenset[str]:
+    """A banned unlock also removes rows it is needed to reveal."""
+    excluded = set(banned)
+    prerequisites = builds.prerequisites()
+    while True:
+        expanded = excluded | {uid for uid, gate in {**prerequisites, **_GATED_BY}.items()
+                               if gate in excluded}
+        if expanded == excluded:
+            return frozenset(excluded)
+        excluded = expanded
+
+
+def _route_build(build: builds.Build, excluded: frozenset[str],
+                 priority_ids: tuple[str, ...]) -> builds.Build | None:
+    """Restrict the existing build before graph construction or ranking."""
+    if not excluded and not priority_ids:
+        return build
+    original = [(uid, weight) for uid, weight in build.weights if uid not in excluded]
+    if priority_ids:
+        maximum = max((weight for _, weight in original), default=0.)
+        leading = [(uid, maximum + float((len(priority_ids) - index) * 100))
+                   for index, uid in enumerate(priority_ids) if uid not in excluded]
+        prioritized = {uid for uid, _ in leading}
+        original = leading + [(uid, weight) for uid, weight in original
+                              if uid not in prioritized]
+    if not original:
+        return None
+    allowed = {uid for uid, _ in original}
+    return replace(build, weights=tuple(original),
+                   targets=MappingProxyType({uid: value for uid, value in build.targets.items()
+                                             if uid in allowed}),
+                   level_caps=MappingProxyType({uid: cap for uid, cap in build.level_caps.items()
+                                                if uid in allowed}),
+                   focus=MappingProxyType({uid: note for uid, note in build.focus.items()
+                                           if uid in allowed}))
+
+
+def choose_next(facts: RerollFacts, *,
+                banned_upgrade_ids: frozenset[str] = frozenset(),
+                priority_ids: tuple[str, ...] = ()) -> RerollDecision:
     """The one next move for this reroll account, with its reasoning attached.
 
     An adapter, not a planner: it keeps the reroll ladder (wave 60 stops
@@ -593,11 +643,21 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
             facts.lifetime_coins,
             "Tier 1 Wave 60 was verified; Ultimate Weapon choice stays with the operator.")
 
-    starter = _survival_starter(facts)
+    excluded = _ban_closure(banned_upgrade_ids)
+    spend_ceiling = (int(facts.wallet_coins * facts.spend_fraction)
+                     if facts.spend_fraction is not None and facts.wallet_coins is not None
+                     else None)
+    starter = _survival_starter(facts, excluded, spend_ceiling)
     if starter is not None:
         return starter
     original_build = _build_for(facts)
-    build = _economy_build(original_build, facts)
+    candidate_build = _economy_build(original_build, facts)
+    build = _route_build(candidate_build, excluded, priority_ids)
+    if build is None:
+        return RerollDecision(
+            facts.account_id, original_build.id, _GOALS.get(original_build.id, _DEFAULT_GOAL),
+            "needs_operator", None, None, None, None, facts.wallet_coins,
+            facts.lifetime_coins, "No Workshop upgrade remains: blocked by Never Buy.")
     targeted = frozenset(build.targets)
     graph = workshop_objectives.workshop_objectives(
         _with_level_caps(build, facts.purchases),
@@ -607,7 +667,13 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
         _revision(facts, targeted=targeted), knowledge=knowledge.KNOWLEDGE,
         graph=graph, rates=_NO_MEASURED_INCOME, strategy=_NO_PRE_APPROVALS)
     if plan.top is None and build is not original_build:
-        build = original_build
+        fallback = _route_build(original_build, excluded, priority_ids)
+        if fallback is None:
+            return RerollDecision(
+                facts.account_id, original_build.id, _GOALS.get(original_build.id, _DEFAULT_GOAL),
+                "needs_operator", None, None, None, None, facts.wallet_coins,
+                facts.lifetime_coins, "No Workshop upgrade remains: blocked by Never Buy.")
+        build = fallback
         targeted = frozenset(build.targets)
         graph = workshop_objectives.workshop_objectives(
             _with_level_caps(build, facts.purchases),
@@ -643,10 +709,12 @@ def choose_next(facts: RerollFacts) -> RerollDecision:
         facts.wallet_coins, facts.lifetime_coins,
         economy_reason + outcome.reason + drawn + _price_share(price, facts.lifetime_coins)
         + _variant_label(build, facts))
-    return _cheap_filler(facts, result)
+    return _cheap_filler(facts, result, excluded, spend_ceiling)
 
 
-def project_next(facts: RerollFacts, *, limit: int = 10) -> tuple[PlannedPurchase, ...]:
+def project_next(facts: RerollFacts, *, limit: int = 10,
+                 banned_upgrade_ids: frozenset[str] = frozenset(),
+                 priority_ids: tuple[str, ...] = ()) -> tuple[PlannedPurchase, ...]:
     """Show an ordered projection; only choose_next may authorize the first buy.
 
     Future prices and balances are unknown, so this simulates nothing but
@@ -675,7 +743,8 @@ def project_next(facts: RerollFacts, *, limit: int = 10) -> tuple[PlannedPurchas
     for position in range(1, max(0, limit) + 1):
         step = replace(facts, purchases=counts, values=values,
                        wallet_coins=None, prices={})
-        decision = choose_next(step)
+        decision = choose_next(step, banned_upgrade_ids=banned_upgrade_ids,
+                               priority_ids=priority_ids)
         if decision.upgrade_id is None:
             break
         upgrade = upgrades.by_id(decision.upgrade_id)

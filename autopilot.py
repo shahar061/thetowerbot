@@ -440,6 +440,9 @@ class BattleAutopilot:
         self.search = None
         if row.status != "available" or row.price is None or row.tap is None:
             return False
+        if policy.observe_only:
+            self._decide("observing", "Waiting for a route decision on verified rows", target)
+            return False
         refusal = self.context.refuse("This purchase", ("cash",), now=now)
         if refusal is not None or actual_cash is None:
             # The wallet is decision-critical and has no safe default: no
@@ -448,6 +451,9 @@ class BattleAutopilot:
             return False
         if row.price > actual_cash - policy.cash_reserve:
             self._decide("saving", f"Saving cash for {row.name}; reserve protected", target)
+            return False
+        if row.price > actual_cash * policy.cash_spend_limit_pct // 100:
+            self._decide("saving", f"Saving cash for {row.name}; route spend limit protected", target)
             return False
         tap(device, *row.tap)
         self._mark_tapped(row)

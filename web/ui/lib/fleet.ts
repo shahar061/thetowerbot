@@ -67,6 +67,10 @@ export type RerollMember = { name: string; endpoint: string; lease_id: string; s
   variant?: string | null; variant_name?: string | null;
   play_seconds_to_t1w20?: number | null; play_seconds_so_far?: number | null;
   hidden?: boolean;
+  route_revision_applied?: number | null; route_error?: string | null;
+  workshop_evaluation?: import("./buildRoute").RouteEvaluation | null;
+  battle_evaluation?: import("./buildRoute").RouteEvaluation | null;
+  resource_evaluation?: import("./buildRoute").ResourceEvaluation | null;
 };
 export type RerollRun = { number: number; name: string; status: "active" | "closed";
   started_at: string; closed_at?: string | null };

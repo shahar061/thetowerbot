@@ -10,6 +10,9 @@ from pathlib import Path
 
 import db as bot_db
 from fleet.reroll_metrics import observed_metrics, play_to_t1w20, read_play
+from fleet.build_route import RouteDocument
+from fleet.build_route_runtime import BuildRouteRuntime
+from fleet.build_route_store import BuildRouteStore
 
 
 class Response(io.BytesIO):
@@ -107,6 +110,20 @@ def test_plan_requires_bound_account_and_recent_observation(tmp_path: Path) -> N
     path.write_text(json.dumps({"account_id": "42", "observed_at": time.time(),
                                 "item": "Damage", "state": "buy"}))
     assert read()["reroll_plan"]["item"] == "Damage"
+
+
+def test_route_revision_and_errors_are_account_bound(tmp_path: Path) -> None:
+    root = tmp_path / "workers" / "Air_38"
+    root.mkdir(parents=True)
+    bot_db.bind_account(root / "tower_bot.db", "42")
+    route = BuildRouteStore(tmp_path).publish(RouteDocument.compatibility(), 0, "operator")
+    BuildRouteRuntime(tmp_path, "Air_38", "42").acknowledge(route.revision, "42")
+    read = lambda account_id: observed_metrics(root, account_key="worker:Air_38",
+                                                account_id=account_id, web_port=0, running=False)
+    assert read("42")["route_revision_applied"] == 1
+    assert "route_revision_applied" not in read("different")
+    (tmp_path / "build-route.json").write_text("{broken")
+    assert "current route invalid" in read("42")["route_error"]
 
 
 def test_lifetime_baseline_adds_only_later_recorded_runs(tmp_path: Path) -> None:

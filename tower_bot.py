@@ -1041,6 +1041,12 @@ class TowerBot:
         if self.reroll_progress is not None:
             if self.shopping.active and self._reroll_shopping_policy is not None:
                 shopping_policy = self._reroll_shopping_policy
+                if self.reroll_progress.route_changed_since_policy():
+                    # End the current visit before taking a spend action with
+                    # a rule that no longer belongs to the published route.
+                    shopping_policy = dataclasses.replace(
+                        shopping_policy, enabled=False, workshop=())
+                    self._reroll_shopping_policy = None
             elif state is screens.ScreenState.MAIN_MENU and not self.shopping.reconciliation_pending:
                 shopping_policy = self.reroll_progress.shopping_policy(shopping_policy)
                 self._reroll_shopping_policy = shopping_policy
@@ -1514,7 +1520,11 @@ class TowerBot:
                 if not speed_changed and not commands:
                     battle_policy = (self.reroll_progress.battle_policy(
                         settings.strategy.autopilot,
-                        self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)))
+                        self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)),
+                        run_id=self.runs.current_id,
+                        wave=(int(value) if (value := self.autopilot.context.combat(time.time()).get("wave")) is not None else None),
+                        cash=self.wallet,
+                        combat=self.autopilot.context.combat(time.time()))
                                      if self.reroll_progress is not None else settings.strategy.autopilot)
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
                                                    cash=self.wallet, cooldown=settings.strategy.click_cooldown,
@@ -1576,6 +1586,9 @@ class TowerBot:
             menu_anchor = pages.classify_page(self.screen, self.templates).top_left
             menu_coins, menu_gems = header_numbers(
                 self.screen, "MAIN_MENU", menu_anchor)
+            if self.reroll_progress is not None:
+                self.reroll_progress.note_menu_wallet(menu_coins)
+                self.reroll_progress.resource_evaluation(menu_coins, menu_gems)
             # The first Cards visit is owed once and pays gems. Reroll then
             # claims rewards, checks Labs, and only then enters Workshop.
             if self._offer_cards_intro():
@@ -2547,7 +2560,10 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     reroll_progress = None
     if args.reroll_pool is not None and runtime is not None:
         from fleet.reroll_progress import RerollProgress
+        from fleet.build_route_runtime import BuildRouteRuntime
         reroll_progress = RerollProgress(runtime.root, registered["account_id"], account_state)
+        reroll_progress.route_runtime = BuildRouteRuntime(
+            runtime.root.parent.parent, runtime.root.name, registered["account_id"])
 
     bus = events.EventBus(start_seq=seed_seq)
     state = BotState()

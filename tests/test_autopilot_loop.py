@@ -103,6 +103,9 @@ def test_reroll_game_over_only_goes_home_when_the_target_may_be_affordable(
         def stats_due(self):
             return False
 
+        def lab_due(self):
+            return False
+
     bot = _shopping_bot(
         "game_over", state=screens.ScreenState.GAME_OVER,
         policy=Shopping(enabled=True, workshop=(ShoppingRule("Damage", "ATTACK"),)),

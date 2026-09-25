@@ -107,6 +107,10 @@ class LabCadence:
         record = self._read(self.slot2_path)
         return record is not None and record.get("status") == "owned"
 
+    def route_observation(self) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+        """Account-bound saved Lab decisions for the fleet route display."""
+        return self._record(), self._read(self.slot2_path)
+
     def slot2_due(self, now: float, wallet_gems: int | None = None) -> bool:
         record = self._read(self.slot2_path)
         if record is None:

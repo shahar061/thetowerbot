@@ -23,6 +23,12 @@ from fleet.reroll_planner import (FILLER_SHARE, STARTER_MAX_PRICE, UTILITY_CEILI
 from fleet.reroll_variants import read_variant
 from fleet.workshop_prices import WorkshopPrices, PriceQuote, catalog_price
 from fleet.reroll_survival import prioritize_survival
+from fleet.build_route_runtime import BuildRouteRuntime
+from fleet.build_route import resolve_route
+from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle,
+                                    evaluate_resources, evaluate_workshop,
+                                    select_battle_phase)
+from fleet.build_route_store import RouteUnavailable
 from lab_plan import LabCadence, LabDecision
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
@@ -47,6 +53,25 @@ class RerollProgress:
         self._last_stats_attempt = 0.0
         self._last_skip_note: str | None = None
         self.lab_cadence = LabCadence(self.root, account_id)
+        self.route_runtime: BuildRouteRuntime | None = None
+        self.route_error: str | None = None
+        self._route_evaluation: RouteEvaluation | None = None
+        self.route_policy_revision: int | None = None
+        self._menu_wallet: tuple[int, float] | None = None
+
+    def note_menu_wallet(self, wallet_coins: int | None) -> None:
+        """Keep a fresh, observed menu balance for the next route decision."""
+        if type(wallet_coins) is int and wallet_coins >= 0:
+            self._menu_wallet = (wallet_coins, time.time())
+
+    def route_changed_since_policy(self) -> bool:
+        if self.route_runtime is None or self.route_policy_revision is None:
+            return False
+        try:
+            return self.route_runtime.current().revision != self.route_policy_revision
+        except RouteUnavailable as exc:
+            self.route_error = exc.reason
+            return True
 
     def lab_due(self, now: float | None = None, *,
                 wallet_coins: int | None = None,
@@ -65,6 +90,32 @@ class RerollProgress:
 
     def note_lab_observation(self, decision: LabDecision, now: float | None = None) -> None:
         self.lab_cadence.note(decision, time.time() if now is None else now)
+
+    def resource_evaluation(self, wallet_coins: int | None,
+                            wallet_gems: int | None) -> None:
+        if self.route_runtime is None:
+            return
+        from web.account_catalog import registered_worker
+        registration = registered_worker(self.root)
+        if (registration is None or registration.account_id != self.account_id
+                or db.bound_account(registration.db_path) != self.account_id):
+            self.route_error = "worker account binding changed"
+            return
+        try:
+            route = self.route_runtime.current()
+            lab, slot2 = self.lab_cadence.route_observation()
+            facts = RouteFacts(
+                self.account_id, self.root.name, "main_menu", time.time(), time.time(),
+                wallet_coins=wallet_coins, wallet_gems=wallet_gems,
+                lab_slot2_owned=(slot2.get("status") == "owned" if slot2 else None),
+                game_speed_maxed=(lab.get("kind") == "done" if lab else None),
+                lab_decision_kind=(str(lab["kind"]) if lab and isinstance(lab.get("kind"), str) else None),
+                lab_price=(lab.get("price") if lab and type(lab.get("price")) is int else None),
+            )
+            self.route_runtime.publish_resources(
+                evaluate_resources(resolve_route(route, self.root.name, self.account_id), facts), facts)
+        except (OSError, ValueError, RouteUnavailable) as exc:
+            self.route_error = str(exc)
 
     def lifetime_record(self) -> dict[str, object] | None:
         return read_lifetime(self.root, self.account_id)
@@ -214,7 +265,52 @@ class RerollProgress:
         self._battle_stage = result.stage
         return result
 
+    def route_facts(self) -> RouteFacts:
+        """Capture account-bound facts used unchanged by worker and preview."""
+        if self.route_runtime is None:
+            raise ValueError("route runtime unavailable")
+        best, purchases = self._history()
+        values, lifetime = self._account_readings()
+        wallet, quotes = self._pricing(purchases)
+        self._quotes = quotes
+        anchor = self.price_memory.wallet
+        observed_at = anchor["observed_at"] if anchor else None
+        with db.reader(self.root / "tower_bot.db") as connection:
+            last_run = connection.execute(
+                "SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL").fetchone()[0]
+            if anchor:
+                latest_run = connection.execute(
+                    "SELECT MAX(ended_at) FROM runs WHERE id>? AND ended_at IS NOT NULL",
+                    (anchor["run_id"],)).fetchone()[0]
+                latest_balance = connection.execute(
+                    "SELECT MAX(ts) FROM ledger WHERE ts>=? AND dry_run=0 "
+                    "AND observed IS NOT NULL AND balance_after IS NOT NULL",
+                    (anchor["observed_at"],)).fetchone()[0]
+                observed_at = max(value for value in (observed_at, latest_run, latest_balance)
+                                  if value is not None)
+        if self._menu_wallet is not None and (
+                observed_at is None or self._menu_wallet[1] >= observed_at):
+            wallet, observed_at = self._menu_wallet
+        return RouteFacts(
+            self.account_id, self.root.name, "main_menu", observed_at, time.time(),
+            best_tier_1_wave=best, purchases=purchases, values=values,
+            wallet_coins=wallet, lifetime_coins=lifetime,
+            prices={uid: quote.price for uid, quote in quotes.items()},
+            variant=read_variant(self.root), utility_spent_coins=self._utility_spent(),
+            visit_id=f"after-run:{last_run}",
+            decision_sequence=self.route_runtime.sequence(),
+        )
+
     def shopping_policy(self, base: Shopping) -> Shopping:
+        route = None
+        if self.route_runtime is not None:
+            try:
+                route = self.route_runtime.current()
+            except RouteUnavailable as exc:
+                self.route_error = exc.reason
+                self._route_evaluation = None
+                return replace(base, enabled=False, workshop=())
+            self.route_error = None
         # Reserve the first 100 gems for the second lab even when a custom
         # reroll policy enables card spending.
         if not self.lab_cadence.slot2_owned():
@@ -222,13 +318,57 @@ class RerollProgress:
         # The reroll planner selects one item; a visit-wide percentage cap
         # otherwise rejects an affordable unlock after the planner selects it.
         self._spend_fraction = None
-        plan = self.decision()
+        if route is not None and route.revision > 0:
+            from web.account_catalog import registered_worker
+            registration = registered_worker(self.root)
+            if (registration is None or registration.account_id != self.account_id
+                    or db.bound_account(registration.db_path) != self.account_id):
+                self.route_error = "worker account binding changed"
+                self._route_evaluation = None
+                return replace(base, enabled=False, workshop=())
+            try:
+                self.route_runtime.sync_confirmed()
+                pending = self.route_runtime.pending()
+                if pending is not None and pending.revision != route.revision:
+                    self.route_runtime.abandon_decision("route revision changed")
+                    pending = None
+                facts = self.route_facts()
+                self.route_runtime.publish_facts(facts)
+                effective = resolve_route(route, self.root.name, self.account_id)
+                evaluation = evaluate_workshop(effective, facts, pending)
+                if (evaluation.status == "blocked" and pending is not None
+                        and "Pending choice became unavailable" in evaluation.trace.reason):
+                    self.route_runtime.abandon_decision("pending candidate unavailable")
+                    facts = replace(facts, decision_sequence=self.route_runtime.sequence())
+                    self.route_runtime.publish_facts(facts)
+                    evaluation = evaluate_workshop(effective, facts, None)
+                self._route_evaluation = evaluation
+                if evaluation.status == "unknown" or evaluation.decision is None:
+                    self.route_error = evaluation.trace.reason
+                    return replace(base, enabled=False, workshop=())
+                if evaluation.pending is not None and self.route_runtime.pending() is None:
+                    self.route_runtime.remember_pending(evaluation.pending)
+                self.route_runtime.acknowledge(route.revision, self.account_id)
+                self.route_policy_revision = route.revision
+                plan = evaluation.decision
+            except (OSError, ValueError, RouteUnavailable) as exc:
+                self.route_error = str(exc)
+                self._route_evaluation = None
+                return replace(base, enabled=False, workshop=())
+        else:
+            self._route_evaluation = None
+            self.route_policy_revision = route.revision if route is not None else None
+            plan = self.decision()
         self._publish(plan)
         if plan.item is None or plan.category is None:
             return replace(base, enabled=False, workshop=())
         if not self.workshop_worthwhile():
             return replace(base, enabled=False)
         budget = base.coin_budget
+        if route is not None and route.revision > 0 and plan.wallet_coins is not None:
+            effective = resolve_route(route, self.root.name, self.account_id)
+            ceiling = plan.wallet_coins * effective.workshop.coin_spend_limit_pct // 100
+            budget = ceiling if budget is None else min(budget, ceiling)
         if plan.starter:
             budget = STARTER_MAX_PRICE if budget is None else min(budget, STARTER_MAX_PRICE)
         elif plan.filler:
@@ -252,7 +392,52 @@ class RerollProgress:
                        allow_unlocks=True, coin_budget=budget, coin_budget_pct=None)
 
     def battle_policy(self, base: AutopilotPolicy,
-                      observations: Mapping[str, Mapping[str, Any]] | None = None) -> AutopilotPolicy:
+                      observations: Mapping[str, Mapping[str, Any]] | None = None,
+                      *, run_id: int | None = None, wave: int | None = None,
+                      cash: int | None = None,
+                      combat: Mapping[str, float] | None = None) -> AutopilotPolicy:
+        route = None
+        if self.route_runtime is not None:
+            try:
+                route = self.route_runtime.current()
+            except RouteUnavailable as exc:
+                self.route_error = exc.reason
+                return replace(base, enabled=False, rules=())
+            self.route_error = None
+        if route is not None and route.baseline.battle.mode == "phases":
+            from web.account_catalog import registered_worker
+            registration = registered_worker(self.root)
+            if (registration is None or registration.account_id != self.account_id
+                    or db.bound_account(registration.db_path) != self.account_id):
+                self.route_error = "worker account binding changed"
+                return replace(base, enabled=False, rules=())
+            moment = time.time()
+            best, _ = self._history()
+            facts = RouteFacts(
+                self.account_id, self.root.name, "battle", moment, moment,
+                best_tier_1_wave=best, run_id=run_id, wave=wave, battle_cash=cash,
+                battle_health=(combat or {}).get("health"),
+                battle_max_health=(combat or {}).get("max_health"),
+                enemy_damage=(combat or {}).get("enemy_damage"),
+                upgrade_rows=observations or {},
+                visit_id=f"battle:{run_id}:{wave}" if run_id is not None and wave is not None else None,
+            )
+            effective = resolve_route(route, self.root.name, self.account_id)
+            evaluation = evaluate_battle(effective, facts, None)
+            self.route_runtime.publish_battle_evaluation(evaluation, facts)
+            if wave is None or cash is None or run_id is None:
+                return replace(base, enabled=False, rules=())
+            _, phase = select_battle_phase(effective, facts)
+            if phase is None:
+                return replace(base, enabled=False, rules=())
+            self.route_runtime.acknowledge(route.revision, self.account_id)
+            observe_only = evaluation.status != "observed" or evaluation.decision is None
+            ids = (list(phase.priority_ids) if observe_only else
+                   [evaluation.decision.upgrade_id])
+            return replace(base, enabled=True, preset="manual", purpose="milestone",
+                           rules=tuple(UpgradeRule(uid) for uid in ids),
+                           cash_spend_limit_pct=phase.cash_spend_limit_pct,
+                           observe_only=observe_only)
         if self._battle_stage is None:
             best, _ = self._history()
             self._battle_stage = "stones" if best is not None and best >= 60 else (
@@ -408,7 +593,10 @@ class RerollProgress:
         self._publish(self.decision())
 
     def workshop_worthwhile(self) -> bool:
-        plan = self.decision()
+        if self.route_error is not None:
+            return False
+        plan = (self._route_evaluation.decision if self._route_evaluation is not None
+                and self._route_evaluation.decision is not None else self.decision())
         worthwhile = (plan.upgrade_id is not None and
                       (plan.wallet_coins is None or plan.wallet_coins > 0) and
                       (plan.price is None or plan.wallet_coins is None or plan.wallet_coins >= plan.price))
@@ -429,9 +617,22 @@ class RerollProgress:
         path = self.root / "reroll-plan.json"
         best, purchases = self._history()
         values, _ = self._account_readings()
+        banned: frozenset[str] = frozenset()
+        priorities: tuple[str, ...] = ()
+        if self.route_runtime is not None:
+            try:
+                route = self.route_runtime.current()
+            except RouteUnavailable:
+                route = None
+            if route is not None and route.revision > 0:
+                workshop = resolve_route(route, self.root.name, self.account_id).workshop
+                banned = workshop.banned_upgrade_ids
+                if workshop.mode == "priorities":
+                    priorities = workshop.priority_ids
         preview = project_next(RerollFacts(self.account_id, best, purchases, values,
                                            variant=read_variant(self.root),
-                                           utility_spent_coins=self._utility_spent()))
+                                           utility_spent_coins=self._utility_spent()),
+                               banned_upgrade_ids=banned, priority_ids=priorities)
         payload = {**asdict(decision), "observed_at": now,
                    "next_purchases": [asdict(step) for step in preview]}
         temporary = path.with_name(f".reroll-plan.{uuid4().hex}.tmp")
