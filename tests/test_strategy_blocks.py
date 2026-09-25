@@ -212,6 +212,39 @@ def test_native_groups_can_be_removed_and_reordered() -> None:
     assert not objectives_only.decision.reason.startswith('Early utility allocation:')
 
 
+def test_native_phase_trace_marks_completion_and_next_phase() -> None:
+    starter, economy, objectives, _fallback = blocks.template_program('opening', 'workshop')
+    sample = replace(facts(), best_tier_1_wave=25, utility_spent_coins=0, wallet_coins=1000)
+    result = blocks.evaluate_program(route([starter, economy, objectives]), sample, None, 'workshop')
+
+    assert result.trace.phase_id == 'economy'
+    assert result.trace.phase_state == 'waiting'
+    assert result.trace.next_phase_id == 'opening.objectives'
+    assert 'Survival Starter complete' in result.trace.transition_reason
+
+
+def test_unaffordable_native_candidate_waits_without_handoff() -> None:
+    _starter, economy, _objectives, _fallback = blocks.template_program('opening', 'workshop')
+    sample = replace(facts(), best_tier_1_wave=25, utility_spent_coins=0,
+                     wallet_coins=0, prices={'cash_per_wave': 80})
+    result = blocks.evaluate_program(route([economy]), sample, None, 'workshop')
+
+    assert result.trace.phase_id == 'economy'
+    assert result.trace.phase_state == 'waiting'
+    assert result.trace.next_phase_id is None
+
+
+def test_missing_native_phase_evidence_waits() -> None:
+    starter, economy, _objectives, _fallback = blocks.template_program('opening', 'workshop')
+    sample = replace(facts(), best_tier_1_wave=1, utility_spent_coins=None, purchases={}, prices={})
+    result = blocks.evaluate_program(route([starter, economy]), sample, None, 'workshop')
+
+    assert result.trace.phase_id == 'starter'
+    assert result.trace.phase_state == 'waiting'
+    assert result.trace.next_phase_id == 'opening.economy'
+    assert 'utility spend' in result.trace.transition_reason.lower()
+
+
 def test_unknown_condition_halts_following_sibling_buy() -> None:
     program = [{'id':'guard','type':'condition','field':'best_tier_1_wave','op':'gte','value':50,
                 'then':[],'else':[]}, {'id':'buy','type':'buy','upgrade_id':'damage'}]

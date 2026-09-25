@@ -38,6 +38,17 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, onChange,
       {locked && <div className={styles.lockNotice}><LockKeyhole size={15} />Protected template. Create a copy to edit.</div>}
       <fieldset disabled={locked} className={styles.fields}>
         {block.type === "native" && <>
+          <div className={styles.lockNotice}><strong>Phase handoff</strong><p>{block.phase === "starter" && block.policy === "turtle"
+            ? "Turtle skips Survival Starter and advances to the next configured phase."
+            : block.phase === "starter"
+            ? "Starts for eligible early Opening accounts. Completes when starter rows are satisfied or Tier 1 reaches Wave 20."
+            : block.phase === "economy"
+              ? "Runs while the utility allocation is below target. It waits for affordable upgrades; it does not hand off just because the wallet is low."
+              : block.phase === "objectives"
+                ? "Runs after earlier phases complete and waits for eligible objective upgrades."
+                : block.phase === "fallback"
+                  ? "Looks for a cheap filler while the main goal is waiting for funds."
+                  : "Uses the current in-game policy until its eligible upgrades are complete."}</p></div>
           <label>Policy<select value={block.policy} onChange={event => onChange({ ...block, policy: event.target.value as "opening" | "turtle" })}><option value="opening">Opening</option><option value="turtle">Turtle</option></select></label>
           <p className={styles.hint}>This grouped block runs the existing bot policy. Reorder or replace it with individual blocks to customize the route.</p>
         </>}

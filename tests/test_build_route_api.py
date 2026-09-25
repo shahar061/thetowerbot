@@ -169,6 +169,22 @@ def test_assignment_is_atomic_and_rejects_hidden_and_replaced_workers(tmp_path: 
     assert not (tmp_path / "build-route.json").exists()
 
 
+def test_strategy_api_accepts_empty_scratch_program(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    baseline = client.get("/api/fleet/reroll/strategies").json()["templates"][0]["baseline"]
+    baseline["workshop"].update(mode="blocks", blocks=[])
+    baseline["battle"].update(mode="blocks", branches=[], blocks=[])
+    response = client.post("/api/fleet/reroll/strategies", json={
+        "expected_revision": 0, "name": "Blank route", "source_template": "scratch",
+        "baseline": baseline})
+
+    assert response.status_code == 200
+    strategy = response.json()["strategies"][0]
+    assert strategy["source_template"] == "scratch"
+    assert strategy["baseline"]["workshop"]["blocks"] == []
+    assert strategy["baseline"]["battle"]["blocks"] == []
+
+
 def test_protected_template_can_be_assigned_without_creating_a_copy(tmp_path: Path) -> None:
     _registered_worker(tmp_path, "ACCOUNT-A", "ACCOUNT-A")
     client = _client(tmp_path, active_names=("Air_38",))

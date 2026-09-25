@@ -40,6 +40,26 @@ def test_templates_are_protected_and_invalid_blocks_rejected(tmp_path: Path) -> 
         library.save(expected_revision=0, name="Unsafe", source_template="opening", baseline=baseline)
 
 
+def test_scratch_strategy_saves_empty_programs_as_immutable_versions(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    baseline = library.read()["templates"][0]["baseline"]
+    baseline["workshop"].update(mode="blocks", blocks=[])
+    baseline["battle"].update(mode="blocks", branches=[], blocks=[])
+
+    first = library.save(expected_revision=0, name="From zero", source_template="scratch",
+                         baseline=baseline)
+    saved = first["strategies"][0]
+    assert saved["source_template"] == "scratch"
+    assert saved["baseline"]["workshop"]["blocks"] == []
+    assert saved["baseline"]["battle"]["blocks"] == ()
+    assert library.version(saved["id"], 1)["source_template"] == "scratch"
+
+    revised = library.save(expected_revision=1, name="From zero", source_template="scratch",
+                           baseline=baseline, strategy_id=saved["id"])
+    assert revised["strategies"][0]["version"] == 2
+    assert library.version(saved["id"], 1)["baseline"]["workshop"]["blocks"] == []
+
+
 def test_assignment_takes_precedence_and_replacement_falls_back_safely() -> None:
     raw = RouteDocument.compatibility().to_dict()
     assigned = RouteDocument.compatibility().to_dict()["baseline"]

@@ -7,6 +7,12 @@ import styles from "./studio.module.css";
 
 export type BlockDrag = { preset: string } | { id: string };
 
+const phaseNames: Record<string, string> = { starter: "Survival Starter", economy: "Early Economy",
+  objectives: "Upgrade objectives", fallback: "Cheap fallback" };
+const completionText: Record<string, string> = { starter: "When no eligible starter upgrades remain or Tier 1 reaches Wave 20",
+  economy: "When the utility allocation is reached", objectives: "When no targeted objective remains",
+  fallback: "When no cheap fallback is eligible" };
+
 export function StrategyCanvas({ blocks, names, selected, locked, target, onSelect, onTarget, onDrop, onMove, onDrag,
   parent = null, branch = "root" }: {
   blocks: StrategyBlock[]; names: Map<string, string>; selected: string | null; locked: boolean; target: BlockTarget;
@@ -21,11 +27,12 @@ export function StrategyCanvas({ blocks, names, selected, locked, target, onSele
     <Plus size={13} /><span>Add here</span>
   </button>;
   return <div className={parent ? styles.nestedPath : styles.path} aria-label={parent ? `${branch} path` : "Strategy block path"}>
-    {!blocks.length && <p className={styles.emptyPath}>Choose a block from the side palette.</p>}
+    {!blocks.length && <div className={styles.emptyPath}><strong>No purchases configured</strong>{!parent && <p>Choose a block from the side palette to add the first step.</p>}</div>}
     {blocks.map((block, index) => {
       const title = blockTitle(block, names);
       const Icon = block.type === "condition" ? GitBranch : block.type === "wait" ? Pause : block.type === "pool" ? Sparkles : ShoppingBag;
       const kind = block.type === "condition" || block.type === "pool" ? "logic" : block.type === "fallback" || block.type === "wait" ? "flow" : "buy";
+      const nextBlock = blocks[index + 1];
       return <div key={block.id}>
         {insertion(index)}
         <div className={`${styles.block} ${styles[kind]} ${selected === block.id ? styles.selectedBlock : ""}`}
@@ -46,6 +53,10 @@ export function StrategyCanvas({ blocks, names, selected, locked, target, onSele
             <StrategyCanvas {...{ names, selected, locked, target, onSelect, onTarget, onDrop, onMove, onDrag }} blocks={group.blocks} parent={block.id} branch={group.branch} />
           </div>)}
         </div>
+        {block.type === "native" && nextBlock?.type === "native" && <p className={styles.hint}>
+          {block.phase === "starter" && block.policy === "turtle" ? "Turtle skips Survival Starter" : completionText[block.phase] ?? "When this phase completes"}
+          {" → "}{phaseNames[nextBlock.phase] ?? nextBlock.phase}
+        </p>}
       </div>;
     })}
     {insertion(blocks.length)}

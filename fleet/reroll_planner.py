@@ -748,6 +748,60 @@ def choose_native_phase(facts: RerollFacts, phase: str, *,
     raise ValueError("unknown native Workshop phase")
 
 
+def native_phase_progress(facts: RerollFacts, phase: str, policy: str,
+                          decision: RerollDecision | None, *,
+                          banned_upgrade_ids: frozenset[str] = frozenset()) -> tuple[str, str]:
+    """Explain whether a native block is active, waiting, or actually complete."""
+    if decision is not None:
+        if decision.state in {"save_coins", "observe_price", "observe_balance"}:
+            return "waiting", decision.reason
+        if decision.state == "needs_operator":
+            return "blocked", decision.reason
+        return "active", decision.reason
+
+    if phase == "starter":
+        if policy == "turtle":
+            return "complete", "Turtle skips the Survival Starter phase."
+        if (facts.best_tier_1_wave or 0) >= 20:
+            return "complete", "Survival Starter complete: Tier 1 Wave 20 reached."
+        if facts.utility_spent_coins is None:
+            return "waiting", "Waiting for verified utility spend before Survival Starter."
+        excluded = _ban_closure(banned_upgrade_ids)
+        for uid in STARTER_UPGRADES:
+            if uid in excluded or facts.purchases.get(uid, 0) > 0:
+                continue
+            gate = _GATED_BY.get(uid)
+            if gate and facts.purchases.get(gate, 0) == 0:
+                continue
+            price = facts.prices.get(uid)
+            if price is None:
+                return "waiting", f"Waiting for a verified price for {uid}."
+            if price <= STARTER_MAX_PRICE:
+                if facts.wallet_coins is None:
+                    return "waiting", f"Waiting for a verified wallet before buying {uid}."
+                ceiling = (int(facts.wallet_coins * facts.spend_fraction)
+                           if facts.spend_fraction is not None else None)
+                if ceiling is not None and price > ceiling:
+                    return "waiting", f"Waiting for the spend limit to allow {uid}."
+                if facts.wallet_coins < price:
+                    return "waiting", f"Waiting for enough coins to buy {uid}."
+                return "waiting", f"Waiting for the Survival Starter decision for {uid}."
+        return "complete", "Survival Starter complete: no eligible unsatisfied starter upgrades remain."
+
+    if phase == "economy":
+        if facts.utility_spent_coins is None:
+            return "waiting", "Waiting for verified utility spend."
+        if facts.utility_spent_coins < UTILITY_TARGET_COINS:
+            return "waiting", "Waiting for an affordable utility upgrade to reach the allocation."
+        return "complete", "Early Economy complete: the utility allocation is reached."
+
+    if phase == "fallback":
+        return "waiting", "Cheap fallback is waiting for an affordable filler upgrade."
+    if phase == "objectives":
+        return "complete", "Upgrade objectives have no eligible purchase; waiting for new evidence."
+    return "complete", f"Native phase {phase} is complete."
+
+
 def project_next(facts: RerollFacts, *, limit: int = 10,
                  banned_upgrade_ids: frozenset[str] = frozenset(),
                  priority_ids: tuple[str, ...] = ()) -> tuple[PlannedPurchase, ...]:

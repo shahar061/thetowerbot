@@ -391,12 +391,12 @@ class FleetSetupService:
     def build_route_preview(self, draft: Any) -> dict[str, object]:
         """Evaluate current pool members only; never spend or persist."""
         from dataclasses import asdict, replace
-        import db as bot_db
         from fleet.build_route import resolve_route
         from fleet.build_route_eval import (RouteFacts, RouteEvaluation, ResourceEvaluation,
                                             ResourceStep, evaluate, evaluate_battle,
                                             evaluate_resources)
         from fleet.build_route_runtime import BuildRouteRuntime
+        from fleet.build_route_preview_facts import load_preview_facts
         from web.account_catalog import registered_worker
 
         saved = self.build_route_store().read()
@@ -416,55 +416,46 @@ class FleetSetupService:
                 current_effective = resolve_route(saved, worker_root.name, account_id)
                 proposed_effective = resolve_route(proposed_document, worker_root.name, account_id)
                 runtime = BuildRouteRuntime(self.root, worker_root.name, account_id)
-                def read_facts(filename: str, label: str) -> RouteFacts:
-                    try:
-                        snapshot = json.loads((worker_root / filename).read_text(encoding="utf-8"))
-                    except FileNotFoundError:
-                        raise ValueError(f"Waiting for first verified {label} observation") from None
-                    except (OSError, json.JSONDecodeError):
-                        raise ValueError(f"{label} observation unavailable") from None
-                    if (not isinstance(snapshot, dict) or snapshot.get("account_id") != account_id
-                            or snapshot.get("worker") != worker_root.name):
-                        raise ValueError("worker fact snapshot belongs to another account")
-                    return replace(RouteFacts(**snapshot), now=time.time())
-                try:
-                    if bot_db.bound_account(registration.db_path) != account_id:
-                        raise ValueError("worker database belongs to another account")
-                    facts = read_facts("build-route-facts.json", "Workshop")
+                evidence = load_preview_facts(self.root, worker_root, worker_root.name,
+                                              account_id, registration.db_path)
+                def lane_metadata(lane: Any) -> dict[str, object]:
+                    return {"source": lane.source, "observed_at": lane.observed_at,
+                            "reason": lane.reason, "status": lane.status}
+                if evidence.workshop.facts is not None:
+                    facts = evidence.workshop.facts
                     current = evaluate(current_effective, facts, runtime.pending())
                     proposed = evaluate(proposed_effective, facts, None)
-                except (OSError, ValueError, TypeError) as exc:
+                else:
                     facts = RouteFacts(account_id, worker_root.name)
-                    current = RouteEvaluation.unknown(str(exc), facts)
-                    proposed = RouteEvaluation.unknown(str(exc), facts)
-                try:
-                    if bot_db.bound_account(registration.db_path) != account_id:
-                        raise ValueError("worker database belongs to another account")
-                    battle_facts = read_facts("build-route-battle-facts.json", "battle")
+                    reason = evidence.workshop.reason or "Workshop evidence unavailable"
+                    current = RouteEvaluation.unknown(reason, facts)
+                    proposed = RouteEvaluation.unknown(reason, facts)
+                if evidence.battle.facts is not None:
+                    battle_facts = evidence.battle.facts
                     current_battle = evaluate_battle(current_effective, battle_facts,
                                                     runtime.battle_pending(battle_facts, saved.revision))
                     proposed_battle = evaluate_battle(proposed_effective, battle_facts, None)
-                except (OSError, ValueError, TypeError) as exc:
-                    unknown = RouteEvaluation.unknown(str(exc), RouteFacts(account_id, worker_root.name))
+                else:
+                    reason = evidence.battle.reason or "Battle evidence unavailable"
+                    unknown = RouteEvaluation.unknown(reason, RouteFacts(account_id, worker_root.name))
                     current_battle = proposed_battle = unknown
-                try:
-                    if bot_db.bound_account(registration.db_path) != account_id:
-                        raise ValueError("worker database belongs to another account")
-                    resource_facts = read_facts("build-route-resource-facts.json", "resource")
-                    if (resource_facts.observed_at is None or
-                            resource_facts.now - resource_facts.observed_at > 600):
-                        raise ValueError("resource evidence is stale")
+                if evidence.resources.facts is not None and evidence.resources.status != "stale":
+                    resource_facts = evidence.resources.facts
                     current_resources = evaluate_resources(current_effective, resource_facts)
                     proposed_resources = evaluate_resources(proposed_effective, resource_facts)
-                except (OSError, ValueError, TypeError) as exc:
-                    unknown_step = ResourceStep("unknown", "unknown", str(exc))
+                else:
+                    reason = evidence.resources.reason or "Resource evidence unavailable"
+                    unknown_step = ResourceStep("unknown", "unknown", reason)
                     current_resources = proposed_resources = ResourceEvaluation(unknown_step, unknown_step)
                 members.append({"worker": worker_root.name, "account_id": account_id,
                                 "current": asdict(current), "proposed": asdict(proposed),
                                 "current_battle": asdict(current_battle),
                                 "proposed_battle": asdict(proposed_battle),
                                 "current_resources": asdict(current_resources),
-                                "proposed_resources": asdict(proposed_resources)})
+                                "proposed_resources": asdict(proposed_resources),
+                                "evidence": {"workshop": lane_metadata(evidence.workshop),
+                                             "battle": lane_metadata(evidence.battle),
+                                             "resources": lane_metadata(evidence.resources)}})
         return {"saved_revision": saved.revision, "proposed_revision": saved.revision + 1,
                 "members": members}
 

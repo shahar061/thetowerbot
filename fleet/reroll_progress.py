@@ -38,13 +38,16 @@ from strategy import Shopping, ShoppingRule
 class RerollProgress:
     """Read only this registered account and publish a bounded next action."""
 
-    def __init__(self, worker_root: Path, account_id: str, account_state: AccountState) -> None:
+    def __init__(self, worker_root: Path, account_id: str, account_state: AccountState,
+                 *, read_only: bool = False) -> None:
         self.root = Path(worker_root)
         self.account_id = account_id
         self.account_state = account_state
+        self.read_only = read_only
         self.price_memory = WorkshopPrices(self.root, account_id)
         self._quotes: dict[str, PriceQuote] = {}
-        self._import_legacy_target()
+        if not read_only:
+            self._import_legacy_target()
         self._last_state: tuple[str, str | None, str] | None = None
         self._last_decision: RerollDecision | None = None
         self._last_published_at = 0.0
@@ -221,7 +224,7 @@ class RerollProgress:
             spent -= delta
         return spent
 
-    def _account_readings(self) -> tuple[dict[str, float], int | None]:
+    def _account_readings(self, *, persist_lifetime: bool = True) -> tuple[dict[str, float], int | None]:
         snapshot = self.account_state.snapshot()
         revision = snapshot.get("revision") or {}
         values = {}
@@ -254,7 +257,7 @@ class RerollProgress:
                               and isinstance(rate_field.get("raw_value"), str) else None)
                     stored = self.lifetime_record()
                     observed_at = latest.get("observed_at")
-                    if (isinstance(observed_at, (int, float))
+                    if (persist_lifetime and isinstance(observed_at, (int, float))
                             and (stored is None or observed_at > stored["observed_at"])):
                         self.root.mkdir(parents=True, exist_ok=True)
                         with db.reader(self.root / "tower_bot.db") as connection:
@@ -307,7 +310,7 @@ class RerollProgress:
         if self.route_runtime is None:
             raise ValueError("route runtime unavailable")
         best, purchases = self._history()
-        values, lifetime = self._account_readings()
+        values, lifetime = self._account_readings(persist_lifetime=not self.read_only)
         wallet, quotes = self._pricing(purchases)
         self._quotes = quotes
         anchor = self.price_memory.wallet

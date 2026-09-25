@@ -57,7 +57,8 @@ class StrategyLibrary:
             seen: dict[str, int] = {}
             for row in state["versions"]:
                 if (not isinstance(row["id"], str) or not row["id"].startswith("strategy-")
-                        or row["builtin"] is not False or row["source_template"] not in {"opening", "turtle"}
+                        or row["builtin"] is not False
+                        or row["source_template"] not in {"opening", "turtle", "scratch"}
                         or not isinstance(row["name"], str) or not row["name"].strip()
                         or type(row["version"]) is not int
                         or row["version"] != seen.get(row["id"], 0) + 1):
@@ -94,7 +95,7 @@ class StrategyLibrary:
             raise ValueError("built-in templates are protected; save a copy")
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
             raise ValueError("strategy name must contain 1 to 100 characters")
-        if source_template not in {"opening", "turtle"}:
+        if source_template not in {"opening", "turtle", "scratch"}:
             raise ValueError("unknown source template")
         validated = RouteBaseline.from_dict(baseline).to_dict()
         with self._locked():

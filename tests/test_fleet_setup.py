@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from dataclasses import asdict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +18,9 @@ from web.app import create_app
 from events import EventBus
 from sinks.sse import SseSink
 from sinks.state import BotState
+import db
+from fleet.build_route import RouteDocument
+from fleet.build_route_eval import RouteFacts
 
 
 def qualification(root: Path, *, source: str = "Tiramisu64_6") -> None:
@@ -30,6 +35,123 @@ def qualification(root: Path, *, source: str = "Tiramisu64_6") -> None:
                       "source_instance": source, "source_endpoint": "127.0.0.1:5615",
                       "source_lease": "source-lease"}},
     }))
+
+
+def registered_worker(root: Path, worker: str, account_id: str,
+                      db_account_id: str | None = None) -> Path:
+    worker_root = root / "workers" / worker
+    checkpoint = worker_root / "checkpoints" / ("a" * 32 + ".json")
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text(json.dumps({"worker_id": worker, "account_id": account_id,
+                                     "endpoint": "127.0.0.1:5555", "lease_id": "lease"}))
+    (worker_root / "fleet-registration.json").write_text(json.dumps({
+        "state": "registered", "instance": worker, "account_id": account_id,
+        "web_port": 8001, "binding": str(checkpoint),
+        "endpoint": "127.0.0.1:5555", "lease_id": "lease"}))
+    db.bind_account(worker_root / "tower_bot.db", db_account_id or account_id)
+    return worker_root
+
+
+def preview_service(root: Path, worker: str = "Air_38") -> FleetSetupService:
+    service = FleetSetupService(root, qualification_root=root / "qualifications")
+    service._reroll_pool = SimpleNamespace(members=lambda: [{"name": worker}])
+    return service
+
+
+def test_build_route_preview_keeps_missing_lanes_independent(tmp_path: Path) -> None:
+    worker_root = registered_worker(tmp_path, "Air_38", "account-a")
+    now = time.time()
+    (worker_root / "build-route-resource-facts.json").write_text(json.dumps({
+        **asdict(RouteFacts("account-a", "Air_38", "main_menu", now, now,
+                            wallet_gems=20, lab_slot2_owned=False))
+    }))
+
+    member = preview_service(tmp_path).build_route_preview(RouteDocument.compatibility())["members"][0]
+
+    assert member["evidence"]["workshop"]["status"] == "unknown"
+    assert member["evidence"]["battle"]["status"] == "unknown"
+    assert member["evidence"]["resources"]["status"] == "verified"
+    assert member["current_resources"]["gem_step"]["status"] == "blocked"
+
+
+def test_build_route_preview_rejects_stale_battle_observation(tmp_path: Path) -> None:
+    worker_root = registered_worker(tmp_path, "Air_38", "account-a")
+    observed = time.time() - 20
+    (worker_root / "build-route-battle-facts.json").write_text(json.dumps({
+        "account_id": "account-a", "worker": "Air_38", "screen": "battle",
+        "observed_at": observed, "now": observed, "run_id": 1, "wave": 5,
+        "battle_cash": 100,
+    }))
+
+    member = preview_service(tmp_path).build_route_preview(RouteDocument.compatibility())["members"][0]
+
+    assert member["evidence"]["battle"]["status"] == "stale"
+    assert "stale" in member["current_battle"]["trace"]["reason"].lower()
+
+
+def test_build_route_preview_never_uses_history_as_live_battle_intent(tmp_path: Path) -> None:
+    worker_root = registered_worker(tmp_path, "Air_38", "account-a")
+    connection = db.connect(worker_root / "tower_bot.db")
+    try:
+        now = time.time()
+        connection.execute("INSERT INTO runs(tier,started_at,wave,ended_at) VALUES (1,?,99,?)",
+                           (now - 90, now))
+        connection.commit()
+    finally:
+        connection.close()
+
+    member = preview_service(tmp_path).build_route_preview(RouteDocument.compatibility())["members"][0]
+
+    assert member["current_battle"]["status"] == "unknown"
+    assert member["current_battle"]["trace"]["reason"] == (
+        "Waiting for first verified battle observation")
+
+
+def test_build_route_preview_does_not_write_facts(tmp_path: Path) -> None:
+    worker_root = registered_worker(tmp_path, "Air_38", "account-a")
+    before = {path.name: path.read_bytes() for path in worker_root.iterdir() if path.is_file()
+              and not path.name.endswith(("-shm", "-wal"))}
+
+    preview_service(tmp_path).build_route_preview(RouteDocument.compatibility())
+
+    after = {path.name: path.read_bytes() for path in worker_root.iterdir() if path.is_file()
+             and not path.name.endswith(("-shm", "-wal"))}
+    assert after == before
+
+
+def test_build_route_preview_rejects_database_account_mismatch(tmp_path: Path) -> None:
+    registered_worker(tmp_path, "Air_38", "account-a", "account-b")
+
+    member = preview_service(tmp_path).build_route_preview(RouteDocument.compatibility())["members"][0]
+
+    assert member["evidence"]["workshop"]["status"] == "unknown"
+    assert member["evidence"]["battle"]["status"] == "unknown"
+    assert member["evidence"]["resources"]["status"] == "unknown"
+    assert "another account" in member["evidence"]["workshop"]["reason"]
+
+
+def test_build_route_preview_reconstructs_verified_workshop_facts(tmp_path: Path) -> None:
+    worker_root = registered_worker(tmp_path, "Air_38", "account-a")
+    now = time.time()
+    connection = db.connect(worker_root / "tower_bot.db")
+    try:
+        connection.execute("INSERT INTO account_revisions(detail) VALUES (?)", (json.dumps({
+            "account_id": "account-a", "workshop_stats": [],
+        }),))
+        connection.commit()
+    finally:
+        connection.close()
+    from fleet.workshop_prices import WorkshopPrices
+    prices = WorkshopPrices(worker_root, "account-a")
+    prices.wallet = {"coins": 100, "run_id": 0, "observed_at": now}
+    prices.save()
+
+    member = preview_service(tmp_path).build_route_preview(RouteDocument.compatibility())["members"][0]
+
+    assert member["evidence"]["workshop"]["status"] == "verified"
+    assert member["evidence"]["workshop"]["source"] == (
+        "account revision + price memory + ledger")
+    assert member["current"]["status"] != "unknown"
 
 
 def test_setup_discovers_existing_proof_and_persists_host_policy(tmp_path: Path) -> None:
