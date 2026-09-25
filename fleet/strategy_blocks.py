@@ -151,6 +151,21 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 block['blocks'] = list(walk(block.get('blocks', []), depth + 1))
                 if not block['blocks']:
                     raise ValueError('budget requires at least one block')
+            elif kind == 'save_for':
+                allowed.add('goal')
+                block['goal'] = list(walk(block.get('goal', []), depth + 1))
+                if len(block['goal']) != 1 or block['goal'][0]['type'] not in {'buy', 'pool'}:
+                    raise ValueError('save for goal needs exactly one buy or pool block')
+                if 'discount_pct' in block['goal'][0]:
+                    raise ValueError('a saving goal cannot be a discount pool')
+            elif kind == 'while_saving':
+                allowed |= {'upgrade_id', 'blocks'}
+                if 'upgrade_id' in block and (not isinstance(block['upgrade_id'], str)
+                                              or upgrades.by_id(block['upgrade_id']) is None):
+                    raise ValueError('unknown saving goal upgrade')
+                block['blocks'] = list(walk(block.get('blocks', []), depth + 1))
+                if not block['blocks']:
+                    raise ValueError('while saving requires at least one block')
             elif kind != 'wait':
                 raise ValueError('unknown strategy block type')
             if set(block) - allowed:
@@ -200,6 +215,8 @@ def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
                 result.append(block["upgrade_id"])
             elif block["field"] == "def_abs_coverage":
                 result.extend(("defense_absolute", "defense_percent"))
+        elif kind == "while_saving" and "upgrade_id" in block:
+            result.append(block["upgrade_id"])
         for children in child_lists(block):
             result.extend(program_upgrade_ids(tuple(children)))
     return tuple(dict.fromkeys(result))
@@ -220,6 +237,7 @@ class _Choice:
     phase_state: str | None = None
     next_phase_id: str | None = None
     transition_reason: str | None = None
+    save_price: int | None = None
 
 
 def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
@@ -284,6 +302,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
 
     native_intents: dict[str, Any] = {}
     budget_room: int | None = None
+    saving: _Choice | None = None
     def native_facts(policy: str) -> RerollFacts:
         return RerollFacts(
             facts.account_id, facts.best_tier_1_wave, facts.purchases, facts.values,
@@ -435,8 +454,18 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                   base * ((100 - block.get('decay_pct', 0)) / 100) ** count)
         return candidates
 
+    def unaffordable_pick(goal: Mapping[str, Any]) -> tuple[str, int] | None:
+        if goal['type'] == 'buy':
+            uid = goal['upgrade_id']
+            return (uid, price_for(uid)) if eligible(uid, ignore_funds=True) else None
+        needs_counts = 'max_purchases' in goal or 'level_caps' in goal or goal.get('decay_pct', 0) > 0
+        if needs_counts and counts is None:
+            return None
+        uid = next(iter(pool_candidates(goal, goal['id'], None, ignore_funds=True)), None)
+        return (uid, price_for(uid)) if uid else None
+
     def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
-        nonlocal waiting_native, budget_room
+        nonlocal waiting_native, budget_room, saving
         for index, block in enumerate(items):
             kind, identity = block['type'], block['id']
             if kind == 'wait':
@@ -448,6 +477,26 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     return _Choice(identity, reason='Condition evidence unknown; decision paused', wait=True)
                 matched = COMPARISONS[block['op']](value, block['value'])
                 choice = evaluate(block['then'] if matched else block['else'], (items, *ancestors))
+                if choice is not None:
+                    return choice
+            elif kind == 'save_for':
+                if saving is not None:
+                    rejected.append(f'{identity}: another goal is already saving')
+                    continue
+                choice = evaluate(block['goal'], (items, *ancestors))
+                if choice is not None:
+                    return choice
+                pick = unaffordable_pick(block['goal'][0])
+                if pick is None:
+                    continue
+                uid, price = pick
+                name = upgrades.by_id(uid).name
+                saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
+                                 wait=True, save_price=price)
+            elif kind == 'while_saving':
+                if saving is None or block.get('upgrade_id', saving.upgrade_id) != saving.upgrade_id:
+                    continue
+                choice = evaluate(block['blocks'], (items, *ancestors))
                 if choice is not None:
                     return choice
             elif kind == 'fallback':
@@ -566,7 +615,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                target=block.get('targets', {}).get(chosen))
         return None
 
-    choice = evaluate(program) or waiting_native
+    choice = evaluate(program) or saving or waiting_native
     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
     active_pending = (pending is not None and pending.account_id == facts.account_id
         and pending.revision == route.revision and pending.visit_id == visit
@@ -592,6 +641,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             "observe_price", upgrade.id, upgrade.name, upgrade.category, None, wallet,
             facts.lifetime_coins, choice.reason)
         return RouteEvaluation(facts.account_id, route.revision, "projected", decision, trace, facts.observed_at, pending)
+    if choice.save_price is not None and lane == 'workshop':
+        upgrade = upgrades.by_id(choice.upgrade_id)
+        decision = RerollDecision(facts.account_id, 'strategy', 'Follow assigned strategy', 'save_coins',
+            upgrade.id, upgrade.name, upgrade.category, choice.save_price, wallet,
+            facts.lifetime_coins, choice.reason)
+        return RouteEvaluation(facts.account_id, route.revision, 'blocked', decision, trace, facts.observed_at, pending)
     if choice.wait:
         return RouteEvaluation(facts.account_id, route.revision, 'blocked', None, trace,
                                facts.observed_at, pending)

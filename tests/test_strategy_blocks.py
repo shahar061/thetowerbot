@@ -474,3 +474,76 @@ def test_budget_unknown_spend_waits() -> None:
     after = [budget(), {'id': 'next', 'type': 'buy', 'upgrade_id': 'attack_speed'}]
     result = blocks.evaluate_program(route(after), unknown, None, 'workshop')
     assert result.status == 'blocked' and result.trace.matched_rule_id == 'econ'
+
+
+def save_goal(ids: list[str], **extra: Any) -> dict[str, Any]:
+    return {'id': 'goal', 'type': 'save_for',
+            'goal': [{'id': 'goal.pool', 'type': 'pool', 'upgrade_ids': ids, 'selection': 'priority', **extra}]}
+
+
+def test_save_for_validation() -> None:
+    blocks.validate_program([save_goal(['thorns'])], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([{'id': 'g', 'type': 'save_for', 'goal': []}], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([{'id': 'g', 'type': 'save_for', 'goal': [{'id': 'w', 'type': 'wait'}]}], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([save_goal(['thorns'], discount_pct=20)], 'workshop')
+    with pytest.raises(ValueError):
+        blocks.validate_program([{'id': 'ws', 'type': 'while_saving', 'blocks': []}], 'workshop')
+
+
+def test_save_for_buys_goal_when_affordable() -> None:
+    rich = replace(facts(), wallet_coins=200)
+    assert blocks.evaluate_program(route([save_goal(['thorns'])]), rich, None, 'workshop').decision.upgrade_id == 'thorns'
+
+
+def test_save_for_records_intent_and_lower_block_buys() -> None:
+    program = [save_goal(['thorns']), {'id': 'cheap', 'type': 'buy', 'upgrade_id': 'damage'}]
+    result = blocks.evaluate_program(route(program), facts(), None, 'workshop')  # wallet 100, thorns 100 → affordable
+    assert result.decision.upgrade_id == 'thorns'
+    poor = replace(facts(), wallet_coins=90)
+    result = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert result.decision.upgrade_id == 'damage'
+
+
+def test_save_for_result_when_nothing_else_buys() -> None:
+    poor = replace(facts(), wallet_coins=50)
+    result = blocks.evaluate_program(route([save_goal(['thorns'])]), poor, None, 'workshop')
+    assert result.status == 'blocked'
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+    assert result.decision.price == 100 and 'Saving for' in result.decision.reason
+
+
+def test_only_one_goal_saves_at_a_time() -> None:
+    poor = replace(facts(), wallet_coins=90)
+    program = [save_goal(['thorns']), {**save_goal(['damage']), 'id': 'goal2',
+               'goal': [{'id': 'goal2.pool', 'type': 'pool', 'upgrade_ids': ['damage'], 'selection': 'priority'}]}]
+    result = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
+
+
+def test_satisfied_goal_passes_silently() -> None:
+    done = replace(facts(), values={'thorns': 51.0})
+    program = [save_goal(['thorns'], targets={'thorns': 51}), {'id': 'next', 'type': 'buy', 'upgrade_id': 'damage'}]
+    assert blocks.evaluate_program(route(program), done, None, 'workshop').decision.upgrade_id == 'damage'
+
+
+def test_save_for_ignores_items_over_budget_ceiling() -> None:
+    program = [{'id': 'econ', 'type': 'budget', 'metric': 'utility_spent', 'target': 350, 'ceiling': 400,
+                'blocks': [save_goal(['thorns'])]}, {'id': 'next', 'type': 'buy', 'upgrade_id': 'damage'}]
+    near = replace(facts(), utility_spent_coins=340, wallet_coins=90)  # room 60 < thorns 100
+    result = blocks.evaluate_program(route(program), near, None, 'workshop')
+    assert result.decision.state == 'buy' and result.decision.upgrade_id == 'damage'
+
+
+def test_while_saving_only_runs_during_matching_goal() -> None:
+    poor = replace(facts(), wallet_coins=90)
+    filler = {'id': 'ws', 'type': 'while_saving', 'upgrade_id': 'thorns',
+              'blocks': [{'id': 'fill', 'type': 'buy', 'upgrade_id': 'damage'}]}
+    assert blocks.evaluate_program(route([save_goal(['thorns']), filler]), poor, None, 'workshop').decision.upgrade_id == 'damage'
+    other = [save_goal(['attack_speed']), filler]
+    poorer = replace(facts(), wallet_coins=50)
+    assert blocks.evaluate_program(route(other), poorer, None, 'workshop').decision.state == 'save_coins'
+    rich = replace(facts(), wallet_coins=200)
+    assert blocks.evaluate_program(route([filler]), rich, None, 'workshop').status == 'blocked'
