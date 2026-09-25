@@ -17,6 +17,8 @@ def read_lifetime(root: Path, account_id: str) -> dict[str, Any] | None:
         return None
     try:
         record = json.loads((root / "reroll-lifetime.json").read_text())
+        if not isinstance(record, dict):
+            return None
         baseline = record.get("lifetime_coins")
         run_id = record.get("baseline_run_id", 0)
         if (record.get("account_id") != account_id or not isinstance(baseline, int)

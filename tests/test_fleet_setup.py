@@ -295,6 +295,35 @@ def test_snapshot_flags_bots_that_would_not_stop_and_blocks_no_candidate(tmp_pat
     assert snapshot["operation"] is None
 
 
+def test_snapshot_keeps_healthy_worker_when_other_metrics_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fleet.reroll_metrics as reroll_metrics
+    import web.account_catalog as account_catalog
+    from telegram_report import render_fleet_summary
+
+    service = _service_with_runs(tmp_path, _Runs())
+    service._reroll_pool = SimpleNamespace(snapshot=lambda: {"members": [
+        {"name": "Air18", "state": "ready"}, {"name": "Air19", "state": "ready"},
+    ], "candidates": []})
+    service._reroll_supervisor = SimpleNamespace(
+        reconcile=lambda snapshot: {name: {"state": "paused"} for name in ("Air18", "Air19")},
+        pressure=lambda statuses: {}, max_concurrent_workers=2)
+    monkeypatch.setattr(account_catalog, "registered_worker", lambda root: SimpleNamespace(
+        account_id="42", key=f"worker:{root.name}", web_port=8080))
+
+    def metrics(worker_root: Path, **_kwargs: object) -> dict[str, int]:
+        if worker_root.name == "Air18":
+            raise ValueError("bad worker evidence")
+        return {"tier": 1, "wave": 72}
+
+    monkeypatch.setattr(reroll_metrics, "observed_metrics", metrics)
+    snapshot = service.reroll_snapshot()
+    body = render_fleet_summary(snapshot, fields=["tier_wave", "errors"])
+    assert "Air18 - paused | Tier/Wave unavailable | Error: metrics unavailable" in body
+    assert "Air19 - paused | Tier 1 Wave 72" in body
+
+
 def test_snapshot_marks_members_hidden_from_the_dashboard(tmp_path: Path) -> None:
     runs = _Runs()
     service = _service_with_runs(tmp_path, runs)

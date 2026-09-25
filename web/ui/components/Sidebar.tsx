@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, BookOpen, Compass, Contact, ChartLine, List, Map, Monitor, Power, Receipt, SlidersHorizontal, TriangleAlert,
+  Activity, BookOpen, Compass, Contact, ChartLine, List, Map, Monitor, Power, Receipt, Settings2, SlidersHorizontal, TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -143,6 +143,7 @@ export function Sidebar(): React.JSX.Element {
       ))}
 
       <div className="contents md:mt-auto md:block">
+        {link({ href: reroll ? "/fleet/reroll/settings/" : "/settings/", label: "Settings", icon: Settings2 })}
         {link(GUIDE)}
         <div className="mt-3 hidden items-center gap-2 md:flex">
           {!reroll && <StatusBadge state={selected?.running && connected ? "live" : "warn"}>

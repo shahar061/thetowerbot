@@ -32,14 +32,20 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import config
+from telegram_settings import (
+    FLEET_FIELDS, SINGLE_FIELDS, TelegramMode, TelegramProfile,
+    TelegramSettingsError, TelegramSettingsStore, default_profile,
+)
 
 logger = logging.getLogger("tower_bot.telegram")
 
@@ -208,6 +214,7 @@ def render_summary(
     *,
     paused: bool | None = None,
     label: str = "The Tower bot",
+    fields: Iterable[str] | None = None,
 ) -> str:
     """Format one digest from a BotState.snapshot().
 
@@ -216,39 +223,128 @@ def render_summary(
     ordering is the difference - the first line has to answer "alive?" on a
     lock screen, before anything is expanded.
     """
-    scans = int(snapshot.get("scans") or 0)
+    selected = set(SINGLE_FIELDS if fields is None else fields)
+    legacy = fields is None
     state = "paused" if paused else "running"
     lines = [
         f"{label} - {state}, up {_duration(snapshot.get('uptime') or 0)}",
-        f"Screen: {snapshot.get('screen') or 'UNKNOWN'}",
-        f"Scans: {scans:,}",
     ]
 
+    if "screen" in selected:
+        lines.append(f"Screen: {snapshot.get('screen') or ('UNKNOWN' if legacy else 'unavailable')}")
+    if "scans" in selected:
+        scans = snapshot.get("scans")
+        lines.append(f"Scans: {int(scans):,}" if scans is not None else "Scans: unavailable")
+
     wallet = snapshot.get("wallet")
-    if wallet is not None:
-        lines.append(f"Wallet: ${int(wallet):,}")
+    if "wallet" in selected and (wallet is not None or not legacy):
+        lines.append(f"Wallet: ${int(wallet):,}" if wallet is not None else "Wallet: unavailable")
 
     run = snapshot.get("run")
-    if isinstance(run, Mapping) and run.get("id") is not None:
-        elapsed = _duration(run.get("elapsed") or 0)
-        lines.append(f"Run #{run['id']}: {elapsed} in")
-    else:
-        # Saying so explicitly matters: "no run" during a battle-only
-        # strategy is the symptom of a bot stuck on a menu, and its absence
-        # from the digest would read as though the line just didn't apply.
-        lines.append("Run: none in progress")
-    lines.append(f"Runs completed: {int(snapshot.get('runs_completed') or 0):,}")
+    if "run" in selected:
+        if isinstance(run, Mapping) and run.get("id") is not None:
+            elapsed = _duration(run.get("elapsed") or 0)
+            lines.append(f"Run #{run['id']}: {elapsed} in")
+        else:
+            # An absent run is a real operational state, not a zero-valued run.
+            lines.append("Run: none in progress")
+    if "runs_completed" in selected:
+        completed = snapshot.get("runs_completed")
+        lines.append(f"Runs completed: {int(completed):,}" if completed is not None else "Runs completed: unavailable")
 
-    lines.append(f"Taps: {_tally(snapshot.get('taps') or {})}")
-    lines.append(f"Skips: {_tally(snapshot.get('skips') or {})}")
+    if "taps" in selected:
+        taps = snapshot.get("taps")
+        lines.append(f"Taps: {_tally(taps)}" if isinstance(taps, Mapping) else "Taps: unavailable")
+    if "skips" in selected:
+        skips = snapshot.get("skips")
+        lines.append(f"Skips: {_tally(skips)}" if isinstance(skips, Mapping) else "Skips: unavailable")
 
     last_error = snapshot.get("last_error")
-    lines.append(f"Last error: {last_error}" if last_error else "Last error: none")
+    if "last_error" in selected:
+        lines.append(f"Last error: {last_error}" if last_error else "Last error: none")
 
-    text = "\n".join(lines)
+    return _bounded("\n".join(lines))
+
+
+def _bounded(text: str) -> str:
     if len(text) > MAX_MESSAGE_CHARS:
         text = text[: MAX_MESSAGE_CHARS - len(_TRUNCATION_NOTE)] + _TRUNCATION_NOTE
     return text
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _plain(value: Any) -> str:
+    return str(value).replace("\r", " ").replace("\n", " ").strip()[:500]
+
+
+def render_fleet_summary(
+    snapshot: Mapping[str, Any], *, fields: Iterable[str] | None = None,
+) -> str:
+    """Render one bounded coordinator digest from reroll snapshot members."""
+    selected = set(FLEET_FIELDS if fields is None else fields)
+    raw_members = snapshot.get("members")
+    members = raw_members if isinstance(raw_members, list) else []
+    members = [member for member in members if isinstance(member, Mapping)]
+    members.sort(key=lambda member: _plain(member.get("name") or "").lower())
+    state = ("running" if any(member.get("state") == "running" for member in members)
+             else "paused" if members else "idle")
+    lines = [f"Reroll fleet - {state}, {len(members)} emulators"]
+    shown = 0
+    for member in members:
+        name = _plain(member.get("name") or "Unknown emulator")
+        member_state = _plain(member.get("state") or "unavailable")
+        parts = [f"{name} - {member_state}"]
+        if "tier_wave" in selected:
+            tier, wave = _nonnegative_int(member.get("tier")), _nonnegative_int(member.get("wave"))
+            parts.append(f"Tier {tier} Wave {wave}" if tier is not None and wave is not None else "Tier/Wave unavailable")
+        if "lifetime_coins" in selected:
+            coins = _nonnegative_int(member.get("lifetime_coins"))
+            if coins is None:
+                parts.append("Lifetime coins unavailable")
+            else:
+                qualifier = " (incomplete)" if member.get("lifetime_coins_incomplete") is True else ""
+                parts.append(f"Lifetime coins: {coins:,}{qualifier}")
+        if "milestone" in selected:
+            milestone = member.get("milestone")
+            parts.append(f"Milestone: {_plain(milestone)}" if milestone else "Milestone unavailable")
+        if "errors" in selected and member.get("error"):
+            parts.append(f"Error: {_plain(member['error'])}")
+        row = _bounded(" | ".join(parts))
+        candidate = "\n".join([*lines, row])
+        # Reserve space for the omitted-row count before accepting a row.
+        if len(candidate) + 45 > MAX_MESSAGE_CHARS:
+            break
+        lines.append(row)
+        shown += 1
+    omitted = len(members) - shown
+    if omitted:
+        lines.append(f"… and {omitted} more emulators")
+    return _bounded("\n".join(lines))
+
+
+def render_sample(mode: TelegramMode, profile: TelegramProfile) -> str:
+    """A fixed example through the production formatter; never sends."""
+    if mode == "fleet":
+        return render_fleet_summary({"members": [
+            {"name": "Air18", "state": "running", "tier": 1, "wave": 72,
+             "lifetime_coins": 14200, "milestone": "Tier 1 Wave 50"},
+            {"name": "Air19", "state": "paused", "tier": 1, "wave": 31},
+            {"name": "Air20", "state": "error", "lifetime_coins": 8100,
+             "error": "game screen unavailable"},
+        ]}, fields=profile.fields)
+    if mode != "single":
+        raise ValueError("invalid_telegram_mode")
+    return render_summary({
+        "uptime": 11700, "screen": "BATTLE", "scans": 5412, "wallet": 1284330,
+        "run": {"id": 42, "elapsed": 900}, "runs_completed": 3,
+        "taps": {"buy_upgrade": 91, "retry": 3},
+        "skips": {"unaffordable": 40}, "last_error": None,
+    }, fields=profile.fields)
 
 
 class TelegramReporter:
@@ -267,13 +363,20 @@ class TelegramReporter:
         controls: Any | None = None,
         send: Callable[[str], None] | None = None,
         label: str = "The Tower bot",
+        preferences: TelegramSettingsStore | None = None,
+        fleet: Any | None = None,
+        interval_override_seconds: float | None = None,
     ) -> None:
         self._state = state
         self._settings = settings
         self._controls = controls
         self._send = send if send is not None else self._post
         self._label = label
+        self._preferences = preferences
+        self._fleet = fleet
+        self._interval_override_seconds = interval_override_seconds
         self._stop = threading.Event()
+        self._changed = threading.Event()
         self._thread: threading.Thread | None = None
         # Counters for the tests and for a human asking whether this thing
         # has ever actually worked; nothing reads them in the hot path.
@@ -286,6 +389,8 @@ class TelegramReporter:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._stop.clear()
+        self._changed.clear()
         self._thread = threading.Thread(
             target=self._run, name="TelegramReporter", daemon=True
         )
@@ -298,6 +403,7 @@ class TelegramReporter:
         microseconds instead of after however much of the hour is left.
         """
         self._stop.set()
+        self._changed.set()
         thread, self._thread = self._thread, None
         if thread is None:
             return
@@ -305,21 +411,78 @@ class TelegramReporter:
         if thread.is_alive():
             logger.warning("telegram reporter did not stop within %.1fs", timeout)
 
+    def reconfigure(self) -> None:
+        """Wake the timer after a save in this process."""
+        self._changed.set()
+
+    def _active_mode(self) -> TelegramMode:
+        if self._fleet is None:
+            return "single"
+        try:
+            members = json.loads((self._fleet.root / "reroll-pool.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return "single"
+        if not isinstance(members, list):
+            raise ValueError("pool_state_unreadable")
+        return "fleet" if members else "single"
+
+    def _current_profile(self) -> tuple[TelegramMode, TelegramProfile, str | None]:
+        mode = self._active_mode()
+        if self._preferences is not None:
+            profile, revision = self._preferences.load_with_revision(mode)
+        else:
+            profile, revision = default_profile(mode), None
+        return mode, profile, revision
+
+    def _safe_current_profile(self) -> tuple[TelegramMode, TelegramProfile, str | None] | None:
+        try:
+            return self._current_profile()
+        except (TelegramSettingsError, OSError, ValueError):
+            logger.exception("telegram reporting settings unavailable")
+            return None
+
+    def _delay_seconds(self, profile: TelegramProfile) -> float:
+        if self._interval_override_seconds is not None and self._interval_override_seconds > 0:
+            return self._interval_override_seconds
+        return profile.interval_minutes * 60 if self._preferences is not None else self._settings.interval
+
     def _run(self) -> None:
-        # One digest immediately, before the first wait. An hour is a long
-        # time to discover you pasted the chat id wrong, and the startup
-        # message doubles as the "the bot just came up" signal.
-        self.tick()
-        while not self._stop.wait(self._settings.interval):
+        # Preserve the startup signal, then observe both in-process saves and
+        # atomic settings changes written by another local dashboard process.
+        current = self._safe_current_profile()
+        if current is not None and current[1].enabled:
             self.tick()
+        due = (time.monotonic() + self._delay_seconds(current[1])
+               if current is not None and current[1].enabled else None)
+        while not self._stop.is_set():
+            remaining = max(0.0, due - time.monotonic()) if due is not None else 2.0
+            self._changed.wait(min(2.0, remaining))
+            self._changed.clear()
+            if self._stop.is_set():
+                break
+            newest = self._safe_current_profile()
+            if newest is None:
+                current, due = None, None
+                continue
+            if newest != current:
+                current = newest
+                due = (time.monotonic() + self._delay_seconds(current[1])
+                       if current[1].enabled else None)
+                continue
+            if due is not None and time.monotonic() >= due:
+                self.tick()
+                due = time.monotonic() + self._delay_seconds(current[1])
 
     def render(self) -> str:
-        paused = None
-        if self._controls is not None:
-            paused = self._controls.snapshot().paused
-        return render_summary(
-            self._state.snapshot(), paused=paused, label=self._label
-        )
+        mode, profile, _revision = self._current_profile()
+        return self._render_for(mode, profile)
+
+    def _render_for(self, mode: TelegramMode, profile: TelegramProfile) -> str:
+        if mode == "fleet":
+            return render_fleet_summary(self._fleet.reroll_snapshot(), fields=profile.fields)
+        paused = self._controls.snapshot().paused if self._controls is not None else None
+        return render_summary(self._state.snapshot(), paused=paused, label=self._label,
+                              fields=profile.fields if self._preferences is not None else None)
 
     def tick(self) -> bool:
         """Build and send one digest. Never raises.
@@ -329,11 +492,20 @@ class TelegramReporter:
         feature uses to mean "the bot is gone". So every failure is counted
         and logged, and the timer keeps its next appointment.
         """
+        current = self._safe_current_profile()
+        if current is None or not current[1].enabled:
+            return False
         try:
-            text = self.render()
+            text = self._render_for(current[0], current[1])
         except Exception:  # noqa: BLE001 - a bad snapshot must not kill the timer
             self.failures += 1
             logger.exception("telegram digest could not be rendered")
+            return False
+
+        # Rendering a fleet can involve several disk reads and worker HTTP
+        # requests. A save during that work invalidates the prepared body.
+        newest = self._safe_current_profile()
+        if newest is None or not newest[1].enabled or newest != current:
             return False
 
         try:

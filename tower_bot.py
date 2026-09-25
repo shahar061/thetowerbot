@@ -98,6 +98,7 @@ from sinks.store import StoreSink
 from sinks.tui import TuiSink
 from strategy import MIN_INTERVAL, ControlError, Strategy, StrategyStore
 from telegram_report import TelegramConfig, TelegramReporter
+from telegram_settings import TelegramSettingsStore, legacy_telegram_interval_from_env
 
 logger = logging.getLogger("tower_bot")
 _FAILED_MILESTONES_RETRY_SECONDS = 60.
@@ -2555,9 +2556,20 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     # something below appends a StateSink. --once is excluded outright - a
     # single scan has no "still running" to report on, and a digest for it
     # would arrive after the process had already exited.
+    if args.reroll_pool is not None and runtime is not None:
+        telegram_root = runtime.root.parent.parent
+    elif callable(getattr(fleet_controller, "reroll_snapshot", None)):
+        telegram_root = fleet_controller.root
+    else:
+        telegram_root = db_path.parent
+    telegram_store = TelegramSettingsStore(
+        telegram_root / "telegram-settings.json",
+        initial_interval_seconds=legacy_telegram_interval_from_env(),
+    )
+    # A fleet worker inherits the coordinator's environment, but only the
+    # coordinator should send an aggregate digest to that chat.
     telegram_settings = (
-        None
-        if args.once or args.no_telegram
+        None if args.once or args.no_telegram or args.reroll_pool is not None
         else TelegramConfig.from_env(interval=args.telegram_interval)
     )
     sinks: list[events.Sink] = [TuiSink(state=state) if args.tui else LogSink()]
@@ -2660,11 +2672,17 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
             # `paused`, and Controls does not exist until the strategy has
             # loaded. Its first digest goes out immediately, which is also
             # the "bot just came up" signal.
-            reporter = TelegramReporter(state, telegram_settings, controls=controls)
+            reporter = TelegramReporter(
+                state, telegram_settings, controls=controls,
+                preferences=telegram_store,
+                fleet=(fleet_controller if callable(getattr(fleet_controller, "reroll_snapshot", None)) else None),
+                interval_override_seconds=(telegram_settings.interval if args.telegram_interval is not None else None),
+            )
             reporter.start()
             logger.info(
-                "Telegram digests every %.0fs to chat %s",
-                telegram_settings.interval, telegram_settings.chat_id,
+                "Telegram digests configured for chat %s; schedule follows saved settings%s",
+                telegram_settings.chat_id,
+                " (CLI interval override active)" if args.telegram_interval is not None else "",
             )
 
         if args.once:
@@ -2733,6 +2751,11 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 store=store,
                 shopping=shopping_session,
                 fleet=fleet_controller,
+                telegram_store=telegram_store,
+                telegram_reporter=reporter,
+                telegram_interval_override=(telegram_settings.interval if args.telegram_interval is not None
+                                            and telegram_settings is not None else None),
+                telegram_suppressed=args.no_telegram or args.reroll_pool is not None,
             )
             # No signal handlers of ours here: uvicorn installs its own and
             # would overwrite them anyway.

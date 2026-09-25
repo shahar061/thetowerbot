@@ -9,6 +9,7 @@ import {
   fetchAccountWorkshopPurchases, fetchAccountRuns, fetchAccountRunPurchases,
   fetchAccountRoadmap, fetchAccountSnapshot, fetchAccountStats, fetchAccountLedger, fetchAccountWorkshopSummary,
   startNewReroll, listRerolls,
+  fetchTelegramSettings, saveTelegramSettings, previewTelegramMessage,
 } from "./api";
 import type { Strategy } from "./types";
 import { setAccountScope } from "./accountScope";
@@ -86,6 +87,56 @@ beforeEach(() => {
   respond(200, {});
   vi.stubEnv("NEXT_PUBLIC_BACKEND_HASH", "backend-hash");
   vi.stubEnv("NEXT_PUBLIC_UI_HASH", "ui-hash");
+});
+
+describe("Telegram settings API", () => {
+  it("reads host settings without the selected account scope", async () => {
+    setAccountScope("worker:Air18");
+    await fetchTelegramSettings("fleet");
+    const [url, init] = callArgs();
+    expect(url).toBe("/api/telegram/settings?mode=fleet");
+    expect(init?.headers).not.toHaveProperty("x-account-scope");
+  });
+
+  it("preflights a save against host status and sends the selected profile", async () => {
+    setAccountScope("worker:Air18");
+    fetchMock.mockReset()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({
+        ...validStatus, runtime: { ...validStatus.runtime,
+          capabilities: [...validStatus.runtime.capabilities, "telegram"] },
+      }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
+    const profile = { enabled: true, interval_minutes: 15, fields: ["screen"] };
+    await saveTelegramSettings("single", profile);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/status");
+    expect(fetchMock.mock.calls[0][1]?.headers).not.toHaveProperty("x-account-scope");
+    expect(writeArgs()[0]).toBe("/api/telegram/settings?mode=single");
+    expect(writeArgs()[1]?.body).toBe(JSON.stringify(profile));
+  });
+
+  it("blocks a write when the backend build differs", async () => {
+    fetchMock.mockReset().mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({
+      ...validStatus, runtime: { ...validStatus.runtime,
+        backend: { ...validStatus.runtime.backend, source_hash: "other-build" },
+        capabilities: [...validStatus.runtime.capabilities, "telegram"] },
+    }) });
+    await expect(saveTelegramSettings("single", { enabled: true, interval_minutes: 15,
+      fields: ["screen"] })).rejects.toThrow(ApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends an unsaved profile to the preview route", async () => {
+    fetchMock.mockReset()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({
+        ...validStatus, runtime: { ...validStatus.runtime,
+          capabilities: [...validStatus.runtime.capabilities, "telegram"] },
+      }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ message: "sample" }) });
+    const result = await previewTelegramMessage("fleet", { enabled: false, interval_minutes: 30,
+      fields: ["tier_wave"] });
+    expect(result.message).toBe("sample");
+    expect(writeArgs()[0]).toBe("/api/telegram/preview?mode=fleet");
+  });
 });
 
 describe("fleet routes", () => {
