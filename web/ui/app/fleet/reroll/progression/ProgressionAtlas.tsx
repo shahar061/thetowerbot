@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState, type PointerEvent } from "
 import { Compass, Crosshair, GitBranch, List, Maximize2, Minus, Plus, Shield, Sparkles, Swords } from "lucide-react";
 import { buildFleetGraph, currentObjective, STATUS_LABELS, type AtlasNode, type WorkerRoadmap } from "./fleetRoadmap";
 import { deviceColor } from "@/lib/rerollState";
+import { timeLabel } from "../statsHelpers";
 import styles from "./atlas.module.css";
 
 const VIEW_WIDTH = 1200;
@@ -32,10 +33,19 @@ export function ProgressionAtlas({ workers, pending = false, initialWorker = nul
   const camera = manualCamera ?? { x: viewWidth / 2 - (firstObjective?.x ?? viewWidth / 2), y: VIEW_HEIGHT / 2 - (firstObjective?.y ?? VIEW_HEIGHT / 2), scale: 1 };
   const pattern = useId().replace(/:/g, "");
   const chosen = graph.nodes.find((node) => node.id === selected);
+  const hasWaveGate = chosen?.tier != null && chosen.wave != null;
   const denominator = workers.filter(({ member }) => member.account_id && member.account_key).length;
   const focus = workers.find(({ member }) => member.name === focusedWorker);
   const selectedPlan = focus?.member.reroll_plan?.account_id === focus?.member.account_id ? focus?.member.reroll_plan : null;
-  function select(node: AtlasNode): void { setSelected(node.id); }
+  const fastest = chosen?.accounts.reduce<number | null>((best, account) => {
+    const seconds = account.wave_gate?.play_seconds;
+    return seconds == null ? best : best == null ? seconds : Math.min(best, seconds);
+  }, null);
+  const slowest = Math.max(1, ...(chosen?.accounts.map((account) => account.wave_gate?.play_seconds ?? 0) ?? []));
+  function select(node: AtlasNode): void {
+    setSelected(node.id);
+    setCamera({ x: viewWidth / 2 - node.x * camera.scale, y: VIEW_HEIGHT / 2 - node.y * camera.scale, scale: camera.scale });
+  }
   function fit(): void {
     const scale = Math.min(1, viewWidth / graph.width, VIEW_HEIGHT / graph.height);
     setCamera({ x: (viewWidth - graph.width * scale) / 2, y: (VIEW_HEIGHT - graph.height * scale) / 2, scale });
@@ -52,7 +62,7 @@ export function ProgressionAtlas({ workers, pending = false, initialWorker = nul
     if (node) { select(node); setCamera({ x: viewWidth / 2 - node.x, y: VIEW_HEIGHT / 2 - node.y, scale: 1 }); }
   }
   function pointerDown(event: PointerEvent<SVGSVGElement>): void {
-    if ((event.target as Element).closest('[role="button"]')) return;
+    if ((event.target as Element).closest('[data-atlas-node]')) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     drag.current = { x: event.clientX, y: event.clientY, px: camera.x, py: camera.y };
   }
@@ -62,6 +72,14 @@ export function ProgressionAtlas({ workers, pending = false, initialWorker = nul
     const x = drag.current.px + (event.clientX - drag.current.x) * factor;
     const y = drag.current.py + (event.clientY - drag.current.y) * factor;
     setCamera(() => ({ ...camera, x: Math.max(-graph.width * camera.scale + 150, Math.min(viewWidth - 150, x)), y: Math.max(-graph.height * camera.scale + 150, Math.min(VIEW_HEIGHT - 150, y)) }));
+  }
+  function pointerUp(event: PointerEvent<SVGSVGElement>): void {
+    if (!drag.current) {
+      const target = (event.target as Element).closest('[data-atlas-node]');
+      const node = graph.nodes.find((entry) => entry.id === target?.getAttribute("data-atlas-node"));
+      if (node) select(node);
+    }
+    drag.current = null;
   }
   return <div className={styles.atlas}>
     <section aria-label="Reroll ladder" className={styles.ladder}>
@@ -86,10 +104,11 @@ export function ProgressionAtlas({ workers, pending = false, initialWorker = nul
       <div className={styles.toolbar}><div><Compass size={18} /><strong>Unlock constellations</strong><span>{graph.nodes.length} milestones · {graph.groups.length} categories</span></div>
         <div><button aria-label="Map view" aria-pressed={!list} onClick={() => setList(false)}><GitBranch size={16} /> Map</button><button aria-label="List view" aria-pressed={list} onClick={() => setList(true)}><List size={16} /> List</button></div>
       </div>
+      <div className={`${styles.mapBody} ${chosen ? styles.withInspector : ""}`}><div className={styles.mapSurface}>
       {!graph.nodes.length ? <div className={styles.empty}>{pending ? "Assembling the fleet atlas…" : "No milestone catalog available. A verified worker roadmap is needed to draw the atlas."}</div> : list ? <div className={styles.list}>
         {graph.groups.map((group) => <section key={group.name}><h2>{group.name} <span>{group.count}</span></h2><div>{graph.nodes.filter((node) => node.group === group.name).map((node) => <button key={node.id} onClick={() => select(node)} aria-label={`Inspect ${node.title}`}><strong>{node.title}</strong><span>{node.tier && node.wave ? `T${node.tier} · W${node.wave}` : node.kind}</span><span>{node.verified}/{denominator} verified</span></button>)}</div></section>)}
       </div> : <div className={styles.canvas}>
-        <svg ref={svg} viewBox={`0 0 ${viewWidth} ${VIEW_HEIGHT}`} aria-label="Interactive milestone map" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
+        <svg ref={svg} viewBox={`0 0 ${viewWidth} ${VIEW_HEIGHT}`} aria-label="Interactive milestone map" aria-hidden="true" focusable="false" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={() => { drag.current = null; }}>
           <defs><pattern id={pattern} width="32" height="32" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".7" fill="currentColor" opacity=".13" /></pattern><radialGradient id={`${pattern}-island`}><stop offset="0%" stopColor="var(--atlas-accent)" stopOpacity=".1" /><stop offset="65%" stopColor="var(--atlas-accent)" stopOpacity=".035" /><stop offset="100%" stopColor="var(--atlas-accent)" stopOpacity="0" /></radialGradient></defs>
           <rect width="100%" height="100%" fill={`url(#${pattern})`} />
           <g transform={`translate(${camera.x} ${camera.y}) scale(${camera.scale})`}>
@@ -106,11 +125,7 @@ export function ProgressionAtlas({ workers, pending = false, initialWorker = nul
               const account = node.accounts.find((entry) => entry.member.name === focusedWorker);
               const illuminated = account ? known(account.status) : node.accounts.some((entry) => known(entry.status));
               const unknown = account ? account.status === "unknown" : node.accounts.every((entry) => entry.status === "unknown");
-              return <g key={node.id} transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} aria-label={`Select ${node.title}, ${node.verified} of ${denominator} verified`} aria-pressed={active} onFocus={() => {
-                const x = node.x * camera.scale + camera.x;
-                const y = node.y * camera.scale + camera.y;
-                if (x < 60 || x > viewWidth - 60 || y < 60 || y > VIEW_HEIGHT - 90) setCamera({ x: viewWidth / 2 - node.x, y: VIEW_HEIGHT / 2 - node.y, scale: 1 });
-              }} onClick={() => select(node)} onKeyDown={(event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); select(node); } }} className={`${styles.node} ${active ? styles.selected : ""} ${illuminated ? styles.illuminated : ""} ${unknown ? styles.unknown : ""}`}>
+              return <g key={node.id} data-atlas-node={node.id} transform={`translate(${node.x} ${node.y})`} className={`${styles.node} ${active ? styles.selected : ""} ${illuminated ? styles.illuminated : ""} ${unknown ? styles.unknown : ""}`}>
                 <title>{node.title} · {node.accounts.map((entry) => `${entry.member.name}: ${STATUS_LABELS[entry.status]}`).join("; ")}</title>
                 <rect className={styles.hitTarget} x="-122" y="-49" width="244" height="135" rx="10" />
                 <circle className={styles.orbit} r="43" />
@@ -125,18 +140,30 @@ export function ProgressionAtlas({ workers, pending = false, initialWorker = nul
         <div className={styles.mapHint}>Drag to explore · select a node to compare{camera.scale < .55 && " · zoom in for labels"}</div>
         <div className={styles.controls}><button aria-label="Zoom out" onClick={() => zoom(.8)}><Minus size={17} /></button><span>{Math.round(camera.scale * 100)}%</span><button aria-label="Zoom in" onClick={() => zoom(1.25)}><Plus size={17} /></button><button aria-label="Fit atlas" onClick={fit}><Maximize2 size={17} /></button><button aria-label="Focus current objective" onClick={objective}><Crosshair size={17} /></button></div>
       </div>}
+      </div>
+      {chosen && <section aria-label={`${chosen.title} comparison`} className={styles.inspector}>
+        <header><div><small>{chosen.group} / FLEET TIMING</small><h2>{chosen.title}</h2><p>{chosen.description}</p></div><button onClick={() => setSelected(null)} aria-label="Close milestone comparison">×</button></header>
+        <div className={styles.inspectorContent}>
+          <p className={styles.clockLabel}>{hasWaveGate ? `T${chosen.tier} · W${chosen.wave} gate / recorded play` : "Recorded progress / fleet evidence"}</p>
+          {chosen.accounts.map((account, index) => {
+            const seconds = account.wave_gate?.play_seconds;
+            const label = account.error ? "Evidence unavailable" : !hasWaveGate ? "No timed wave gate" : seconds == null ? account.status === "verified" ? "Reached · time not recorded" : "Not reached" : timeLabel(seconds);
+            return <article key={account.member.name} className={styles.timingRow}>
+              <div className={styles.timingTop}><h3><i style={{ background: deviceColor(account.member.name) }}>{index + 1}</i>{account.member.name}</h3><strong>{label}</strong></div>
+              <div className={styles.timingTrack}><span style={{ width: `${seconds == null ? 0 : Math.max(6, seconds / slowest * 100)}%`, background: deviceColor(account.member.name) }} /></div>
+              <div className={styles.timingMeta}><span>{STATUS_LABELS[account.status]}</span>{seconds != null && fastest === seconds && <span>Fastest recorded</span>}{account.wave_gate && <span>Elapsed {timeLabel(account.wave_gate.elapsed_seconds)}</span>}</div>
+              {account.progress && <p className={styles.progressText}>Observed {account.progress.current} / {account.progress.target}</p>}
+            </article>;
+          })}
+          <p className={styles.timingFootnote}>{hasWaveGate ? "Confirmed at the end of the first completed run to reach this wave, not the exact unlock time. Play time excludes gaps between runs." : "This milestone has no timed wave gate. Status reflects observed account evidence."}</p>
+          <details className={styles.nodeDetails}><summary>Evidence & next decision</summary>{chosen.accounts.map((account) => {
+            const plan = account.member.reroll_plan?.account_id === account.member.account_id ? account.member.reroll_plan : null;
+            return <p key={account.member.name}><strong>{account.member.name}</strong><span>{account.missing.length ? `Waiting for ${account.missing.map((id) => graph.nodes.find((node) => node.id === id)?.title ?? id).join(", ")}` : "Prerequisites clear"} · {plan?.item ? `Next: ${plan.item}` : "Next purchase unknown"}</span></p>;
+          })}</details>
+        </div>
+      </section>}
+      </div>
       <div className={styles.legend}><span><i className={styles.solidLine} /> Confirmed prerequisite</span><span><i className={styles.legendNode} /> Filled marker: reached or available</span><span><i className={styles.unknownNode} /> Unknown evidence</span><span>Verified counts require explicit verification</span></div>
     </section>
-    {chosen ? <section aria-label={`${chosen.title} comparison`} className={styles.comparison}>
-      <header><div><small>{chosen.group} / FLEET COMPARISON</small><h2>{chosen.title}</h2><p>{chosen.description}</p></div><button onClick={() => setSelected(null)} aria-label="Close milestone comparison">×</button></header>
-      <div className={styles.comparisonGrid}>{chosen.accounts.map((account, index) => {
-        const plan = account.member.reroll_plan?.account_id === account.member.account_id ? account.member.reroll_plan : null;
-        return <article key={account.member.name}><h3><i style={{ background: deviceColor(account.member.name) }}>{index + 1}</i>{account.member.name}<small>{account.member.account_id ?? "Unverified account"}</small></h3>
-          <strong className={styles.status} data-status={account.status}>{STATUS_LABELS[account.status]}</strong>
-          <dl><dt>Observed progress</dt><dd>{account.progress ? `${account.progress.current} / ${account.progress.target}` : "Unknown"}</dd><dt>Prerequisites still unverified</dt><dd>{account.missing.length ? account.missing.map((id) => graph.nodes.find((node) => node.id === id)?.title ?? id).join(", ") : account.requires.length ? "None" : "No catalog prerequisites"}</dd><dt>Next workshop decision</dt><dd>{plan?.item ? `${plan.item} · ${plan.state.replace(/_/g, " ")}` : "Unknown"}</dd><dt>Milestone observation age</dt><dd>Not supplied by roadmap</dd>{plan && <><dt>Strategy observed</dt><dd>{new Date(plan.observed_at * 1000).toLocaleString()}</dd></>}</dl>
-          {account.error && <p className={styles.workerError}>{account.error}</p>}
-        </article>;
-      })}</div>
-    </section> : graph.nodes.length > 0 && <div className={styles.selectionPrompt}><Crosshair size={20} /><span>Select a milestone to compare every worker’s evidence, prerequisites, and next decision.</span></div>}
   </div>;
 }
