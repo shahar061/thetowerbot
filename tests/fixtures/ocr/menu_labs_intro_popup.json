@@ -1,0 +1,212 @@
+[
+  {
+    "text": "824",
+    "confidence": 0.9986123243967692,
+    "rect": [
+      87,
+      25,
+      108,
+      47
+    ]
+  },
+  {
+    "text": "129",
+    "confidence": 0.9986999034881592,
+    "rect": [
+      436,
+      27,
+      93,
+      49
+    ]
+  },
+  {
+    "text": "LAB",
+    "confidence": 0.9934575955073038,
+    "rect": [
+      26,
+      108,
+      110,
+      49
+    ]
+  },
+  {
+    "text": "Lab 1",
+    "confidence": 0.9039157271385193,
+    "rect": [
+      26,
+      262,
+      94,
+      39
+    ]
+  },
+  {
+    "text": "Lab Offline",
+    "confidence": 0.941976623101668,
+    "rect": [
+      396,
+      442,
+      287,
+      47
+    ]
+  },
+  {
+    "text": "LABS",
+    "confidence": 0.9977242052555084,
+    "rect": [
+      452,
+      552,
+      178,
+      58
+    ]
+  },
+  {
+    "text": "Lab",
+    "confidence": 0.9759587049484253,
+    "rect": [
+      26,
+      654,
+      68,
+      36
+    ]
+  },
+  {
+    "text": "Labs grant you incremental upgrades to",
+    "confidence": 0.9821289197394723,
+    "rect": [
+      175,
+      938,
+      727,
+      45
+    ]
+  },
+  {
+    "text": "different parts of the game. Unlock research",
+    "confidence": 0.9961386553265832,
+    "rect": [
+      139,
+      985,
+      803,
+      45
+    ]
+  },
+  {
+    "text": "by completing Tier milestones. Start a lab",
+    "confidence": 0.9917774739719573,
+    "rect": [
+      165,
+      1037,
+      752,
+      40
+    ]
+  },
+  {
+    "text": "by selecting a research and spending coins.",
+    "confidence": 0.9925794643025065,
+    "rect": [
+      149,
+      1086,
+      780,
+      40
+    ]
+  },
+  {
+    "text": "Spend Cells to accelerate your lab progress,",
+    "confidence": 0.980272734707052,
+    "rect": [
+      144,
+      1180,
+      792,
+      42
+    ]
+  },
+  {
+    "text": "or spend Gems to automatically finish the",
+    "confidence": 0.9889358238476079,
+    "rect": [
+      160,
+      1227,
+      760,
+      41
+    ]
+  },
+  {
+    "text": "level.",
+    "confidence": 0.9669748445351919,
+    "rect": [
+      486,
+      1273,
+      107,
+      43
+    ]
+  },
+  {
+    "text": "Turn on lab queuing to",
+    "confidence": 0.9948879697106101,
+    "rect": [
+      408,
+      1394,
+      410,
+      47
+    ]
+  },
+  {
+    "text": "automaticallyresearchthenext",
+    "confidence": 0.9975076339074543,
+    "rect": [
+      325,
+      1449,
+      581,
+      35
+    ]
+  },
+  {
+    "text": "leveloncethepreviousoneis",
+    "confidence": 0.9947020626068115,
+    "rect": [
+      350,
+      1496,
+      532,
+      36
+    ]
+  },
+  {
+    "text": "finished.",
+    "confidence": 0.9996901154518127,
+    "rect": [
+      535,
+      1539,
+      160,
+      42
+    ]
+  },
+  {
+    "text": "Every fully completedresearchincreases",
+    "confidence": 0.981592617536846,
+    "rect": [
+      169,
+      1664,
+      745,
+      40
+    ]
+  },
+  {
+    "text": "the strength of Gems used in lab rushes.",
+    "confidence": 0.9826118230819703,
+    "rect": [
+      175,
+      1712,
+      727,
+      40
+    ]
+  },
+  {
+    "text": "Gem Rush Efficiency: 1x",
+    "confidence": 0.9949984783711641,
+    "rect": [
+      329,
+      1808,
+      423,
+      42
+    ]
+  }
+]

@@ -215,7 +215,20 @@ def test_changed_price_resets_confirmation_and_timeout_records_no_purchase() -> 
     assert result.observed_coin_spend == 0
 
 
-def test_second_lab_unlock_requires_stable_price_and_verified_gem_debit() -> None:
+def test_labs_intro_popup_is_closed_before_lab_one_is_read() -> None:
+    visit, device = setup()
+    visit.request()
+    with patch("lab_visit.tap", side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        assert visit.advance(frame("menu_labs_intro_popup"),
+                             boxes("menu_labs_intro_popup"), device, 10) is None
+        assert visit.last_tap is not None and visit.last_tap[0] == "close_labs_intro"
+        x, y = device.taps[-1]
+        assert abs(x - 906) <= 4 and abs(y - 563) <= 4
+        visit.advance(frame("menu_labs_slot1_idle"), boxes("menu_labs_slot1_idle"), device, 11)
+    assert visit.last_tap is not None and visit.last_tap[0] == "open_lab_one"
+
+
+def test_lab_one_is_checked_first_then_second_lab_unlocks_with_verified_debit() -> None:
     from lab_screen import read_home
 
     image = frame("menu_labs_slot1_idle")
@@ -234,17 +247,28 @@ def test_second_lab_unlock_requires_stable_price_and_verified_gem_debit() -> Non
     assert read_home(image, owned).slot2_status == "owned"
     visit, device = setup()
     visit.request()
+    picker = frame("menu_labs_game_speed_picker")
+    picker_text = boxes("menu_labs_game_speed_picker")
     with patch("lab_visit.tap", side_effect=lambda _device, x, y: device.taps.append((x, y))):
         visit.advance(image, locked, device, 10.)
-        assert device.taps == []
-        visit.advance(image, locked, device, 11.)
-        assert len(device.taps) == 1
-        assert device.taps[0] == (price.rect.x + price.rect.w // 2,
-                                  price.rect.y + price.rect.h // 2)
-        visit.advance(image, owned, device, 12.)
-        visit.advance(image, owned, device, 13.)
-        visit.advance(image, owned, device, 14.)
-        result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 15.)
+        assert visit.last_tap is not None and visit.last_tap[0] == "open_lab_one"
+        visit.advance(picker, picker_text, device, 11.)
+        visit.advance(picker, picker_text, device, 12.)
+        assert visit.last_tap is not None and visit.last_tap[0] == "close_picker"
+        visit.advance(image, locked, device, 13.)
+        assert visit.last_tap is None
+        visit.advance(image, locked, device, 14.)
+        assert visit.last_tap is not None and visit.last_tap[0] == "unlock_lab_two"
+        assert device.taps[-1] == (price.rect.x + price.rect.w // 2,
+                                   price.rect.y + price.rect.h // 2)
+        visit.advance(image, owned, device, 15.)
+        visit.advance(image, owned, device, 16.)
+        visit.advance(image, owned, device, 17.)
+        assert visit.last_tap is not None and visit.last_tap[0] == "return_to_battle"
+        result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 18.)
     assert result is not None
-    assert result.status == "slot2_unlocked"
+    assert result.status == "observed"
+    assert result.decision.kind == "wait_coins"
+    assert result.slot2_status == "owned"
     assert result.observed_gem_spend == 100
+    assert result.gems_before == 119 and result.gem_balance == 19
