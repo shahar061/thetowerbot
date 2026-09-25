@@ -12,26 +12,22 @@ const EXAMPLES: Record<GuideBlockType, string> = {
   buy: "Buy Thorns: unlocked, costs 400, wallet 450 → buys. Wallet 300 → passes to the next block.",
   pool: "Pool Damage → Attack Speed, Damage capped at 2 buys: after 2 Damage buys, Attack Speed is picked. Add a target (Thorns → 51) to stop once the stat reaches 51%.",
   condition: "If current wave ≤ 20 → Then: economy pool. At wave 25 the Else path runs; if the wave is unknown, the decision waits.",
-  fallback: "Paths: [Def. Abs pool, Wait]. If Def. Abs can't be bought, the Wait stops everything else from spending.",
+  fallback: "Paths: [Def. Abs pool, Wait]. Def. Abs costs 120 with 90 cash: the pool can't buy, so the Wait stops the decision and the 90 cash is kept.",
   budget: "Target 350, ceiling 400, spent 340: a 70-coin item is rejected (340 + 70 > 400); a 50-coin item is bought.",
   save_for: "Goal Thorns costs 409, wallet 300: records \"Saving for Thorns\" and lets later blocks try a cheaper buy. Only one goal saves at a time.",
   while_saving: "While saving for Thorns → Def. Abs at ≤ 80% of Thorns. Skipped when nothing is saving or the goal is a different upgrade.",
-  wait: "Place at the end of a path to keep coins instead of falling through to later blocks.",
-  native: "Older strategies may contain sealed policy blocks. They still run exactly as before; build new routes from the blocks above.",
+  wait: "Route [Save for Thorns (409), Wait]: with 300 coins nothing is affordable, so the Wait ends the decision and all 300 coins stay in the wallet.",
+  native: "A saved copy from before blocks existed may hold 4 sealed policy blocks (starter, economy, objectives, fallback). They still run exactly as before; the Opening and Turtle templates now use the blocks above instead.",
 };
 
 function Route({ walk }: { walk: Walkthrough }): React.JSX.Element {
   const [scenario, setScenario] = useState(walk.scenarios[0]);
-  // role="status" (an implicit aria-live=polite region) is only meaningful once a
-  // scenario toggle has actually changed the reason text; granting it unconditionally
-  // to every walkthrough card would put several competing status regions on one page.
-  const [touched, setTouched] = useState(false);
   return <section className={styles.walk} aria-label={walk.title}>
     <h3>{walk.title} <span>{walk.lane}</span></h3>
-    <div className={styles.toggles}>{walk.scenarios.map(item => <button key={item.id} type="button" aria-pressed={item.id === scenario.id} onClick={() => { setScenario(item); setTouched(true); }}>{item.label}</button>)}</div>
+    <div className={styles.toggles}>{walk.scenarios.map(item => <button key={item.id} type="button" aria-pressed={item.id === scenario.id} onClick={() => setScenario(item)}>{item.label}</button>)}</div>
     <ol className={styles.route}>{walk.steps.map((step, index) => <li key={step.id} data-active={step.id === scenario.active}>
       <span className={styles.stepNo}>{index + 1}</span><div><strong>{step.title}</strong><p>{step.detail}</p></div></li>)}</ol>
-    <p role={touched ? "status" : undefined} className={styles.reason}>{scenario.reason}</p>
+    <p role="status" className={styles.reason}>{scenario.reason}</p>
   </section>;
 }
 

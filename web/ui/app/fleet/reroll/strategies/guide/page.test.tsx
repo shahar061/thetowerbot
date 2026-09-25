@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import StrategyGuidePage from "./page";
 import { GUIDE_BLOCKS } from "../strategyBlocks";
@@ -19,13 +19,27 @@ test("guide explains the loop and every block with an anchor and a diagram", () 
 
 test("walkthrough scenarios highlight the active block and reason", () => {
   render(<StrategyGuidePage />);
-  fireEvent.click(screen.getByRole("button", { name: "Saving for Thorns" }));
-  expect(screen.getByText(/cheap defense/i, { selector: "[data-active=true] *" })).toBeInTheDocument();
-  expect(screen.getByRole("status")).toHaveTextContent(/80% of the Thorns price/);
+  // Both walkthroughs render their own always-live role="status" reason paragraph, so the
+  // query is scoped to the "Turtle · Workshop" region (its <section aria-label> gives an
+  // implicit region role) to keep it unambiguous.
+  const workshop = screen.getByRole("region", { name: /Turtle · Workshop/i });
+  fireEvent.click(within(workshop).getByRole("button", { name: "Saving for Thorns" }));
+  expect(within(workshop).getByText(/cheap defense/i, { selector: "[data-active=true] *" })).toBeInTheDocument();
+  expect(within(workshop).getByRole("status")).toHaveTextContent(/80% of the Thorns price/);
 });
 
 test("guide links back to the studio", () => {
   render(<StrategyGuidePage />);
   // Ruling: repo uses trailingSlash: true (web/ui/next.config), so internal links must keep the trailing slash.
   expect(screen.getByRole("link", { name: /back to strategy studio/i })).toHaveAttribute("href", "/fleet/reroll/strategies/");
+});
+
+test("every block card's worked example includes a number", () => {
+  const { container } = render(<StrategyGuidePage />);
+  for (const block of GUIDE_BLOCKS) {
+    const section = container.querySelector(`#block-${block.type}`);
+    const example = section!.querySelector(".example");
+    expect(example, block.type).not.toBeNull();
+    expect(example!.textContent, block.type).toMatch(/\d/);
+  }
 });
