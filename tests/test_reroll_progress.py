@@ -386,6 +386,8 @@ def test_published_worker_plan_contains_ten_account_bound_buys(tmp_path: Path) -
     payload = json.loads((progress.root / "reroll-plan.json").read_text())
     assert len(payload["next_purchases"]) == 10
     assert payload["next_purchases"][0]["account_id"] == "ACCOUNT-A"
+    assert payload["confirmed_purchases"] == progress._history()[1]
+    assert payload["price_source"] in {"observed", "catalog_estimate", None}
 
 
 def test_the_worker_variant_file_reaches_the_planner(tmp_path: Path) -> None:

@@ -634,6 +634,9 @@ class RerollProgress:
                                            utility_spent_coins=self._utility_spent()),
                                banned_upgrade_ids=banned, priority_ids=priorities)
         payload = {**asdict(decision), "observed_at": now,
+                   "confirmed_purchases": purchases,
+                   "price_source": (self._quotes[decision.upgrade_id].source
+                                    if decision.upgrade_id in self._quotes else None),
                    "next_purchases": [asdict(step) for step in preview]}
         temporary = path.with_name(f".reroll-plan.{uuid4().hex}.tmp")
         try:

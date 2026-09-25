@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { BuildRouteDocument } from "@/lib/buildRoute";
 import type { Upgrade } from "@/lib/types";
 import { FlowBuilder } from "./FlowBuilder";
+vi.mock("./routeCanvas.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 
 const api = vi.hoisted(() => ({ preview: vi.fn(), publish: vi.fn(), revisions: vi.fn(), rollback: vi.fn(), rebind: vi.fn() }));
 vi.mock("@/lib/api", () => ({
@@ -32,7 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.preview.mockResolvedValue({ saved_revision: 2, proposed_revision: 3, members: [{ worker: "Air_38", account_id: "account-a",
     current: { status: "observed", decision: { item: "Damage" } }, proposed: { status: "projected", decision: { item: "Cash/Wave" } } }] });
-  api.publish.mockImplementation(async ({ route: draft }: { route: BuildRouteDocument }) => ({ ...draft, revision: 3 }));
+  api.publish.mockImplementation(async (draft: BuildRouteDocument) => ({ ...draft, revision: 3 }));
   api.revisions.mockResolvedValue({ revisions: [route] });
   api.rebind.mockResolvedValue({ worker: "Air_38", old_account_id: "old-account",
     new_account_id: "account-a", patched_rules: ["workshop.default"],
@@ -53,16 +54,25 @@ test("reorders with buttons and pointer drag, keeping keyboard focus", () => {
   expect(within(screen.getAllByTestId("priority-row")[0]).getByText("Damage")).toBeInTheDocument();
 });
 
-test("searches Never Buy and keeps budget separate from weighted luck", () => {
+test("moves a palette block to Never Buy without checkboxes and publishes budget and luck separately", async () => {
   render(<FlowBuilder saved={route} catalog={catalog} members={members} onPublished={vi.fn()} />);
   fireEvent.change(screen.getByRole("searchbox", { name: "Search upgrades" }), { target: { value: "defense" } });
-  fireEvent.click(screen.getByRole("checkbox", { name: "Never buy Defense Absolute" }));
+  fireEvent.dragStart(screen.getByTestId("palette-defense_absolute"));
+  fireEvent.dragOver(screen.getByTestId("never-buy-drop"));
+  fireEvent.drop(screen.getByTestId("never-buy-drop"));
   expect(screen.getByText("Never Buy · 1")).toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: /Never buy/ })).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Spend limit"), { target: { value: "30" } });
   fireEvent.change(screen.getByLabelText("Weighted luck"), { target: { value: "25" } });
   expect(screen.getByLabelText("Spend limit")).toHaveValue(30);
   expect(screen.getByLabelText("Weighted luck")).toHaveValue(25);
   expect(screen.getByLabelText("Weight for Cash/Wave")).toHaveValue(1);
+  fireEvent.click(screen.getByRole("button", { name: "Publish route" }));
+  await waitFor(() => expect(api.publish).toHaveBeenCalledWith(expect.objectContaining({
+    baseline: expect.objectContaining({ workshop: expect.objectContaining({
+      banned_upgrade_ids: ["defense_absolute"], coin_spend_limit_pct: 30, draw_chance_pct: 25,
+    }) }),
+  }), 2));
 });
 
 test("previews current and proposed per account before publishing", async () => {
@@ -127,6 +137,7 @@ test("rebind needs a server preview and an explicit reapply action", async () =>
 
 test("builds a highest-wave economy branch with ten-wave budget and separate luck", () => {
   render(<FlowBuilder saved={route} catalog={catalog} members={members} onPublished={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "In-game lane" }));
   fireEvent.click(screen.getByRole("button", { name: "Build battle phases" }));
   fireEvent.click(screen.getByRole("button", { name: "Add 50-wave economy branch" }));
   expect(screen.getByLabelText("Highest-wave gate for battle.economy.1")).toHaveValue(50);
@@ -135,11 +146,34 @@ test("builds a highest-wave economy branch with ten-wave budget and separate luc
   fireEvent.change(screen.getByLabelText("Weighted luck for battle.economy.1.first10"), { target: { value: "25" } });
   expect(screen.getByLabelText("Cash spend limit for battle.economy.1.first10")).toHaveValue(30);
   expect(screen.getByLabelText("Weighted luck for battle.economy.1.first10")).toHaveValue(25);
+  fireEvent.dragStart(screen.getByTestId("battle-palette-battle.economy.1.first10-damage"));
+  fireEvent.dragOver(screen.getByTestId("battle-path-battle.economy.1.first10"));
+  fireEvent.drop(screen.getByTestId("battle-path-battle.economy.1.first10"));
+  expect(screen.getByTestId("battle-priority-battle.economy.1.first10-damage")).toBeInTheDocument();
 });
 
-test("resource path marks future actions planned and cannot enable them", () => {
+test("resource paths publish planned blocks without enabling unsupported automation", async () => {
   render(<FlowBuilder saved={route} catalog={catalog} members={members} onPublished={vi.fn()} />);
-  fireEvent.change(screen.getByLabelText("Add gem path step"), { target: { value: "cards" } });
+  fireEvent.click(screen.getByRole("button", { name: /Gems lane/ }));
+  fireEvent.dragStart(screen.getByTestId("resource-palette-cards"));
+  fireEvent.dragOver(screen.getByTestId("gem-path-drop"));
+  fireEvent.drop(screen.getByTestId("gem-path-drop"));
   expect(screen.getAllByText("Planned · not automated").length).toBeGreaterThan(0);
-  expect(screen.getByLabelText("Execution for planned steps")).toBeDisabled();
+  expect(screen.getByTestId("resource-step-cards")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /Labs lane/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Add Slot 2 research/ }));
+  expect(screen.getByTestId("resource-step-slot2_research")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Publish route" }));
+  await waitFor(() => expect(api.publish).toHaveBeenCalledWith(expect.objectContaining({
+    baseline: expect.objectContaining({ gems: expect.objectContaining({ steps: ["unlock_lab_slot_2", "cards"] }),
+      labs: expect.objectContaining({ steps: ["research_game_speed", "slot2_research"] }) }),
+  }), 2));
+});
+
+test("gem spending limit validates before publication", () => {
+  render(<FlowBuilder saved={route} catalog={catalog} members={members} onPublished={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: /Gems lane/ }));
+  fireEvent.change(screen.getByLabelText("Gem spend limit"), { target: { value: "120" } });
+  expect(screen.getByRole("button", { name: "Publish route" })).toBeDisabled();
+  expect(screen.getByText("Gem spend limit must be between 0 and 100%.")).toBeInTheDocument();
 });

@@ -6,6 +6,7 @@ import { deviceColor } from "@/lib/rerollState";
 import type { RerollMember } from "@/lib/fleet";
 import { WorkerBattlePurchases } from "../Purchases";
 import { DecisionInspector, type DecisionSelection } from "./DecisionInspector";
+import styles from "./routeCanvas.module.css";
 
 function phase(stage: string): string {
   return stage.replaceAll("_", " ").replace(/^./, letter => letter.toUpperCase());
@@ -25,12 +26,19 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
   const [selection, setSelection] = useState<DecisionSelection | null>(null);
   const visible = members.filter(member => !member.hidden).sort((a, b) => a.name.localeCompare(b.name));
   const shown = scope === "fleet" ? visible : visible.filter(member => member.name === scope);
+  const ready = visible.filter(member => {
+    const evaluation = member.account_id && member.workshop_evaluation?.account_id === member.account_id ? member.workshop_evaluation : null;
+    const plan = member.account_id && member.reroll_plan?.account_id === member.account_id ? member.reroll_plan : null;
+    return (evaluation?.decision?.state ?? plan?.state) === "buy";
+  }).length;
+  const waiting = visible.filter(member => !member.account_id ||
+    (member.workshop_evaluation?.account_id !== member.account_id && member.reroll_plan?.account_id !== member.account_id)).length;
 
   return <section aria-label="Fleet Build Route" className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
       <div>
-        <h2 className="font-heading font-semibold">Fleet preview</h2>
-        <p className="text-xs text-muted-foreground">Compare the next supported action for every verified account.</p>
+        <h2 className="font-heading font-semibold">Fleet purchase roads</h2>
+        <p className="text-xs text-muted-foreground">The first tile is the current choice. Later tiles are milestone projections; their future price and level are not yet known.</p>
       </div>
       <label className="flex items-center gap-2 text-sm">Emulator scope
         <select aria-label="Emulator scope" className="rounded-md border border-border bg-background px-2 py-1" value={scope} onChange={event => setScope(event.target.value)}>
@@ -38,6 +46,11 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
           {visible.map(member => <option key={member.name} value={member.name}>{member.name}</option>)}
         </select>
       </label>
+    </div>
+    <div className="flex flex-wrap gap-2 text-xs" aria-label="Fleet road summary">
+      <span className="rounded-full border border-border bg-card px-3 py-1">{visible.length} active emulators</span>
+      <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1">{ready} ready to buy</span>
+      <span className="rounded-full border border-border bg-card px-3 py-1">{waiting} waiting for account evidence</span>
     </div>
     {!visible.some(member => member.battle_evaluation?.status === "observed" &&
       member.battle_evaluation.account_id === member.account_id) &&
@@ -47,7 +60,10 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
         const plan = member.account_id && member.reroll_plan?.account_id === member.account_id ? member.reroll_plan : null;
         const evaluation = member.workshop_evaluation?.account_id === member.account_id ? member.workshop_evaluation ?? null : null;
         const item = evaluation?.decision?.item ?? plan?.item ?? null;
+        const upgradeId = evaluation?.decision?.upgrade_id ?? plan?.upgrade_id ?? null;
+        const confirmed = plan?.confirmed_purchases && upgradeId ? plan.confirmed_purchases[upgradeId] ?? 0 : null;
         const price = evaluation?.decision?.price ?? plan?.price ?? null;
+        const priceSource = evaluation?.trace.price_source ?? plan?.price_source ?? null;
         const wallet = evaluation?.decision?.wallet_coins ?? plan?.wallet_coins ?? null;
         const reason = evaluation?.trace.reason ?? plan?.reason ?? "Waiting for verified Workshop observations.";
         const status = stateLabel(evaluation?.status ?? (plan ? "projected" : null));
@@ -66,16 +82,26 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
             <p className="text-xs" aria-label={`Route status for ${member.name}`}>{revisionState}</p>
           </header>
           <section aria-label={`Workshop policy for ${member.name}`} className="space-y-2">
-            <div className="flex items-center justify-between gap-2"><h4 className="text-sm font-semibold">Workshop policy</h4><span className="text-xs text-muted-foreground">{plan ? status : "Unknown"}</span></div>
-            {plan ? <>
-              <p className="font-heading text-lg font-semibold">{item ?? "Waiting"}</p>
-              <p className="font-mono text-xs">{wallet !== null && price !== null ? `${wallet} / ${price} coins` : "Price or wallet unknown"}</p>
+            <div className="flex items-center justify-between gap-2"><h4 className="text-sm font-semibold">Workshop policy</h4><span className="text-xs text-muted-foreground">{plan || evaluation ? status : "Unknown"}</span></div>
+            {plan || evaluation ? <>
+              <div className={styles.road}>
+                <div className={`${styles.roadStep} rounded-xl border border-primary/40 bg-primary/10 p-3`}>
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-primary">Next selected buy</span>
+                  <p className="font-heading text-lg font-semibold">{item ?? "Waiting"}</p>
+                  <p className="font-mono text-xs">{wallet !== null && price !== null ? `${wallet} / ${price} coins` : "Price or wallet unknown"}</p>
+                  <p className="text-xs text-muted-foreground">{price !== null ? `${price} coins · ${priceSource === "observed" ? "Observed price" : priceSource === "catalog_estimate" ? "Estimated price; checked before buying" : "Price source unknown; checked before buying"}` : "Next price unknown"}</p>
+                  <p className="text-xs text-muted-foreground">{confirmed !== null ? `Next level: at least ${confirmed + 1} · ${confirmed} recorded purchases` : "Next level unknown · purchase history unavailable"}</p>
+                </div>
+                {!!plan?.next_purchases?.length && <ol className="mt-3 space-y-2" aria-label="Projected Workshop milestones">
+                  {plan.next_purchases.map(step => <li key={`${step.position}:${step.upgrade_id}`} className={`${styles.roadStep} rounded-lg border border-border bg-background/40 p-3 text-xs`}>
+                    <span className="font-mono text-[10px] text-muted-foreground">PROJECTED MILESTONE {step.position}</span>
+                    <p className="font-semibold">{step.item}</p><p className="text-muted-foreground">{step.focus} · Future price unknown · {plan.confirmed_purchases?.[step.upgrade_id] ? `Recorded level at least ${plan.confirmed_purchases[step.upgrade_id]}` : "Level unknown"}</p>
+                  </li>)}
+                </ol>}
+              </div>
               {item && <button type="button" onClick={() => setSelection({ worker: member.name, accountId: member.account_id!, item, reason,
-                revision: savedRevision, observedAt: evaluation?.evidence_at ?? plan.observed_at, evaluation })}
+                revision: savedRevision, observedAt: evaluation?.evidence_at ?? plan?.observed_at ?? null, evaluation })}
                 className="rounded-md border border-primary/50 px-2 py-1 text-xs text-primary">Why {item} for {member.name}?</button>}
-              {!!plan.next_purchases?.length && <div className="flex flex-wrap gap-1" aria-label="Projected Workshop milestones">
-                {plan.next_purchases.map(step => <span key={`${step.position}:${step.upgrade_id}`} className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{step.item} · Projected</span>)}
-              </div>}
             </> : <p className="text-sm text-muted-foreground">Workshop plan unavailable for this account. Waiting for matching observations.</p>}
           </section>
           <div className="grid grid-cols-2 gap-2 text-xs">

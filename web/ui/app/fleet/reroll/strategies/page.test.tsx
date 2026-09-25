@@ -1,7 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import StrategiesPage from "./page";
 import type { RerollSnapshot } from "@/lib/fleet";
+vi.mock("./routeCanvas.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 
 let pool: RerollSnapshot;
 vi.mock("../RerollWorkspace", () => ({ useRerollWorkspace: () => ({ pool, loading: false, error: null }) }));
@@ -17,6 +18,7 @@ beforeEach(() => {
 
 test("compares effective account plans in stable worker order with separate battle evidence", () => {
   render(<StrategiesPage />);
+  fireEvent.click(screen.getByRole("tab", { name: /Fleet roads/ }));
   const columns = screen.getAllByRole("article");
   expect(within(columns[0]).getByRole("heading", { name: "Air_1" })).toBeInTheDocument();
   expect(within(columns[0]).getByText("Damage")).toBeInTheDocument();
@@ -30,6 +32,7 @@ test("rejects a plan for a replaced account and omits hidden workers", () => {
   pool.members[0].reroll_plan!.account_id = "old";
   pool.members[1].hidden = true;
   render(<StrategiesPage />);
+  fireEvent.click(screen.getByRole("tab", { name: /Fleet roads/ }));
   expect(screen.getAllByRole("article")).toHaveLength(1);
   expect(screen.queryByText("Defense Absolute")).not.toBeInTheDocument();
   expect(screen.getByText(/Workshop plan unavailable for this account/)).toBeInTheDocument();

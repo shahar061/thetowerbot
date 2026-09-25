@@ -47,6 +47,8 @@ export type RerollCandidate = { name: string; endpoint: string; state: string };
 export type RerollPlan = { account_id: string; stage: string; goal: string; state: string;
   item: string | null; price: number | null; wallet_coins: number | null;
   lifetime_coins: number | null; reason: string; observed_at: number;
+  upgrade_id?: string | null; price_source?: "observed" | "catalog_estimate" | null;
+  confirmed_purchases?: Record<string, number>;
   next_purchases?: { account_id: string; position: number; upgrade_id: string;
     item: string; category: string; unlock: boolean; focus: string }[] };
 export type RerollMember = { name: string; endpoint: string; lease_id: string; state: string;
