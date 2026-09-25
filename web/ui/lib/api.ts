@@ -14,6 +14,7 @@ import type {
   RunRow,
   Snapshot,
   StatsPayload,
+  WorkshopLevels,
   WorkshopPurchaseSummary,
   StatusPayload,
   Strategy,
@@ -188,6 +189,8 @@ export const fetchAccountStats = (accountKey: string, expectedAccountId: string)
   workerRead<StatsPayload>("/api/stats", accountKey, expectedAccountId);
 export const fetchAccountWorkshopSummary = (accountKey: string, expectedAccountId: string) =>
   workerRead<WorkshopPurchaseSummary>("/api/workshop-purchases/summary", accountKey, expectedAccountId);
+export const fetchAccountWorkshopLevels = (accountKey: string, expectedAccountId: string) =>
+  workerRead<WorkshopLevels>("/api/workshop-levels", accountKey, expectedAccountId);
 export const fetchErrors = (limit = 100) => getJson<StoredEvent[]>(`/api/errors?limit=${limit}`);
 
 export type LedgerQuery = {
