@@ -20,7 +20,8 @@ export function StrategyCanvas({ blocks, names, selected, locked, target, onSele
   onMove: (id: string, direction: -1 | 1) => void; onDrag: (value: BlockDrag | null) => void;
   parent?: string | null; branch?: BlockTarget["branch"];
 }): React.JSX.Element {
-  const insertion = (index: number): React.JSX.Element => <button type="button" aria-label={parent ? `Insert into ${branch} at ${index + 1}` : `Insert block at ${index + 1}`}
+  // The save-for goal holds exactly one block, edited in the inspector: no drop targets.
+  const insertion = (index: number): React.JSX.Element | null => branch === "goal" ? null : <button type="button" aria-label={parent ? `Insert into ${branch} at ${index + 1}` : `Insert block at ${index + 1}`}
     onClick={() => onTarget({ parent, branch, index })} onDragOver={event => event.preventDefault()}
     onDrop={event => { event.preventDefault(); event.stopPropagation(); onDrop({ parent, branch, index }); }}
     className={`${styles.connector} ${target.parent === parent && target.branch === branch && target.index === index ? styles.target : ""}`}>
@@ -55,7 +56,7 @@ export function StrategyCanvas({ blocks, names, selected, locked, target, onSele
           {!locked && <div className={styles.blockTools}><button type="button" disabled={index === 0} onClick={() => onMove(block.id, -1)} aria-label={`Move ${title} up`}><ChevronUp size={14} /></button>
             <button type="button" disabled={index === blocks.length - 1} onClick={() => onMove(block.id, 1)} aria-label={`Move ${title} down`}><ChevronDown size={14} /></button></div>}
           {childGroups(block).map(group => <div key={group.branch} className={styles.branch}>
-            <div className={styles.branchHeader}><span><ArrowDown size={12} />{group.label}</span><button type="button" onClick={() => onTarget({ parent: block.id, branch: group.branch, index: group.blocks.length })}>Add to {group.label}</button></div>
+            <div className={styles.branchHeader}><span><ArrowDown size={12} />{group.label}</span>{group.branch !== "goal" && <button type="button" onClick={() => onTarget({ parent: block.id, branch: group.branch, index: group.blocks.length })}>Add to {group.label}</button>}</div>
             <StrategyCanvas {...{ names, selected, locked, target, onSelect, onTarget, onDrop, onMove, onDrag }} blocks={group.blocks} parent={block.id} branch={group.branch} />
           </div>)}
         </div>

@@ -225,7 +225,8 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
         </div>
         <div className={styles.canvasFooter}><span>Preview this strategy on every current emulator. No assignments change.</span><button className={styles.button} type="button" disabled={busy || !activeMembers.length} onClick={() => void inspectDecisions()}>Preview across fleet</button></div>
       </main>
-      {programLane ? <StrategyBlockInspector block={selectedBlock} lane={programLane} catalog={catalog} locked={locked} onCopy={() => startCopy()}
+      {programLane ? <StrategyBlockInspector block={selectedBlock} lane={programLane} catalog={catalog} locked={locked}
+        isGoal={selectedBlock ? locateBlock(blocks, selectedBlock.id)?.branch === "goal" : false} onCopy={() => startCopy()}
         onChange={block => editBlocks(updateBlock(blocks, block.id, () => block))} onRemove={() => { if (selectedBlock) editBlocks(updateBlock(blocks, selectedBlock.id, () => null)); setSelection(null); setTarget(ROOT_END); }} />
         : <aside className={styles.inspector} aria-label="Resource strategy settings"><p className={styles.eyebrow}>Resource path</p><h3>{lane === "gems" ? "Protect your lab fund" : "Keep research moving"}</h3><p className={styles.hint}>{lane === "gems" ? "Lab slot 2 is the first 100-gem purchase. Later cards and lab steps stay visibly planned." : "Game Speed uses lab slot 1 through all supported levels, before Workshop spending."}</p>
           {locked && <button className={styles.primaryButton} type="button" onClick={() => startCopy()}>Create copy to edit</button>}

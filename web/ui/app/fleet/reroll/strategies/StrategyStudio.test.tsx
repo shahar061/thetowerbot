@@ -166,7 +166,7 @@ test("inspector edits pool target and links to the guide", () => {
     catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
   expect(screen.getByRole("link", { name: /learn more/i })).toHaveAttribute("href", "/fleet/reroll/strategies/guide/#block-pool");
   fireEvent.click(screen.getByRole("button", { name: "Add target for Thorn Damage" }));
-  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ targets: { thorns: 0 } }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ targets: { thorns: 1 } }));
 });
 
 test("studio header links to the guide", () => {
@@ -233,4 +233,60 @@ test("the In-game palette does not offer Budget", () => {
   fireEvent.click(screen.getByRole("tab", { name: "Flow" }));
   expect(screen.queryByRole("button", { name: "Add Budget" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Add Save for goal" })).toBeInTheDocument();
+});
+
+test("a save-for goal branch is not a drop target", () => {
+  const onTarget = vi.fn();
+  const blocks = [{ id: "goal", type: "save_for" as const, goal: [{ id: "pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const }] },
+    { id: "ws", type: "while_saving" as const, blocks: [] }];
+  render(<StrategyCanvas blocks={blocks} names={new Map()} selected={null} locked={false}
+    target={{ parent: null, branch: "root", index: 0 }} onSelect={() => {}} onTarget={onTarget} onDrop={() => {}} onMove={() => {}} onDrag={() => {}} />);
+  expect(screen.getByText("Goal")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Add to Goal" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Insert into goal/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add to While saving" })).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: /Insert into blocks/ })).toHaveLength(1);
+});
+
+test("inspector hides Add discount for a save-for goal pool", () => {
+  const block = { id: "pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const };
+  const { rerender } = render(<StrategyBlockInspector block={block} lane="workshop" isGoal
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.queryByRole("button", { name: "Add discount" })).not.toBeInTheDocument();
+  rerender(<StrategyBlockInspector block={block} lane="workshop"
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("button", { name: "Add discount" })).toBeInTheDocument();
+});
+
+test("studio marks a selected save-for goal pool as a goal", () => {
+  const goalRoute: BuildRouteDocument = { ...route, baseline: { ...baseline, workshop: { ...baseline.workshop, blocks: [
+    { id: "goal", type: "save_for", goal: [{ id: "goal.pool", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }] },
+    { id: "free", type: "pool", upgrade_ids: ["damage"], selection: "priority" }] } } };
+  const goalLibrary: StrategyLibrary = { ...library, templates: [{ ...template, baseline: goalRoute.baseline }, library.templates[1]] };
+  render(<StrategyStudio library={goalLibrary} saved={goalRoute} catalog={catalog} members={members} onPublished={vi.fn()} />);
+  fireEvent.click(within(screen.getByTestId("block-goal.pool")).getAllByRole("button")[0]);
+  expect(screen.queryByRole("button", { name: "Add discount" })).not.toBeInTheDocument();
+  fireEvent.click(within(screen.getByTestId("block-free")).getAllByRole("button")[0]);
+  expect(screen.getByRole("button", { name: "Add discount" })).toBeInTheDocument();
+});
+
+test("integer inputs use whole steps and ignore a cleared field", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "weighted", price_cap: 50,
+    wallet_share_pct: 20, max_purchases: 3, discount_pct: 20, decay_pct: 10, weight_floor: 1, weights: { thorns: 2 },
+    level_caps: { thorns: { base: 2 } } }} lane="workshop" catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  for (const label of ["Maximum price (coins)", "Maximum % of wallet", "Maximum confirmed purchases per upgrade", "Minimum discount (%)",
+    "Reduce weight after each buy (%)", "Minimum weight", "Weight for Thorn Damage", "Level cap for Thorn Damage"]) {
+    expect(screen.getByLabelText(label)).toHaveAttribute("step", "1");
+  }
+  fireEvent.change(screen.getByLabelText("Maximum price (coins)"), { target: { value: "" } });
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+test("budget inputs use whole steps with a positive target", () => {
+  render(<StrategyBlockInspector block={{ id: "b", type: "budget", metric: "utility_spent", target: 350, ceiling: 400, blocks: [] }}
+    lane="workshop" catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByLabelText("Utility target (coins)")).toHaveAttribute("step", "1");
+  expect(screen.getByLabelText("Utility target (coins)")).toHaveAttribute("min", "1");
+  expect(screen.getByLabelText("Hard ceiling (coins)")).toHaveAttribute("step", "1");
 });
