@@ -47,7 +47,7 @@ export default function FleetRunsPage(): React.JSX.Element {
   const active = shown.find(run => runKey(run) === selected) ?? null;
   const now = Date.now() / 1000;
 
-  return <main className="flex h-full flex-col gap-4 p-6">
+  return <main className="flex h-full flex-col gap-4 md:p-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><h1 className="text-xl font-bold">Runs</h1>
         <p className="text-sm text-muted-foreground">Every battle across the fleet, newest first. Select a run to see what it bought.</p></div>
