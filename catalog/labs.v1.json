@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "scope": "Planning prices for Labs and gem purchases. Only Game Speed has a price table; labs with levels null have an unknown price. Observed game prices always win.",
+  "labs_unlock": {"best_tier_1_wave": 30, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+  "labs": [
+    {"id": "labs.game-speed", "name": "Game Speed", "unlock": null, "max_level": 7,
+     "levels": [
+       {"level": 1, "coins": 300, "seconds": 540, "max_speed": 2.0},
+       {"level": 2, "coins": 2500, "seconds": 9000, "max_speed": 2.5},
+       {"level": 3, "coins": 12000, "seconds": 35280, "max_speed": 3.0},
+       {"level": 4, "coins": 50000, "seconds": 122520, "max_speed": 3.5},
+       {"level": 5, "coins": 150000, "seconds": 329940, "max_speed": 4.0},
+       {"level": 6, "coins": 500000, "seconds": 1215960, "max_speed": 4.5},
+       {"level": 7, "coins": 1000000, "seconds": 2199960, "max_speed": 5.0}
+     ],
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab/Game_Speed", "checked": "2026-09-26"},
+    {"id": "labs.attack-speed", "name": "Attack Speed", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.labs-speed", "name": "Labs Speed", "unlock": {"best_tier_1_wave": 150}, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab/Lab_Speed", "checked": "2026-09-26"},
+    {"id": "labs.coins-wave", "name": "Coins / Wave", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.cash-bonus", "name": "Cash Bonus", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.coins-kill-bonus", "name": "Coins / Kill Bonus", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.starting-cash", "name": "Starting Cash", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.buy-multiplier", "name": "Buy Multiplier", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.workshop-attack-discount", "name": "Workshop Attack Discount", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.workshop-defense-discount", "name": "Workshop Defense Discount", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"id": "labs.workshop-utility-discount", "name": "Workshop Utility Discount", "unlock": null, "max_level": null, "levels": null,
+     "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"}
+  ],
+  "lab_slots": [
+    {"slot": 2, "gems": 100, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"slot": 3, "gems": 400, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"slot": 4, "gems": 1400, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"},
+    {"slot": 5, "gems": 3000, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Lab_Upgrades", "checked": "2026-09-26"}
+  ],
+  "card_slots": [
+    {"slot": 2, "gems": 50, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 3, "gems": 100, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 4, "gems": 200, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 5, "gems": 300, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 6, "gems": 400, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 7, "gems": 500, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 8, "gems": 600, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 9, "gems": 750, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"},
+    {"slot": 10, "gems": 1000, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"}
+  ],
+  "card_gems": {"gems": 20, "source_url": "https://the-tower-idle-tower-defense.fandom.com/wiki/Cards", "checked": "2026-09-26"}
+}
