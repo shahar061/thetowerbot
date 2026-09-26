@@ -323,11 +323,69 @@ def finish_run(
     conn.commit()
 
 
+_NO_RECORD: dict[str, Any] = {
+    "wave_record": None, "wave_prev": None, "wave_broken_by": None,
+    "coin_record": None, "coin_prev": None, "coin_broken_by": None,
+}
+
+
 def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)
+        "SELECT runs.*, (SELECT SUM(levels) FROM run_upgrades u WHERE u.run_id = runs.id) AS buys "
+        "FROM runs ORDER BY id DESC LIMIT ?",
+        (limit,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    records = _records(conn)
+    listed = []
+    for row in rows:
+        run = dict(row)
+        run["total_coins"] = None if run["coins"] is None else run["coins"] + (run["ad_coins"] or 0)
+        run.update(records.get(run["id"], _NO_RECORD))
+        listed.append(run)
+    return listed
+
+
+def _records(conn: sqlite3.Connection) -> dict[int, dict[str, Any]]:
+    """High scores in the order they were set, over this account's whole history.
+
+    A run is a record when it strictly beats every earlier finished,
+    non-abandoned run in its scope: per tier for waves, account-wide for total
+    coins. A later record does not erase an earlier one - it marks it broken.
+    Runs with the value unread (NULL) neither set nor break a record.
+    """
+    rows = conn.execute(
+        "SELECT id, tier, wave, coins + COALESCE(ad_coins, 0) AS total FROM runs "
+        "WHERE ended_at IS NOT NULL AND abandoned = 0 ORDER BY id"
+    ).fetchall()
+    found: dict[int, dict[str, Any]] = {}
+    for kind, column, per_tier in (("wave", "wave", True), ("coin", "total", False)):
+        best: dict[int | None, tuple[int, int]] = {}
+        for row in rows:
+            value = row[column]
+            if value is None or (per_tier and row["tier"] is None):
+                continue
+            scope = row["tier"] if per_tier else None
+            previous = best.get(scope)
+            if previous is not None and value <= previous[1]:
+                continue
+            entry = found.setdefault(row["id"], dict(_NO_RECORD))
+            entry[f"{kind}_record"] = "standing"
+            if previous is not None:
+                entry[f"{kind}_prev"] = {"run_id": previous[0], "value": previous[1]}
+                found[previous[0]][f"{kind}_record"] = "broken"
+                found[previous[0]][f"{kind}_broken_by"] = row["id"]
+            best[scope] = (row["id"], value)
+    return found
+
+
+def run_upgrade_levels(conn: sqlite3.Connection, run_id: int) -> list[dict[str, Any]] | None:
+    """One run's frozen purchase summary, or None when none was recorded
+    (a run older than the events retention, or one that bought nothing)."""
+    rows = conn.execute(
+        "SELECT upgrade_id, levels, spent, unpriced FROM run_upgrades WHERE run_id = ? ORDER BY upgrade_id",
+        (run_id,),
+    ).fetchall()
+    return [dict(row) for row in rows] or None
 
 
 def run_events(

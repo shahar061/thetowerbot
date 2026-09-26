@@ -502,3 +502,66 @@ def test_connect_backfills_summaries_for_finished_runs_with_purchase_events(tmp_
     conn.close()
     conn = db.connect(path)
     assert conn.execute("SELECT levels FROM run_upgrades WHERE run_id = 1 AND upgrade_id = 'damage'").fetchone()[0] == 1
+
+
+def _by_id(conn: sqlite3.Connection, limit: int = 50) -> dict[int, dict]:
+    return {run["id"]: run for run in db.list_runs(conn, limit=limit)}
+
+
+def test_records_are_chronological_and_keep_broken_badges(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, wave=10, coins=50)
+    _finish(conn, 2, wave=10, coins=40)        # tie on wave: not a record
+    _finish(conn, 3, wave=14, coins=90, ad_coins=10)
+    runs = _by_id(conn)
+    assert runs[1]["wave_record"] == "broken" and runs[1]["wave_broken_by"] == 3
+    assert runs[1]["wave_prev"] is None
+    assert runs[2]["wave_record"] is None and runs[2]["coin_record"] is None
+    assert runs[3]["wave_record"] == "standing" and runs[3]["wave_prev"] == {"run_id": 1, "value": 10}
+    assert runs[3]["total_coins"] == 100 and runs[3]["coin_record"] == "standing"
+
+
+def test_wave_records_are_per_tier_and_coin_records_are_not(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, tier=1, wave=30, coins=100)
+    _finish(conn, 2, tier=2, wave=12, coins=80)
+    runs = _by_id(conn)
+    assert runs[2]["wave_record"] == "standing"      # first T2 run
+    assert runs[1]["wave_record"] == "standing"      # still best at T1
+    assert runs[2]["coin_record"] is None            # 80 < 100 fleet-member-wide
+
+
+def test_abandoned_open_and_unread_runs_never_hold_or_break_records(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, wave=10, coins=50)
+    _finish(conn, 2, wave=99, coins=999, abandoned=True)
+    _finish(conn, 3, wave=None, coins=None)
+    db.start_run(conn, 4, started_at=500.0)          # live run, ended_at NULL
+    conn.execute("UPDATE runs SET wave = 200, coins = 2000 WHERE id = 4")
+    conn.commit()
+    runs = _by_id(conn)
+    assert runs[1]["wave_record"] == "standing" and runs[1]["coin_record"] == "standing"
+    for run_id in (2, 3, 4):
+        assert runs[run_id]["wave_record"] is None and runs[run_id]["coin_record"] is None
+    assert runs[3]["total_coins"] is None
+
+
+def test_records_use_full_history_beyond_the_page_limit(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, wave=10)
+    _finish(conn, 2, wave=12)
+    [latest] = db.list_runs(conn, limit=1)
+    assert latest["id"] == 2 and latest["wave_prev"] == {"run_id": 1, "value": 10}
+
+
+def test_buys_and_upgrade_levels(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    db.start_run(conn, 1, started_at=0.0)
+    _buy(conn, 1, 1, "damage", 10)
+    _buy(conn, 2, 1, "damage", 12)
+    _finish(conn, 1)
+    _finish(conn, 2)
+    runs = _by_id(conn)
+    assert runs[1]["buys"] == 2 and runs[2]["buys"] is None
+    assert db.run_upgrade_levels(conn, 1) == [{"upgrade_id": "damage", "levels": 2, "spent": 22, "unpriced": 0}]
+    assert db.run_upgrade_levels(conn, 2) is None
