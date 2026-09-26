@@ -7,6 +7,7 @@ import { StrategyCanvas } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
 
 vi.mock("./studio.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
+vi.mock("./routeCanvas.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 const api = vi.hoisted(() => ({ save: vi.fn(), assign: vi.fn(), preview: vi.fn(), ledger: vi.fn() }));
 vi.mock("@/lib/api", () => ({ saveFleetStrategy: api.save, assignFleetStrategy: api.assign, previewBuildRoute: api.preview,
   fetchStrategyLedger: api.ledger }));
