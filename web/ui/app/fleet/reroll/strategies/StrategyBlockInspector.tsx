@@ -5,7 +5,7 @@ import Link from "next/link";
 import { LockKeyhole, Trash2 } from "lucide-react";
 import type { StrategyBlock, ProgramLane } from "@/lib/strategyStudio";
 import type { Upgrade } from "@/lib/types";
-import { blockDetail, blockTitle, guideAnchor } from "./strategyBlocks";
+import { blockDetail, blockTitle, guideAnchor, relativeWaveLimit } from "./strategyBlocks";
 import styles from "./studio.module.css";
 
 type Pool = Extract<StrategyBlock, { type: "pool" }>;
@@ -67,11 +67,13 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
         </>}
         {block.type === "buy" && <label>Upgrade<select value={block.upgrade_id} onChange={event => onChange({ ...block, upgrade_id: event.target.value })}>{available.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         {block.type === "condition" && <>
-          <label>Account fact<select value={block.field} onChange={event => {
+          <label>Account fact<select aria-label="Account fact" value={block.field} onChange={event => {
             const field = event.target.value as typeof block.field;
-            if (field === "upgrade_value") { onChange({ ...block, field, upgrade_id: available[0]?.id }); return; }
-            if (block.field === "upgrade_value") { const { upgrade_id: _drop, ...rest } = block; onChange({ ...rest, field }); return; }
-            onChange({ ...block, field });
+            const { relative, ...fixed } = block;
+            const base = relative && field !== "wave" ? { ...fixed, value: relative.cap } : block;
+            if (field === "upgrade_value") { onChange({ ...base, field, upgrade_id: available[0]?.id }); return; }
+            if (base.field === "upgrade_value") { const { upgrade_id: _drop, ...rest } = base; onChange({ ...rest, field }); return; }
+            onChange({ ...base, field });
           }}>
             <option value="best_tier_1_wave">Highest Tier 1 wave</option>{lane === "battle" && <option value="wave">Current wave</option>}<option value="wallet">Available {lane === "battle" ? "cash" : "coins"}</option>
             <option value="upgrade_value">Upgrade value</option>{lane === "battle" && <option value="def_abs_coverage">Def. Abs coverage</option>}</select></label>
@@ -81,7 +83,24 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
           </select></label>}
           <label>Comparison<select value={block.op} onChange={event => onChange({ ...block, op: event.target.value as "gte" | "lte" | "gt" | "lt" })}>
             <option value="gte">At least (≥)</option><option value="gt">More than (&gt;)</option><option value="lte">At most (≤)</option><option value="lt">Less than (&lt;)</option></select></label>
-          <label>Threshold<input type="number" step="any" min={0} value={block.value} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, value }); }} /></label>
+          {block.field === "wave" && <label>Threshold type<select aria-label="Threshold type" value={block.relative ? "relative" : "fixed"} onChange={event => {
+            if (event.target.value === "relative") {
+              const { value, ...rest } = block;
+              onChange({ ...rest, relative: { pct: 50, floor: 5, cap: Math.max(5, Math.round(value ?? 30)) } });
+            } else if (block.relative) {
+              const { relative, ...rest } = block;
+              onChange({ ...rest, value: relative.cap });
+            }
+          }}><option value="fixed">Fixed wave</option><option value="relative">% of best wave</option></select></label>}
+          {block.relative ? <>
+            <label>Percent of best wave<input aria-label="Percent of best wave" type="number" min={1} max={1000} step={1} value={block.relative.pct}
+              onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, relative: { ...block.relative!, pct: value } }); }} /></label>
+            <label>At least wave<input aria-label="At least wave" type="number" min={1} step={1} value={block.relative.floor}
+              onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, relative: { ...block.relative!, floor: value } }); }} /></label>
+            <label>At most wave<input aria-label="At most wave" type="number" min={block.relative.floor} step={1} value={block.relative.cap}
+              onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, relative: { ...block.relative!, cap: value } }); }} /></label>
+            <p className={styles.hint}>{[10, 40, 90].map((best, index) => `${index ? "best" : "Best"} ${best} → ${index ? "" : "wave "}${relativeWaveLimit(block.relative!, best)}`).join(" · ")}</p>
+          </> : <label>Threshold<input type="number" step="any" min={0} value={block.value ?? 0} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, value }); }} /></label>}
           <p className={styles.hint}>Nest another If / else inside a branch to combine conditions, such as best wave ≥50 and current wave ≤10.</p>
         </>}
         {block.type === "pool" && <>
