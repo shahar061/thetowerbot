@@ -677,3 +677,56 @@ def test_a_banned_goal_is_not_observed() -> None:
     result=blocks.evaluate_program(route(program,bans=('thorns',)),replace(facts(),prices={},price_evidence={}),
         None,'workshop')
     assert result.decision is None or result.decision.stage != 'strategy_observe'
+
+
+def relative_condition(**relative: int) -> dict[str, Any]:
+    return {'id': 'econ', 'type': 'condition', 'field': 'wave', 'op': 'lte',
+            'relative': {'pct': 50, 'floor': 5, 'cap': 30, **relative},
+            'then': [{'id': 'yes', 'type': 'buy', 'upgrade_id': 'health'}],
+            'else': [{'id': 'no', 'type': 'buy', 'upgrade_id': 'defense_absolute'}]}
+
+
+@pytest.mark.parametrize('best,expected', [(None, 5), (1, 5), (8, 5), (24, 12), (40, 20), (90, 30), (500, 30)])
+def test_relative_wave_limit_clamps_to_floor_and_cap(best: int | None, expected: int) -> None:
+    assert blocks.relative_wave_limit({'pct': 50, 'floor': 5, 'cap': 30}, best) == expected
+
+
+@pytest.mark.parametrize('best,wave,upgrade,note', [
+    (None, 5, 'health', 'econ: wave 5 ≤ 5 → then (best wave unknown → floor 5)'),
+    (None, 6, 'defense_absolute', 'econ: wave 6 ≤ 5 → else (best wave unknown → floor 5)'),
+    (24, 12, 'health', 'econ: wave 12 ≤ 12 → then (50% of best 24, floor 5, cap 30)'),
+    (24, 13, 'defense_absolute', 'econ: wave 13 ≤ 12 → else (50% of best 24, floor 5, cap 30)'),
+    (90, 31, 'defense_absolute', 'econ: wave 31 ≤ 30 → else (50% of best 90, floor 5, cap 30)'),
+])
+def test_relative_wave_condition_picks_branch_and_explains_limit(best: int | None, wave: int, upgrade: str, note: str) -> None:
+    program = [relative_condition()]
+    blocks.validate_program(program, 'battle')
+    sample = replace(battle_facts(defense_absolute={'status': 'available', 'value': 500.0, 'price': 10, 'observed_at': 100}),
+                     best_tier_1_wave=best, wave=wave)
+    result = blocks.evaluate_program(route(program, lane='battle'), sample, None, 'battle')
+    assert result.decision.upgrade_id == upgrade
+    assert note in result.trace.rejected
+
+
+def test_fixed_wave_condition_trace_is_unchanged() -> None:
+    program = [{**relative_condition(), 'value': 30}]
+    del program[0]['relative']
+    sample = replace(battle_facts(), wave=12)
+    result = blocks.evaluate_program(route(program, lane='battle'), sample, None, 'battle')
+    assert not any('wave 12' in note for note in result.trace.rejected)
+
+
+@pytest.mark.parametrize('change,message', [
+    ({'value': 30}, 'not both'),
+    ({'field': 'best_tier_1_wave'}, 'only for the current wave'),
+    ({'relative': {'pct': 50, 'floor': 5}}, 'exactly pct, floor and cap'),
+    ({'relative': {'pct': 50, 'floor': 5, 'cap': 30, 'x': 1}}, 'exactly pct, floor and cap'),
+    ({'relative': {'pct': 0, 'floor': 5, 'cap': 30}}, 'relative pct'),
+    ({'relative': {'pct': 50.5, 'floor': 5, 'cap': 30}}, 'relative pct'),
+    ({'relative': {'pct': 50, 'floor': 0, 'cap': 30}}, 'relative floor'),
+    ({'relative': {'pct': 50, 'floor': 10, 'cap': 9}}, 'relative cap'),
+    ({'relative': 'half'}, 'exactly pct, floor and cap'),
+])
+def test_relative_wave_validation_errors(change: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        blocks.validate_program([{**relative_condition(), **change}], 'battle')

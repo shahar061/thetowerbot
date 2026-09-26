@@ -14,6 +14,15 @@ MAX_BLOCKS = 80
 MAX_DEPTH = 6
 
 COMPARISONS = {'gte': operator.ge, 'lte': operator.le, 'gt': operator.gt, 'lt': operator.lt}
+SYMBOLS = {'gte': '≥', 'lte': '≤', 'gt': '>', 'lt': '<'}
+
+
+def relative_wave_limit(relative: Mapping[str, int], best: int | None) -> int:
+    """The wave a relative condition compares against: a share of the best
+    finished Tier 1 wave, clamped to [floor, cap]; unknown best → floor."""
+    if best is None:
+        return relative['floor']
+    return min(relative['cap'], max(relative['floor'], best * relative['pct'] // 100))
 
 
 def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
@@ -122,7 +131,7 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 if 'wallet_share_pct' in block:
                     number(block['wallet_share_pct'], 'wallet_share_pct', 1, 100)
             elif kind == 'condition':
-                allowed |= {'field', 'op', 'value', 'then', 'else', 'upgrade_id'}
+                allowed |= {'field', 'op', 'value', 'relative', 'then', 'else', 'upgrade_id'}
                 field = block.get('field')
                 if field not in {'best_tier_1_wave', 'wave', 'wallet', 'upgrade_value', 'def_abs_coverage'}:
                     raise ValueError('unknown condition fact')
@@ -135,10 +144,23 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     raise ValueError('only upgrade value conditions name an upgrade')
                 if block.get('op') not in COMPARISONS:
                     raise ValueError('unknown condition comparison')
-                raw = block.get('value')
-                if (isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw)
-                        or not 0 <= raw <= 1000000000000):
-                    raise ValueError('condition value must be a number between 0 and 1000000000000')
+                if 'relative' in block:
+                    if 'value' in block:
+                        raise ValueError('a condition has a value or a relative threshold, not both')
+                    if field != 'wave':
+                        raise ValueError('relative thresholds are only for the current wave')
+                    relative = block['relative']
+                    if not isinstance(relative, dict) or set(relative) != {'pct', 'floor', 'cap'}:
+                        raise ValueError('a relative threshold needs exactly pct, floor and cap')
+                    number(relative['pct'], 'relative pct', 1, 1000)
+                    low = number(relative['floor'], 'relative floor', 1, 100000)
+                    number(relative['cap'], 'relative cap', low, 100000)
+                    block['relative'] = dict(relative)
+                else:
+                    raw = block.get('value')
+                    if (isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw)
+                            or not 0 <= raw <= 1000000000000):
+                        raise ValueError('condition value must be a number between 0 and 1000000000000')
                 block['then'] = list(walk(block.get('then', []), depth + 1))
                 block['else'] = list(walk(block.get('else', []), depth + 1))
             elif kind == 'fallback':
@@ -596,7 +618,17 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 if value is None:
                     rejected.append(f'{identity}: condition evidence unknown')
                     return _Choice(identity, reason='Condition evidence unknown; decision paused', wait=True)
-                matched = COMPARISONS[block['op']](value, block['value'])
+                if 'relative' in block:
+                    relative = block['relative']
+                    threshold = relative_wave_limit(relative, facts.best_tier_1_wave)
+                    matched = COMPARISONS[block['op']](value, threshold)
+                    basis = (f"best wave unknown → floor {relative['floor']}" if facts.best_tier_1_wave is None
+                             else f"{relative['pct']}% of best {facts.best_tier_1_wave}, "
+                                  f"floor {relative['floor']}, cap {relative['cap']}")
+                    rejected.append(f"{identity}: wave {value} {SYMBOLS[block['op']]} {threshold} "
+                                    f"→ {'then' if matched else 'else'} ({basis})")
+                else:
+                    matched = COMPARISONS[block['op']](value, block['value'])
                 choice = evaluate(block['then'] if matched else block['else'], (items, *ancestors))
                 if choice is not None:
                     return choice
