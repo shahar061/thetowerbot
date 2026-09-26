@@ -10,6 +10,7 @@ import cv2
 import pytest
 
 import config
+import events
 import game_over
 import ocr
 import tower_bot
@@ -49,3 +50,23 @@ def test_modal_extras_swallow_ocr_failures(monkeypatch: pytest.MonkeyPatch) -> N
         raise RuntimeError("onnx went away")
     monkeypatch.setattr(ocr, "read", boom)
     assert tower_bot.TowerBot._read_modal_extras(SimpleNamespace(screen=None)) == (None, None)
+
+
+def test_read_modal_stats_puts_killed_by_and_ad_coins_onto_run_ended() -> None:
+    """The seam between the glyph-read reader and the OCR'd extras: wave,
+    coins and tier come from `reader`, killed_by and ad_coins from
+    `_read_modal_extras` - both must land on the returned RunEnded."""
+    reader = SimpleNamespace(
+        read=lambda *a, **k: 11,
+        read_at_caption=lambda *a, **k: 80,
+    )
+    fake_self = SimpleNamespace(
+        screen=None, reader=reader,
+        _read_modal_extras=lambda: ("Tank", 7),
+    )
+    ended = events.RunEnded(run_id=1, duration=60.0)
+
+    result = tower_bot.TowerBot._read_modal_stats(fake_self, ended, (0, 0))
+
+    assert (result.wave, result.coins, result.tier) == (11, 80, 80)
+    assert (result.killed_by, result.ad_coins) == ("Tank", 7)
