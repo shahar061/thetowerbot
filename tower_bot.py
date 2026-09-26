@@ -1790,7 +1790,8 @@ class TowerBot:
                 go_home=((self.shopping.due(shopping_policy, self.runs.completed)
                           and (self.reroll_progress is None
                                or self.reroll_progress.initial_workshop_due()
-                               or self.reroll_progress.workshop_worthwhile()))
+                               or self.reroll_progress.workshop_worthwhile(
+                                   publish_estimate=state is screens.ScreenState.GAME_OVER)))
                          or self._claim_owed(settings)
                          or (state is screens.ScreenState.GAME_OVER
                              and self._menu_badge_check_due(settings))

@@ -375,11 +375,19 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             price = row.get('price')
         return price if type(price) is int and price >= 0 else None
 
+    # Workshop candidates turned away only for having no known price. If the
+    # program then decides nothing, these are observed rather than waited on:
+    # waiting cannot end, because only a Workshop visit reads a price.
+    unpriced: list[str] = []
+
     def eligible(uid: str, *, ignore_funds: bool = False) -> bool:
         if uid in excluded:
             rejected.append(f'{uid}: blocked by Never Buy')
             return False
         price = price_for(uid, reference=ignore_funds)
+        if (price is None and lane == 'workshop'
+                and not (upgrades.by_id(uid).unlock and facts.purchases.get(uid, 0))):
+            unpriced.append(uid)
         if price is None or (not ignore_funds and price > ceiling):
             return False
         if budget_room is not None and price > budget_room:
@@ -739,6 +747,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         return None
 
     choice = evaluate(program) or saving or waiting_native
+    if choice is None and unpriced:
+        choice = observe_prices('blocks', unpriced)
     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
     active_pending = (pending is not None and pending.account_id == facts.account_id
         and pending.revision == route.revision and pending.visit_id == visit

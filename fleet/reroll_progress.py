@@ -22,7 +22,7 @@ from fleet.reroll_planner import (FILLER_SHARE, STARTER_MAX_PRICE, UTILITY_CEILI
                                   UTILITY_TARGET_COINS, RerollDecision,
                                   RerollFacts, choose_next, project_next)
 from fleet.reroll_variants import read_variant
-from fleet.workshop_prices import WorkshopPrices, PriceQuote, catalog_price
+from fleet.workshop_prices import CATALOG, WorkshopPrices, PriceQuote, catalog_price
 from fleet.reroll_survival import prioritize_survival
 from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route import RouteRules, resolve_route
@@ -36,6 +36,11 @@ from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
 logger = logging.getLogger(__name__)
+
+# An unexplained debit smaller than this cannot be a hidden Workshop
+# purchase, so it cannot have moved a Workshop price.
+CHEAPEST_WORKSHOP_PRICE = min(price for upgrade in CATALOG["upgrades"].values()
+                              for price in upgrade.get("next_coins", []) if price > 0)
 
 
 class RerollProgress:
@@ -673,7 +678,8 @@ class RerollProgress:
                 elif verdict not in {"bought", "free"}:
                     if upgrade:
                         invalidated[upgrade.id] = max(row["ts"], invalidated.get(upgrade.id, 0))
-            if row["kind"] == "UNEXPLAINED" and row["delta"] is not None and row["delta"] < 0:
+            if (row["kind"] == "UNEXPLAINED" and row["delta"] is not None
+                    and row["delta"] <= -CHEAPEST_WORKSHOP_PRICE):
                 # A reconciliation emitted for the very frame we just read
                 # invalidates older rows, not prices observed on that frame.
                 moment = (anchor["observed_at"] if anchor and row["observed"] == anchor["coins"]
@@ -740,7 +746,15 @@ class RerollProgress:
             return evaluation.trace.reason
         return f"Random draw ({odds:.0%}) · {evaluation.trace.reason}"
 
-    def workshop_worthwhile(self) -> bool:
+    def workshop_worthwhile(self, *, publish_estimate: bool = False) -> bool:
+        """Whether a Workshop visit could buy the planned upgrade now.
+
+        `publish_estimate` is for the GAME_OVER caller only. A skipped visit
+        retries without passing the menu that republishes the plan, so the
+        fleet card would keep the last menu balance run after run; publish
+        the run-payout estimate instead. The menu caller must not: its plan
+        was just published from a fresh balance read.
+        """
         if self.route_error is not None:
             return False
         if self._route_evaluation is not None and self._route_evaluation.decision is not None:
@@ -751,6 +765,9 @@ class RerollProgress:
             _, purchases = self._history()
             wallet, _ = self._pricing(purchases)
             plan = replace(self._route_evaluation.decision, wallet_coins=wallet)
+            if plan.state == "save_coins" and plan.item is not None and plan.price is not None:
+                plan = replace(plan, reason=f"Saving for {plan.item} ({wallet}/{plan.price} coins, "
+                                            "estimated from run payouts)")
         else:
             plan = self.decision()
         worthwhile = (plan.upgrade_id is not None and
@@ -760,6 +777,8 @@ class RerollProgress:
         if note is not None and note != self._last_skip_note:
             RerollJournal(self.root.parent.parent).append(
                 instance=self.root.name, level="info", kind="workshop_skip", message=note)
+            if publish_estimate:
+                self._publish(plan)
         self._last_skip_note = note
         return worthwhile
 
