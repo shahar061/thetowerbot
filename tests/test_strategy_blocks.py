@@ -647,3 +647,33 @@ def test_def_abs_coverage_with_locked_defense_percent_uses_zero() -> None:
     assert blocks.evaluate_program(route(program, lane='battle'), covered, None, 'battle').decision.upgrade_id == 'health'
     exposed = replace(locked, enemy_damage=100.0)  # 100 / 100 = 1.0
     assert blocks.evaluate_program(route(program, lane='battle'), exposed, None, 'battle').decision.upgrade_id == 'defense_absolute'
+
+
+def test_a_goal_with_no_known_price_asks_to_observe_it() -> None:
+    # Every saved price can be invalidated at once (an unexplained debit).
+    # Without a price nothing is eligible, and without a Workshop visit no
+    # price is ever read again: the worker stalled on "waiting for price".
+    program=[{'id':'goal','type':'save_for','goal':[
+        {'id':'goal.pool','type':'pool','upgrade_ids':['thorns'],'selection':'priority'}]}]
+    result=blocks.evaluate_program(route(program),replace(facts(),prices={},price_evidence={}),None,'workshop')
+    assert (result.decision.stage, result.decision.state) == ('strategy_observe', 'observe_price')
+    assert result.trace.observation_ids == ('thorns',)
+
+
+def test_the_turtle_program_recovers_from_losing_every_price() -> None:
+    program=blocks.template_program('turtle','workshop')
+    sample=replace(facts(),prices={},price_evidence={},wallet_coins=979,
+        purchases={'unlock_defense_upgrades':1,'unlock_thorns':1,'defense_absolute':5,'thorns':4})
+    result=blocks.evaluate_program(route(program),sample,None,'workshop')
+    assert result.decision.stage == 'strategy_observe'
+    assert 'thorns' in result.trace.observation_ids
+    # An unlock already bought has no tile left to read a price from.
+    assert not {'unlock_defense_upgrades','unlock_thorns'} & set(result.trace.observation_ids)
+
+
+def test_a_banned_goal_is_not_observed() -> None:
+    program=[{'id':'goal','type':'save_for','goal':[
+        {'id':'goal.pool','type':'pool','upgrade_ids':['thorns'],'selection':'priority'}]}]
+    result=blocks.evaluate_program(route(program,bans=('thorns',)),replace(facts(),prices={},price_evidence={}),
+        None,'workshop')
+    assert result.decision is None or result.decision.stage != 'strategy_observe'

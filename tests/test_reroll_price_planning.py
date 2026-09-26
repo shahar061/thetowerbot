@@ -118,3 +118,29 @@ def test_survival_starter_precedes_utility_and_skips_expensive_starter_levels() 
     done = choose_next(replace(facts, purchases={"damage": 1, "attack_speed": 1, "health": 1,
                                                 "unlock_defense_upgrades": 1, "defense_absolute": 1}))
     assert not done.starter and done.upgrade_id == "unlock_cash_bonuses"
+
+
+def _unexplained(root: Path, ts: float, delta: int, balance: int) -> None:
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO ledger(ts,kind,currency,delta,balance_after,observed,dry_run) "
+                     "VALUES(?,'UNEXPLAINED','coins',?,?,?,0)", (ts, delta, balance, balance))
+
+
+def test_a_rounding_sized_unexplained_debit_keeps_workshop_prices(tmp_path: Path) -> None:
+    # A lab visit read the wallet one coin under the ledger's balance. No
+    # Workshop purchase costs one coin, so it cannot have moved any price;
+    # dropping every quote here stalled a strategy worker for good.
+    progress = worker(tmp_path)
+    progress.observe_prices({"thorns": 206, "defense_absolute": 254}, 29)
+    observed = progress.price_memory.wallet["observed_at"]
+    _unexplained(tmp_path, observed + 5, -1, 450)
+    assert {uid: quote.price for uid, quote in progress._pricing({})[1].items()
+            if uid in {"thorns", "defense_absolute"}} == {"thorns": 206, "defense_absolute": 254}
+
+
+def test_an_unexplained_debit_that_could_be_a_purchase_still_drops_prices(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_prices({"thorns": 206}, 400)
+    observed = progress.price_memory.wallet["observed_at"]
+    _unexplained(tmp_path, observed + 5, -30, 370)
+    assert "thorns" not in progress._pricing({})[1]
