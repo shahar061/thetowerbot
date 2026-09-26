@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import db
@@ -170,3 +171,48 @@ def test_first_menu_wallet_bootstraps_route_without_prior_workshop_visit(tmp_pat
     facts = progress.route_facts()
     assert facts.wallet_coins == 75
     assert facts.observed_at is not None
+
+
+def test_run_payouts_reopen_a_workshop_visit_the_cached_route_wallet_refused(tmp_path: Path) -> None:
+    # The route decision is cached from the last menu visit. Without the run
+    # projection the worker retries forever, never reaching the menu that
+    # would refresh its wallet.
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    progress._utility_spent = lambda: 0  # type: ignore[method-assign]
+    now = time.time()
+    progress.route_facts = lambda: RouteFacts("account-a", "Air_38", "main_menu", now, now,
+        best_tier_1_wave=1, wallet_coins=5, prices={"damage": 10, "attack_speed": 12},
+        utility_spent_coins=0, visit_id="visit-1")  # type: ignore[method-assign]
+    _published(tmp_path, 0)
+    progress.shopping_policy(Strategy.from_config().shopping)
+    evaluation = progress._route_evaluation
+    assert evaluation is not None and evaluation.decision is not None
+    progress._route_evaluation = replace(evaluation, decision=replace(
+        evaluation.decision, state="save_coins", price=12, wallet_coins=5))
+    progress.observe_prices({evaluation.decision.upgrade_id: 12}, 5)
+    assert not progress.workshop_worthwhile()
+
+    ended_at = time.time() + 1
+    with db.connect(worker_root / "tower_bot.db") as connection:
+        db.finish_run(connection, 1, started_at=ended_at - .5, ended_at=ended_at, wave=5, coins=10,
+                      tier=1, abandoned=False, scan_count=0, tap_count=0)
+
+    assert progress.workshop_worthwhile()
+
+
+def test_a_weighted_draw_audit_row_does_not_erase_the_wallet(tmp_path: Path) -> None:
+    # Confirming a weighted draw writes a ROUTE_DECISION ledger row with no
+    # coin delta. Read as an unknown debit, it left the wallet None, so the
+    # route refused every visit that no menu wallet read rescued.
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    progress.observe_prices({"damage": 10}, 580)
+    with db.connect(worker_root / "tower_bot.db") as connection:
+        connection.execute(
+            "INSERT INTO ledger(ts,kind,item,category,currency,dry_run,reason) "
+            "VALUES (?,'ROUTE_DECISION','Damage','ATTACK','coins',0,'draw')", (time.time() + 1,))
+    assert progress.route_facts().wallet_coins == 580

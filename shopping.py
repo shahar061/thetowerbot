@@ -242,6 +242,11 @@ class ShoppingSession:
         # authorization and transaction; this only reports fresh row facts.
         self.reroll_observe_price: Any | None = None
         self.reroll_observe_prices: Any | None = None
+        # Asked after each verified purchase for the strategy's next choice;
+        # returns a Shopping to continue the visit with, or None to finish.
+        self.reroll_replan: Any | None = None
+        self._replan_due = False
+        self._replanned: Shopping | None = None
         self._templates = templates
         self._bus = bus
         self._reader = reader
@@ -399,6 +404,8 @@ class ShoppingSession:
         self._refused_streak = 0
         self._last_page = None
         self._last_run_count = run_count
+        self._replan_due = False
+        self._replanned = None
         self._step = Step.OPEN_WORKSHOP if categories else Step.OPEN_CARDS
 
         self._bus.publish(events.ShoppingStarted(
@@ -465,6 +472,10 @@ class ShoppingSession:
                 # leaving the bot silently stranded on a menu page.
                 self._abort(device, shopping, screen, "shopping disabled")
                 return
+            # A replanned policy lives only for this visit, and never outranks
+            # the caller switching shopping off above.
+            if self._replanned is not None:
+                shopping = self._replanned
             if reading.page == pages.UNKNOWN:
                 self._off_page_streak += 1
                 if self._off_page_streak >= 2:
@@ -786,6 +797,11 @@ class ShoppingSession:
         if self.reroll_observe_prices is not None and observation.category == category:
             self.reroll_observe_prices(
                 {row.upgrade_id: row.price for row in observation.rows if row.status == "available"}, coins)
+        if self._replan_due:
+            # After the prices and wallet this frame shows were reported, so
+            # the strategy chooses from what the purchase actually changed.
+            self._replan_due = False
+            shopping = self._replan(shopping, coins)
         rules = [r for r in shopping.rows_for(category) if r.name not in self._exhausted]
         if not rules:
             self._categories.pop(0)
@@ -911,6 +927,26 @@ class ShoppingSession:
         else:
             self._record_purchase(seen, coins, dry_run=True)
 
+    def _replan(self, shopping: Shopping, coins: int | None) -> Shopping:
+        """Continue the visit on the strategy's next choice, if it has one.
+
+        The new policy was budgeted against the wallet as it is now, so its
+        budget opens a fresh window. An unproven spend keeps the old bound:
+        an unknown total must still stop the visit.
+        """
+        if self._coin_spent is None or coins is None:
+            return shopping
+        policy = self.reroll_replan()
+        if policy is None or not policy.enabled or not policy.workshop:
+            return shopping
+        self._replanned = policy
+        self._coin_spent = 0
+        self._visit_coins = coins
+        self._exhausted -= {rule.name for rule in policy.workshop}
+        self._categories += [c for c in policy.categories_in_priority_order()
+                             if c not in self._categories]
+        return policy
+
     def _visit_budget(self, shopping: Shopping) -> int | None:
         """Coins this visit may spend in total, or None for no limit.
 
@@ -964,6 +1000,7 @@ class ShoppingSession:
         rehearsing. A real purchase tallies only what the outcome proved.
         """
         self._bought += 1
+        self._replan_due = not dry_run and self.reroll_replan is not None
         spent = row.price if outcome is None else outcome.spent
         self._spend(spent, coins=True)
         self._bus.publish(events.Purchased(
