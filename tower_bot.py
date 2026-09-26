@@ -555,6 +555,7 @@ class TowerBot:
         settings: Live,
         anchor: tuple[int, int] | None,
         commands: tuple[str, ...],
+        reads: ocr.FrameReads | None = None,
     ) -> bool:
         """Drive the in-battle speed widget: browser commands, then policy.
 
@@ -591,6 +592,14 @@ class TowerBot:
         if commands:
             return True
 
+        # The battle read covers the widget, and its label reads speeds no
+        # template exists for. An unread frame leaves the templates to it.
+        boxes: tuple[ocr.TextBox, ...] = ()
+        if reads is not None:
+            try:
+                boxes = reads.battle()
+            except Exception:  # noqa: BLE001 - the templates still read the widget
+                boxes = ()
         return self.speed.settle(
             self.screen,
             self.device,
@@ -599,6 +608,7 @@ class TowerBot:
                     else settings.strategy.target_speed),
             anchor=anchor,
             tuning=settings.strategy,
+            boxes=boxes,
         ) is not None
 
     def _ladder_waves(self) -> tuple[int | None, int | None]:
@@ -1491,7 +1501,7 @@ class TowerBot:
         # entered a run - which can be minutes later, long after the user
         # who pressed the button stopped watching for it.
         commands = self.controls.drain()
-        speed_changed = self._manage_speed(settings, in_run_anchor, commands)
+        speed_changed = self._manage_speed(settings, in_run_anchor, commands, reads)
         if speed_changed and self.reroll_progress is not None:
             # The readout changes after the tap. Give it a fresh frame before
             # any gem claim, in-battle purchase, or navigation can act.

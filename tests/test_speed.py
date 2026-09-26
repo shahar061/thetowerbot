@@ -15,7 +15,9 @@ from unittest.mock import MagicMock
 import cv2
 import pytest
 
+import config
 import events
+import ocr
 import speed
 import vision
 
@@ -193,3 +195,48 @@ def test_settle_announces_the_adjustment(templates: vision.TemplateCache) -> Non
     adjusted = [e for e in bus.published if isinstance(e, events.SpeedAdjusted)]
     assert len(adjusted) == 1
     assert (adjusted[0].direction, adjusted[0].reading, adjusted[0].target) == ("up", 1.0, 2.0)
+
+
+# -- the OCR readout ----------------------------------------------------------
+# Templates exist only for the speeds harvested so far. The label the battle
+# OCR already reads covers every step up to x5.0 without a crop per level.
+
+def _box(text: str, rect: tuple[int, int, int, int] = (767, 1398, 80, 39),
+         confidence: float = .99) -> ocr.TextBox:
+    """Defaults to where in_run_lit.json reads its "x1.0" label."""
+    return ocr.TextBox(text, confidence, config.Rect(*rect))
+
+
+@pytest.mark.parametrize(("text", "value"), [("x2.5", 2.5), ("x5.0", 5.0), ("X3.5", 3.5)])
+def test_reads_a_speed_with_no_template_from_the_ocr_label(
+    templates: vision.TemplateCache, text: str, value: float,
+) -> None:
+    assert speed.read(frame("main_menu"), templates, anchor=ANCHOR,
+                      boxes=(_box(text),)) == value
+
+
+@pytest.mark.parametrize("box", [
+    _box("x1.20", rect=(861, 1995, 110, 45)),  # critical factor, below the widget
+    _box("x1.00", rect=(429, 1486, 88, 35)),   # coins multiplier, left of it
+    _box("x2.6"),                               # not a step the widget can show
+    _box("x2.5", confidence=.5),
+])
+def test_ignores_labels_that_are_not_a_confident_widget_reading(
+    templates: vision.TemplateCache, box: ocr.TextBox,
+) -> None:
+    assert speed.read(frame("main_menu"), templates, anchor=ANCHOR, boxes=(box,)) is None
+
+
+def test_template_still_reads_when_ocr_missed_the_label(
+    templates: vision.TemplateCache,
+) -> None:
+    assert speed.read(frame("in_run_lit"), templates, anchor=ANCHOR, boxes=()) == 1.0
+
+
+def test_settle_climbs_from_an_ocr_only_speed(templates: vision.TemplateCache) -> None:
+    controller = speed.SpeedController()
+
+    assert controller.settle(frame("in_run_lit"), MagicMock(), templates, target=3.0,
+                             anchor=ANCHOR, boxes=(_box("x2.5"),)) == "up"
+    assert controller.settle(frame("in_run_lit"), MagicMock(), templates, target=2.5,
+                             anchor=ANCHOR, boxes=(_box("x2.5"),)) is None

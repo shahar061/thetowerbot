@@ -2,8 +2,8 @@
 
 Two halves, deliberately not sharing a dependency.
 
-`read()` needs pixels. `step()` is pure arithmetic over config.SPEED_VALUES
-and needs none - which is what lets the whole settle policy be tested, and
+`read()` needs the frame and its OCR. `step()` is pure arithmetic over
+config.SPEED_VALUES and needs none - which is what lets the whole settle policy be tested, and
 be correct, before a readout template exists for any value but x1.0.
 
 Nothing here taps. The caller owns the device, the cooldown and the jitter,
@@ -14,11 +14,13 @@ answers "what speed is showing" and "which way from here".
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import config
 import events
 import jitter
+import ocr
 import vision
 from device import Image, tap
 from strategy import Strategy
@@ -32,21 +34,54 @@ def _crop(screen: Image, anchor: tuple[int, int], region: config.Region) -> Imag
     return screen[y : y + region.h, x : x + region.w]
 
 
+_LABEL = re.compile(r"^[xX]\s*(\d+\.\d)$")
+
+
+def _read_label(boxes: tuple[ocr.TextBox, ...], anchor: tuple[int, int]) -> float | None:
+    """The one confident speed label inside the readout region, if any.
+
+    Only a box centred in SPEED_READOUT_REGION counts: "x1.00" (coins) and
+    "x1.20" (critical factor) are drawn elsewhere on the same screen. A label
+    that is not a step the widget shows ("x2.6") is a misread, not a speed.
+    """
+    region = config.SPEED_READOUT_REGION
+    left, top = anchor[0] + region.dx, anchor[1] + region.dy
+    values = set()
+    for box in boxes:
+        x, y = box.rect.x + box.rect.w / 2, box.rect.y + box.rect.h / 2
+        if (box.confidence < config.SPEED_OCR_MIN_CONFIDENCE
+                or not (left <= x < left + region.w and top <= y < top + region.h)):
+            continue
+        match = _LABEL.match(box.text.strip())
+        if match is not None and float(match.group(1)) in config.SPEED_VALUES:
+            values.add(float(match.group(1)))
+    return values.pop() if len(values) == 1 else None
+
+
 def read(
     screen: Image,
     templates: vision.TemplateCache,
     anchor: tuple[int, int],
     threshold: float = config.SPEED_MATCH_THRESHOLD,
+    boxes: tuple[ocr.TextBox, ...] = (),
 ) -> float | None:
     """The speed showing between the arrows, or None if nothing matched.
 
-    Scored against every known value and the best one wins, rather than
-    returning the first over the threshold: the labels differ by one glyph,
-    so "first past the post" makes the answer depend on tuple order.
+    The OCR label comes first: it reads every speed, where templates exist
+    only for the ones harvested so far. The templates answer when the OCR
+    missed the label.
+
+    Templates are scored against every known value and the best one wins,
+    rather than returning the first over the threshold: the labels differ by
+    one glyph, so "first past the post" makes the answer depend on tuple
+    order.
     """
+    label = _read_label(boxes, anchor)
+    if label is not None:
+        return label
     window = _crop(screen, anchor, config.SPEED_READOUT_REGION)
     best: tuple[float, float] | None = None
-    for value in config.SPEED_VALUES:
+    for value in config.SPEED_TEMPLATE_VALUES:
         template = templates.get(config.speed_template(value))
         if template.shape[0] > window.shape[0] or template.shape[1] > window.shape[1]:
             logger.warning("speed template for x%.1f is larger than the readout window", value)
@@ -166,9 +201,10 @@ class SpeedController:
         target: float | None,
         anchor: tuple[int, int],
         tuning: Strategy | None = None,
+        boxes: tuple[ocr.TextBox, ...] = (),
     ) -> str | None:
         """Read the widget and tap at most one arrow toward `target`."""
-        current = read(screen, templates, anchor)
+        current = read(screen, templates, anchor, boxes=boxes)
         direction = self.decide(current, target)
         if direction is None:
             return None
