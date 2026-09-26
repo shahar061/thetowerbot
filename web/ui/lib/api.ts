@@ -12,6 +12,7 @@ import type {
   LedgerPayload,
   RunPurchasePayload,
   RunRow,
+  RunUpgradesPayload,
   Snapshot,
   StatsPayload,
   WorkshopLevels,
@@ -190,6 +191,10 @@ export const fetchAccountWorkshopPurchases = (accountKey: string, before?: numbe
   );
 export const fetchAccountRuns = (accountKey: string, expectedAccountId?: string) =>
   workerRead<RunRow[]>("/api/runs?limit=1", accountKey, expectedAccountId);
+export const fetchAccountRunHistory = (accountKey: string, expectedAccountId?: string, limit = 200) =>
+  workerRead<RunRow[]>(`/api/runs?limit=${limit}`, accountKey, expectedAccountId);
+export const fetchAccountRunUpgrades = (accountKey: string, runId: number, expectedAccountId?: string) =>
+  workerRead<RunUpgradesPayload | null>(`/api/runs/${runId}/upgrades`, accountKey, expectedAccountId);
 export const fetchAccountRunPurchases = (accountKey: string, runId: number, expectedAccountId?: string) =>
   workerRead<RunPurchasePayload>(`/api/runs/${runId}/purchases`, accountKey, expectedAccountId);
 export const fetchUnknown = () => getJson<Snapshot[]>("/api/unknown");

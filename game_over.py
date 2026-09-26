@@ -229,3 +229,15 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
     )
     return GameOverReading(SCREEN_ID, observed_at, width, height,
                            hashlib.sha256(screen.tobytes()).hexdigest(), fields)
+
+
+def run_extras(reading: GameOverReading | None) -> tuple[str | None, int | None]:
+    """Killed By and ad coins for the run record, or None for each field that
+    was not positively observed. Absent and unreadable are both None: the
+    runs table stores what was read, never a guess."""
+    if reading is None:
+        return None, None
+    observed = {f.key: f.raw_value for f in reading.fields if f.status == "observed" and f.raw_value}
+    killed = observed.get("killed_by")
+    ad = observed.get("ad_coins_earned")
+    return (killed.strip() or None) if killed else None, ocr.parse_number(ad) if ad else None

@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 import db
+import events
+from sinks.store import to_row
 
 
 def make_db(tmp_path: Path) -> sqlite3.Connection:
@@ -172,6 +174,21 @@ def test_close_abandoned_runs_backdates_ended_at_to_started_at(tmp_path: Path) -
     assert (runs[1]["ended_at"], runs[1]["abandoned"]) == (100.0, 1)
     # A run that already ended cleanly must be left alone.
     assert (runs[2]["ended_at"], runs[2]["abandoned"]) == (90.0, 0)
+
+
+def test_close_abandoned_runs_summarizes_purchases_for_each_run_it_closes(tmp_path: Path) -> None:
+    """A killed process never reaches finish_run, so without this the run's
+    purchases would sit unsummarized in `run_upgrades` until the next
+    restart's `db.connect` backfill - see `_backfill_run_upgrades`."""
+    conn = make_db(tmp_path)
+    db.start_run(conn, 1, started_at=100.0)
+    db.insert_event(conn, to_row(events.BattlePurchased(
+        seq=1, ts=101.0, item="Damage", upgrade_id="damage", price=10, value=None), 1))
+
+    db.close_abandoned_runs(conn)
+
+    rows = {r["upgrade_id"]: dict(r) for r in conn.execute("SELECT * FROM run_upgrades WHERE run_id = 1")}
+    assert rows["damage"]["levels"] == 1
 
 
 def test_close_abandoned_runs_is_a_no_op_when_nothing_is_open(tmp_path: Path) -> None:
@@ -439,3 +456,165 @@ def test_run_purchases_come_back_in_purchase_order(tmp_path: Path) -> None:
         db.insert_event(conn, a_purchase(seq))
 
     assert [p["seq"] for p in db.run_purchases(conn, 1)] == [1, 2, 3]
+
+
+def _buy(conn: sqlite3.Connection, seq: int, run_id: int, upgrade_id: str | None, price: int | None) -> None:
+    db.insert_event(conn, to_row(events.BattlePurchased(
+        seq=seq, ts=100.0 + seq, item="x", upgrade_id=upgrade_id, price=price, value=None), run_id))
+
+
+def _finish(conn: sqlite3.Connection, run_id: int, **overrides: object) -> None:
+    fields: dict[str, object] = dict(started_at=0.0, ended_at=100.0 + run_id, wave=10, coins=50, tier=1,
+                                     abandoned=False, scan_count=0, tap_count=0)
+    fields.update(overrides)
+    db.finish_run(conn, run_id, **fields)  # type: ignore[arg-type]
+
+
+def test_connect_adds_killed_by_and_ad_coins_to_an_old_runs_table(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, "
+                "wave INTEGER, coins INTEGER, tier INTEGER, abandoned INTEGER NOT NULL DEFAULT 0, "
+                "scan_count INTEGER NOT NULL DEFAULT 0, tap_count INTEGER NOT NULL DEFAULT 0)")
+    old.execute("INSERT INTO runs (id, started_at) VALUES (1, 5.0)")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    assert {"killed_by", "ad_coins", "purpose"} <= columns
+    assert db.list_runs(conn)[0]["killed_by"] is None
+
+
+def test_finish_run_stores_killed_by_and_ad_coins(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, killed_by="Tank", ad_coins=40)
+    run = db.list_runs(conn)[0]
+    assert (run["killed_by"], run["ad_coins"]) == ("Tank", 40)
+
+
+def test_finish_run_summarizes_purchases_once_per_upgrade(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    db.start_run(conn, 1, started_at=0.0)
+    _buy(conn, 1, 1, "damage", 10)
+    _buy(conn, 2, 1, "damage", None)
+    _buy(conn, 3, 1, "health", 7)
+    _buy(conn, 4, 1, None, 3)          # unattributable: skipped
+    _finish(conn, 1)
+    _finish(conn, 1)                   # repeated finish must not double count
+    rows = {r["upgrade_id"]: dict(r) for r in conn.execute("SELECT * FROM run_upgrades WHERE run_id = 1")}
+    assert set(rows) == {"damage", "health"}
+    assert (rows["damage"]["levels"], rows["damage"]["spent"], rows["damage"]["unpriced"]) == (2, 10, 1)
+    assert (rows["health"]["levels"], rows["health"]["spent"], rows["health"]["unpriced"]) == (1, 7, 0)
+
+
+def test_connect_backfills_summaries_for_finished_runs_with_purchase_events(tmp_path: Path) -> None:
+    path = tmp_path / "bot.db"
+    conn = db.connect(path)
+    _finish(conn, 1)
+    _buy(conn, 1, 1, "damage", 10)
+    conn.execute("DELETE FROM run_upgrades")
+    conn.commit()
+    conn.close()
+    conn = db.connect(path)
+    assert conn.execute("SELECT levels FROM run_upgrades WHERE run_id = 1 AND upgrade_id = 'damage'").fetchone()[0] == 1
+
+
+def _pre_migration_db(path: Path) -> None:
+    """A worker DB as it looks before any writer `connect` has touched it:
+    `purpose` exists (an older migration), but `killed_by`, `ad_coins` and
+    `run_upgrades` do not - `db.reader` (mode=ro) never migrates, only
+    `db.connect` does."""
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, "
+        "wave INTEGER, coins INTEGER, tier INTEGER, abandoned INTEGER NOT NULL DEFAULT 0, "
+        "scan_count INTEGER NOT NULL DEFAULT 0, tap_count INTEGER NOT NULL DEFAULT 0, "
+        "purpose TEXT NOT NULL DEFAULT 'farm')"
+    )
+    old.execute(
+        "INSERT INTO runs (id, started_at, ended_at, wave, coins, tier, abandoned) "
+        "VALUES (1, 0.0, 60.0, 10, 50, 1, 0)"
+    )
+    old.commit()
+    old.close()
+
+
+def test_list_runs_and_run_upgrade_levels_tolerate_a_worker_db_opened_before_migration(tmp_path: Path) -> None:
+    """The web layer reads worker DBs with `db.reader`, which never migrates.
+    A worker whose writer has not connected since `run_upgrades`/`killed_by`/
+    `ad_coins` were added must still answer, not raise OperationalError."""
+    path = tmp_path / "old.db"
+    _pre_migration_db(path)
+
+    with db.reader(path) as conn:
+        runs = db.list_runs(conn)
+        levels = db.run_upgrade_levels(conn, 1)
+
+    assert len(runs) == 1
+    run = runs[0]
+    assert (run["buys"], run["killed_by"], run["ad_coins"]) == (None, None, None)
+    assert run["total_coins"] == 50
+    assert levels is None
+
+
+def _by_id(conn: sqlite3.Connection, limit: int = 50) -> dict[int, dict]:
+    return {run["id"]: run for run in db.list_runs(conn, limit=limit)}
+
+
+def test_records_are_chronological_and_keep_broken_badges(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, wave=10, coins=50)
+    _finish(conn, 2, wave=10, coins=40)        # tie on wave: not a record
+    _finish(conn, 3, wave=14, coins=90, ad_coins=10)
+    runs = _by_id(conn)
+    assert runs[1]["wave_record"] == "broken" and runs[1]["wave_broken_by"] == 3
+    assert runs[1]["wave_prev"] is None
+    assert runs[2]["wave_record"] is None and runs[2]["coin_record"] is None
+    assert runs[3]["wave_record"] == "standing" and runs[3]["wave_prev"] == {"run_id": 1, "value": 10}
+    assert runs[3]["total_coins"] == 100 and runs[3]["coin_record"] == "standing"
+
+
+def test_wave_records_are_per_tier_and_coin_records_are_not(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, tier=1, wave=30, coins=100)
+    _finish(conn, 2, tier=2, wave=12, coins=80)
+    runs = _by_id(conn)
+    assert runs[2]["wave_record"] == "standing"      # first T2 run
+    assert runs[1]["wave_record"] == "standing"      # still best at T1
+    assert runs[2]["coin_record"] is None            # 80 < 100 fleet-member-wide
+
+
+def test_abandoned_open_and_unread_runs_never_hold_or_break_records(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, wave=10, coins=50)
+    _finish(conn, 2, wave=99, coins=999, abandoned=True)
+    _finish(conn, 3, wave=None, coins=None)
+    db.start_run(conn, 4, started_at=500.0)          # live run, ended_at NULL
+    conn.execute("UPDATE runs SET wave = 200, coins = 2000 WHERE id = 4")
+    conn.commit()
+    runs = _by_id(conn)
+    assert runs[1]["wave_record"] == "standing" and runs[1]["coin_record"] == "standing"
+    for run_id in (2, 3, 4):
+        assert runs[run_id]["wave_record"] is None and runs[run_id]["coin_record"] is None
+    assert runs[3]["total_coins"] is None
+
+
+def test_records_use_full_history_beyond_the_page_limit(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, wave=10)
+    _finish(conn, 2, wave=12)
+    [latest] = db.list_runs(conn, limit=1)
+    assert latest["id"] == 2 and latest["wave_prev"] == {"run_id": 1, "value": 10}
+
+
+def test_buys_and_upgrade_levels(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    db.start_run(conn, 1, started_at=0.0)
+    _buy(conn, 1, 1, "damage", 10)
+    _buy(conn, 2, 1, "damage", 12)
+    _finish(conn, 1)
+    _finish(conn, 2)
+    runs = _by_id(conn)
+    assert runs[1]["buys"] == 2 and runs[2]["buys"] is None
+    assert db.run_upgrade_levels(conn, 1) == [{"upgrade_id": "damage", "levels": 2, "spent": 22, "unpriced": 0}]
+    assert db.run_upgrade_levels(conn, 2) is None

@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS runs (
     purpose    TEXT NOT NULL DEFAULT 'farm' CHECK(purpose IN ('farm', 'milestone'))
 );
 
+-- Never pruned, unlike `events`: what each finished run bought, one row per
+-- upgrade. Written by finish_run from that run's BattlePurchased events.
+CREATE TABLE IF NOT EXISTS run_upgrades (
+    run_id     INTEGER NOT NULL,
+    upgrade_id TEXT    NOT NULL,
+    levels     INTEGER NOT NULL,
+    spent      INTEGER NOT NULL,
+    unpriced   INTEGER NOT NULL,
+    PRIMARY KEY (run_id, upgrade_id)
+);
+
 CREATE TABLE IF NOT EXISTS events (
     seq    INTEGER PRIMARY KEY,
     run_id INTEGER,
@@ -152,6 +163,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
             "ALTER TABLE runs ADD COLUMN purpose TEXT NOT NULL DEFAULT 'farm' "
             "CHECK(purpose IN ('farm', 'milestone'))"
         )
+    if "killed_by" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN killed_by TEXT")
+    if "ad_coins" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN ad_coins INTEGER")
+    _backfill_run_upgrades(conn)
     conn.commit()
     return conn
 
@@ -271,6 +287,8 @@ def finish_run(
     abandoned: bool,
     scan_count: int,
     tap_count: int,
+    killed_by: str | None = None,
+    ad_coins: int | None = None,
 ) -> None:
     """Close a run out.
 
@@ -278,11 +296,14 @@ def finish_run(
     opening row never landed, the run is still worth recording. `started_at`
     is only used in that case - an existing row keeps the start it was opened
     with, which is the real one.
+
+    Also freezes the run's purchases into `run_upgrades`, because `events`
+    is pruned and `runs` is not.
     """
     conn.execute(
         """INSERT INTO runs (id, started_at, ended_at, wave, coins, tier,
-                             abandoned, scan_count, tap_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             abandoned, scan_count, tap_count, killed_by, ad_coins)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                ended_at   = excluded.ended_at,
                wave       = excluded.wave,
@@ -290,20 +311,114 @@ def finish_run(
                tier       = excluded.tier,
                abandoned  = excluded.abandoned,
                scan_count = excluded.scan_count,
-               tap_count  = excluded.tap_count""",
+               tap_count  = excluded.tap_count,
+               killed_by  = excluded.killed_by,
+               ad_coins   = excluded.ad_coins""",
         (
             run_id, started_at, ended_at, wave, coins, tier,
-            int(abandoned), scan_count, tap_count,
+            int(abandoned), scan_count, tap_count, killed_by, ad_coins,
         ),
     )
+    _summarize_purchases(conn, run_id)
     conn.commit()
 
 
+_NO_RECORD: dict[str, Any] = {
+    "wave_record": None, "wave_prev": None, "wave_broken_by": None,
+    "coin_record": None, "coin_prev": None, "coin_broken_by": None,
+}
+
+
+def _schema_probe(conn: sqlite3.Connection) -> dict[str, bool]:
+    """What the read paths below can rely on existing.
+
+    `db.reader` opens worker DBs mode=ro and never migrates them - only
+    `db.connect` (the writer) adds `run_upgrades`/`killed_by`/`ad_coins`. A
+    worker whose writer has not reconnected since those were added must be
+    read as if they were never added, not raise OperationalError.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    has_run_upgrades = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_upgrades'"
+    ).fetchone() is not None
+    return {
+        "run_upgrades": has_run_upgrades,
+        "killed_by": "killed_by" in columns,
+        "ad_coins": "ad_coins" in columns,
+    }
+
+
 def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    schema = _schema_probe(conn)
+    buys_select = (
+        "(SELECT SUM(levels) FROM run_upgrades u WHERE u.run_id = runs.id) AS buys"
+        if schema["run_upgrades"] else "NULL AS buys"
+    )
     rows = conn.execute(
-        "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)
+        f"SELECT runs.*, {buys_select} FROM runs ORDER BY id DESC LIMIT ?",
+        (limit,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    records = _records(conn, schema)
+    listed = []
+    for row in rows:
+        run = dict(row)
+        if not schema["killed_by"]:
+            run["killed_by"] = None
+        if not schema["ad_coins"]:
+            run["ad_coins"] = None
+        run["total_coins"] = None if run["coins"] is None else run["coins"] + (run["ad_coins"] or 0)
+        run.update(records.get(run["id"], _NO_RECORD))
+        listed.append(run)
+    return listed
+
+
+def _records(conn: sqlite3.Connection, schema: dict[str, bool] | None = None) -> dict[int, dict[str, Any]]:
+    """High scores in the order they were set, over this account's whole history.
+
+    A run is a record when it strictly beats every earlier finished,
+    non-abandoned run in its scope: per tier for waves, account-wide for total
+    coins. A later record does not erase an earlier one - it marks it broken.
+    Runs with the value unread (NULL) neither set nor break a record.
+    """
+    if schema is None:
+        schema = _schema_probe(conn)
+    total_select = "coins + COALESCE(ad_coins, 0) AS total" if schema["ad_coins"] else "coins AS total"
+    rows = conn.execute(
+        f"SELECT id, tier, wave, {total_select} FROM runs "
+        "WHERE ended_at IS NOT NULL AND abandoned = 0 ORDER BY id"
+    ).fetchall()
+    found: dict[int, dict[str, Any]] = {}
+    for kind, column, per_tier in (("wave", "wave", True), ("coin", "total", False)):
+        best: dict[int | None, tuple[int, int]] = {}
+        for row in rows:
+            value = row[column]
+            if value is None or (per_tier and row["tier"] is None):
+                continue
+            scope = row["tier"] if per_tier else None
+            previous = best.get(scope)
+            if previous is not None and value <= previous[1]:
+                continue
+            entry = found.setdefault(row["id"], dict(_NO_RECORD))
+            entry[f"{kind}_record"] = "standing"
+            if previous is not None:
+                entry[f"{kind}_prev"] = {"run_id": previous[0], "value": previous[1]}
+                found[previous[0]][f"{kind}_record"] = "broken"
+                found[previous[0]][f"{kind}_broken_by"] = row["id"]
+            best[scope] = (row["id"], value)
+    return found
+
+
+def run_upgrade_levels(conn: sqlite3.Connection, run_id: int) -> list[dict[str, Any]] | None:
+    """One run's frozen purchase summary, or None when none was recorded
+    (a run older than the events retention, one that bought nothing, or a
+    worker DB read before `run_upgrades` was migrated onto it)."""
+    if not _schema_probe(conn)["run_upgrades"]:
+        return None
+    rows = conn.execute(
+        "SELECT upgrade_id, levels, spent, unpriced FROM run_upgrades WHERE run_id = ? ORDER BY upgrade_id",
+        (run_id,),
+    ).fetchall()
+    return [dict(row) for row in rows] or None
 
 
 def run_events(
@@ -350,6 +465,48 @@ def run_purchases(conn: sqlite3.Connection, run_id: int) -> list[dict[str, Any]]
     return purchases
 
 
+def _summarize_purchases(conn: sqlite3.Connection, run_id: int) -> None:
+    """Rewrite one run's `run_upgrades` rows from its BattlePurchased events.
+
+    Delete-then-insert keeps a repeated finish idempotent. A purchase with no
+    upgrade_id cannot be attributed to an upgrade, so it is left out rather
+    than stored under a NULL key.
+    """
+    totals: dict[str, list[int]] = {}
+    for row in run_purchases(conn, run_id):
+        if not row["upgrade_id"]:
+            continue
+        entry = totals.setdefault(row["upgrade_id"], [0, 0, 0])
+        entry[0] += 1
+        if row["price"] is None:
+            entry[2] += 1
+        else:
+            entry[1] += row["price"]
+    conn.execute("DELETE FROM run_upgrades WHERE run_id = ?", (run_id,))
+    conn.executemany(
+        "INSERT INTO run_upgrades (run_id, upgrade_id, levels, spent, unpriced) VALUES (?, ?, ?, ?, ?)",
+        [(run_id, upgrade_id, *values) for upgrade_id, values in totals.items()],
+    )
+
+
+def _backfill_run_upgrades(conn: sqlite3.Connection) -> None:
+    """Summarize finished runs that predate `run_upgrades` while their events survive.
+
+    Harmless if a run's purchases all lack an upgrade_id (nothing for
+    `_summarize_purchases` to insert): the WHERE clause's own EXISTS check
+    still finds a matching BattlePurchased event, so this re-runs that run
+    on every connect - a no-op each time, never a growing cost, but also
+    never resolved since it can't tell "summarized as empty" from "not yet
+    summarized."""
+    pending = conn.execute(
+        "SELECT r.id FROM runs r WHERE r.ended_at IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM run_upgrades u WHERE u.run_id = r.id) "
+        "AND EXISTS (SELECT 1 FROM events e WHERE e.run_id = r.id AND e.type = 'BattlePurchased')"
+    ).fetchall()
+    for row in pending:
+        _summarize_purchases(conn, row["id"])
+
+
 def close_abandoned_runs(conn: sqlite3.Connection) -> int:
     """Close out runs a killed process never finished. Returns how many.
 
@@ -360,10 +517,16 @@ def close_abandoned_runs(conn: sqlite3.Connection) -> int:
     than "now": no real duration was ever observed, and backdating to the
     run's own start is honest about that instead of inventing one.
     """
+    pending = [row["id"] for row in conn.execute("SELECT id FROM runs WHERE ended_at IS NULL")]
     cursor = conn.execute(
         "UPDATE runs SET ended_at = started_at, abandoned = 1 "
         "WHERE ended_at IS NULL"
     )
+    # finish_run is never called for a kill, so nothing else freezes these
+    # runs' purchases into run_upgrades; without this they would wait for
+    # the next restart's `_backfill_run_upgrades` pass.
+    for run_id in pending:
+        _summarize_purchases(conn, run_id)
     conn.commit()
     return cursor.rowcount
 

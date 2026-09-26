@@ -254,3 +254,13 @@ def test_a_mission_claim_keeps_both_of_its_currencies(tmp_path: Path) -> None:
         moved = {line["currency"]: line["delta"] for line in db.ledger_page(conn)}
 
     assert moved == {"coins": 120, "gems": 5}
+
+
+def test_the_run_row_carries_killed_by_and_ad_coins(tmp_path: Path) -> None:
+    path = drain(tmp_path, [
+        events.RunStarted(run_id=1),
+        events.RunEnded(run_id=1, duration=60.0, wave=11, coins=80, tier=1, killed_by="Tank", ad_coins=0),
+    ])
+    with db.reader(path) as conn:
+        run = db.list_runs(conn)[0]
+    assert (run["killed_by"], run["ad_coins"], run["total_coins"]) == ("Tank", 0, 80)

@@ -930,6 +930,43 @@ def create_app(
             },
         }
 
+    @app.get("/api/runs/{run_id}/upgrades")
+    def run_upgrades(run_id: int, request: Request) -> dict | None:
+        """End-of-run in-run upgrade levels, grouped like the Workshop tabs.
+
+        Every catalog upgrade that has a level ladder is listed so the panel
+        can show what was left alone; levels are the bot's buys this run.
+        """
+        path = _history_path(request)
+        if path is None:
+            return None
+        with db.reader(path) as conn:
+            rows = db.run_upgrade_levels(conn, run_id)
+        if rows is None:
+            return None
+        bought = {row["upgrade_id"]: row for row in rows}
+        ladders = workshop_levels.ladders()
+        categories = []
+        for category in ("ATTACK", "DEFENSE", "UTILITY"):
+            items = []
+            for upgrade in upgrades.CATALOG:
+                if upgrade.category != category or upgrade.unlock or upgrade.id not in ladders:
+                    continue
+                row = bought.get(upgrade.id, {})
+                items.append({
+                    "upgrade_id": upgrade.id, "name": upgrade.name,
+                    "levels": row.get("levels", 0), "max_level": ladders[upgrade.id].max_level,
+                    "spent": row.get("spent", 0), "unpriced": row.get("unpriced", 0),
+                })
+            categories.append({"name": category, "items": items})
+        # Summed from the listed items, not `rows`: a stored upgrade_id with
+        # no ladder entry (uncatalogued, or an unlock with no level ladder)
+        # never becomes a card, so it must not inflate the header past what
+        # the cards actually show.
+        listed = [item for category in categories for item in category["items"]]
+        totals = {key: sum(item[key] for item in listed) for key in ("levels", "spent", "unpriced")}
+        return {"categories": categories, "totals": totals}
+
     @app.get("/api/events/stream")
     async def stream(request: Request) -> StreamingResponse:
         choice = _live_choice(request)

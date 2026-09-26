@@ -151,6 +151,26 @@ export interface RunRow {
   abandoned: number;
   scan_count: number;
   tap_count: number;
+  killed_by?: string | null;
+  ad_coins?: number | null;
+  total_coins?: number | null;
+  buys?: number | null;
+  wave_record?: RecordState;
+  wave_prev?: RecordRef | null;
+  wave_broken_by?: number | null;
+  coin_record?: RecordState;
+  coin_prev?: RecordRef | null;
+  coin_broken_by?: number | null;
+}
+
+export type RecordState = "standing" | "broken" | null;
+export interface RecordRef { run_id: number; value: number }
+export interface RunUpgradeItem {
+  upgrade_id: string; name: string; levels: number; max_level: number; spent: number; unpriced: number;
+}
+export interface RunUpgradesPayload {
+  categories: { name: string; items: RunUpgradeItem[] }[];
+  totals: { levels: number; spent: number; unpriced: number };
 }
 
 /** One in-run upgrade the autopilot bought and verified during a run.

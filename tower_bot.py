@@ -63,6 +63,7 @@ import db
 import digits
 import events
 import free_ticket
+import game_over
 import gem_claim
 import stall_watchdog
 import jitter
@@ -515,6 +516,7 @@ class TowerBot:
         that pushes them down 49px while the modal's top edge rises as it
         re-centres. Those two are found by their own caption instead.
         """
+        killed_by, ad_coins = self._read_modal_extras()
         return dataclasses.replace(
             ended,
             wave=self.reader.read(
@@ -528,7 +530,21 @@ class TowerBot:
                 self.screen, config.MODAL_TIER_CAPTION, config.MODAL_TIER_REGION,
                 "modal",
             ),
+            killed_by=killed_by,
+            ad_coins=ad_coins,
         )
+
+    def _read_modal_extras(self) -> tuple[str | None, int | None]:
+        """Killed By and ad coins by OCR on the confirmed game-over frame.
+
+        Best effort by design: the glyph-read wave/coins/tier stay the run's
+        authority, and nothing here may stop the run from ending.
+        """
+        try:
+            return game_over.run_extras(game_over.parse_frame(self.screen, ocr.read(self.screen)))
+        except Exception:
+            logger.exception("Game-over OCR failed; killed_by and ad_coins left empty")
+            return None, None
 
     # -- main loop ---------------------------------------------------------
     def run_cap_reached(

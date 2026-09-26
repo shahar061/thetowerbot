@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import sqlite3
 import threading
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
@@ -276,6 +277,87 @@ def test_a_run_that_bought_nothing_reports_zeroed_totals(harness) -> None:
 
     assert body["purchases"] == []
     assert body["totals"] == {"count": 0, "spent": 0, "unpriced": 0, "by_category": {}}
+
+
+def test_run_upgrades_group_levels_by_workshop_tab_with_max_levels(harness) -> None:
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.start_run(conn, 1, started_at=0.0)
+    db.insert_event(conn, a_battle_purchase(1))
+    db.insert_event(conn, a_battle_purchase(2, price=None))
+    db.finish_run(conn, 1, started_at=0.0, ended_at=60.0, wave=11, coins=80, tier=1,
+                  abandoned=False, scan_count=0, tap_count=0, killed_by="Tank", ad_coins=0)
+    conn.close()
+    body = client.get("/api/runs/1/upgrades").json()
+    attack = next(c for c in body["categories"] if c["name"] == "ATTACK")
+    damage = next(i for i in attack["items"] if i["upgrade_id"] == "damage")
+    assert (damage["levels"], damage["spent"], damage["unpriced"], damage["max_level"]) == (2, 120, 1, 6000)
+    assert [c["name"] for c in body["categories"]] == ["ATTACK", "DEFENSE", "UTILITY"]
+    assert all(not i["upgrade_id"].startswith("unlock_") for c in body["categories"] for i in c["items"])
+    assert body["totals"] == {"levels": 2, "spent": 120, "unpriced": 1}
+    run = client.get("/api/runs").json()[0]
+    assert (run["killed_by"], run["buys"], run["wave_record"]) == ("Tank", 2, "standing")
+
+
+def test_run_upgrades_totals_ignore_purchases_with_no_ladder_entry(harness) -> None:
+    """A stored `run_upgrades` row for an upgrade id the catalog does not
+    list (or that has no level ladder) must not inflate the header totals
+    past what the cards actually show."""
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.start_run(conn, 1, started_at=0.0)
+    db.insert_event(conn, a_battle_purchase(1))
+    db.insert_event(conn, a_battle_purchase(2, price=900, detail={"item": "?", "upgrade_id": "nonesuch"}))
+    db.finish_run(conn, 1, started_at=0.0, ended_at=60.0, wave=11, coins=80, tier=1,
+                  abandoned=False, scan_count=0, tap_count=0)
+    conn.close()
+
+    body = client.get("/api/runs/1/upgrades").json()
+
+    listed_levels = sum(item["levels"] for c in body["categories"] for item in c["items"])
+    assert listed_levels == 1
+    assert body["totals"] == {"levels": 1, "spent": 120, "unpriced": 0}
+
+
+def test_run_upgrades_is_null_without_a_record(harness) -> None:
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.start_run(conn, 1, started_at=0.0)
+    conn.close()
+    assert client.get("/api/runs/1/upgrades").json() is None
+
+
+def test_runs_and_upgrades_routes_answer_200_on_a_worker_db_opened_before_migration(tmp_path: Path) -> None:
+    """These routes read with `db.reader`, which never migrates - only
+    `db.connect` does. A worker whose writer has not reconnected since
+    `run_upgrades`/`killed_by`/`ad_coins` were added must still answer with
+    200, not 500."""
+    db_path = tmp_path / "old.db"
+    old = sqlite3.connect(db_path)
+    old.execute(
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, "
+        "wave INTEGER, coins INTEGER, tier INTEGER, abandoned INTEGER NOT NULL DEFAULT 0, "
+        "scan_count INTEGER NOT NULL DEFAULT 0, tap_count INTEGER NOT NULL DEFAULT 0, "
+        "purpose TEXT NOT NULL DEFAULT 'farm')"
+    )
+    old.execute(
+        "INSERT INTO runs (id, started_at, ended_at, wave, coins, tier, abandoned) "
+        "VALUES (1, 0.0, 60.0, 10, 50, 1, 0)"
+    )
+    old.commit()
+    old.close()
+    client = TestClient(create_app(
+        state=BotState(), sse=SseSink(), bus=events.EventBus(),
+        db_path=db_path, unknown_dir=tmp_path,
+    ))
+
+    runs = client.get("/api/runs")
+    upgrades = client.get("/api/runs/1/upgrades")
+
+    assert runs.status_code == 200
+    assert (runs.json()[0]["buys"], runs.json()[0]["killed_by"]) == (None, None)
+    assert upgrades.status_code == 200
+    assert upgrades.json() is None
 
 
 def test_unknown_lists_snapshots_newest_first(harness) -> None:
