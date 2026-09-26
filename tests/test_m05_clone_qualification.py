@@ -514,6 +514,41 @@ def test_worker_probe_dismisses_measured_play_games_sheet_on_recovery(tmp_path: 
     assert host.calls == [("stop", "clone-a"), ("start", "clone-a")]
 
 
+def test_worker_probe_waits_for_dialogs_to_finish_closing(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    host, adapter, _, clones, scope = setup(tmp_path)
+    item = clones[0]
+    host.instances.append(HostInstance(item.instance, item.attempt.endpoint,
+                                       item.attempt.lease_id, "running", scope.source_lineage))
+    attempt = replace(item.attempt, created_at=time.time() - 1.)
+    taps: list[tuple[int, int]] = []
+    device = SimpleNamespace(
+        serial=attempt.endpoint,
+        app_current=lambda: SimpleNamespace(package="com.TechTreeGames.TheTower"),
+        click=lambda x, y: taps.append((x, y)),
+    )
+    # The first frame after each close tap still shows the old or a
+    # transitional screen, as on a slow emulator.
+    screens = iter(["account", "account", "account", "settings", "unknown", "home"])
+    def observe(_: object) -> AccountFrame:
+        screen = next(screens)
+        controls = {"account": {"close": (940, 585)}, "settings": {"close": (910, 490)},
+                    "unknown": {}, "home": {}}[screen]
+        stamp = time.time()
+        return AccountFrame(screen, "ACCOUNT-A" if screen == "account" else None,
+                            scope.game_version, f"digest-{stamp}", stamp,
+                            f"capture://{stamp}", controls,
+                            popup_title="ACCOUNT" if screen == "account" else None,
+                            id_label="ID:" if screen == "account" else None)
+    monkeypatch.setattr(clone_qualification_module.time, "sleep", lambda _: None)
+    proof = probe_clone_worker(adapter=adapter,
+                               candidate=replace(item, attempt=attempt,
+                                                 connect=lambda: device, observe=observe),
+                               account_id="ACCOUNT-A", scope=scope, navigate=True)
+    assert proof["recovered_at"] > proof["started_at"]
+    assert taps == [(940, 585), (910, 490)]
+
+
 def test_worker_probe_conflict_never_taps_and_does_not_restart(tmp_path: Path) -> None:
     host, adapter, _, clones, scope = setup(tmp_path)
     item = clones[0]

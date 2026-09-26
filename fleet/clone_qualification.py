@@ -132,6 +132,28 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
             time.sleep(1.)
         raise ValueError("worker account screen timed out")
 
+    def close_dialog(device: Any, dialog: AccountFrame, expected: str,
+                     error: str) -> AccountFrame:
+        # A frame read right after the tap can still show the closing
+        # dialog. Poll until the next screen settles, and re-tap only a
+        # dialog that is still up after the animation had time to finish.
+        shot = dialog
+        for poll in range(10):
+            if poll % 3 == 0 and shot.screen == dialog.screen:
+                if "close" not in shot.controls:
+                    raise ValueError(f"{dialog.screen} close control unavailable")
+                device.click(*shot.controls["close"])
+            else:
+                time.sleep(1.)
+            shot = candidate.observe(device)
+            if shot.conflict_dialog:
+                raise ValueError("session_conflict")
+            if shot.screen == expected:
+                return shot
+            if shot.screen not in {dialog.screen, "unknown"}:
+                raise ValueError(error)
+        raise ValueError(error)
+
     with candidate.runtime.reserve(attempt.endpoint):
         connector = HostBoundConnect(adapter, candidate.instance, attempt,
                                      candidate.connect, timeout=10., restart_after=2)
@@ -180,18 +202,10 @@ def probe_clone_worker(*, adapter: BlueStacksAdapter, candidate: CloneCandidate,
             # The account proof leaves two stacked dialogs over the game.
             # Use the controls located on each fresh dialog frame. Their
             # absolute positions change with the emulator height.
-            if "close" not in after.controls:
-                raise ValueError("account close control unavailable")
-            device.click(*after.controls["close"])
-            settings = candidate.observe(device)
-            if settings.screen != "settings" or settings.conflict_dialog:
-                raise ValueError("account dialog did not close after recovery")
-            if "close" not in settings.controls:
-                raise ValueError("settings close control unavailable")
-            device.click(*settings.controls["close"])
-            home = candidate.observe(device)
-            if home.screen != "home" or home.conflict_dialog:
-                raise ValueError("settings dialog did not close after recovery")
+            settings = close_dialog(device, after, "settings",
+                                    "account dialog did not close after recovery")
+            close_dialog(device, settings, "home",
+                         "settings dialog did not close after recovery")
         adapter.designated(candidate.instance, attempt)
         return {"account_id": account_id, "started_at": before.observed_at,
                 "startup_evidence_ref": before.evidence_ref,
