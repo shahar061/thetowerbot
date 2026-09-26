@@ -7,6 +7,7 @@ import type { RerollMember } from "@/lib/fleet";
 import { deviceColor } from "@/lib/rerollState";
 import type { WorkshopLevelRow, WorkshopLevels } from "@/lib/types";
 import { memberIdentity } from "../statsHelpers";
+import { RecentWorkshopBuys } from "./RecentWorkshopBuys";
 
 const CATEGORIES = ["ATTACK", "DEFENSE", "UTILITY"] as const;
 const STALE_SECONDS = 24 * 3600;
@@ -67,14 +68,17 @@ function Cell({ row, color, cheapest, now, focused }: {
   </div>;
 }
 
-export function WorkshopMatrix({ members }: { members: RerollMember[] }): React.JSX.Element {
+export function WorkshopMatrix({ members, focusWorker = null }: { members: RerollMember[]; focusWorker?: string | null }): React.JSX.Element {
   const identity = JSON.stringify(members.map(({ name, account_key, account_id, lease_id }) => ({ name, account_key, account_id, lease_id })));
   const [results, setResults] = useState<Record<string, Result>>({});
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [hideMaxed, setHideMaxed] = useState(true);
   const [sort, setSort] = useState<Sort>("category");
   const [query, setQuery] = useState("");
-  const [focus, setFocus] = useState<string | null>(null);
+  const [focus, setFocus] = useState<string | null>(() => {
+    const target = members.find(member => member.name === focusWorker);
+    return target ? memberIdentity(target) : null;
+  });
   const [now, setNow] = useState(() => Date.now() / 1000);
 
   useEffect(() => {
@@ -101,6 +105,7 @@ export function WorkshopMatrix({ members }: { members: RerollMember[] }): React.
   }, [identity]);
 
   const shown = focus ? members.filter(member => memberIdentity(member) === focus) : members;
+  const focused = focus ? members.find(member => memberIdentity(member) === focus) ?? null : null;
   const rowsOf = (member: RerollMember): Map<string, WorkshopLevelRow> =>
     new Map((results[memberIdentity(member)]?.data?.upgrades ?? []).map(row => [row.id, row]));
   const byMember = new Map(members.map(member => [memberIdentity(member), rowsOf(member)]));
@@ -195,6 +200,7 @@ export function WorkshopMatrix({ members }: { members: RerollMember[] }): React.
         </tbody>
       </table>
     </div>
+    {focused && <RecentWorkshopBuys member={focused} />}
     <p className="border-t px-4 py-3 text-xs text-muted-foreground">
       Levels are inferred by matching each Workshop stat the bot read to the upgrade’s per-level value table. A range (80–82) means the read’s
       rounding fits several levels, and “?” means the read fits none (for example a lab bonus). The next price assumes the lowest matching level and no Workshop discount labs.

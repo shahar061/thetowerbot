@@ -349,7 +349,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     if lane == 'battle' and (facts.run_id is None or facts.wave is None or facts.wave < 1):
         return RouteEvaluation.unknown('Live run and wave are unverified', facts)
     program = route.workshop.blocks if lane == 'workshop' else route.battle.blocks
-    ceiling = wallet * (route.workshop.coin_spend_limit_pct if lane == 'workshop' else 100) // 100
+    from fleet.coin_share import spendable_wallet, workshop_ceiling, workshop_limit_pct
+    jar = getattr(facts, 'lab_coin_jar', 0) if lane == 'workshop' else 0
+    ceiling = workshop_ceiling(route, wallet, jar) if lane == 'workshop' else wallet
     excluded = _ban_closure(route.workshop.banned_upgrade_ids)
     counts = facts.confirmed_purchases if lane == 'workshop' else facts.run_purchases
     rejected: list[str] = []
@@ -407,8 +409,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     def native_facts(policy: str) -> RerollFacts:
         return RerollFacts(
             facts.account_id, facts.best_tier_1_wave, facts.purchases, facts.values,
-            wallet, facts.lifetime_coins, facts.prices,
-            spend_fraction=route.workshop.coin_spend_limit_pct / 100,
+            spendable_wallet(wallet, jar), facts.lifetime_coins, facts.prices,
+            spend_fraction=workshop_limit_pct(route) / 100,
             variant=facts.variant, utility_spent_coins=facts.utility_spent_coins,
             policy=policy)
 

@@ -204,16 +204,29 @@ class BattleRoute:
         return cls(mode, branches, _blocks(raw.get("blocks", []), "battle", mode))
 
 
+def _resource_blocks(value: object, lane: str, mode: str) -> tuple[dict[str, Any], ...]:
+    if mode not in {"steps", "blocks"}:
+        raise ValueError(f"unknown {lane} mode")
+    if mode != "blocks" and value:
+        raise ValueError("blocks require blocks mode")
+    if mode != "blocks":
+        return ()
+    from fleet.resource_blocks import validate_gems, validate_labs
+    return validate_gems(value) if lane == "gems" else validate_labs(value)
+
+
 @dataclass(frozen=True)
 class GemRoute:
     lab_slot2_reserve: int = 100
     spend_limit_pct: int = 100
     steps: tuple[str, ...] = ("unlock_lab_slot_2",)
+    mode: str = "steps"
+    blocks: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_dict(cls, value: object) -> GemRoute:
         raw = _mapping(value, "gems")
-        _keys(raw, {"lab_slot2_reserve", "spend_limit_pct", "steps"})
+        _keys(raw, {"lab_slot2_reserve", "spend_limit_pct", "steps", "mode", "blocks"})
         reserve = raw.get("lab_slot2_reserve", 100)
         if type(reserve) is not int or reserve != 100:
             raise ValueError("lab slot 2 reserve must remain 100 gems")
@@ -225,19 +238,22 @@ class GemRoute:
         if (not steps or steps[0] != "unlock_lab_slot_2" or len(steps) != len(set(steps))
                 or any(step not in allowed for step in steps)):
             raise ValueError("gem path must start with lab slot 2 and contain known unique steps")
+        mode = raw.get("mode", "steps")
         return cls(reserve, _percent(raw.get("spend_limit_pct", 100), "gem spend_limit_pct"),
-                   tuple(steps))
+                   tuple(steps), mode, _resource_blocks(raw.get("blocks", []), "gems", mode))
 
 
 @dataclass(frozen=True)
 class LabRoute:
     slot1_research: str = "game_speed"
     steps: tuple[str, ...] = ("research_game_speed",)
+    mode: str = "steps"
+    blocks: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_dict(cls, value: object) -> LabRoute:
         raw = _mapping(value, "labs")
-        _keys(raw, {"slot1_research", "steps"})
+        _keys(raw, {"slot1_research", "steps", "mode", "blocks"})
         if raw.get("slot1_research", "game_speed") != "game_speed":
             raise ValueError("lab slot 1 must research Game Speed")
         steps = raw.get("steps", ["research_game_speed"])
@@ -246,7 +262,150 @@ class LabRoute:
         if (not steps or steps[0] != "research_game_speed" or len(steps) != len(set(steps))
                 or any(step not in {"research_game_speed", "slot2_research"} for step in steps)):
             raise ValueError("lab path must start with Game Speed and contain known unique steps")
-        return cls("game_speed", tuple(steps))
+        mode = raw.get("mode", "steps")
+        return cls("game_speed", tuple(steps), mode,
+                   _resource_blocks(raw.get("blocks", []), "labs", mode))
+
+
+LAB_SHARE_MODES = ("when_affordable", "save_pct", "labs_first")
+POOL_SELECTIONS = ("cheapest", "ordered", "shortest")
+IDLE_FILLS = ("leave_idle", "shortest_under_30m")
+
+
+def _ranged(value: object, name: str, low: int, high: int) -> int:
+    if type(value) is not int or not low <= value <= high:
+        raise ValueError(f"{name} must be an integer from {low} to {high}")
+    return value
+
+
+def _flag(value: object, name: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be boolean")
+    return value
+
+
+@dataclass(frozen=True)
+class LabShareRule:
+    mode: str = "when_affordable"
+    pct: int = 25
+
+    @classmethod
+    def from_dict(cls, value: object) -> LabShareRule:
+        raw = _mapping(value, "lab_share")
+        _keys(raw, {"mode", "pct"})
+        mode = raw.get("mode", "when_affordable")
+        if mode not in LAB_SHARE_MODES:
+            raise ValueError("unknown lab_share mode")
+        return cls(mode, _ranged(raw.get("pct", 25), "lab_share pct", 5, 90))
+
+
+@dataclass(frozen=True)
+class CoinRules:
+    lab_share: LabShareRule = field(default_factory=LabShareRule)
+    workshop_spend_limit_pct: int = 100
+
+    @classmethod
+    def from_dict(cls, value: object) -> CoinRules:
+        raw = _mapping(value, "coins rules")
+        _keys(raw, {"lab_share", "workshop_spend_limit_pct"})
+        # The rule inherits the moved field's 0-100 range so every existing
+        # route stays loadable; the Studio control offers 10-100.
+        return cls(LabShareRule.from_dict(raw.get("lab_share", {})),
+                   _percent(raw.get("workshop_spend_limit_pct", 100), "workshop_spend_limit_pct"))
+
+
+@dataclass(frozen=True)
+class LabPoolRule:
+    selection: str = "ordered"
+    max_price_pct_of_wallet: int | None = None
+    max_seconds: int | None = None
+
+    @classmethod
+    def from_dict(cls, value: object) -> LabPoolRule:
+        raw = _mapping(value, "pool rules")
+        _keys(raw, {"selection", "max_price_pct_of_wallet", "max_seconds"})
+        selection = raw.get("selection", "ordered")
+        if selection not in POOL_SELECTIONS:
+            raise ValueError("unknown pool selection")
+        price, seconds = raw.get("max_price_pct_of_wallet"), raw.get("max_seconds")
+        # Imported lazily (and not redefined here) to avoid an import cycle
+        # with fleet.resource_blocks, which is the single source of truth.
+        from fleet.resource_blocks import MAX_POOL_SECONDS
+        return cls(selection,
+                   None if price is None else _ranged(price, "max_price_pct_of_wallet", 1, 100),
+                   None if seconds is None else _ranged(seconds, "max_seconds", 60, MAX_POOL_SECONDS))
+
+
+@dataclass(frozen=True)
+class LabRules:
+    auto_start: bool = True
+    pool: LabPoolRule = field(default_factory=LabPoolRule)
+    idle_fill: str = "leave_idle"
+
+    @classmethod
+    def from_dict(cls, value: object) -> LabRules:
+        raw = _mapping(value, "labs rules")
+        _keys(raw, {"auto_start", "pool", "idle_fill"})
+        idle_fill = raw.get("idle_fill", "leave_idle")
+        if idle_fill not in IDLE_FILLS:
+            raise ValueError("unknown idle_fill")
+        return cls(_flag(raw.get("auto_start", True), "auto_start"),
+                   LabPoolRule.from_dict(raw.get("pool", {})), idle_fill)
+
+
+@dataclass(frozen=True)
+class GemRules:
+    auto_unlock_lab_slots: bool = True
+    spend_limit_pct: int = 100
+    keep: int = 0
+
+    @classmethod
+    def from_dict(cls, value: object) -> GemRules:
+        raw = _mapping(value, "gems rules")
+        _keys(raw, {"auto_unlock_lab_slots", "spend_limit_pct", "keep"})
+        return cls(_flag(raw.get("auto_unlock_lab_slots", True), "auto_unlock_lab_slots"),
+                   _percent(raw.get("spend_limit_pct", 100), "gem spend_limit_pct"),
+                   _ranged(raw.get("keep", 0), "keep", 0, 1_000_000))
+
+
+@dataclass(frozen=True)
+class RouteRules:
+    """Whole-strategy settings. The defaults are today's behavior."""
+    coins: CoinRules = field(default_factory=CoinRules)
+    labs: LabRules = field(default_factory=LabRules)
+    gems: GemRules = field(default_factory=GemRules)
+
+    @classmethod
+    def from_dict(cls, value: object) -> RouteRules:
+        raw = _mapping(value, "rules")
+        _keys(raw, {"coins", "labs", "gems"})
+        return cls(CoinRules.from_dict(raw.get("coins", {})), LabRules.from_dict(raw.get("labs", {})),
+                   GemRules.from_dict(raw.get("gems", {})))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def with_limits(self, workshop_pct: int, gem_pct: int) -> RouteRules:
+        return replace(self, coins=replace(self.coins, workshop_spend_limit_pct=workshop_pct),
+                       gems=replace(self.gems, spend_limit_pct=gem_pct))
+
+
+def _migrated_rules(value: object, workshop_raw: Mapping[str, object],
+                    gems_raw: Mapping[str, object], workshop: WorkshopRoute,
+                    gems: GemRoute) -> RouteRules:
+    """Rules own the moved limits. Without rules, the old fields fill them; with
+    rules, an explicit old field that disagrees is a pre-rules writer's edit and
+    wins, so an older client's change is never silently dropped.
+
+    Contract: every rules-aware writer must write BOTH the old field and the
+    rule; the old field wins whenever it is explicitly present."""
+    if value is None:
+        return RouteRules().with_limits(workshop.coin_spend_limit_pct, gems.spend_limit_pct)
+    rules = RouteRules.from_dict(value)
+    workshop_pct = (workshop.coin_spend_limit_pct if "coin_spend_limit_pct" in workshop_raw
+                    else rules.coins.workshop_spend_limit_pct)
+    gem_pct = gems.spend_limit_pct if "spend_limit_pct" in gems_raw else rules.gems.spend_limit_pct
+    return rules.with_limits(workshop_pct, gem_pct)
 
 
 @dataclass(frozen=True)
@@ -255,19 +414,30 @@ class RouteBaseline:
     battle: BattleRoute
     gems: GemRoute
     labs: LabRoute
+    rules: RouteRules = field(default_factory=RouteRules)
 
     @classmethod
     def from_dict(cls, value: object) -> RouteBaseline:
         raw = _mapping(value, "baseline")
-        _keys(raw, {"workshop", "battle", "gems", "labs"})
-        return cls(WorkshopRoute.from_dict(raw.get("workshop", {})),
-                   BattleRoute.from_dict(raw.get("battle", {})),
-                   GemRoute.from_dict(raw.get("gems", {})),
-                   LabRoute.from_dict(raw.get("labs", {})))
+        _keys(raw, {"workshop", "battle", "gems", "labs", "rules"})
+        workshop_raw = _mapping(raw.get("workshop", {}), "workshop")
+        gems_raw = _mapping(raw.get("gems", {}), "gems")
+        workshop = WorkshopRoute.from_dict(workshop_raw)
+        battle = BattleRoute.from_dict(raw.get("battle", {}))
+        gems = GemRoute.from_dict(gems_raw)
+        labs = LabRoute.from_dict(raw.get("labs", {}))
+        rules = _migrated_rules(raw.get("rules"), workshop_raw, gems_raw, workshop, gems)
+        from fleet.resource_blocks import check_pool_limits
+        check_pool_limits(labs.blocks, max_seconds=rules.labs.pool.max_seconds,
+                          max_price_pct=rules.labs.pool.max_price_pct_of_wallet)
+        # Dual-write for one release: older workers still read the old fields.
+        return cls(replace(workshop, coin_spend_limit_pct=rules.coins.workshop_spend_limit_pct),
+                   battle, replace(gems, spend_limit_pct=rules.gems.spend_limit_pct), labs, rules)
 
     def to_dict(self) -> dict[str, Any]:
         return {"workshop": _workshop_dict(self.workshop), "battle": asdict(self.battle),
-                "gems": asdict(self.gems), "labs": asdict(self.labs)}
+                "gems": asdict(self.gems), "labs": asdict(self.labs),
+                "rules": self.rules.to_dict()}
 
 
 @dataclass(frozen=True)
@@ -422,11 +592,7 @@ class RouteDocument:
         return {
             "schema": self.schema, "revision": self.revision,
             "authored_at": self.authored_at,
-            "baseline": {
-                "workshop": _workshop_dict(self.baseline.workshop),
-                "battle": asdict(self.baseline.battle),
-                "gems": asdict(self.baseline.gems), "labs": asdict(self.baseline.labs),
-            },
+            "baseline": self.baseline.to_dict(),
             "overrides": {worker: {"account_id": value.account_id,
                                   "patches": value.patches}
                           for worker, value in self.overrides.items()},
@@ -452,6 +618,7 @@ class EffectiveRoute:
     gems: GemRoute
     labs: LabRoute
     override_state: str
+    rules: RouteRules = field(default_factory=RouteRules)
 
 
 def resolve_route(route: RouteDocument, worker: str, account_id: str) -> EffectiveRoute:
@@ -463,25 +630,32 @@ def resolve_route(route: RouteDocument, worker: str, account_id: str) -> Effecti
         baseline = assignment.baseline if matches else RouteDocument.compatibility().baseline
         return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
                               baseline.gems, baseline.labs,
-                              "assigned" if matches else "inactive_account_changed")
+                              "assigned" if matches else "inactive_account_changed",
+                              baseline.rules)
     override = route.overrides.get(worker)
     if override is None:
         return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
-                              baseline.gems, baseline.labs, "none")
+                              baseline.gems, baseline.labs, "none", baseline.rules)
     if override.account_id != account_id:
         return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
-                              baseline.gems, baseline.labs, "inactive_account_changed")
+                              baseline.gems, baseline.labs, "inactive_account_changed",
+                              baseline.rules)
     return apply_rule_patches(base=EffectiveRoute(
         route.revision, baseline.workshop, baseline.battle,
-        baseline.gems, baseline.labs, "active"), patches=override.patches)
+        baseline.gems, baseline.labs, "active", baseline.rules), patches=override.patches)
 
 
 def apply_rule_patches(base: EffectiveRoute,
                        patches: Mapping[str, Mapping[str, object]]) -> EffectiveRoute:
     """Overlay validated stable rule IDs; unpatched fields stay inherited."""
     workshop = base.workshop
+    rules = base.rules
     if patch := patches.get(workshop.id):
         workshop = WorkshopRoute.from_dict({**_workshop_dict(workshop), **patch})
+        if "coin_spend_limit_pct" in patch:
+            # An account override of the old field maps to the rule.
+            rules = replace(rules, coins=replace(
+                rules.coins, workshop_spend_limit_pct=workshop.coin_spend_limit_pct))
     branches: list[BattleBranch] = []
     for branch in base.battle.branches:
         branch_patch = patches.get(branch.id, {})
@@ -492,5 +666,5 @@ def apply_rule_patches(base: EffectiveRoute,
             **asdict(branch), **branch_patch,
             "phases": [asdict(phase) for phase in phases],
         }))
-    return replace(base, workshop=workshop,
+    return replace(base, workshop=workshop, rules=rules,
                    battle=replace(base.battle, branches=tuple(branches)))

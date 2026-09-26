@@ -856,8 +856,13 @@ class TowerBot:
                         coins_before=decision.wallet_coins,
                         coins_after=decision.wallet_coins - decision.price,
                         completes_at=result.confirmed_job.completes_at))
+                    # The confirmed debit spent the lab savings.
+                    self.reroll_progress.note_lab_coin_debit()
         else:
-            self.reroll_progress.note_lab_observation(decision)
+            # With auto-start off the visit only looked; keep the saved Game
+            # Speed evidence rather than overwriting it with "inspect".
+            if result.reason != "auto_start_off":
+                self.reroll_progress.note_lab_observation(decision)
         logger.info("Lab 1 visit ended: %s (%s)%s", result.status, result.reason,
                     "; Lab 2 unlocked" if result.observed_gem_spend == 100 else "")
 
@@ -1735,7 +1740,8 @@ class TowerBot:
                     if (labs_tab_status == "unlocked"
                             and self.reroll_progress.lab_due(
                                 wallet_coins=menu_coins, wallet_gems=menu_gems,
-                            ) and self.lab_visit.request()):
+                            ) and self.lab_visit.request(
+                                self.reroll_progress.lab_visit_options())):
                         logger.info("Armed Labs check from the confirmed unlocked tab.")
                     else:
                         if self._menu_tab_unlocked("workshop"):

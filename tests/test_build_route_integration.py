@@ -9,7 +9,7 @@ from pathlib import Path
 
 import db
 from account_state import AccountState
-from fleet.build_route import RouteDocument
+from fleet.build_route import RouteDocument, RouteRules
 from fleet.build_route_eval import RouteFacts
 from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route_store import BuildRouteStore
@@ -273,3 +273,170 @@ def test_purchase_reason_names_a_random_draw_and_its_odds(tmp_path: Path) -> Non
                                          trace=DecisionTrace("turtle.thorns", "Save for goal: buy Thorns"))
     assert progress.purchase_reason("coins_per_kill_bonus") == "Save for goal: buy Thorns"
     assert progress.purchase_reason("damage") is None
+
+
+from lab_plan import LabDecision, LabVisitOptions
+
+
+def _rules_route(root: Path, rules: dict, expected: int = 0) -> RouteDocument:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
+    for section, values in rules.items():
+        raw["baseline"]["rules"][section] = {**raw["baseline"]["rules"][section], **values}
+    return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
+
+
+def _progress(tmp_path: Path) -> RerollProgress:
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    return progress
+
+
+def _facts(visit: str, wallet: int = 1000):
+    now = time.time()
+    return lambda: RouteFacts("account-a", "Air_38", "main_menu", now, now,
+        best_tier_1_wave=1, wallet_coins=wallet, prices={"damage": 10, "attack_speed": 12},
+        utility_spent_coins=0, visit_id=visit)
+
+
+def _game_speed_waits(progress: RerollProgress, price: int = 2500) -> None:
+    progress.note_lab_observation(LabDecision("wait_coins", price=price, wallet_coins=100,
+                                              game_speed_level=2), now=time.time())
+
+
+def _bought_once(progress: RerollProgress) -> None:
+    with db.connect(progress.root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO ledger(ts,kind,item,category,currency,delta,dry_run,detail) "
+                     "VALUES(1,'WORKSHOP_BUY','Damage','ATTACK','coins',-30,0,?)",
+                     (json.dumps({"verdict": "bought"}),))
+
+
+def test_a_route_without_rules_keeps_no_jar_and_the_whole_limit(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {})
+    _game_speed_waits(progress)
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    progress.shopping_policy(Strategy.from_config().shopping)
+    assert progress._route_evaluation.trace.spend_ceiling == 1000
+    assert not (progress.root / "lab-coin-jar.json").exists()
+
+
+def test_save_pct_holds_a_jar_that_workshop_cannot_spend(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "save_pct", "pct": 20}}})
+    _game_speed_waits(progress)
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    progress.shopping_policy(base)
+    assert progress._route_evaluation.trace.spend_ceiling == 800
+    assert json.loads((progress.root / "lab-coin-jar.json").read_text())["amount"] == 200
+    for _ in range(3):  # every main-menu scan recomputes the policy for the same visit
+        progress.shopping_policy(base)
+    assert progress._route_evaluation.trace.spend_ceiling == 800
+    snapshot = json.loads((progress.root / "build-route-facts.json").read_text())
+    assert snapshot["lab_coin_jar"] == 200
+    progress.route_facts = _facts("visit-2")  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress._route_evaluation.trace.spend_ceiling == 640
+    progress.note_lab_coin_debit()
+    assert progress.coin_jar.amount() == 0
+
+
+def test_the_jar_lowers_the_live_workshop_visit_budget(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "save_pct", "pct": 20}}})
+    _game_speed_waits(progress)
+    _bought_once(progress)
+    progress.workshop_worthwhile = lambda: True  # type: ignore[method-assign]
+    progress.route_facts = _facts("visit-1", wallet=80)  # type: ignore[method-assign]
+    base = replace(Strategy.from_config().shopping, coin_budget=None)
+    # A starter buy is capped at 75 coins; the 16-coin jar leaves only 64 spendable.
+    assert progress.shopping_policy(base).coin_budget == 64
+    assert progress.coin_jar.amount() == 16
+
+
+def test_labs_first_pauses_workshop_after_the_tutorial_grant(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
+    _game_speed_waits(progress)
+    progress.note_lab_slot2("owned", 200)
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
+    assert progress.shopping_policy(base).coin_budget == 50  # the tutorial grant is never skipped
+    _bought_once(progress)
+    paused = progress.shopping_policy(base)
+    # Only Workshop waits; card gem buys continue in the same visit.
+    assert paused.enabled and paused.workshop == () and paused.cards.enabled
+    progress.note_lab_observation(LabDecision("wait_running", job_completes_at=time.time() + 3600,
+                                              game_speed_level=2))
+    progress.workshop_worthwhile = lambda: True  # type: ignore[method-assign]
+    assert progress.shopping_policy(base).workshop != ()
+
+
+def test_paused_workshop_publishes_a_paused_plan_not_the_unrunnable_buy(tmp_path: Path) -> None:
+    """While labs_first pauses Workshop, the published reroll-plan.json must
+    say so - not describe a buy that `workshop=()` guarantees never runs."""
+    progress = _progress(tmp_path)
+    published = []
+    progress._publish = lambda decision: published.append(decision)  # type: ignore[method-assign]
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
+    _game_speed_waits(progress)
+    progress.note_lab_slot2("owned", 200)
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
+    progress.shopping_policy(base)  # the tutorial grant visit; not paused yet
+    _bought_once(progress)
+    published.clear()
+    paused = progress.shopping_policy(base)
+    assert paused.workshop == ()
+    assert len(published) == 1
+    decision = published[0]
+    assert decision.state == "save_coins"
+    assert "paused" in decision.reason.lower()
+    assert "lab" in decision.reason.lower()
+
+
+def test_resource_rules_falls_back_to_defaults_when_resolve_route_breaks(
+        tmp_path: Path, monkeypatch) -> None:
+    """A bad account override must not escape into the live main-menu loop;
+    resource_rules fails closed to today's defaults, matching the existing
+    RouteUnavailable fallback."""
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
+    assert progress.resource_rules().coins.lab_share.mode == "labs_first"
+
+    def _boom(*args, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr("fleet.reroll_progress.resolve_route", _boom)
+    assert progress.resource_rules() == RouteRules()
+
+
+def test_gems_keep_raises_the_card_gem_floor(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {"gems": {"keep": 60}})
+    progress.note_lab_slot2("owned", 200, now=1000.)
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    base = replace(base, cards=replace(base.cards, enabled=True, gem_floor=0))
+    assert progress.shopping_policy(base).cards.gem_floor == 60
+
+
+def test_auto_start_and_auto_unlock_switches_gate_the_lab_visit(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    progress.note_lab_unlocked("labs_tab", now=999.)
+    progress.note_lab_observation(LabDecision("wait_coins", price=300, wallet_coins=100,
+                                              game_speed_level=1), now=1000.)
+    progress.note_lab_slot2("locked", 65, now=1000.)
+    assert progress.lab_visit_options() == LabVisitOptions()
+    _rules_route(tmp_path, {"labs": {"auto_start": False}, "gems": {"auto_unlock_lab_slots": False}})
+    assert not progress.lab_due(now=1100., wallet_coins=5000, wallet_gems=500)
+    assert progress.lab_visit_options() == LabVisitOptions(start_research=False, unlock_slot2=False)
+    _rules_route(tmp_path, {"gems": {"keep": 50}}, expected=1)
+    assert not progress.lab_due(now=1100., wallet_coins=100, wallet_gems=120)
+    assert progress.lab_due(now=1100., wallet_coins=100, wallet_gems=150)
+    assert progress.lab_visit_options().min_gems == 150

@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, BookOpen, Compass, Contact, ChartLine, List, Map, Monitor, Power, Receipt, Settings2, SlidersHorizontal, TriangleAlert, Wrench,
+  Activity, BookOpen, Compass, Contact, ChartLine, FlaskConical, List, Map, Monitor, Power, Receipt, Settings2, SlidersHorizontal, TriangleAlert, Wrench,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -47,6 +47,7 @@ const FLEET_GROUPS: { label: string; items: Item[] }[] = [{
     { href: "/fleet/reroll/", label: "Fleet Live", icon: Monitor },
     { href: "/fleet/reroll/stats/", label: "Stats", icon: ChartLine },
     { href: "/fleet/reroll/workshop/", label: "Workshop", icon: Wrench },
+    { href: "/fleet/reroll/labs/", label: "Labs & Gems", icon: FlaskConical },
     { href: "/fleet/reroll/ledger/", label: "Ledger", icon: Receipt },
     { href: "/fleet/reroll/strategies/", label: "Strategy Studio", icon: SlidersHorizontal },
     { href: "/fleet/reroll/progression/", label: "Progression", icon: Map },

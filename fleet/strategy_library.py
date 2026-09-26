@@ -19,16 +19,35 @@ class LibraryConflict(ValueError):
         self.revision = revision
 
 
+TEMPLATE_IDS = ("opening", "turtle", "labs_gems")
+SOURCE_TEMPLATES = {*TEMPLATE_IDS, "scratch"}
+
+
 def templates() -> list[dict[str, Any]]:
+    from fleet.resource_blocks import template_gem_blocks, template_lab_blocks, template_rules
     from fleet.strategy_blocks import template_program
-    result = []
-    for policy in ("opening", "turtle"):
+
+    def purchase_lanes(policy: str) -> dict[str, Any]:
         baseline = RouteDocument.compatibility().baseline.to_dict()
         baseline["workshop"].update(mode="blocks", blocks=template_program(policy, "workshop"))
         baseline["battle"].update(mode="blocks", branches=[], blocks=template_program(policy, "battle"))
+        return baseline
+
+    result = []
+    for policy in ("opening", "turtle"):
         result.append({"id": policy, "name": policy.title(), "version": 1,
-                       "source_template": policy, "baseline": RouteBaseline.from_dict(baseline).to_dict(),
+                       "source_template": policy,
+                       "baseline": RouteBaseline.from_dict(purchase_lanes(policy)).to_dict(),
                        "builtin": True})
+    # The community Labs & Gems path: Opening's purchase lanes, block lanes
+    # for gems and labs, and rules that save toward each Game Speed level.
+    labs_gems = purchase_lanes("opening")
+    labs_gems["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))
+    labs_gems["labs"].update(mode="blocks", blocks=list(template_lab_blocks()))
+    labs_gems["rules"] = template_rules()
+    result.append({"id": "labs_gems", "name": "Common Labs & Gems path", "version": 1,
+                   "source_template": "labs_gems",
+                   "baseline": RouteBaseline.from_dict(labs_gems).to_dict(), "builtin": True})
     return result
 
 
@@ -59,7 +78,7 @@ class StrategyLibrary:
             for row in state["versions"]:
                 if (not isinstance(row["id"], str) or not row["id"].startswith("strategy-")
                         or row["builtin"] is not False
-                        or row["source_template"] not in {"opening", "turtle", "scratch"}
+                        or row["source_template"] not in SOURCE_TEMPLATES
                         or not isinstance(row["name"], str) or not row["name"].strip()
                         or type(row["version"]) is not int
                         or row["version"] != seen.get(row["id"], 0) + 1):
@@ -78,7 +97,7 @@ class StrategyLibrary:
     def version(self, strategy_id: str, version: int) -> dict[str, Any]:
         if type(version) is not int or version < 1:
             raise ValueError("invalid strategy version")
-        if strategy_id in {"opening", "turtle"}:
+        if strategy_id in TEMPLATE_IDS:
             if version != 1:
                 raise ValueError("built-in strategy version not found")
             return next(row for row in templates() if row["id"] == strategy_id)
@@ -92,11 +111,11 @@ class StrategyLibrary:
              baseline: object, strategy_id: str | None = None) -> dict[str, Any]:
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError("invalid expected library revision")
-        if strategy_id in {"opening", "turtle"}:
+        if strategy_id in TEMPLATE_IDS:
             raise ValueError("built-in templates are protected; save a copy")
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
             raise ValueError("strategy name must contain 1 to 100 characters")
-        if source_template not in {"opening", "turtle", "scratch"}:
+        if source_template not in SOURCE_TEMPLATES:
             raise ValueError("unknown source template")
         validated = RouteBaseline.from_dict(baseline).to_dict()
         with self._locked():
@@ -104,7 +123,7 @@ class StrategyLibrary:
             if state["revision"] != expected_revision:
                 raise LibraryConflict(state["revision"])
             latest = {row["id"]: row for row in state["versions"]}
-            taken_names = {"opening", "turtle"} | {
+            taken_names = {item["name"].strip().casefold() for item in templates()} | {
                 row["name"].strip().casefold() for row in latest.values() if row["id"] != strategy_id}
             if name.strip().casefold() in taken_names:
                 raise ValueError("strategy name already exists")

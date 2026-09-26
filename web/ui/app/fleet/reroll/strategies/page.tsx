@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
-import { fetchBuildRoute, fetchFleetStrategies, fetchUpgrades } from "@/lib/api";
+import { fetchBuildRoute, fetchFleetLabs, fetchFleetStrategies, fetchUpgrades } from "@/lib/api";
 import type { BuildRouteDocument } from "@/lib/buildRoute";
+import type { LabsSnapshot } from "@/lib/labs";
 import type { Upgrade } from "@/lib/types";
 import { VariantComparison } from "../VariantComparison";
 import { useRerollWorkspace } from "../RerollWorkspace";
@@ -19,6 +20,7 @@ export default function StrategiesPage(): React.JSX.Element {
   const [library, setLibrary] = useState<StrategyLibrary | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [tab, setTab] = useState<"builder" | "roads">("builder");
+  const [labs, setLabs] = useState<LabsSnapshot | null>(null);
   const members = pool?.members ?? [];
   useEffect(() => {
     let active = true;
@@ -29,6 +31,13 @@ export default function StrategiesPage(): React.JSX.Element {
       setSavedRevision(nextRoute.revision);
       setLibrary(nextLibrary);
     }).catch(error => { if (active) setRouteError(error instanceof Error ? error.message : "Build Route unavailable"); });
+    return () => { active = false; };
+  }, []);
+  // The labs snapshot only enriches the Studio (automation badges, wallet-split preview); its
+  // absence must never block the page the way a Build Route failure does.
+  useEffect(() => {
+    let active = true;
+    fetchFleetLabs().then(next => { if (active) setLabs(next); }, () => { if (active) setLabs(null); });
     return () => { active = false; };
   }, []);
 
@@ -50,7 +59,7 @@ export default function StrategiesPage(): React.JSX.Element {
     </div>
     {tab === "roads" && !!members.length && <FleetRoutePreview members={members} savedRevision={savedRevision} assignments={route?.assignments ?? undefined} showHistory />}
     <div hidden={tab !== "builder"}>{route && catalog && library && <StrategyStudio library={library} saved={route} catalog={catalog} members={members}
-      onPublished={next => { setRoute(next); setSavedRevision(next.revision); }} />}</div>
+      labsSnapshot={labs} onPublished={next => { setRoute(next); setSavedRevision(next.revision); }} />}</div>
     {!!pool?.variant_comparison?.length && <details className="rounded-xl border border-border bg-card p-4">
       <summary className="cursor-pointer font-medium">Compare opening variants</summary>
       <p className="my-3 text-sm text-muted-foreground">Timing includes accounts that reached Tier 1 Wave 20. Reached counts show incomplete attempts; these samples do not establish a winning strategy.</p>

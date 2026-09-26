@@ -178,3 +178,27 @@ def test_slot_two_reservation_is_account_bound(tmp_path: Path) -> None:
     cadence.note_slot2("owned", 19, 1200.)
     assert cadence.slot2_owned()
     assert not cadence.slot2_due(100_000.)
+
+
+def test_running_research_records_when_it_completes(tmp_path: Path) -> None:
+    from lab_plan import LabCadence, LabDecision
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    cadence.note(LabDecision("wait_running", job_completes_at=5000., game_speed_level=3), now=1000.)
+    record, _ = cadence.route_observation()
+    assert record is not None and record["job_completes_at"] == 5000.
+    cadence.note(LabDecision("wait_coins", price=12000, wallet_coins=10, game_speed_level=3), now=6000.)
+    record, _ = cadence.route_observation()
+    assert record is not None and record["job_completes_at"] is None
+
+
+def test_slot_two_check_honours_a_raised_gem_floor(tmp_path: Path) -> None:
+    from lab_plan import LAB2_GEMS, LabCadence, LabVisitOptions
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    cadence.note_slot2("locked", 65, 1000.)
+    assert not cadence.slot2_due(1100., wallet_gems=120, min_gems=150)
+    assert cadence.slot2_due(1100., wallet_gems=150, min_gems=150)
+    assert cadence.slot2_due(1100., wallet_gems=100)  # the default floor is unchanged
+    assert LAB2_GEMS == 100
+    assert LabVisitOptions() == LabVisitOptions(start_research=True, unlock_slot2=True, min_gems=100)

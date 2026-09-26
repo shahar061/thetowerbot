@@ -13,6 +13,7 @@ import pytest
 import config
 from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading,
                         read_confirmation, read_home, read_picker)
+from lab_plan import LabVisitOptions
 from lab_visit import LabVisit
 import ocr
 from supervisor import RecoveryState
@@ -315,3 +316,26 @@ def test_lab_one_is_checked_first_then_second_lab_unlocks_with_verified_debit() 
     assert result.slot2_status == "owned"
     assert result.observed_gem_spend == 100
     assert result.gems_before == 119 and result.gem_balance == 19
+
+
+def test_auto_start_off_looks_but_never_opens_the_picker() -> None:
+    home = LabHomeReading(True, "idle", None, (540, 450))
+    visit = LabVisit(vision.TemplateCache(Path("templates")), home_reader=lambda _s, _b: home)
+    device = Device()
+    visit.request(LabVisitOptions(start_research=False))
+    with patch("lab_visit.tap", side_effect=lambda _d, x, y: device.taps.append((x, y))):
+        visit.advance(frame("menu_labs_slot1_affordable"), (), device, 10)
+    assert (540, 450) not in device.taps
+    assert visit._outcome is not None and visit._outcome.reason == "auto_start_off"
+
+
+def test_lab_two_unlock_respects_the_switch_and_the_gem_floor() -> None:
+    home = LabHomeReading(True, "researching", None, None, gem_balance=150,
+                          slot2_status="locked", slot2_price=100, slot2_point=(700, 450))
+    for options in (LabVisitOptions(unlock_slot2=False), LabVisitOptions(min_gems=200)):
+        visit = LabVisit(vision.TemplateCache(Path("templates")))
+        visit.request(options)
+        assert visit._unlock_lab_two(home, Device()) is False
+    visit = LabVisit(vision.TemplateCache(Path("templates")))
+    visit.request(LabVisitOptions(min_gems=150))
+    assert visit._unlock_lab_two(home, Device()) is True  # first matching read; no tap yet

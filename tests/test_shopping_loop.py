@@ -18,7 +18,7 @@ import events
 import tower_bot
 import vision
 from shopping import ShoppingSession
-from lab_plan import LabDecision
+from lab_plan import LabDecision, LabVisitOptions
 from lab_visit import LabVisit, LabVisitResult
 from labs import LabJob, LabsReading, LabsState
 from strategy import Shopping, ShoppingRule
@@ -81,6 +81,7 @@ def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.lab_due.return_value = True
+    progress.lab_visit_options.return_value = LabVisitOptions()
     progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
@@ -91,6 +92,31 @@ def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
     progress.note_lab_unlocked.assert_called_once_with("labs_tab")
     assert not bot.shopping.active
     assert navigated(bot.bus) == []
+
+
+def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu) -> None:
+    """Arming the labs check must forward reroll_progress.lab_visit_options()
+    into LabVisit.request() untouched - not a default LabVisit() would invent
+    on its own, and not some other truthy stand-in a mock could paper over."""
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("menu_main_labs_unlocked", state=tower_bot.screens.ScreenState.MAIN_MENU,
+                        policy=a_policy(), auto_navigate=True)
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy()
+    progress.stats_due.return_value = False
+    progress.lab_due.return_value = True
+    options = LabVisitOptions(start_research=False, unlock_slot2=False, min_gems=150)
+    progress.lab_visit_options.return_value = options
+    progress.initial_workshop_due.return_value = False
+    bot.reroll_progress = progress
+    bot.lab_visit = LabVisit(bot.templates)
+    bot.lab_visit.request = Mock(wraps=bot.lab_visit.request)
+
+    bot.run_once()
+
+    assert bot.lab_visit.active
+    bot.lab_visit.request.assert_called_once_with(options)
 
 
 def test_reroll_does_not_open_labs_without_a_visible_unlocked_tab(bot_on_main_menu) -> None:
@@ -171,6 +197,7 @@ def test_confirmed_lab_start_records_one_job_and_one_coin_debit(bot_on_main_menu
                if isinstance(event, events.LabResearchStarted)]
     assert len(started) == 1
     assert (started[0].coins_before, started[0].coins_after) == (400, 100)
+    bot.reroll_progress.note_lab_coin_debit.assert_called_once()
 
 
 def test_failed_lab_start_does_not_record_a_spend(bot_on_main_menu) -> None:
@@ -375,3 +402,12 @@ def test_due_is_false_when_the_session_is_disabled() -> None:
         digits.NumberReader(), disabled_reason="the OCR engine will not load",
     )
     assert session.due(a_policy(), run_count=1) is False
+
+
+def test_auto_start_off_visit_keeps_the_saved_lab_evidence(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot.reroll_progress = Mock()
+    bot.lab_state = LabsState(Mock())
+    bot._finish_lab_visit(LabVisitResult("observed", "auto_start_off", LabDecision("inspect")))
+    bot.reroll_progress.note_lab_observation.assert_not_called()
+    bot.reroll_progress.note_lab_coin_debit.assert_not_called()

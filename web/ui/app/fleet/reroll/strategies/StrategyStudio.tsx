@@ -3,14 +3,17 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Dialog } from "@base-ui/react/dialog";
-import { ArrowDown, BookOpen, Copy, FlaskConical, Gem, GitBranch, Hammer, LockKeyhole, Maximize2, Minimize2, Monitor, Plus, Save, Shield, Sparkles, Swords, X } from "lucide-react";
+import { BookOpen, Copy, FlaskConical, Gem, GitBranch, Hammer, LockKeyhole, Maximize2, Minimize2, Monitor, Plus, Save, Shield, Sparkles, Swords, X } from "lucide-react";
 import { assignFleetStrategy, fetchStrategyLedger, previewBuildRoute, saveFleetStrategy } from "@/lib/api";
 import type { BuildRouteDocument, BuildRoutePreview } from "@/lib/buildRoute";
+import { rulesOf, withRules, type LabsSnapshot } from "@/lib/labs";
 import type { SpendingLane, StrategyBlock, StrategyDefinition, StrategyLedgerEntry, StrategyLibrary, StrategyWorker } from "@/lib/strategyStudio";
 import type { Upgrade } from "@/lib/types";
 import { ROOT_END, presetsForLane, findBlock, insertBlock, locateBlock, makeBlock, updateBlock, type BlockPreset, type BlockTarget } from "./strategyBlocks";
 import { StrategyCanvas, type BlockDrag } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
+import { ResourceBlocks } from "./ResourceBlocks";
+import { StrategyRules } from "./StrategyRules";
 import { RouteInspector } from "./RouteInspector";
 import { StrategyHistory } from "./StrategyHistory";
 import styles from "./studio.module.css";
@@ -18,13 +21,11 @@ import styles from "./studio.module.css";
 type Draft = StrategyDefinition & { dirty?: boolean };
 const LANES = [{ id: "workshop", label: "Workshop", icon: Hammer }, { id: "battle", label: "In-game", icon: Swords },
   { id: "gems", label: "Gems", icon: Gem }, { id: "labs", label: "Labs", icon: FlaskConical }] as const;
-const RESOURCES: Record<string, string> = { unlock_lab_slot_2: "Unlock lab slot 2", unlock_lab_slot_3: "Unlock lab slot 3", unlock_lab_slot_4: "Unlock lab slot 4",
-  unlock_lab_slot_5: "Unlock lab slot 5", cards: "Cards", card_slot: "Card slot", research_game_speed: "Game Speed research", slot2_research: "Slot 2 research" };
 const messageOf = (error: unknown): string => error instanceof Error ? error.message : "The request could not be completed.";
 
-export function StrategyStudio({ library: initialLibrary, saved, catalog, members, onPublished }: {
+export function StrategyStudio({ library: initialLibrary, saved, catalog, members, onPublished, labsSnapshot = null }: {
   library: StrategyLibrary; saved: BuildRouteDocument; catalog: Upgrade[]; members: StrategyWorker[];
-  onPublished: (route: BuildRouteDocument) => void;
+  onPublished: (route: BuildRouteDocument) => void; labsSnapshot?: LabsSnapshot | null;
 }): React.JSX.Element {
   const [library, setLibrary] = useState(initialLibrary);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
@@ -35,7 +36,6 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
   const [category, setCategory] = useState<"Logic" | "Flow" | "Buy">("Logic");
   const [search, setSearch] = useState("");
   const [drag, setDrag] = useState<BlockDrag | null>(null);
-  const [resourceDrag, setResourceDrag] = useState<string | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyMode, setCopyMode] = useState<"copy" | "scratch">("copy");
@@ -77,8 +77,6 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
   if (!current) return <p role="alert">No strategy templates available.</p>;
   const strategy = current;
   const locked = strategy.builtin;
-  const resourceSteps = lane === "gems" || lane === "labs" ? strategy.baseline[lane].steps : [];
-  const resourceOptions = lane === "gems" ? ["unlock_lab_slot_3", "unlock_lab_slot_4", "unlock_lab_slot_5", "card_slot", "cards"] : ["slot2_research"];
   const known = new Set(all.map(item => item.id));
   const choices = [...all, ...Object.values(drafts).filter(item => !known.has(item.id))];
 
@@ -147,13 +145,6 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     if (!block || !from || from.index + direction < 0) return;
     editBlocks(insertBlock(updateBlock(blocks, id, () => null), block, { ...from, index: from.index + direction }));
   }
-  function changeResource(step: string, before?: number): void {
-    if (locked) { startCopy(); return; }
-    if (lane !== "gems" && lane !== "labs") return;
-    const next = resourceSteps.filter(item => item !== step);
-    next.splice(Math.max(1, before ?? next.length), 0, step);
-    edit({ ...strategy.baseline, [lane]: { ...strategy.baseline[lane], steps: next } }); setResourceDrag(null);
-  }
   async function save(): Promise<void> {
     setBusy(true); setError("");
     try {
@@ -218,9 +209,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
           </>}
           <p className={styles.hint}>Drop into a connector, or choose an insertion point and use +.</p>
           <div className={styles.sharedRules}><Shield size={15} /><strong>Shared rules</strong><p>Never Buy, unlocks and affordability apply to every path.</p></div>
-        </> : <>{resourceOptions.filter(step => !resourceSteps.includes(step)).map(step => <div key={step} className={`${styles.paletteBlock} ${styles.resource}`} draggable onDragStart={() => setResourceDrag(step)} onDragEnd={() => setResourceDrag(null)}>
-          <span><strong>{RESOURCES[step]}</strong><small>Planned · not automated</small></span><button type="button" aria-label={`Add ${RESOURCES[step]}`} onClick={() => changeResource(step)}><Plus size={15} /></button></div>)}
-          <p className={styles.hint}>Drag into the path. Current lab automation remains first.</p></>}
+        </> : <p className={styles.hint}>Add and arrange {lane} blocks on the canvas. Only blocks marked Automated run today; the rest are planned.</p>}
       </aside>
       <main className={styles.canvasPane}>
         <div role="tablist" aria-label="Spending lanes" className={styles.lanes}>{LANES.map(item => <button role="tab" aria-selected={lane === item.id} type="button" key={item.id} onClick={() => { setLane(item.id); setSelection(null); setTarget(ROOT_END); setPreview(null); }}><item.icon size={16} />{item.label}</button>)}</div>
@@ -231,11 +220,11 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
             // The goal branch is not an insertion point: add after its save-for block instead.
             const pos = at?.branch === "goal" && at.parent ? locateBlock(blocks, at.parent) : at;
             if (pos) setTarget({ ...pos, index: pos.index + 1 }); }} onTarget={setTarget} onDrop={drop} onMove={move} onDrag={setDrag} />
-            : <div className={styles.path} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (resourceDrag) changeResource(resourceDrag); }}>{resourceSteps.map((step, index) => <div key={step}>
-              <div className={styles.resourceConnector}><ArrowDown size={16} /></div><div className={`${styles.block} ${styles.resource}`} draggable={!locked && index > 0} onDragStart={() => setResourceDrag(step)} onDragEnd={() => setResourceDrag(null)} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); event.stopPropagation(); if (resourceDrag && index > 0) changeResource(resourceDrag, index); }}>
-                <div className={styles.blockMain}><span className={styles.blockKind}>{index === 0 ? "CURRENT AUTOMATION" : "PLANNED · NOT AUTOMATED"}</span><strong>{RESOURCES[step]}</strong><span className={styles.blockDetail}>{index === 0 ? lane === "gems" ? "Reserve the first 100 gems for the second lab." : "Keep slot 1 on Game Speed until maxed. Never cancel research or rush with gems." : "Part of your spending path; waiting for automation support."}</span></div>
-                {!locked && index > 0 && <div className={styles.resourceActions}><button type="button" disabled={index === 1} onClick={() => changeResource(step, index - 1)}>Move up</button><button type="button" aria-label={`Remove ${RESOURCES[step]}`} onClick={() => edit({ ...strategy.baseline, [lane]: { ...strategy.baseline[lane], steps: resourceSteps.filter(value => value !== step) } })}>Remove</button></div>}
-              </div></div>)}</div>}
+            : <ResourceBlocks kind={lane as "gems" | "labs"} gems={strategy.baseline.gems} labs={strategy.baseline.labs} locked={locked}
+                automated={labsSnapshot?.automated ?? []} catalog={labsSnapshot?.reference ?? null} hideGemSpendLimit
+                rules={rulesOf(strategy.baseline)}
+                onGemsChange={gems => { if (locked) startCopy(); else edit({ ...strategy.baseline, gems }); }}
+                onLabsChange={labs => { if (locked) startCopy(); else edit({ ...strategy.baseline, labs }); }} />}
           <div className={styles.pathEnd}>One confirmed purchase → refresh facts → decide again</div>
         </div>
         <div className={styles.canvasFooter}><span>Preview this strategy on every current emulator. No assignments change.</span><button className={styles.button} type="button" disabled={busy || !activeMembers.length} onClick={() => void inspectDecisions()}>Preview across fleet</button></div>
@@ -245,16 +234,21 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
         onChange={block => editBlocks(updateBlock(blocks, block.id, () => block))} onRemove={() => { if (selectedBlock) editBlocks(updateBlock(blocks, selectedBlock.id, () => null)); setSelection(null); setTarget(ROOT_END); }} />
         : <aside className={styles.inspector} aria-label="Resource strategy settings"><p className={styles.eyebrow}>Resource path</p><h3>{lane === "gems" ? "Protect your lab fund" : "Keep research moving"}</h3><p className={styles.hint}>{lane === "gems" ? "Lab slot 2 is the first 100-gem purchase. Later cards and lab steps stay visibly planned." : "Game Speed uses lab slot 1 through all supported levels, before Workshop spending."}</p>
           {locked && <button className={styles.primaryButton} type="button" onClick={() => startCopy()}>Create copy to edit</button>}
-          {lane === "gems" && <label className={styles.fields}>Planned gem spend limit (%)<input type="number" disabled={locked} min={0} max={100} value={strategy.baseline.gems.spend_limit_pct} onChange={event => edit({ ...strategy.baseline, gems: { ...strategy.baseline.gems, spend_limit_pct: Number(event.target.value) } })} /><span className={styles.hint}>Does not change the first 100-gem lab unlock.</span></label>}
         </aside>}
     </div>
     {programLane === "workshop" && <div className={styles.guardrails} inert={busy}>
-      <label>Spend limit · % of available coins<input aria-label="Workshop spend limit" type="number" min={0} max={100} disabled={locked} value={strategy.baseline.workshop.coin_spend_limit_pct} onChange={event => edit({ ...strategy.baseline, workshop: { ...strategy.baseline.workshop, coin_spend_limit_pct: Number(event.target.value) } })} /></label>
+      <label>Spend limit · % of available coins<input aria-label="Workshop spend limit" type="number" min={10} max={100} disabled={locked} value={strategy.baseline.workshop.coin_spend_limit_pct}
+        onChange={event => { const rules = rulesOf(strategy.baseline); edit(withRules(strategy.baseline, { ...rules, coins: { ...rules.coins, workshop_spend_limit_pct: Number(event.target.value) } })); }} /></label>
       <div className={styles.banArea} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (locked) { startCopy(); return; } if (drag && "preset" in drag && drag.preset.startsWith("upgrade:")) { const id = drag.preset.slice(8); edit({ ...strategy.baseline, workshop: { ...strategy.baseline.workshop, banned_upgrade_ids: [...new Set([...strategy.baseline.workshop.banned_upgrade_ids, id])] } }); } setDrag(null); }}>
         <strong>Never Buy <span>{strategy.baseline.workshop.banned_upgrade_ids.length}</span></strong><div className={styles.bannedItems}>{strategy.baseline.workshop.banned_upgrade_ids.map(id => <button key={id} type="button" disabled={locked} aria-label={`Allow ${names.get(id) ?? id}`} onClick={() => edit({ ...strategy.baseline, workshop: { ...strategy.baseline.workshop, banned_upgrade_ids: strategy.baseline.workshop.banned_upgrade_ids.filter(value => value !== id) } })}>{names.get(id) ?? id}<X size={12} /></button>)}</div>
         <label>Add to Never Buy<select disabled={locked} value="" onChange={event => { if (event.target.value) edit({ ...strategy.baseline, workshop: { ...strategy.baseline.workshop, banned_upgrade_ids: [...new Set([...strategy.baseline.workshop.banned_upgrade_ids, event.target.value])] } }); }}><option value="">Drop an upgrade here, or choose…</option>{catalog.filter(item => !strategy.baseline.workshop.banned_upgrade_ids.includes(item.id)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       </div>
     </div>}
+    <details className="border-b border-border px-6 py-4" open inert={busy}>
+      <summary className="cursor-pointer text-sm font-semibold">Strategy rules</summary>
+      <StrategyRules rules={rulesOf(strategy.baseline)} locked={locked} rows={labsSnapshot?.workers ?? []}
+        onChange={rules => edit(withRules(strategy.baseline, rules))} />
+    </details>
     {preview && <div className={styles.preview}><p className={styles.hint}>Hypothetical fleet-wide assignment · compare before choosing which emulators to assign.</p><RouteInspector preview={preview} members={members} /></div>}
     <div className={styles.assignmentsSummary}><h3>Fleet assignments</h3>{activeMembers.map(member => { const assignment = saved.assignments?.[member.name]; return <div key={member.name}><Monitor size={15} /><strong>{member.name}</strong><span>{assignment && assignment.account_id === member.account_id ? `${assignment.strategy_name} · v${assignment.strategy_version}` : assignment ? "Account changed · assignment inactive" : "Current fleet route"}</span></div>; })}</div>
     <StrategyHistory entries={ledger} error={ledgerError} />

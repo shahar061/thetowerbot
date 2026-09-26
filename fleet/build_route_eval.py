@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from fleet.build_route import BattleBranch, BattlePhase, EffectiveRoute
+from fleet.coin_share import spendable_wallet, workshop_ceiling, workshop_limit_pct
 from fleet.reroll_planner import (DRAW_SHARPNESS, RerollDecision, RerollFacts,
                                   _ban_closure, choose_next)
 import builds
@@ -61,6 +62,7 @@ class RouteFacts:
     confirmed_purchases: Mapping[str, int] | None = None
     run_purchases: Mapping[str, int] | None = None
     price_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    lab_coin_jar: int = 0
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,26 @@ class ResourceEvaluation:
     lab_step: ResourceStep
 
 
+def _future_gem_action(route: EffectiveRoute) -> str | None:
+    if route.gems.mode != "blocks":
+        return next((step for step in route.gems.steps if step != "unlock_lab_slot_2"), None)
+    for block in route.gems.blocks[1:]:
+        return (f"unlock_lab_slot_{block['slot']}" if block["type"] == "unlock_lab_slot"
+                else block["type"])
+    return None
+
+
+def _future_lab_action(route: EffectiveRoute) -> str | None:
+    if route.labs.mode != "blocks":
+        return next((step for step in route.labs.steps if step != "research_game_speed"), None)
+    track = next((item for item in route.labs.blocks if 1 in item["slots"]), None)
+    if track is None:
+        return None
+    for block in track["children"][1:]:
+        return f"research_{block['lab_id']}" if block["type"] == "research" else block["type"]
+    return None
+
+
 def evaluate_resources(route: EffectiveRoute, facts: RouteFacts) -> ResourceEvaluation:
     """Describe existing lab automation and mark future route nodes as plans."""
     if facts.wallet_gems is None or facts.lab_slot2_owned is None:
@@ -119,11 +141,11 @@ def evaluate_resources(route: EffectiveRoute, facts: RouteFacts) -> ResourceEval
                ResourceStep("unlock_lab_slot_2", "blocked",
                             f"Save {route.gems.lab_slot2_reserve - facts.wallet_gems} more gems"))
     else:
-        future = next((step for step in route.gems.steps if step != "unlock_lab_slot_2"), None)
+        future = _future_gem_action(route)
         gem = (ResourceStep(future, "planned", "Planned · not automated") if future else
                ResourceStep("lab_slot_2_owned", "supported", "Second lab unlocked; reserve released"))
     if facts.game_speed_maxed is True:
-        future_lab = next((step for step in route.labs.steps if step != "research_game_speed"), None)
+        future_lab = _future_lab_action(route)
         lab = (ResourceStep(future_lab, "planned", "Planned · not automated") if future_lab else
                ResourceStep("game_speed_maxed", "supported", "Game Speed research complete"))
     elif facts.lab_decision_kind is None:
@@ -282,14 +304,15 @@ def evaluate_workshop(route: EffectiveRoute, facts: RouteFacts,
         return RouteEvaluation.unknown("Account evidence is stale", facts)
     if facts.wallet_coins is None or facts.wallet_coins < 0:
         return RouteEvaluation.unknown("Workshop wallet is unknown", facts)
-    spend_ceiling = facts.wallet_coins * route.workshop.coin_spend_limit_pct // 100
+    jar = facts.lab_coin_jar
+    spend_ceiling = workshop_ceiling(route, facts.wallet_coins, jar)
+    limit = workshop_limit_pct(route)
     edited = route.workshop.mode == "priorities"
     decision = choose_next(RerollFacts(
         facts.account_id, facts.best_tier_1_wave, facts.purchases,
-        facts.values, facts.wallet_coins, facts.lifetime_coins,
+        facts.values, spendable_wallet(facts.wallet_coins, jar), facts.lifetime_coins,
         facts.prices,
-        spend_fraction=(route.workshop.coin_spend_limit_pct / 100
-                        if edited or route.workshop.coin_spend_limit_pct < 100 else None),
+        spend_fraction=(limit / 100 if edited or limit < 100 else None),
         draw_sharpness=None if edited else DRAW_SHARPNESS,
         variant=facts.variant,
         utility_spent_coins=facts.utility_spent_coins,

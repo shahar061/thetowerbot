@@ -98,16 +98,28 @@ test("names each emulator's assigned strategy and flags one left behind by an ac
   expect(within(cards[2]).getByText("Strategy: Fleet baseline")).toBeInTheDocument();
 });
 
-test("lists the latest Workshop buys with their cost and reason", () => {
+test("a three-line strip links to the Labs and Workshop pages and says unknown without data", () => {
   const member = structuredClone(members[0]);
-  member.recent_workshop_purchases = [
-    { at: 1, item: "Coins / Kill Bonus", category: "UTILITY", cost: 126, reason: "Random draw (71%)" },
-    { at: 0, item: "Thorns", category: "DEFENSE", cost: 60, reason: null },
-  ];
+  member.recent_workshop_purchases = [{ at: Date.now() / 1000 - 125, item: "Coins / Kill Bonus", category: "UTILITY", cost: 126, reason: "Random draw (71%)" }];
   render(<FleetRoutePreview members={[member]} savedRevision={2} />);
-  const list = screen.getByRole("list", { name: "Recent Workshop buys for Air_38" });
-  const rows = within(list).getAllByRole("listitem");
-  expect(within(rows[0]).getByText("Coins / Kill Bonus")).toBeInTheDocument();
-  expect(within(rows[0]).getByText("126 coins · Random draw (71%)")).toBeInTheDocument();
-  expect(within(rows[1]).getByText("60 coins · Reason not recorded")).toBeInTheDocument();
+  const strip = screen.getByRole("region", { name: "Labs, gems and last buy for Air_38" });
+  expect(strip).toHaveTextContent("Labs: unknown");
+  expect(strip).toHaveTextContent("Gems: unknown · 75 gems");
+  expect(strip).toHaveTextContent("Last buy: Coins / Kill Bonus · 126 coins · 2m ago");
+  expect(within(strip).getByRole("link", { name: "Labs" })).toHaveAttribute("href", "/fleet/reroll/labs/?worker=Air_38");
+  expect(within(strip).getByRole("link", { name: "Last buy" })).toHaveAttribute("href", "/fleet/reroll/workshop/?worker=Air_38");
+  expect(screen.queryByRole("list", { name: "Recent Workshop buys for Air_38" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Gems · Labs")).not.toBeInTheDocument();
+});
+
+test("the strip reads the worker's resource evaluation", () => {
+  const member = structuredClone(members[0]);
+  member.resource_evaluation = { account_id: "account-a", revision: 2, observed_at: 100,
+    gem_step: { action: "unlock_lab_slot_2", status: "blocked", reason: "Save 25 more gems" },
+    lab_step: { action: "research_game_speed", status: "supported", reason: "Game Speed available for 300 coins" } };
+  render(<FleetRoutePreview members={[member]} savedRevision={2} />);
+  const strip = screen.getByRole("region", { name: "Labs, gems and last buy for Air_38" });
+  expect(strip).toHaveTextContent("Labs: Game Speed available for 300 coins · Automated");
+  expect(strip).toHaveTextContent("Gems: Save 25 more gems · Waiting");
+  expect(strip).toHaveTextContent("Last buy: none recorded");
 });

@@ -138,6 +138,8 @@ def _changed_rules(before: RouteDocument, after: RouteDocument) -> list[str]:
         changed.append("gems.path")
     if before.baseline.labs != after.baseline.labs:
         changed.append("labs.path")
+    if before.baseline.rules != after.baseline.rules:
+        changed.append("rules")
     for worker in sorted(set(before.overrides) | set(after.overrides)):
         if before.overrides.get(worker) != after.overrides.get(worker):
             changed.append(f"override.{worker}")

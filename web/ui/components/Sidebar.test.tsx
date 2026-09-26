@@ -9,7 +9,7 @@ vi.mock("@/lib/useEventStream", () => ({ useConnected: () => true }));
 vi.mock("@/components/ThemeToggle", () => ({ ThemeToggle: () => <button>Theme</button> }));
 beforeEach(() => { state.pathname = "/"; vi.clearAllMocks(); state.errors.mockResolvedValue([]); state.strategies.mockResolvedValue({ active: "single-strategy" }); });
 
-test.each(["/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/", "/fleet/reroll/stats/", "/fleet/reroll/ledger/"])("fleet navigation at %s excludes account signals and polling", pathname => {
+test.each(["/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/", "/fleet/reroll/stats/", "/fleet/reroll/ledger/", "/fleet/reroll/labs/"])("fleet navigation at %s excludes account signals and polling", pathname => {
   state.pathname = pathname;
   render(<Sidebar />);
   expect(screen.getByRole("link", { name: "Fleet Live" })).toHaveAttribute("href", "/fleet/reroll/");
@@ -18,6 +18,7 @@ test.each(["/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progres
   expect(screen.getByRole("link", { name: "Progression" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Workshop" })).toHaveAttribute("href", "/fleet/reroll/workshop/");
   expect(screen.getByRole("link", { name: "History" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Labs & Gems" })).toHaveAttribute("href", "/fleet/reroll/labs/");
   expect(screen.getByRole("link", { name: "Guide" })).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Control" })).not.toBeInTheDocument();
   expect(screen.queryByText("no bot")).not.toBeInTheDocument();

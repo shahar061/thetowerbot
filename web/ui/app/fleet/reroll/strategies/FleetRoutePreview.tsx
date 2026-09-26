@@ -6,6 +6,7 @@ import { deviceColor } from "@/lib/rerollState";
 import type { RerollMember } from "@/lib/fleet";
 import type { StrategyAssignment } from "@/lib/strategyStudio";
 import { WorkerBattlePurchases } from "../Purchases";
+import { boughtAgo } from "../workshop/RecentWorkshopBuys";
 import { DecisionInspector, type DecisionSelection } from "./DecisionInspector";
 import styles from "./routeCanvas.module.css";
 
@@ -39,9 +40,22 @@ function strategyLabel(member: RerollMember, assignments: Record<string, Strateg
   return assignment.account_id === member.account_id ? name : `${name} · inactive, account changed`;
 }
 
-function boughtAgo(at: number): string {
-  const minutes = Math.max(0, Math.floor((Date.now() / 1000 - at) / 60));
-  return minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`;
+function stepStatus(status: string): string {
+  return status === "supported" ? "Automated" : status === "planned" ? "Planned · not automated" : status === "blocked" ? "Waiting" : "Unknown";
+}
+
+function LabsGemsStrip({ member, resources }: { member: RerollMember; resources: RerollMember["resource_evaluation"] | null }): React.JSX.Element {
+  const worker = encodeURIComponent(member.name);
+  const last = member.recent_workshop_purchases?.[0] ?? null;
+  const gems = member.wallet_gems !== null && member.wallet_gems !== undefined ? ` · ${member.wallet_gems} gems` : "";
+  return <section aria-label={`Labs, gems and last buy for ${member.name}`} className="space-y-1 rounded-lg border border-border bg-background/40 p-2 text-xs">
+    <p><Link className="font-medium text-primary underline" href={`/fleet/reroll/labs/?worker=${worker}`}>Labs</Link>: {resources
+      ? `${resources.lab_step.reason} · ${stepStatus(resources.lab_step.status)}` : "unknown"}</p>
+    <p><span className="font-medium">Gems</span>: {resources
+      ? `${resources.gem_step.reason} · ${stepStatus(resources.gem_step.status)}` : "unknown"}{gems}</p>
+    <p><Link className="font-medium text-primary underline" href={`/fleet/reroll/workshop/?worker=${worker}`}>Last buy</Link>: {last
+      ? `${last.item} · ${last.cost ?? "?"} coins · ${boughtAgo(last.at)}` : "none recorded"}</p>
+  </section>;
 }
 
 export function FleetRoutePreview({ members, savedRevision, assignments, showHistory = false }: {
@@ -135,21 +149,8 @@ export function FleetRoutePreview({ members, savedRevision, assignments, showHis
                 className="rounded-md border border-primary/50 px-2 py-1 text-xs text-primary">Why {item} for {member.name}?</button>}
             </> : <p className="text-sm text-muted-foreground">Workshop plan unavailable for this account. Waiting for matching observations.</p>}
           </section>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <section className="rounded-lg border border-border bg-background/40 p-2"><h4 className="font-medium">Battle</h4><p>{battle?.status === "observed" ? battle.decision?.item ?? "Waiting" : "Unknown"}</p><p className="text-muted-foreground">{battle?.trace.phase_id ?? battle?.trace.reason ?? "No current wave evidence"}</p><p>Cash {battle?.decision?.battle_cash ?? member.battle_cash ?? "—"}</p></section>
-            <section className="rounded-lg border border-border bg-background/40 p-2"><h4 className="font-medium">Gems · Labs</h4>
-              {resources ? <><p>Gems: {resources.gem_step.action.replaceAll("_", " ")} · {resources.gem_step.status}</p><p>Labs: {resources.lab_step.action.replaceAll("_", " ")} · {resources.lab_step.status}</p></> : <p>Path unknown</p>}
-              <p>Gems {member.wallet_gems ?? "—"}</p></section>
-          </div>
-          {!!member.recent_workshop_purchases?.length && <section className="space-y-1">
-            <h4 className="text-sm font-medium">Recent Workshop buys</h4>
-            <ol aria-label={`Recent Workshop buys for ${member.name}`} className="space-y-1">
-              {member.recent_workshop_purchases.map(buy => <li key={`${buy.at}:${buy.item}`} className="rounded-lg border border-border bg-background/40 px-2 py-1 text-xs">
-                <div className="flex justify-between gap-2"><span className="font-medium">{buy.item}</span><span className="text-muted-foreground">{boughtAgo(buy.at)}</span></div>
-                <p className="text-muted-foreground">{`${buy.cost ?? "?"} coins · ${buy.reason ?? "Reason not recorded"}`}</p>
-              </li>)}
-            </ol>
-          </section>}
+          <section className="rounded-lg border border-border bg-background/40 p-2 text-xs"><h4 className="font-medium">Battle</h4><p>{battle?.status === "observed" ? battle.decision?.item ?? "Waiting" : "Unknown"}</p><p className="text-muted-foreground">{battle?.trace.phase_id ?? battle?.trace.reason ?? "No current wave evidence"}</p><p>Cash {battle?.decision?.battle_cash ?? member.battle_cash ?? "—"}</p></section>
+          <LabsGemsStrip member={member} resources={resources} />
           {showHistory && <section aria-label={`Battle evidence for ${member.name}`} className="space-y-1">
             <h4 className="text-sm font-medium">Battle evidence</h4>
             <p className="text-xs text-muted-foreground">Confirmed purchases below describe the latest recorded run.</p>

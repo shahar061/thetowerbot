@@ -365,6 +365,13 @@ class FleetSetupService:
         from fleet.strategy_ledger import read_ledger
         return read_ledger(self.root, limit)
 
+    def labs_snapshot(self) -> dict[str, Any]:
+        """Read-only Labs & Gems rows for the visible pool members."""
+        from fleet.labs_view import labs_snapshot
+        visible = sorted({member["name"] for member in self._manual_pool().members()}
+                         - self._runs().hidden_names())
+        return labs_snapshot(self.root, visible)
+
     def build_route_validate_bindings(self, route: Any) -> None:
         """Reject a draft bound to an account that has since been replaced."""
         import db as bot_db
