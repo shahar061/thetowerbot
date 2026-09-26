@@ -31,7 +31,8 @@ def test_save_versions_do_not_publish_and_old_version_is_immutable(tmp_path: Pat
 def test_templates_are_protected_and_invalid_blocks_rejected(tmp_path: Path) -> None:
     library = StrategyLibrary(tmp_path)
     templates = library.read()["templates"]
-    assert [(item["id"], item["builtin"]) for item in templates] == [("opening", True), ("turtle", True)]
+    assert [(item["id"], item["builtin"]) for item in templates] == [
+        ("opening", True), ("turtle", True), ("labs_gems", True)]
     baseline = templates[0]["baseline"]
     assert baseline["workshop"]["mode"] == "blocks"
     with pytest.raises(ValueError, match="protected"):
@@ -155,3 +156,32 @@ def test_save_stamps_saved_at_and_old_rows_without_it_still_load(tmp_path: Path)
     latest = saved["strategies"][0]
     assert latest["version"] == 2 and before <= latest["saved_at"] <= time.time()
     assert "saved_at" not in library.version("strategy-old", 1)
+
+
+def test_common_labs_and_gems_template_is_protected_and_copyable(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    templates = library.read()["templates"]
+    template = next(item for item in templates if item["id"] == "labs_gems")
+    opening = next(item for item in templates if item["id"] == "opening")
+    baseline = template["baseline"]
+    assert template["name"] == "Common Labs & Gems path"
+    assert baseline["workshop"]["blocks"] == opening["baseline"]["workshop"]["blocks"]
+    assert baseline["battle"]["blocks"] == opening["baseline"]["battle"]["blocks"]
+    assert (baseline["gems"]["mode"], baseline["labs"]["mode"]) == ("blocks", "blocks")
+    assert baseline["rules"]["coins"]["lab_share"] == {"mode": "save_pct", "pct": 25}
+    assert baseline["rules"]["labs"]["pool"] == {"selection": "cheapest", "max_price_pct_of_wallet": 10,
+                                                 "max_seconds": None}
+    assert baseline["rules"]["labs"]["idle_fill"] == "shortest_under_30m"
+    assert baseline["rules"]["labs"]["auto_start"] and baseline["rules"]["gems"]["auto_unlock_lab_slots"]
+    with pytest.raises(ValueError, match="protected"):
+        library.save(expected_revision=0, name="Overwrite", source_template="labs_gems",
+                     baseline=baseline, strategy_id="labs_gems")
+    with pytest.raises(ValueError, match="already exists"):
+        library.save(expected_revision=0, name="common labs & gems path", source_template="labs_gems",
+                     baseline=baseline)
+    saved = library.save(expected_revision=0, name="My labs path", source_template="labs_gems",
+                         baseline=baseline)["strategies"][0]
+    assert saved["source_template"] == "labs_gems"
+    assert saved["baseline"]["rules"] == baseline["rules"]
+    assert library.version("labs_gems", 1)["name"] == "Common Labs & Gems path"
+    assert StrategyLibrary(tmp_path).read()["strategies"][0]["id"] == saved["id"]  # reload validates
