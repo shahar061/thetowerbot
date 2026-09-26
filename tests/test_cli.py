@@ -1021,6 +1021,7 @@ def test_run_forever_rescans_promptly_while_a_battle_purchase_is_pending(monkeyp
     waits: list[float] = []
 
     def run_once(max_runs=None) -> bool:
+        bot._last_scan_in_battle = True
         bot.autopilot.pending = (MagicMock(), 0.0) if not waits else None
         return True
 
@@ -1036,3 +1037,36 @@ def test_run_forever_rescans_promptly_while_a_battle_purchase_is_pending(monkeyp
 
     assert waits[0] == config.BATTLE_FOLLOWUP_SECONDS
     assert waits[1] > 4.0
+
+
+def test_run_forever_uses_the_menu_interval_outside_battle(monkeypatch) -> None:
+    """Menu walks take one tap per scan, so they get their own pace; the
+    battle pace is untouched."""
+    import events
+    import vision
+    from tower_bot import TowerBot
+
+    bot = TowerBot(
+        device=MagicMock(),
+        templates=vision.TemplateCache(Path(__file__).parent.parent / "templates"),
+        bus=events.EventBus(),
+    )
+    bot.controls.apply({"interval": 5.0, "menu_interval": 0.5, "timing_jitter": 0.0})
+    in_battle = [True, False]
+    waits: list[float] = []
+
+    def run_once(max_runs=None) -> bool:
+        bot._last_scan_in_battle = in_battle[len(waits)]
+        return True
+
+    def wait(seconds: float) -> bool:
+        waits.append(seconds)
+        if len(waits) == 2:
+            bot.stop()
+        return False
+
+    monkeypatch.setattr(bot, "run_once", run_once)
+    monkeypatch.setattr(bot._stopping, "wait", wait)
+    bot.run_forever()
+
+    assert waits == [5.0, 0.5]

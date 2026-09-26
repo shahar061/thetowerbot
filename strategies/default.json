@@ -32,6 +32,7 @@
   ],
   "affordability": "digits",
   "interval": 2.0,
+  "menu_interval": 2.0,
   "click_cooldown": 1.0,
   "auto_navigate": false,
   "max_runs": null,

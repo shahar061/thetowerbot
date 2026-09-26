@@ -51,6 +51,7 @@ AFFORDABILITY = ("digits", "brightness")
 PATCHABLE_FIELDS = (
     "affordability",
     "interval",
+    "menu_interval",
     "click_cooldown",
     "auto_navigate",
     "max_runs",
@@ -129,6 +130,7 @@ _STRATEGY_TYPES: dict[str, tuple[type, ...]] = {
     "name": (str,),
     "affordability": (str,),
     "interval": (int, float),
+    "menu_interval": (int, float),
     "click_cooldown": (int, float),
     "navigation_cooldown": (int, float),
     "tap_jitter_px": (int, float),
@@ -578,7 +580,11 @@ class Strategy:
     name: str
     actions: tuple[ActionRule, ...]
     affordability: str = "digits"
+    # `interval` paces scans in battle; `menu_interval` paces everything else.
+    # Menu walks take one tap per scan, so their length is roughly steps x
+    # interval, while a battle scan does more OCR and needs no extra speed.
     interval: float = config.SCAN_INTERVAL_SECONDS
+    menu_interval: float = config.SCAN_INTERVAL_SECONDS
     click_cooldown: float = config.CLICK_COOLDOWN_SECONDS
     auto_navigate: bool = False
     max_runs: int | None = None
@@ -641,6 +647,7 @@ class Strategy:
                 "affordability", f"affordability must be one of {AFFORDABILITY}"
             )
         _in_range("interval", self.interval, MIN_INTERVAL, MAX_INTERVAL)
+        _in_range("menu_interval", self.menu_interval, MIN_INTERVAL, MAX_INTERVAL)
         _in_range("click_cooldown", self.click_cooldown, 0.0, MAX_COOLDOWN)
         _in_range("navigation_cooldown", self.navigation_cooldown, 0.0, MAX_COOLDOWN)
         _in_range("tap_jitter_px", self.tap_jitter_px, 0.0, MAX_TAP_JITTER_PX)
@@ -704,6 +711,10 @@ class Strategy:
             ),
         )
 
+    def interval_for(self, in_battle: bool) -> float:
+        """The nominal wait after a scan, before jitter."""
+        return self.interval if in_battle else self.menu_interval
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-shaped. What the store writes and the browser receives."""
         return {
@@ -720,6 +731,7 @@ class Strategy:
             ],
             "affordability": self.affordability,
             "interval": self.interval,
+            "menu_interval": self.menu_interval,
             "click_cooldown": self.click_cooldown,
             "auto_navigate": self.auto_navigate,
             "max_runs": self.max_runs,

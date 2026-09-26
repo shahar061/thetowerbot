@@ -309,6 +309,7 @@ export interface Strategy {
   actions: ActionRule[];
   affordability: string;
   interval: number;
+  menu_interval: number;
   click_cooldown: number;
   auto_navigate: boolean;
   max_runs: number | null;

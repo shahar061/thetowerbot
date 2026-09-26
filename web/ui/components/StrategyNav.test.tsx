@@ -8,6 +8,7 @@ const strategy: Strategy = {
   actions: [],
   affordability: "digits",
   interval: 2,
+  menu_interval: 2,
   click_cooldown: 1,
   auto_navigate: false,
   max_runs: null,
