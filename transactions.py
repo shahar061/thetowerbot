@@ -44,6 +44,17 @@ def abbreviation_slack(value: int) -> int:
     return 0 if digits <= 3 else 10 ** (digits - 3)
 
 
+def reading_tolerance(*readings: int, rounded_amounts: int = 0) -> int:
+    """How far apart balance figures may be while describing one real balance.
+
+    Each header reading hides its abbreviation_slack. Each amount the game
+    rounded before showing it adds one more coin: a run payout is fractional
+    coins shown whole, so the next reading can land a coin either side of a
+    running total that added the shown figure.
+    """
+    return sum(abbreviation_slack(reading) for reading in readings) + rounded_amounts
+
+
 class Stage(str, Enum):
     """Where a transaction stands between intent and proof.
 
@@ -503,7 +514,7 @@ def judge(
         )
 
     slack = (None if wallet_before is None or wallet_after is None
-             else abbreviation_slack(wallet_before) + abbreviation_slack(wallet_after))
+             else reading_tolerance(wallet_before, wallet_after))
     if (effect_changed and drop is not None and drop > 0 and price is not None
             and (price_in_catalog or slack < price and abs(drop - price) <= slack)):
         # One level was bought, and it costs one price. A drop that misses

@@ -54,6 +54,7 @@ export const FILTER_KINDS = [
   "SHOP_UNAVAILABLE",
   "POLICY_CHANGED",
   "UNEXPLAINED",
+  "ROUNDING",
 ] as const;
 
 /** The order currencies always appear in - in a bundle's amount cell, the

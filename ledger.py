@@ -63,6 +63,7 @@ KINDS: tuple[str, ...] = (
     "SHOP_UNAVAILABLE",
     "POLICY_CHANGED",
     "UNEXPLAINED",
+    "ROUNDING",
     "CARD_SLOT",
     "MODULE",
     "RELIC",
@@ -357,6 +358,19 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
     return ()
 
 
+def _rounded_since_reading(conn: sqlite3.Connection) -> dict[str, int]:
+    """Run payouts written since each balanced currency's last reading.
+
+    Read back from the table so a restarted writer allows the same rounding
+    as the one that wrote them.
+    """
+    return {currency: conn.execute(
+        "SELECT COUNT(*) FROM ledger WHERE currency = ? AND dry_run = 0 AND kind = 'RUN_PAYOUT' "
+        "AND id > COALESCE((SELECT MAX(id) FROM ledger WHERE currency = ? AND dry_run = 0 "
+        "AND observed IS NOT NULL), 0)", (currency, currency)).fetchone()[0]
+        for currency in BALANCED_CURRENCIES}
+
+
 class LedgerWriter:
     """Turns events into ledger lines, carrying the running balances.
 
@@ -395,6 +409,9 @@ class LedgerWriter:
         # restart still produces the right UNEXPLAINED - only a non-observing
         # event landing in between would be computed off a stale base.
         self._stale: dict[str, bool] = {COINS: False, GEMS: False}
+        # Rounded amounts (run payouts) added since each currency's last
+        # reading: how far that reading may land from the running total.
+        self._rounded: dict[str, int] = _rounded_since_reading(conn)
 
     def lines_for(self, event: events.Event) -> list[LedgerLine]:
         """Every line this event produces, in the order they must be written.
@@ -413,6 +430,7 @@ class LedgerWriter:
                     "ORDER BY id DESC LIMIT 1", (currency,),
                 ).fetchone()
                 self._stale[currency] = row is not None and row[0] is None
+            self._rounded = _rounded_since_reading(self._conn)
             self._data_version = version
         if isinstance(event, events.Purchased) and event.transaction_key:
             if self._conn.execute(
@@ -432,6 +450,8 @@ class LedgerWriter:
         the running total, in which case the UNEXPLAINED line comes FIRST:
         the gap happened before the event that revealed it.
         """
+        from transactions import reading_tolerance
+
         currency = line.currency
         if currency is None:
             return [line]
@@ -442,17 +462,23 @@ class LedgerWriter:
 
         if line.observed is not None:
             if known is not None and line.observed != known:
+                # A gap a rounded payout or an abbreviated header can explain
+                # is not money that moved; only a bigger one is unexplained.
+                rounding = abs(line.observed - known) <= reading_tolerance(
+                    known, line.observed, rounded_amounts=self._rounded.get(currency, 0))
                 out.append(
                     LedgerLine(
-                        kind="UNEXPLAINED",
+                        kind="ROUNDING" if rounding else "UNEXPLAINED",
                         ts=line.ts,
                         currency=currency,
                         delta=line.observed - known,
                         balance_after=line.observed,
                         observed=line.observed,
-                        reason="balance moved outside the bot",
+                        reason=("within reading and rounding tolerance" if rounding
+                                else "balance moved outside the bot"),
                     )
                 )
+            self._rounded[currency] = 0
             # The game is the source of truth. Whatever the running total
             # said, the number on screen is what the balance actually is -
             # and reading it closes any hole that was open.
@@ -464,6 +490,8 @@ class LedgerWriter:
             balance = known + line.delta
 
         out.append(dataclasses.replace(line, balance_after=balance))
+        if line.kind == "RUN_PAYOUT" and line.delta is not None:
+            self._rounded[currency] = self._rounded.get(currency, 0) + 1
 
         # Commit the reading unconditionally. An UNEXPLAINED line above has
         # already priced any gap it revealed, so the anchor has to move to it
@@ -576,7 +604,7 @@ def repair_unproven_buys(conn: sqlite3.Connection) -> int:
     the residual. Its balance_after is a reading, so nothing after it
     changes. Idempotent: a repaired line no longer has a NULL delta.
     """
-    from transactions import abbreviation_slack
+    from transactions import reading_tolerance
 
     buys = conn.execute(
         "SELECT id, item, category, currency, price, observed FROM ledger "
@@ -611,8 +639,7 @@ def repair_unproven_buys(conn: sqlite3.Connection) -> int:
                     # A reading the stale chain matched exactly: with the
                     # price applied it would need a line that does not exist.
                     continue
-                close = running is not None and abs(reading - running) <= (
-                    abbreviation_slack(observed) + abbreviation_slack(reading))
+                close = running is not None and abs(reading - running) <= reading_tolerance(observed, reading)
                 if not (in_catalog or close):
                     continue
                 residual = delta + price

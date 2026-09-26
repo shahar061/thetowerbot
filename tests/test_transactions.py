@@ -322,3 +322,10 @@ def test_exact_readings_leave_no_room_for_a_near_miss() -> None:
     )
 
     assert outcome.spent is None
+
+
+def test_reading_tolerance_adds_each_readings_abbreviation_and_each_rounded_amount() -> None:
+    assert transactions.reading_tolerance(450, 451) == 0
+    assert transactions.reading_tolerance(2610, 2614) == 20
+    assert transactions.reading_tolerance(450, 451, rounded_amounts=2) == 2
+    assert transactions.reading_tolerance(12300, rounded_amounts=1) == 101
