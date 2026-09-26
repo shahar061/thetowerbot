@@ -329,23 +329,50 @@ _NO_RECORD: dict[str, Any] = {
 }
 
 
+def _schema_probe(conn: sqlite3.Connection) -> dict[str, bool]:
+    """What the read paths below can rely on existing.
+
+    `db.reader` opens worker DBs mode=ro and never migrates them - only
+    `db.connect` (the writer) adds `run_upgrades`/`killed_by`/`ad_coins`. A
+    worker whose writer has not reconnected since those were added must be
+    read as if they were never added, not raise OperationalError.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    has_run_upgrades = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_upgrades'"
+    ).fetchone() is not None
+    return {
+        "run_upgrades": has_run_upgrades,
+        "killed_by": "killed_by" in columns,
+        "ad_coins": "ad_coins" in columns,
+    }
+
+
 def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    schema = _schema_probe(conn)
+    buys_select = (
+        "(SELECT SUM(levels) FROM run_upgrades u WHERE u.run_id = runs.id) AS buys"
+        if schema["run_upgrades"] else "NULL AS buys"
+    )
     rows = conn.execute(
-        "SELECT runs.*, (SELECT SUM(levels) FROM run_upgrades u WHERE u.run_id = runs.id) AS buys "
-        "FROM runs ORDER BY id DESC LIMIT ?",
+        f"SELECT runs.*, {buys_select} FROM runs ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
-    records = _records(conn)
+    records = _records(conn, schema)
     listed = []
     for row in rows:
         run = dict(row)
+        if not schema["killed_by"]:
+            run["killed_by"] = None
+        if not schema["ad_coins"]:
+            run["ad_coins"] = None
         run["total_coins"] = None if run["coins"] is None else run["coins"] + (run["ad_coins"] or 0)
         run.update(records.get(run["id"], _NO_RECORD))
         listed.append(run)
     return listed
 
 
-def _records(conn: sqlite3.Connection) -> dict[int, dict[str, Any]]:
+def _records(conn: sqlite3.Connection, schema: dict[str, bool] | None = None) -> dict[int, dict[str, Any]]:
     """High scores in the order they were set, over this account's whole history.
 
     A run is a record when it strictly beats every earlier finished,
@@ -353,8 +380,11 @@ def _records(conn: sqlite3.Connection) -> dict[int, dict[str, Any]]:
     coins. A later record does not erase an earlier one - it marks it broken.
     Runs with the value unread (NULL) neither set nor break a record.
     """
+    if schema is None:
+        schema = _schema_probe(conn)
+    total_select = "coins + COALESCE(ad_coins, 0) AS total" if schema["ad_coins"] else "coins AS total"
     rows = conn.execute(
-        "SELECT id, tier, wave, coins + COALESCE(ad_coins, 0) AS total FROM runs "
+        f"SELECT id, tier, wave, {total_select} FROM runs "
         "WHERE ended_at IS NOT NULL AND abandoned = 0 ORDER BY id"
     ).fetchall()
     found: dict[int, dict[str, Any]] = {}
@@ -380,7 +410,10 @@ def _records(conn: sqlite3.Connection) -> dict[int, dict[str, Any]]:
 
 def run_upgrade_levels(conn: sqlite3.Connection, run_id: int) -> list[dict[str, Any]] | None:
     """One run's frozen purchase summary, or None when none was recorded
-    (a run older than the events retention, or one that bought nothing)."""
+    (a run older than the events retention, one that bought nothing, or a
+    worker DB read before `run_upgrades` was migrated onto it)."""
+    if not _schema_probe(conn)["run_upgrades"]:
+        return None
     rows = conn.execute(
         "SELECT upgrade_id, levels, spent, unpriced FROM run_upgrades WHERE run_id = ? ORDER BY upgrade_id",
         (run_id,),
@@ -457,7 +490,14 @@ def _summarize_purchases(conn: sqlite3.Connection, run_id: int) -> None:
 
 
 def _backfill_run_upgrades(conn: sqlite3.Connection) -> None:
-    """Summarize finished runs that predate `run_upgrades` while their events survive."""
+    """Summarize finished runs that predate `run_upgrades` while their events survive.
+
+    Harmless if a run's purchases all lack an upgrade_id (nothing for
+    `_summarize_purchases` to insert): the WHERE clause's own EXISTS check
+    still finds a matching BattlePurchased event, so this re-runs that run
+    on every connect - a no-op each time, never a growing cost, but also
+    never resolved since it can't tell "summarized as empty" from "not yet
+    summarized."""
     pending = conn.execute(
         "SELECT r.id FROM runs r WHERE r.ended_at IS NOT NULL "
         "AND NOT EXISTS (SELECT 1 FROM run_upgrades u WHERE u.run_id = r.id) "
@@ -477,10 +517,16 @@ def close_abandoned_runs(conn: sqlite3.Connection) -> int:
     than "now": no real duration was ever observed, and backdating to the
     run's own start is honest about that instead of inventing one.
     """
+    pending = [row["id"] for row in conn.execute("SELECT id FROM runs WHERE ended_at IS NULL")]
     cursor = conn.execute(
         "UPDATE runs SET ended_at = started_at, abandoned = 1 "
         "WHERE ended_at IS NULL"
     )
+    # finish_run is never called for a kill, so nothing else freezes these
+    # runs' purchases into run_upgrades; without this they would wait for
+    # the next restart's `_backfill_run_upgrades` pass.
+    for run_id in pending:
+        _summarize_purchases(conn, run_id)
     conn.commit()
     return cursor.rowcount
 

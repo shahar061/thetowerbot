@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import sqlite3
 import threading
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
@@ -304,6 +305,39 @@ def test_run_upgrades_is_null_without_a_record(harness) -> None:
     db.start_run(conn, 1, started_at=0.0)
     conn.close()
     assert client.get("/api/runs/1/upgrades").json() is None
+
+
+def test_runs_and_upgrades_routes_answer_200_on_a_worker_db_opened_before_migration(tmp_path: Path) -> None:
+    """These routes read with `db.reader`, which never migrates - only
+    `db.connect` does. A worker whose writer has not reconnected since
+    `run_upgrades`/`killed_by`/`ad_coins` were added must still answer with
+    200, not 500."""
+    db_path = tmp_path / "old.db"
+    old = sqlite3.connect(db_path)
+    old.execute(
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, "
+        "wave INTEGER, coins INTEGER, tier INTEGER, abandoned INTEGER NOT NULL DEFAULT 0, "
+        "scan_count INTEGER NOT NULL DEFAULT 0, tap_count INTEGER NOT NULL DEFAULT 0, "
+        "purpose TEXT NOT NULL DEFAULT 'farm')"
+    )
+    old.execute(
+        "INSERT INTO runs (id, started_at, ended_at, wave, coins, tier, abandoned) "
+        "VALUES (1, 0.0, 60.0, 10, 50, 1, 0)"
+    )
+    old.commit()
+    old.close()
+    client = TestClient(create_app(
+        state=BotState(), sse=SseSink(), bus=events.EventBus(),
+        db_path=db_path, unknown_dir=tmp_path,
+    ))
+
+    runs = client.get("/api/runs")
+    upgrades = client.get("/api/runs/1/upgrades")
+
+    assert runs.status_code == 200
+    assert (runs.json()[0]["buys"], runs.json()[0]["killed_by"]) == (None, None)
+    assert upgrades.status_code == 200
+    assert upgrades.json() is None
 
 
 def test_unknown_lists_snapshots_newest_first(harness) -> None:

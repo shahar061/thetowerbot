@@ -176,6 +176,21 @@ def test_close_abandoned_runs_backdates_ended_at_to_started_at(tmp_path: Path) -
     assert (runs[2]["ended_at"], runs[2]["abandoned"]) == (90.0, 0)
 
 
+def test_close_abandoned_runs_summarizes_purchases_for_each_run_it_closes(tmp_path: Path) -> None:
+    """A killed process never reaches finish_run, so without this the run's
+    purchases would sit unsummarized in `run_upgrades` until the next
+    restart's `db.connect` backfill - see `_backfill_run_upgrades`."""
+    conn = make_db(tmp_path)
+    db.start_run(conn, 1, started_at=100.0)
+    db.insert_event(conn, to_row(events.BattlePurchased(
+        seq=1, ts=101.0, item="Damage", upgrade_id="damage", price=10, value=None), 1))
+
+    db.close_abandoned_runs(conn)
+
+    rows = {r["upgrade_id"]: dict(r) for r in conn.execute("SELECT * FROM run_upgrades WHERE run_id = 1")}
+    assert rows["damage"]["levels"] == 1
+
+
 def test_close_abandoned_runs_is_a_no_op_when_nothing_is_open(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     db.finish_run(
@@ -502,6 +517,44 @@ def test_connect_backfills_summaries_for_finished_runs_with_purchase_events(tmp_
     conn.close()
     conn = db.connect(path)
     assert conn.execute("SELECT levels FROM run_upgrades WHERE run_id = 1 AND upgrade_id = 'damage'").fetchone()[0] == 1
+
+
+def _pre_migration_db(path: Path) -> None:
+    """A worker DB as it looks before any writer `connect` has touched it:
+    `purpose` exists (an older migration), but `killed_by`, `ad_coins` and
+    `run_upgrades` do not - `db.reader` (mode=ro) never migrates, only
+    `db.connect` does."""
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, "
+        "wave INTEGER, coins INTEGER, tier INTEGER, abandoned INTEGER NOT NULL DEFAULT 0, "
+        "scan_count INTEGER NOT NULL DEFAULT 0, tap_count INTEGER NOT NULL DEFAULT 0, "
+        "purpose TEXT NOT NULL DEFAULT 'farm')"
+    )
+    old.execute(
+        "INSERT INTO runs (id, started_at, ended_at, wave, coins, tier, abandoned) "
+        "VALUES (1, 0.0, 60.0, 10, 50, 1, 0)"
+    )
+    old.commit()
+    old.close()
+
+
+def test_list_runs_and_run_upgrade_levels_tolerate_a_worker_db_opened_before_migration(tmp_path: Path) -> None:
+    """The web layer reads worker DBs with `db.reader`, which never migrates.
+    A worker whose writer has not connected since `run_upgrades`/`killed_by`/
+    `ad_coins` were added must still answer, not raise OperationalError."""
+    path = tmp_path / "old.db"
+    _pre_migration_db(path)
+
+    with db.reader(path) as conn:
+        runs = db.list_runs(conn)
+        levels = db.run_upgrade_levels(conn, 1)
+
+    assert len(runs) == 1
+    run = runs[0]
+    assert (run["buys"], run["killed_by"], run["ad_coins"]) == (None, None, None)
+    assert run["total_coins"] == 50
+    assert levels is None
 
 
 def _by_id(conn: sqlite3.Connection, limit: int = 50) -> dict[int, dict]:
