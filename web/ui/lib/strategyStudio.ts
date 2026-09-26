@@ -20,7 +20,7 @@ export type StrategyBlock =
   | (BlockBase & { type: "wait" });
 
 export type StrategyDefinition = {
-  id: string; name: string; version: number; source_template: "opening" | "turtle" | "scratch"; builtin: boolean;
+  id: string; name: string; version: number; source_template: "opening" | "turtle" | "labs_gems" | "scratch"; builtin: boolean;
   baseline: BuildRouteDocument["baseline"];
 };
 export type StrategyLibrary = { revision: number; templates: StrategyDefinition[]; strategies: StrategyDefinition[] };

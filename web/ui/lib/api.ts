@@ -29,6 +29,7 @@ import type { AccountMetrics } from "./accountMetrics";
 import type { TelegramMode, TelegramProfile, TelegramSettingsResponse } from "./telegram";
 import type { BuildRouteDocument, BuildRoutePreview, BuildRouteRevisions, BuildRouteRebindPreview } from "./buildRoute";
 import type { SaveStrategyInput, StrategyLedger, StrategyLibrary } from "./strategyStudio";
+import type { LabsSnapshot } from "./labs";
 
 /** An HTTP failure that kept its status code.
  *
@@ -82,6 +83,7 @@ export const fetchMilestoneRoadmap = () => getJson<MilestoneRoadmap>("/api/miles
 export const fetchAccountMetrics = () => getJson<AccountMetrics>("/api/account-metrics", { cache: "no-store" });
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
 export const fetchReroll = () => getJson<RerollSnapshot>("/api/fleet/reroll", { cache: "no-store" }, false);
+export const fetchFleetLabs = () => getJson<LabsSnapshot>("/api/fleet/labs", { cache: "no-store" }, false);
 export const fetchBuildRoute = () => getJson<BuildRouteDocument>("/api/fleet/reroll/route", { cache: "no-store" }, false);
 export interface FleetTiming { menu_interval: number }
 export interface FleetTimingSaved extends FleetTiming { workers_updated: number; workers_not_running: number }

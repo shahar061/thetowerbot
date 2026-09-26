@@ -1,4 +1,5 @@
 import type { StrategyAssignment, StrategyBlock } from "./strategyStudio";
+import type { GemBlock, LabBlock, RouteRules } from "./labs";
 
 export type RouteTrace = {
   matched_rule_id: string;
@@ -65,8 +66,9 @@ export type BuildRouteDocument = {
         emergency_survival: boolean;
       }[];
     }[] };
-    gems: { lab_slot2_reserve: number; spend_limit_pct: number; steps: string[] };
-    labs: { slot1_research: string; steps: string[] };
+    gems: { lab_slot2_reserve: number; spend_limit_pct: number; steps: string[]; mode?: "steps" | "blocks"; blocks?: GemBlock[] };
+    labs: { slot1_research: string; steps: string[]; mode?: "steps" | "blocks"; blocks?: LabBlock[] };
+    rules?: RouteRules;
   };
   overrides: Record<string, { account_id: string; patches: Record<string, Record<string, unknown>> }>;
   dependencies: Record<string, string[]>;
