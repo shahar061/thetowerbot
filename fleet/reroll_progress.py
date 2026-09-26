@@ -24,13 +24,13 @@ from fleet.reroll_variants import read_variant
 from fleet.workshop_prices import WorkshopPrices, PriceQuote, catalog_price
 from fleet.reroll_survival import prioritize_survival
 from fleet.build_route_runtime import BuildRouteRuntime
-from fleet.build_route import resolve_route
+from fleet.build_route import RouteRules, resolve_route
 from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle,
                                     evaluate_resources, evaluate_workshop,
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
-from fleet.coin_share import workshop_ceiling
-from lab_plan import LabCadence, LabDecision
+from fleet import coin_share
+from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
@@ -57,6 +57,7 @@ class RerollProgress:
         self._last_stats_attempt = 0.0
         self._last_skip_note: str | None = None
         self.lab_cadence = LabCadence(self.root, account_id)
+        self.coin_jar = coin_share.LabCoinJar(self.root, account_id, read_only=read_only)
         self.route_runtime: BuildRouteRuntime | None = None
         self.route_error: str | None = None
         self._route_evaluation: RouteEvaluation | None = None
@@ -77,14 +78,39 @@ class RerollProgress:
             self.route_error = exc.reason
             return True
 
+    def resource_rules(self) -> RouteRules:
+        """This account's strategy rules; today's defaults when no route applies."""
+        if self.route_runtime is None:
+            return RouteRules()
+        try:
+            route = self.route_runtime.current()
+        except RouteUnavailable:
+            return RouteRules()
+        return resolve_route(route, self.root.name, self.account_id).rules
+
     def lab_due(self, now: float | None = None, *,
                 wallet_coins: int | None = None,
                 wallet_gems: int | None = None) -> bool:
         moment = time.time() if now is None else now
         if not self.lab_unlocked():
             return False
-        return (self.lab_cadence.slot2_due(moment, wallet_gems)
-                or self.lab_cadence.due(moment, wallet_coins))
+        rules = self.resource_rules()
+        slot2 = (rules.gems.auto_unlock_lab_slots and self.lab_cadence.slot2_due(
+            moment, wallet_gems, min_gems=LAB2_GEMS + rules.gems.keep))
+        slot1 = rules.labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
+        return slot2 or slot1
+
+    def lab_visit_options(self) -> LabVisitOptions:
+        rules = self.resource_rules()
+        return LabVisitOptions(start_research=rules.labs.auto_start,
+                               unlock_slot2=rules.gems.auto_unlock_lab_slots,
+                               min_gems=LAB2_GEMS + rules.gems.keep)
+
+    def note_lab_coin_debit(self, now: float | None = None) -> None:
+        """A confirmed lab coin debit spent the savings: empty the jar."""
+        if self.read_only:
+            return
+        self.coin_jar.reset(time.time() if now is None else now)
 
     def lab_unlocked(self) -> bool:
         """Whether this account has positive, persisted Labs unlock evidence."""
@@ -349,9 +375,17 @@ class RerollProgress:
         # reroll policy enables card spending.
         if not self.lab_cadence.slot2_owned():
             base = replace(base, cards=replace(base.cards, enabled=False))
+        rules = (resolve_route(route, self.root.name, self.account_id).rules
+                 if route is not None else RouteRules())
+        # gems.keep is a reserve: cards never spend below it.
+        if rules.gems.keep > base.cards.gem_floor:
+            base = replace(base, cards=replace(base.cards, gem_floor=rules.gems.keep))
         # The reroll planner selects one item; a visit-wide percentage cap
         # otherwise rejects an affordable unlock after the planner selects it.
         self._spend_fraction = None
+        jar = 0
+        paused = False
+        route_wallet: int | None = None
         if route is not None and route.revision > 0:
             from web.account_catalog import registered_worker
             registration = registered_worker(self.root)
@@ -367,8 +401,15 @@ class RerollProgress:
                     self.route_runtime.abandon_decision("route revision changed")
                     pending = None
                 facts = self.route_facts()
-                self.route_runtime.publish_facts(facts)
                 effective = resolve_route(route, self.root.name, self.account_id)
+                lab_record, _ = self.lab_cadence.route_observation()
+                # Grows at most once per visit key: this runs on every menu scan.
+                jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,
+                                           facts.visit_id or "", time.time())
+                paused = coin_share.workshop_paused(effective, lab_record)
+                facts = replace(facts, lab_coin_jar=jar)
+                route_wallet = facts.wallet_coins
+                self.route_runtime.publish_facts(facts)
                 evaluation = evaluate_workshop(effective, facts, pending)
                 if (evaluation.status == "blocked" and pending is not None
                         and "Pending choice became unavailable" in evaluation.trace.reason):
@@ -403,6 +444,11 @@ class RerollProgress:
                            workshop=(ShoppingRule(plan.item, plan.category),),
                            allow_unlocks=True, coin_budget=50, coin_budget_pct=None,
                            cards=replace(base.cards, enabled=False))
+        if paused:
+            # labs_first: an automated lab waits for coins, so Workshop holds
+            # every coin until the lab check starts it. Claims, the tutorial
+            # grant and Cards are not Workshop visits, so they continue.
+            return replace(base, workshop=())
         if plan.stage == "strategy_observe":
             ids = self._route_evaluation.trace.observation_ids
             rows = tuple(ShoppingRule(upgrades.by_id(uid).name, upgrades.by_id(uid).category)
@@ -414,9 +460,9 @@ class RerollProgress:
         if not self.workshop_worthwhile():
             return replace(base, enabled=False)
         budget = base.coin_budget
-        if route is not None and route.revision > 0 and plan.wallet_coins is not None:
+        if route is not None and route.revision > 0 and route_wallet is not None:
             effective = resolve_route(route, self.root.name, self.account_id)
-            ceiling = workshop_ceiling(effective, plan.wallet_coins, facts.lab_coin_jar)
+            ceiling = coin_share.workshop_ceiling(effective, route_wallet, jar)
             budget = ceiling if budget is None else min(budget, ceiling)
         if plan.stage == "strategy" and plan.price is not None:
             budget = plan.price if budget is None else min(budget, plan.price)

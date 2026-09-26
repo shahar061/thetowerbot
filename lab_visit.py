@@ -8,7 +8,7 @@ import time
 from typing import Callable
 
 from device import AdbDevice, Image, tap
-from lab_plan import LabDecision, decide
+from lab_plan import LabDecision, LabVisitOptions, decide
 from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading,
                         read_confirmation, read_home, read_picker)
 import ocr
@@ -68,15 +68,17 @@ class LabVisit:
         self._slot2_reads = 0
         self._slot2_confirm_reads = 0
         self._slot2_tapped = False
+        self._options = LabVisitOptions()
         self.last_tap: tuple[str, int, int] | None = None
 
     @property
     def active(self) -> bool:
         return self._state != "idle"
 
-    def request(self) -> bool:
+    def request(self, options: LabVisitOptions | None = None) -> bool:
         if self.active:
             return False
+        self._options = options or LabVisitOptions()
         self._state = "open"
         self._started_at = 0.
         self._scans = 0
@@ -150,8 +152,9 @@ class LabVisit:
 
     def _unlock_lab_two(self, home: LabHomeReading, device: AdbDevice) -> bool:
         """On the way out, buy Lab 2 once from two matching affordable reads."""
-        if (self._slot2_tapped or home.slot2_status != "locked" or home.slot2_price != 100
-                or home.gem_balance is None or home.gem_balance < 100
+        if (not self._options.unlock_slot2 or self._slot2_tapped
+                or home.slot2_status != "locked" or home.slot2_price != 100
+                or home.gem_balance is None or home.gem_balance < self._options.min_gems
                 or home.slot2_point is None):
             return False
         self._slot2_home = home
@@ -235,7 +238,11 @@ class LabVisit:
                 return None
             self._slot2_home = home
             decision = decide(home, None)
-            if decision.kind == "inspect" and home.slot_point is not None:
+            if decision.kind == "inspect" and not self._options.start_research:
+                # Auto-start is off: read the slot, never open the picker.
+                self._return(LabVisitResult("observed", "auto_start_off", decision,
+                                             confirmed_job=home.job))
+            elif decision.kind == "inspect" and home.slot_point is not None:
                 self._slot = home
                 self._tap(device, home.slot_point, "open_lab_one")
                 self._state = "picker"

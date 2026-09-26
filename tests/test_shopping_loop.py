@@ -18,7 +18,7 @@ import events
 import tower_bot
 import vision
 from shopping import ShoppingSession
-from lab_plan import LabDecision
+from lab_plan import LabDecision, LabVisitOptions
 from lab_visit import LabVisit, LabVisitResult
 from labs import LabJob, LabsReading, LabsState
 from strategy import Shopping, ShoppingRule
@@ -81,6 +81,7 @@ def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.lab_due.return_value = True
+    progress.lab_visit_options.return_value = LabVisitOptions()
     progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
@@ -171,6 +172,7 @@ def test_confirmed_lab_start_records_one_job_and_one_coin_debit(bot_on_main_menu
                if isinstance(event, events.LabResearchStarted)]
     assert len(started) == 1
     assert (started[0].coins_before, started[0].coins_after) == (400, 100)
+    bot.reroll_progress.note_lab_coin_debit.assert_called_once()
 
 
 def test_failed_lab_start_does_not_record_a_spend(bot_on_main_menu) -> None:
@@ -375,3 +377,12 @@ def test_due_is_false_when_the_session_is_disabled() -> None:
         digits.NumberReader(), disabled_reason="the OCR engine will not load",
     )
     assert session.due(a_policy(), run_count=1) is False
+
+
+def test_auto_start_off_visit_keeps_the_saved_lab_evidence(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot.reroll_progress = Mock()
+    bot.lab_state = LabsState(Mock())
+    bot._finish_lab_visit(LabVisitResult("observed", "auto_start_off", LabDecision("inspect")))
+    bot.reroll_progress.note_lab_observation.assert_not_called()
+    bot.reroll_progress.note_lab_coin_debit.assert_not_called()
