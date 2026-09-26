@@ -263,7 +263,8 @@ def test_battle_pool_can_compare_to_native_unaffordable_priority() -> None:
              *blocks.native_template_program('turtle','battle')]
     sample=replace(facts(),screen='battle',run_id=2,wave=2,battle_cash=90,run_purchases={},
         upgrade_rows={'defense_absolute':{'status':'unaffordable','value':0,'price':100,'observed_at':100},
-                      'damage':{'status':'available','value':5,'price':80,'observed_at':100}})
+                      'damage':{'status':'available','value':5,'price':80,'observed_at':100},
+                      'attack_speed':{'status':'unaffordable','value':1,'price':95,'observed_at':100}})
     result=blocks.evaluate_program(route(program,lane='battle'),sample,None,'battle')
     assert result.trace.matched_rule_id == 'cheap'
     assert result.decision.upgrade_id == 'damage'
@@ -760,3 +761,33 @@ def test_turtle_battle_template_keeps_def_abs_ahead_and_buys_cheap_defense() -> 
     assert blocks.evaluate_program(route(program, lane='battle'), thin, None, 'battle').decision.upgrade_id == 'defense_absolute'
     survival = next(b for b in program if b['id'] == 'turtle.battle.survival')
     assert survival['upgrade_ids'] == ['health', 'defense_percent', 'health_regen', 'damage', 'attack_speed']
+
+
+def test_battle_stale_priority_row_is_observed_before_later_blocks() -> None:
+    # A row not read for over 60s is unverified, not unaffordable: the bot
+    # stayed on another tab. Falling through would let Health win forever.
+    program = [{'id': 'eco', 'type': 'pool', 'upgrade_ids': ['cash_bonus'], 'selection': 'priority'},
+               {'id': 'hp', 'type': 'pool', 'upgrade_ids': ['health'], 'selection': 'priority'}]
+    stale = battle_facts(cash_bonus={'status': 'unknown', 'value': None, 'price': None, 'observed_at': 30})
+    result = blocks.evaluate_program(route(program, lane='battle'), stale, None, 'battle')
+    assert result.decision.state == 'observe_price'
+    assert result.trace.observation_ids == ('cash_bonus',)
+    fresh = battle_facts(cash_bonus={'status': 'available', 'value': 1.0, 'price': 10, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), fresh, None, 'battle').decision.upgrade_id == 'cash_bonus'
+    poor = battle_facts(cash_bonus={'status': 'unaffordable', 'value': 1.0, 'price': 500, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), poor, None, 'battle').decision.upgrade_id == 'health'
+
+
+def test_battle_stale_buy_block_is_observed() -> None:
+    program = [{'id': 'eco', 'type': 'buy', 'upgrade_id': 'cash_bonus'},
+               {'id': 'hp', 'type': 'buy', 'upgrade_id': 'health'}]
+    result = blocks.evaluate_program(route(program, lane='battle'), battle_facts(), None, 'battle')
+    assert result.trace.observation_ids == ('cash_bonus',)
+
+
+def test_battle_priority_pool_observes_only_stale_rows_ranked_above_its_pick() -> None:
+    stale = battle_facts(cash_bonus={'status': 'unknown', 'value': None, 'price': None, 'observed_at': 30})
+    above = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['cash_bonus', 'health'], 'selection': 'priority'}]
+    assert blocks.evaluate_program(route(above, lane='battle'), stale, None, 'battle').trace.observation_ids == ('cash_bonus',)
+    below = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['health', 'cash_bonus'], 'selection': 'priority'}]
+    assert blocks.evaluate_program(route(below, lane='battle'), stale, None, 'battle').decision.upgrade_id == 'health'

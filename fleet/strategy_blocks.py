@@ -484,6 +484,14 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 and math.isfinite(timestamp) and 0 <= timestamp <= facts.now)
 
     def observe_prices(identity: str, ids: list[str]) -> _Choice | None:
+        if lane == 'battle':
+            # A row unread for 60s is unverified, not unaffordable: the bot sat
+            # on another tab. Skipping it would hand every later block the win.
+            stale = [uid for uid in dict.fromkeys(ids) if uid not in excluded and not (
+                isinstance(seen := facts.upgrade_rows.get(uid, {}).get('observed_at'), (float, int))
+                and 0 <= facts.now - seen <= 60)]
+            return (_Choice(identity, stale[0], 'Observe stale battle rows before later blocks',
+                            observation_ids=tuple(stale)) if stale else None)
         if lane != 'workshop':
             return None
         gates = {child: item.id for item in upgrades.CATALOG if item.unlock for child in item.unlocks}
@@ -736,6 +744,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             elif kind == 'buy':
                 if eligible(block['upgrade_id']):
                     return _Choice(identity, block['upgrade_id'], 'First affordable eligible upgrade')
+                if lane == 'battle' and (observation := observe_prices(identity, [block['upgrade_id']])):
+                    return observation
             elif kind == 'pool':
                 needs_counts = 'max_purchases' in block or 'level_caps' in block or block.get('decay_pct', 0) > 0
                 if needs_counts and counts is None:
@@ -754,6 +764,14 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             return observation
                         continue
                 candidates = pool_candidates(block, identity, reference_price)
+                if lane == 'battle':
+                    # A priority pick only needs the stale rows ranked above it;
+                    # a weighted draw depends on every member.
+                    ids = list(block['upgrade_ids'])
+                    if candidates and block.get('selection', 'priority') == 'priority':
+                        ids = ids[:ids.index(next(iter(candidates)))]
+                    if observation := observe_prices(identity, ids):
+                        return observation
                 if not candidates:
                     if 'discount_pct' in block:
                         observation = observe_prices(identity, block['upgrade_ids'])
