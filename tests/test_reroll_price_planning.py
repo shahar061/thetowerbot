@@ -144,3 +144,16 @@ def test_an_unexplained_debit_that_could_be_a_purchase_still_drops_prices(tmp_pa
     observed = progress.price_memory.wallet["observed_at"]
     _unexplained(tmp_path, observed + 5, -30, 370)
     assert "thorns" not in progress._pricing({})[1]
+
+
+def test_a_rounding_line_never_invalidates_workshop_prices(tmp_path: Path) -> None:
+    # An abbreviated "12.3K" header hides up to 100 coins; the ledger books
+    # that gap as ROUNDING, and only UNEXPLAINED may drop observed prices.
+    progress = worker(tmp_path)
+    progress.observe_prices({"thorns": 206}, 12_360)
+    observed = progress.price_memory.wallet["observed_at"]
+    with db.connect(tmp_path / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO ledger(ts,kind,currency,delta,balance_after,observed,dry_run) "
+                     "VALUES(?,'ROUNDING','coins',-60,12300,12300,0)", (observed + 5,))
+    wallet, quotes = progress._pricing({})
+    assert (wallet, quotes["thorns"].price) == (12_300, 206)

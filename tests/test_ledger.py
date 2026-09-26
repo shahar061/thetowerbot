@@ -829,3 +829,67 @@ def test_a_workshop_purchase_keeps_the_reason_it_was_chosen() -> None:
                          reason="Random draw (71%)", seq=7, ts=1000.0))
 
     assert line.detail == {"verdict": "bought", "reason": "Random draw (71%)"}
+
+
+# -- readings that differ only by rounding --------------------------------------
+def _thorns(coins_before: int, seq: int, ts: float) -> events.Purchased:
+    return events.Purchased(item="Thorns", category="DEFENSE", price=157,
+                            coins_before=coins_before, dry_run=False, seq=seq, ts=ts)
+
+
+def test_a_run_payouts_fractional_coin_is_rounding_not_an_unexplained_debit(tmp_path: Path) -> None:
+    """The game-over screen rounds a payout of fractional coins, so the next
+    menu reading lands a coin either side of the running total."""
+    write, _ = writer(tmp_path)
+    write.lines_for(_thorns(186, 1, 1.0))
+    write.lines_for(events.RunEnded(run_id=1, duration=600, coins=422, seq=2, ts=2.0))
+
+    lines = write.lines_for(_thorns(450, 3, 3.0))
+
+    assert [line.kind for line in lines] == ["ROUNDING", "WORKSHOP_BUY"]
+    assert (lines[0].delta, lines[0].balance_after) == (-1, 450)
+
+
+def test_each_payout_since_the_last_reading_widens_the_rounding_allowance(tmp_path: Path) -> None:
+    write, _ = writer(tmp_path)
+    write.lines_for(_thorns(186, 1, 1.0))
+    write.lines_for(events.RunEnded(run_id=1, duration=600, coins=100, seq=2, ts=2.0))
+    write.lines_for(events.RunEnded(run_id=2, duration=600, coins=100, seq=3, ts=3.0))
+
+    assert write.lines_for(_thorns(227, 4, 4.0))[0].kind == "ROUNDING"
+
+
+def test_a_gap_bigger_than_rounding_stays_unexplained(tmp_path: Path) -> None:
+    write, _ = writer(tmp_path)
+    write.lines_for(_thorns(186, 1, 1.0))
+    write.lines_for(events.RunEnded(run_id=1, duration=600, coins=422, seq=2, ts=2.0))
+
+    lines = write.lines_for(_thorns(440, 3, 3.0))
+
+    assert [line.kind for line in lines] == ["UNEXPLAINED", "WORKSHOP_BUY"]
+    assert lines[0].delta == -11
+
+
+def test_an_abbreviated_header_reading_is_rounding(tmp_path: Path) -> None:
+    """"2.61K" parses to 2610 but stands for any balance near it."""
+    write, _ = writer(tmp_path)
+    write.lines_for(events.Purchased(item="Health", category="DEFENSE", price=75,
+                                     coins_before=2689, dry_run=False, seq=1, ts=1.0))
+
+    lines = write.lines_for(events.Purchased(item="Health", category="DEFENSE", price=75,
+                                             coins_before=2610, dry_run=False, seq=2, ts=2.0))
+
+    assert [line.kind for line in lines] == ["ROUNDING", "WORKSHOP_BUY"]
+    assert lines[0].delta == -4
+
+
+def test_the_rounding_allowance_survives_a_restart(tmp_path: Path) -> None:
+    write, conn = writer(tmp_path)
+    for event in (_thorns(186, 1, 1.0),
+                  events.RunEnded(run_id=1, duration=600, coins=422, seq=2, ts=2.0)):
+        for line in write.lines_for(event):
+            db.insert_ledger(conn, line.as_row())
+
+    restarted = ledger.LedgerWriter(conn)
+
+    assert restarted.lines_for(_thorns(450, 3, 3.0))[0].kind == "ROUNDING"
