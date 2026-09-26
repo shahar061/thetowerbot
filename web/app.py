@@ -297,6 +297,11 @@ class BuildRouteRebindPreviewRequest(BuildRoutePreviewRequest):
     new_account_id: str
 
 
+class FleetTimingRequest(BaseModel):
+    # Loose on purpose: FleetTiming is the single validator.
+    menu_interval: Any
+
+
 class StrategySaveRequest(BaseModel):
     model_config = {"extra": "forbid", "strict": True}
     expected_revision: int
@@ -1530,6 +1535,33 @@ def create_app(
                 "message": "strategy_library_revision_changed", "current_revision": exc.revision}) from exc
         except (RouteUnavailable, ValueError, TypeError) as exc:
             raise _build_route_error(exc) from exc
+
+    def _timing_root() -> Path:
+        root = _fleet_root()
+        if fleet is None or root is None:
+            raise HTTPException(status_code=503, detail="fleet_timing_unavailable")
+        return root
+
+    @app.get("/api/fleet/reroll/timing")
+    def fleet_timing_get() -> dict[str, Any]:
+        from fleet import reroll_timing
+        return (reroll_timing.load(_timing_root()) or reroll_timing.FleetTiming()).to_dict()
+
+    @app.put("/api/fleet/reroll/timing")
+    def fleet_timing_put(body: FleetTimingRequest) -> dict[str, Any]:
+        from fleet import reroll_timing
+        root = _timing_root()
+        try:
+            timing = reroll_timing.FleetTiming(menu_interval=body.menu_interval)
+        except ControlError as exc:
+            raise HTTPException(status_code=422, detail=f"{exc.field}: {exc}") from exc
+        reroll_timing.save(root, timing)
+        # Stopped workers take it at their next launch; running ones now.
+        ports = [choice.web_port for choice in _choices()
+                 if choice.kind == "worker" and choice.web_port is not None]
+        unreachable = reroll_timing.push(ports, timing)
+        return {**timing.to_dict(), "workers_updated": len(ports) - len(unreachable),
+                "workers_not_running": len(unreachable)}
 
     @app.post("/api/fleet/reroll/strategies/assign")
     def fleet_strategy_assign(body: StrategyAssignRequest) -> dict[str, Any]:
