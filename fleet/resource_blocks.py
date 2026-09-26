@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import operator
+from dataclasses import dataclass
 from typing import Any, Iterator, Mapping, Sequence
 
 import lab_catalog
@@ -335,3 +336,326 @@ def template_rules() -> dict[str, Any]:
                  "pool": {"selection": "cheapest", "max_price_pct_of_wallet": 10, "max_seconds": None}},
         "gems": {"auto_unlock_lab_slots": True, "spend_limit_pct": 100, "keep": 0},
     }
+
+
+# ---- Evaluation -----------------------------------------------------------
+
+STALE_SECONDS = 86400
+_IDLE_KINDS = {"wait_coins", "inspect", "start", "done"}
+
+
+@dataclass(frozen=True)
+class LabFacts:
+    now: float
+    wallet_coins: int | None = None
+    wallet_gems: int | None = None
+    best_tier_1_wave: int | None = None
+    slot1: Mapping[str, Any] | None = None
+    slot2: Mapping[str, Any] | None = None
+    jar: int = 0
+
+
+@dataclass(frozen=True)
+class SlotNow:
+    state: str
+    level: int | None = None
+    completes_at: float | None = None
+    overdue_seconds: float | None = None
+    read_at: float | None = None
+    stale: bool = False
+
+
+@dataclass(frozen=True)
+class SlotNext:
+    lab_id: str
+    name: str
+    level: int | None
+    price: int | None
+    seconds: int | None
+
+
+@dataclass(frozen=True)
+class SlotPlan:
+    slot: int
+    now: SlotNow
+    next: SlotNext | None
+    covered: bool | None
+    automated: bool
+    why: tuple[str, ...]
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class GemStep:
+    block_id: str
+    type: str
+    label: str
+    state: str
+    price: int | None
+    automated: bool
+
+
+@dataclass(frozen=True)
+class GemPlan:
+    wallet: int | None
+    next: GemStep | None
+    price: int | None
+    have: int | None
+    need: int | None
+    automated: bool
+    why: tuple[str, ...]
+    steps: tuple[GemStep, ...]
+
+
+@dataclass(frozen=True)
+class LabPlan:
+    wallet_coins: int | None
+    jar: int
+    slots: tuple[SlotPlan, ...]
+    gems: GemPlan
+
+
+def _number(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _gs_level(record: Mapping[str, Any] | None) -> int | None:
+    level = record.get("game_speed_level") if record else None
+    return level if type(level) is int and level >= 1 else None
+
+
+def _slot1_now(record: Mapping[str, Any] | None, now: float) -> SlotNow:
+    if record is None:
+        return SlotNow("unknown")
+    read_at = _number(record.get("observed_at"))
+    stale = read_at is not None and now - read_at > STALE_SECONDS
+    kind = record.get("kind")
+    if kind == "wait_running":
+        completes = _number(record.get("job_completes_at"))
+        overdue = now - completes if completes is not None and completes <= now else None
+        return SlotNow("researching", _gs_level(record), completes, overdue, read_at, stale)
+    if kind in _IDLE_KINDS:
+        return SlotNow("idle", _gs_level(record), read_at=read_at, stale=stale)
+    if kind == "wait_unlock":
+        return SlotNow("locked", read_at=read_at, stale=stale)
+    return SlotNow("unknown", read_at=read_at, stale=stale)
+
+
+def _slot2_now(record: Mapping[str, Any] | None, now: float) -> SlotNow:
+    if record is None:
+        return SlotNow("unknown")
+    read_at = _number(record.get("observed_at"))
+    stale = read_at is not None and now - read_at > STALE_SECONDS
+    state = {"locked": "locked", "owned": "owned_unread"}.get(record.get("status"), "unknown")
+    return SlotNow(state, read_at=read_at, stale=stale)
+
+
+def _known_levels(record: Mapping[str, Any] | None) -> tuple[dict[str, int], dict[str, int]]:
+    """Completed and in-progress levels we actually read. Only Game Speed."""
+    if record is None:
+        return {}, {}
+    kind, level = record.get("kind"), _gs_level(record)
+    if kind == "done":
+        return {GAME_SPEED: _max_level(GAME_SPEED)}, {}
+    if level is None:
+        return {}, {}
+    if kind == "wait_running":
+        return {GAME_SPEED: level - 1}, {GAME_SPEED: level}
+    if kind in _IDLE_KINDS:
+        return {GAME_SPEED: level - 1}, {}
+    return {}, {}
+
+
+def _next_level(lab_id: str, known: Mapping[str, int], running: Mapping[str, int]) -> int | None:
+    completed = known.get(lab_id)
+    if completed is None:
+        return None
+    level = completed + 1
+    return level + 1 if running.get(lab_id) == level else level
+
+
+def _option(lab_id: str, level: int | None) -> SlotNext:
+    entry = lab_catalog.lab(lab_id)
+    assert entry is not None
+    row = lab_catalog.level(lab_id, level) if level is not None else None
+    return SlotNext(lab_id, entry.name, level, row.coins if row else None, row.seconds if row else None)
+
+
+def _pool_choice(block: Mapping[str, Any], facts: LabFacts, pool: Any,
+                 known: Mapping[str, int], running: Mapping[str, int],
+                 why: list[str]) -> SlotNext | None:
+    selection = block.get("selection", pool.selection)
+    max_seconds = block.get("max_seconds", pool.max_seconds)
+    max_pct = block.get("max_price_pct_of_wallet", pool.max_price_pct_of_wallet)
+    caps = block.get("caps", {})
+    candidates: list[tuple[int, SlotNext]] = []
+    for index, lab_id in enumerate(block["lab_ids"]):
+        level = _next_level(lab_id, known, running)
+        cap = caps.get(lab_id, lab_catalog.lab(lab_id).max_level)
+        if level is not None and cap is not None and level > cap:
+            continue
+        option = _option(lab_id, level)
+        if max_seconds is not None and option.seconds is not None and option.seconds > max_seconds:
+            continue
+        if (max_pct is not None and option.price is not None and facts.wallet_coins is not None
+                and option.price * 100 > facts.wallet_coins * max_pct):
+            continue
+        candidates.append((index, option))
+    if not candidates:
+        why.append(f"{block['id']}: no lab in the pool fits the limits")
+        return None
+    if selection == "cheapest":
+        chosen = min(candidates, key=lambda item: (item[1].price is None, item[1].price or 0, item[0]))
+    elif selection == "shortest":
+        chosen = min(candidates, key=lambda item: (item[1].seconds is None, item[1].seconds or 0, item[0]))
+    else:
+        chosen = candidates[0]
+    why.append(f"{block['id']}: {selection} pick {chosen[1].name}")
+    return chosen[1]
+
+
+def _fact(block: Mapping[str, Any], facts: LabFacts, known: Mapping[str, int]) -> float | None:
+    field = block["field"]
+    if field == "best_tier_1_wave":
+        return facts.best_tier_1_wave
+    if field == "game_speed_maxed":
+        record = facts.slot1
+        if record is None:
+            return None
+        if record.get("kind") == "done":
+            return 1
+        return 0 if _gs_level(record) is not None else None
+    return known.get(block["lab_id"])
+
+
+def _choose(children: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any,
+            known: Mapping[str, int], running: Mapping[str, int],
+            why: list[str]) -> tuple[str, SlotNext | None, str | None]:
+    """First unmet child wins: ("pick", next, block type) | ("wait"|"unknown"|"done", None, None)."""
+    for block in children:
+        kind = block["type"]
+        if kind == "wait":
+            why.append(f"{block['id']}: leave the slot idle")
+            return "wait", None, None
+        if kind == "research":
+            level = _next_level(block["lab_id"], known, running)
+            name = lab_catalog.lab(block["lab_id"]).name
+            if level is not None and level > block["to_level"]:
+                why.append(f"{block['id']}: {name} reached {block['to_level']}")
+                continue
+            why.append(f"{block['id']}: research {name} to {block['to_level']}"
+                       + ("" if level is not None else " (level unread)"))
+            return "pick", _option(block["lab_id"], level), "research"
+        if kind == "lab_pool":
+            chosen = _pool_choice(block, facts, rules.labs.pool, known, running, why)
+            if chosen is not None:
+                return "pick", chosen, "lab_pool"
+            continue
+        if kind == "condition":
+            value = _fact(block, facts, known)
+            if value is None:
+                why.append(f"{block['id']}: {block['field']} unread")
+                return "unknown", None, None
+            branch = "then" if COMPARISONS[block["cmp"]](value, block["value"]) else "else"
+            why.append(f"{block['id']}: {block['field']} → {branch}")
+            outcome = _choose(block[branch], facts, rules, known, running, why)
+            if outcome[0] != "done":
+                return outcome
+    return "done", None, None
+
+
+def _gem_label(block: Mapping[str, Any]) -> str:
+    kind = block["type"]
+    if kind == "unlock_lab_slot":
+        return f"Unlock lab slot {block['slot']}"
+    if kind == "card_slots":
+        return f"Card slots up to {block['up_to']}"
+    if kind == "buy_cards":
+        return ("Cards for card-buy missions" if block["purpose"] == "card_missions"
+                else f"Cards until {', '.join(block['cards'])}")
+    if kind == "save_for":
+        return "Save for modules"
+    return "Wait"
+
+
+def _gem_met(block: Mapping[str, Any], slot2: Mapping[str, Any] | None) -> bool | None:
+    """True/False when read; None when we cannot know (never a guess)."""
+    if block["type"] != "unlock_lab_slot":
+        return False
+    status = slot2.get("status") if slot2 else None
+    if block["slot"] == 2:
+        return {"owned": True, "locked": False}.get(status)
+    return False if status == "locked" else None
+
+
+def _gem_price(block: Mapping[str, Any]) -> int | None:
+    if block["type"] == "unlock_lab_slot":
+        return lab_catalog.lab_slot_gems(block["slot"])
+    if block["type"] == "buy_cards":
+        return lab_catalog.CATALOG.card_gems
+    return None
+
+
+def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) -> GemPlan:
+    steps: list[GemStep] = []
+    why: list[str] = []
+    current: GemStep | None = None
+    for block in blocks:
+        met = _gem_met(block, facts.slot2)
+        automated = gem_automated(block) and rules.gems.auto_unlock_lab_slots
+        if current is None and met is True:
+            state = "done"
+            why.append(f"{block['id']}: done")
+        elif current is None:
+            state = "current"
+            why.append(f"{block['id']}: {'ownership unread' if met is None else 'next'}")
+            if gem_automated(block) and not rules.gems.auto_unlock_lab_slots:
+                why.append("Auto-unlock off")
+        else:
+            state = "next"
+        step = GemStep(block["id"], block["type"], block.get("label") or _gem_label(block),
+                       state, _gem_price(block), automated)
+        if state == "current":
+            current = step
+        steps.append(step)
+    price = current.price if current else None
+    need = price + rules.gems.keep if price is not None else None
+    return GemPlan(facts.wallet_gems, current, price, facts.wallet_gems, need,
+                   current.automated if current else False, tuple(why), tuple(steps))
+
+
+def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
+    """Pure: per-slot Now/Next and the next gem step. No reads, writes or clocks."""
+    rules = route.rules
+    lab_blocks = (route.labs.blocks if route.labs.mode == "blocks"
+                  else legacy_lab_blocks(route.labs.steps))
+    gem_blocks = (route.gems.blocks if route.gems.mode == "blocks"
+                  else legacy_gem_blocks(route.gems.steps))
+    known, running = _known_levels(facts.slot1)
+    slot2_now = _slot2_now(facts.slot2, facts.now)
+    later = (SlotNow("locked", read_at=slot2_now.read_at, stale=slot2_now.stale)
+             if slot2_now.state == "locked" else SlotNow("unknown"))
+    nows = {1: _slot1_now(facts.slot1, facts.now), 2: slot2_now, 3: later, 4: later, 5: later}
+    plans: list[SlotPlan] = []
+    for slot in LAB_SLOTS:
+        track = next((item for item in lab_blocks if slot in item["slots"]), None)
+        why: list[str] = []
+        note: str | None = None
+        if track is None:
+            outcome, chosen, kind = "none", None, None
+            why.append("No track plans this slot")
+        else:
+            why.append(f"{track['id']}: slots {', '.join(map(str, track['slots']))}")
+            outcome, chosen, kind = _choose(track["children"], facts, rules, known, running, why)
+            if outcome == "done":
+                why.append("Track complete")
+        automated = chosen is not None and kind == "research" and research_automated(chosen.lab_id, slot)
+        if automated and not rules.labs.auto_start:
+            automated, note = False, "Auto-start off"
+        if chosen is None and outcome in {"wait", "done"} and rules.labs.idle_fill == "shortest_under_30m":
+            note = "Idle fill: shortest lab under 30m (planned)"
+        covered = (facts.wallet_coins >= chosen.price
+                   if chosen is not None and chosen.price is not None and facts.wallet_coins is not None
+                   else None)
+        plans.append(SlotPlan(slot, nows[slot], chosen, covered, automated, tuple(why), note))
+    return LabPlan(facts.wallet_coins, facts.jar, tuple(plans), _gem_plan(gem_blocks, facts, rules))
