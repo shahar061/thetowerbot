@@ -8,37 +8,15 @@ import { deviceColor } from "@/lib/rerollState";
 import type { WorkshopLevelRow, WorkshopLevels } from "@/lib/types";
 import { memberIdentity } from "../statsHelpers";
 import { RecentWorkshopBuys } from "./RecentWorkshopBuys";
+import { WorkshopCubes } from "./WorkshopCubes";
+import { ago, averageShare, CATEGORIES, gameNumber, levelText, progress, STALE_SECONDS } from "./workshopFormat";
 
-const CATEGORIES = ["ATTACK", "DEFENSE", "UTILITY"] as const;
-const STALE_SECONDS = 24 * 3600;
 const CHEAPEST_MARKED = 3;
 type Sort = "category" | "cheapest" | "gap";
+export type WorkshopView = "table" | "cubes";
 type Result = { data: WorkshopLevels | null; error: string | null };
 
-const SUFFIXES = ["", "K", "M", "B", "T", "q", "Q"];
-/** Coin prices the way the game prints them: 331, 1.23K, 4.68T. */
-export function gameNumber(value: number): string {
-  let tier = 0;
-  while (Math.abs(value) >= 1000 && tier < SUFFIXES.length - 1) { value /= 1000; tier += 1; }
-  return tier === 0 ? String(Math.round(value)) : `${value.toFixed(2)}${SUFFIXES[tier]}`;
-}
-
-function ago(seconds: number): string {
-  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))}m ago`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
-  return `${Math.round(seconds / 86400)}d ago`;
-}
-
-/** Share of the ladder climbed; the lower bound of an ambiguous read. */
-function progress(row: WorkshopLevelRow): number | null {
-  if (row.status === "maxed") return 1;
-  return row.level_min === null ? null : row.level_min / row.max_level;
-}
-
-function levelText(row: WorkshopLevelRow): string {
-  if (row.level_min === null) return "?";
-  return row.level_min === row.level_max ? String(row.level_min) : `${row.level_min}–${row.level_max}`;
-}
+export { gameNumber };
 
 function Cell({ row, color, cheapest, now, focused }: {
   row?: WorkshopLevelRow; color: string; cheapest: boolean; now: number; focused: boolean;
@@ -68,13 +46,23 @@ function Cell({ row, color, cheapest, now, focused }: {
   </div>;
 }
 
-export function WorkshopMatrix({ members, focusWorker = null }: { members: RerollMember[]; focusWorker?: string | null }): React.JSX.Element {
+/** Keeps the chosen layout in ?view= so a refresh or a shared link opens it. */
+function rememberView(view: WorkshopView): void {
+  const url = new URL(window.location.href);
+  if (view === "cubes") url.searchParams.set("view", view); else url.searchParams.delete("view");
+  window.history.replaceState(window.history.state, "", url);
+}
+
+export function WorkshopMatrix({ members, focusWorker = null, initialView = "table" }: {
+  members: RerollMember[]; focusWorker?: string | null; initialView?: WorkshopView;
+}): React.JSX.Element {
   const identity = JSON.stringify(members.map(({ name, account_key, account_id, lease_id }) => ({ name, account_key, account_id, lease_id })));
   const [results, setResults] = useState<Record<string, Result>>({});
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [hideMaxed, setHideMaxed] = useState(true);
   const [sort, setSort] = useState<Sort>("category");
   const [query, setQuery] = useState("");
+  const [view, setView] = useState<WorkshopView>(initialView);
   const [focus, setFocus] = useState<string | null>(() => {
     const target = members.find(member => member.name === focusWorker);
     return target ? memberIdentity(target) : null;
@@ -128,6 +116,11 @@ export function WorkshopMatrix({ members, focusWorker = null }: { members: Rerol
   const sorted = sort === "category" ? null
     : [...visible].sort((a, b) => sort === "cheapest" ? minPrice(a.id) - minPrice(b.id) : gap(b.id) - gap(a.id));
 
+  const toggleFocus = (member: RerollMember): void => setFocus(current => current ? null : memberIdentity(member));
+  const toggleCategory = (category: string): void => setCollapsed(current => {
+    const next = new Set(current); if (!next.delete(category)) next.add(category); return next;
+  });
+
   const reads = members.flatMap(member => [...(byMember.get(memberIdentity(member))?.values() ?? [])].flatMap(row => row.observed_at ?? []));
   const oldest = reads.length ? Math.min(...reads) : null;
   const pending = members.some(member => !results[memberIdentity(member)]);
@@ -155,16 +148,28 @@ export function WorkshopMatrix({ members, focusWorker = null }: { members: Rerol
           <option value="cheapest">Cheapest next</option>
           <option value="gap">Biggest level gap</option>
         </select>
+        <div role="group" aria-label="Layout" className="inline-flex gap-0.5 rounded-md border border-border p-0.5">
+          {(["table", "cubes"] as const).map(option => <button key={option} type="button" aria-pressed={view === option}
+            onClick={() => { setView(option); rememberView(option); }}
+            className={`rounded px-2.5 py-1 text-xs capitalize ${view === option ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+            {option}
+          </button>)}
+        </div>
       </div>
     </header>
-    <div className="max-h-[75vh] overflow-auto">
+    {view === "cubes" ? <WorkshopCubes members={shown} catalog={catalog} visible={sorted ?? visible}
+      rowsOf={member => byMember.get(memberIdentity(member)) ?? new Map()}
+      cheapest={member => cheapest.get(memberIdentity(member)) ?? new Set()}
+      errors={member => results[memberIdentity(member)]?.error ?? null}
+      now={now} focused={focus !== null} onFocus={toggleFocus} collapsed={collapsed} onToggle={toggleCategory} />
+    : <div className="max-h-[75vh] overflow-auto">
       <table className="w-full min-w-[480px] border-separate border-spacing-0 text-sm">
         <thead className="sticky top-0 z-20 bg-card">
           <tr>
             <th className="sticky left-0 z-30 w-44 bg-card px-4 py-3 text-left text-xs font-medium text-muted-foreground">Upgrade</th>
             {shown.map(member => <th key={memberIdentity(member)} className="min-w-28 px-3 py-3 text-left">
               <button type="button" aria-pressed={focus === memberIdentity(member)} title={focus ? "Show all emulators" : `Focus ${member.name}`}
-                onClick={() => setFocus(current => current ? null : memberIdentity(member))}
+                onClick={() => toggleFocus(member)}
                 className="inline-flex items-center gap-1.5 rounded-md text-xs font-medium hover:underline">
                 <i className="size-2.5 rounded-full" style={{ backgroundColor: deviceColor(member.name) }} />{member.name}
               </button>
@@ -180,16 +185,14 @@ export function WorkshopMatrix({ members, focusWorker = null }: { members: Rerol
             return <Fragment key={category}>
               <tr className="bg-muted/30">
                 <th scope="rowgroup" className="sticky left-0 z-10 bg-muted px-4 py-2 text-left">
-                  <button type="button" aria-expanded={open} onClick={() => setCollapsed(current => {
-                    const next = new Set(current); if (!next.delete(category)) next.add(category); return next;
-                  })} className="inline-flex items-center gap-1 text-xs font-semibold tracking-wide">
+                  <button type="button" aria-expanded={open} onClick={() => toggleCategory(category)} className="inline-flex items-center gap-1 text-xs font-semibold tracking-wide">
                     {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}{category} <span className="font-normal text-muted-foreground">({items.length})</span>
                   </button>
                 </th>
                 {shown.map(member => {
-                  const shares = items.flatMap(item => { const share = byMember.get(memberIdentity(member))?.get(item.id); return share ? progress(share) ?? [] : []; });
+                  const share = averageShare(items.map(item => byMember.get(memberIdentity(member))?.get(item.id)));
                   return <td key={memberIdentity(member)} className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
-                    {shares.length ? `avg ${Math.round(shares.reduce((a, b) => a + b, 0) / shares.length * 100)}%` : "—"}
+                    {share === null ? "—" : `avg ${Math.round(share * 100)}%`}
                   </td>;
                 })}
               </tr>
@@ -199,7 +202,8 @@ export function WorkshopMatrix({ members, focusWorker = null }: { members: Rerol
           {!pending && !visible.length && <tr><td colSpan={shown.length + 1} className="p-8 text-center text-sm text-muted-foreground">No upgrades match.</td></tr>}
         </tbody>
       </table>
-    </div>
+    </div>}
+    {view === "cubes" && !pending && !visible.length && <p className="p-8 text-center text-sm text-muted-foreground">No upgrades match.</p>}
     {focused && <RecentWorkshopBuys member={focused} />}
     <p className="border-t px-4 py-3 text-xs text-muted-foreground">
       Levels are inferred by matching each Workshop stat the bot read to the upgrade’s per-level value table. A range (80–82) means the read’s
