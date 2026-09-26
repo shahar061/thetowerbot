@@ -13,6 +13,18 @@ import config
 from lab_screen import LabHomeReading, LabPickerReading
 
 
+# The second lab slot costs 100 gems; the reserve for it is a fixed safety rule.
+LAB2_GEMS = 100
+
+
+@dataclass(frozen=True)
+class LabVisitOptions:
+    """What one Labs visit may do. Defaults are today's behavior."""
+    start_research: bool = True
+    unlock_slot2: bool = True
+    min_gems: int = LAB2_GEMS
+
+
 @dataclass(frozen=True)
 class LabDecision:
     kind: str
@@ -155,17 +167,18 @@ class LabCadence:
         """Account-bound saved Lab decisions for the fleet route display."""
         return self._record(), self._read(self.slot2_path)
 
-    def slot2_due(self, now: float, wallet_gems: int | None = None) -> bool:
+    def slot2_due(self, now: float, wallet_gems: int | None = None,
+                  min_gems: int = LAB2_GEMS) -> bool:
         record = self._read(self.slot2_path)
         if record is None:
             return True
         if record.get("status") == "owned":
             return False
         if type(wallet_gems) is int:
-            if wallet_gems < 100:
+            if wallet_gems < min_gems:
                 return False
             previous = record.get("wallet_gems")
-            if type(previous) is int and previous < 100:
+            if type(previous) is int and previous < min_gems:
                 return True
         observed = record.get("observed_at")
         return not isinstance(observed, (int, float)) or now >= observed + 3600
@@ -211,7 +224,10 @@ class LabCadence:
         payload = {"account_id": self.account_id, "kind": decision.kind,
                    "next_check_at": next_check, "observed_at": now,
                    "wallet_coins": decision.wallet_coins, "price": decision.price,
-                   "game_speed_level": observed_level}
+                   "game_speed_level": observed_level,
+                   # Read by the Labs & Gems page; only a running job has one.
+                   "job_completes_at": (decision.job_completes_at
+                                        if decision.kind == "wait_running" else None)}
         self._write(self.path, payload)
 
     @staticmethod
