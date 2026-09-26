@@ -4,6 +4,7 @@ export type SpendingLane = "workshop" | "battle" | "gems" | "labs";
 export type ProgramLane = "workshop" | "battle";
 export type LevelCap = { base: number; per_level_of?: string; step?: number };
 type BlockBase = { id: string; label?: string };
+export type WaveRelative = { pct: number; floor: number; cap: number };
 export type StrategyBlock =
   | (BlockBase & { type: "native"; policy: "opening" | "turtle"; phase: "starter" | "economy" | "objectives" | "fallback" | "battle" })
   | (BlockBase & { type: "buy"; upgrade_id: string })
@@ -12,7 +13,7 @@ export type StrategyBlock =
       decay_pct?: number; weight_floor?: number; targets?: Record<string, number>; level_caps?: Record<string, LevelCap>;
       price_cap?: number; wallet_share_pct?: number })
   | (BlockBase & { type: "condition"; field: "best_tier_1_wave" | "wave" | "wallet" | "upgrade_value" | "def_abs_coverage";
-      op: "gte" | "lte" | "gt" | "lt"; value: number; upgrade_id?: string; then: StrategyBlock[]; else: StrategyBlock[] })
+      op: "gte" | "lte" | "gt" | "lt"; value?: number; relative?: WaveRelative; upgrade_id?: string; then: StrategyBlock[]; else: StrategyBlock[] })
   | (BlockBase & { type: "fallback"; blocks: StrategyBlock[] })
   | (BlockBase & { type: "budget"; metric: "utility_spent"; target: number; ceiling: number; blocks: StrategyBlock[] })
   | (BlockBase & { type: "save_for"; goal: StrategyBlock[] })

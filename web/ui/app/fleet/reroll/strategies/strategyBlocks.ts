@@ -1,4 +1,4 @@
-import type { ProgramLane, StrategyBlock } from "@/lib/strategyStudio";
+import type { ProgramLane, StrategyBlock, WaveRelative } from "@/lib/strategyStudio";
 
 export type BlockPreset = "condition" | "cheap" | "cap" | "weighted" | "buy" | "fallback" | "wait" | "budget" | "save_for" | "while_saving";
 export type BlockTarget = { parent: string | null; branch: "root" | "then" | "else" | "blocks" | "goal"; index: number };
@@ -47,6 +47,12 @@ export const nativeDetails = {
   battle: ["Battle survival", "Current battle policy: safety first, with native upgrade targets and observed prices."],
 } as const;
 
+/** Mirrors fleet/strategy_blocks.py relative_wave_limit. */
+export function relativeWaveLimit(relative: WaveRelative, best: number | null): number {
+  if (best === null) return relative.floor;
+  return Math.min(relative.cap, Math.max(relative.floor, Math.floor(best * relative.pct / 100)));
+}
+
 function conditionLabel(block: Extract<StrategyBlock, { type: "condition" }>, names: Map<string, string>): string {
   if (block.field === "upgrade_value") return `${names.get(block.upgrade_id ?? "") ?? block.upgrade_id} value`;
   return ({ best_tier_1_wave: "best T1 wave", wave: "current wave", wallet: "balance", def_abs_coverage: "Def. Abs coverage" })[block.field];
@@ -56,7 +62,8 @@ export function blockTitle(block: StrategyBlock, names: Map<string, string>): st
   switch (block.type) {
     case "native": return block.phase === "objectives" ? `${block.policy === "turtle" ? "Turtle" : "Opening"} objectives` : nativeDetails[block.phase][0];
     case "buy": return `Buy ${names.get(block.upgrade_id) ?? block.upgrade_id}`;
-    case "condition": return `If ${conditionLabel(block, names)} ${({ gte: "≥", lte: "≤", gt: ">", lt: "<" })[block.op]} ${block.value}`;
+    case "condition": return `If ${conditionLabel(block, names)} ${({ gte: "≥", lte: "≤", gt: ">", lt: "<" })[block.op]} ${block.relative
+      ? `${block.relative.pct}% of best (${block.relative.floor}–${block.relative.cap})` : block.value}`;
     case "fallback": return "First available path";
     case "budget": return `Budget · ${block.target}/${block.ceiling} utility coins`;
     case "save_for": return "Save for goal";
