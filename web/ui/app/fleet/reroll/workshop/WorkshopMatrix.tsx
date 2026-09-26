@@ -46,14 +46,26 @@ function Cell({ row, color, cheapest, now, focused }: {
   </div>;
 }
 
-/** Keeps the chosen layout in ?view= so a refresh or a shared link opens it. */
+const VIEW_STORAGE_KEY = "workshop-view";
+
+/** The layout last picked on this browser, so navigating back to the Workshop reopens it. */
+function storedView(): WorkshopView {
+  try {
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "cubes" ? "cubes" : "table";
+  } catch {
+    return "table";
+  }
+}
+
+/** Keeps the chosen layout in ?view= (refresh, shared links) and in localStorage (returning via the nav). */
 function rememberView(view: WorkshopView): void {
+  try { window.localStorage.setItem(VIEW_STORAGE_KEY, view); } catch { /* storage blocked: the URL still carries it */ }
   const url = new URL(window.location.href);
   if (view === "cubes") url.searchParams.set("view", view); else url.searchParams.delete("view");
   window.history.replaceState(window.history.state, "", url);
 }
 
-export function WorkshopMatrix({ members, focusWorker = null, initialView = "table" }: {
+export function WorkshopMatrix({ members, focusWorker = null, initialView }: {
   members: RerollMember[]; focusWorker?: string | null; initialView?: WorkshopView;
 }): React.JSX.Element {
   const identity = JSON.stringify(members.map(({ name, account_key, account_id, lease_id }) => ({ name, account_key, account_id, lease_id })));
@@ -62,7 +74,7 @@ export function WorkshopMatrix({ members, focusWorker = null, initialView = "tab
   const [hideMaxed, setHideMaxed] = useState(true);
   const [sort, setSort] = useState<Sort>("category");
   const [query, setQuery] = useState("");
-  const [view, setView] = useState<WorkshopView>(initialView);
+  const [view, setView] = useState<WorkshopView>(() => initialView ?? storedView());
   const [focus, setFocus] = useState<string | null>(() => {
     const target = members.find(member => member.name === focusWorker);
     return target ? memberIdentity(target) : null;

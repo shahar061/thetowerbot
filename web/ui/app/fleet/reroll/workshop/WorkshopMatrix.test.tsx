@@ -94,6 +94,17 @@ describe("WorkshopMatrix", () => {
     expect(panel.getByRole("table")).toBeDefined();
   });
 
+  it("reopens the last picked layout when the URL does not name one", async () => {
+    window.localStorage.clear();
+    const first = render(<WorkshopMatrix members={[member("Air_1")]} />);
+    fireEvent.click(within(await screen.findByRole("region", { name: "Workshop levels" })).getByRole("button", { name: "cubes" }));
+    first.unmount();
+    window.history.replaceState(null, "", "/fleet/reroll/workshop");
+    render(<WorkshopMatrix members={[member("Air_1")]} />);
+    const panel = within(await screen.findByRole("region", { name: "Workshop levels" }));
+    expect(panel.getByRole("button", { name: "cubes" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("charts total levels per emulator split by tab, and filters cubes by search", async () => {
     render(<WorkshopMatrix members={[member("Air_1"), member("Air_2")]} initialView="cubes" />);
     const chart = within(await screen.findByRole("figure", { name: "Total Workshop levels per emulator" }));
