@@ -212,6 +212,51 @@ export function newResourceBlock(type: ResourceBlock["type"], taken: Set<string>
   }
 }
 
+/** Mirrors the block-shape checks fleet/resource_blocks.py enforces server-side (validate_gems,
+ * validate_labs, check_pool_limits), so the editor can flag a doomed save before it round-trips.
+ * Not exhaustive - just the shapes an editor click can produce. Keyed by block id. */
+export function laneProblems(lane: "labs" | "gems", blocks: ResourceBlock[], rules: RouteRules): Record<string, string> {
+  const problems: Record<string, string> = {};
+  if (lane === "gems") {
+    let lastSlot = 1;
+    for (const block of blocks) {
+      if (block.type === "unlock_lab_slot") {
+        if (block.slot <= lastSlot) problems[block.id] = "Lab slots must unlock in increasing order.";
+        lastSlot = Math.max(lastSlot, block.slot);
+      } else if (block.type === "buy_cards" && block.purpose === "until_cards" && !(block.cards ?? []).length) {
+        problems[block.id] = "Pick at least one card.";
+      }
+    }
+    return problems;
+  }
+  const owners = new Set<number>();
+  const walk = (items: ResourceBlock[], top: boolean): void => {
+    for (const item of items) {
+      if (item.type === "slot_track") {
+        if (top) {
+          if (!item.slots.length) problems[item.id] = "A slot track needs at least one slot.";
+          for (const slot of item.slots) {
+            if (owners.has(slot)) problems[item.id] = `Lab slot ${slot} is already claimed by another track.`;
+            else owners.add(slot);
+          }
+        }
+        walk(item.children, false);
+      } else if (item.type === "condition") {
+        walk(item.then, false); walk(item.else, false);
+      } else if (item.type === "lab_pool") {
+        const pool = rules.labs.pool;
+        if (pool.max_seconds !== null && item.max_seconds !== undefined && item.max_seconds > pool.max_seconds)
+          problems[item.id] = "This pool's max duration is looser than the strategy rule.";
+        else if (pool.max_price_pct_of_wallet !== null && item.max_price_pct_of_wallet !== undefined
+            && item.max_price_pct_of_wallet > pool.max_price_pct_of_wallet)
+          problems[item.id] = "This pool's max price is looser than the strategy rule.";
+      }
+    }
+  };
+  walk(blocks, true);
+  return problems;
+}
+
 /** Mirrors fleet/coin_share.py for one visit: jar vs what Workshop may spend.
  *
  * Pauses exactly when the worker's own wait_coins path would: labs_first,

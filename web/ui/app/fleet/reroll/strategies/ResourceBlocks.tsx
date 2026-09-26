@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import type { BuildRouteDocument } from "@/lib/buildRoute";
-import { appendChild, collectIds, containerFor, findResourceBlock, isAutomated, legacyGemBlocks, legacyLabBlocks,
-  mapBlocks, moveWithin, newResourceBlock, type AutomatedBlock, type LabBlock, type LabsReference,
-  type ResourceBlock } from "@/lib/labs";
+import { appendChild, collectIds, containerFor, findResourceBlock, isAutomated, laneProblems, legacyGemBlocks,
+  legacyLabBlocks, mapBlocks, moveWithin, newResourceBlock, type AutomatedBlock, type LabBlock, type LabsReference,
+  type ResourceBlock, type RouteRules } from "@/lib/labs";
 import styles from "./routeCanvas.module.css";
 
 type Gems = BuildRouteDocument["baseline"]["gems"];
@@ -29,7 +29,10 @@ type Props = { kind: Kind; gems: Gems; labs: Labs; onGemsChange: (gems: Gems) =>
   locked?: boolean; automated?: AutomatedBlock[]; catalog?: LabsReference | null;
   // Studio drives gems.spend_limit_pct through the Strategy rules panel (withRules); this steps-mode
   // control is only for standalone callers (FlowBuilder) that never touch RouteRules at all.
-  hideGemSpendLimit?: boolean };
+  hideGemSpendLimit?: boolean;
+  // Only meaningful in blocks mode: the lab-pool inheritance hints and the laneProblems check
+  // (fleet/resource_blocks.py's shape rules) need the live strategy rules, not just the catalog.
+  rules?: RouteRules | null };
 
 export function ResourceBlocks(props: Props): React.JSX.Element {
   const lane = props.kind === "gems" ? props.gems : props.labs;
@@ -128,7 +131,8 @@ function summary(block: ResourceBlock, labName: (id: string) => string): string 
   }
 }
 
-function BlocksEditor({ kind, gems, labs, onGemsChange, onLabsChange, locked = false, automated = [], catalog = null }: Props): React.JSX.Element {
+function BlocksEditor({ kind, gems, labs, onGemsChange, onLabsChange, locked = false, automated = [], catalog = null,
+  rules = null }: Props): React.JSX.Element {
   const blocks = ((kind === "gems" ? gems.blocks : labs.blocks) ?? []) as ResourceBlock[];
   const [selected, setSelected] = useState<string | null>(null);
   const block = selected ? findResourceBlock(blocks, selected) : null;
@@ -142,6 +146,9 @@ function BlocksEditor({ kind, gems, labs, onGemsChange, onLabsChange, locked = f
   // The first gem block and the slot-1 Game Speed research keep today's automation; they cannot move or go.
   const pinned = (item: ResourceBlock): boolean => kind === "gems" ? item.id === blocks[0]?.id
     : item.id === slot1Track?.id || item.id === slot1Track?.children[0]?.id;
+  // Mirrors fleet/resource_blocks.py's shape checks so a doomed save is flagged here, not at save time.
+  const problems = rules ? laneProblems(kind, blocks, rules) : {};
+  const poolRule = rules?.labs.pool ?? null;
 
   function change(next: ResourceBlock[]): void {
     if (locked) return;
@@ -183,6 +190,7 @@ function BlocksEditor({ kind, gems, labs, onGemsChange, onLabsChange, locked = f
             <button type="button" aria-label={`Remove ${name(item)}`} onClick={() => { change(mapBlocks(blocks, other => other.id === item.id ? null : other)); setSelected(null); }} className="rounded border border-border px-2 py-1">×</button>
           </span>}
         </div>
+        {problems[item.id] && <p role="alert" className="ml-1 mt-1 text-[10px] text-danger">{problems[item.id]}</p>}
         {item.type === "slot_track" && list(item.children, item.slots, depth + 1)}
         {item.type === "condition" && <><p className="ml-4 mt-1 text-[10px] uppercase text-muted-foreground">Then</p>{list(item.then, slots, depth + 1)}
           <p className="ml-4 mt-1 text-[10px] uppercase text-muted-foreground">Else</p>{list(item.else, slots, depth + 1)}</>}
@@ -196,13 +204,14 @@ function BlocksEditor({ kind, gems, labs, onGemsChange, onLabsChange, locked = f
     <div className="flex flex-wrap gap-2" aria-label="Add a block">{(kind === "gems" ? GEM_TYPES : LAB_TYPES).map(type =>
       <button key={type} type="button" aria-label={`Add ${TYPE_LABELS[type]}`} disabled={!canAdd(type)} onClick={() => add(type)}
         className="rounded border border-border px-2 py-1 text-xs disabled:opacity-40">+ {TYPE_LABELS[type]}</button>)}</div>
-    {block && <BlockInspector block={block} locked={locked} catalog={catalog}
+    {block && <BlockInspector block={block} locked={locked} catalog={catalog} pinned={pinned(block)} poolRule={poolRule}
       onChange={next => change(mapBlocks(blocks, other => other.id === next.id ? next : other))} />}
   </section>;
 }
 
-function BlockInspector({ block, locked, catalog, onChange }: { block: ResourceBlock; locked: boolean;
-  catalog: LabsReference | null; onChange: (block: ResourceBlock) => void }): React.JSX.Element {
+function BlockInspector({ block, locked, catalog, pinned, poolRule, onChange }: { block: ResourceBlock; locked: boolean;
+  catalog: LabsReference | null; pinned: boolean; poolRule: RouteRules["labs"]["pool"] | null;
+  onChange: (block: ResourceBlock) => void }): React.JSX.Element {
   const labs = catalog?.labs ?? [];
   const set = (patch: Record<string, unknown>): void => onChange({ ...block, ...patch } as ResourceBlock);
   const optional = (value: string): number | undefined => value === "" ? undefined : Number(value);
@@ -211,34 +220,54 @@ function BlockInspector({ block, locked, catalog, onChange }: { block: ResourceB
       onChange={event => { const label = event.target.value; if (label.trim()) set({ label }); else { const { label: _unused, ...rest } = block; onChange(rest as ResourceBlock); } }}
       className="rounded border border-border bg-background px-2 py-1" /></label>
     {block.type === "slot_track" && <fieldset className="flex gap-2"><legend>Slots</legend>{[1, 2, 3, 4, 5].map(slot =>
-      <label key={slot} className="flex items-center gap-1"><input type="checkbox" disabled={locked} checked={block.slots.includes(slot)}
+      <label key={slot} className="flex items-center gap-1"><input type="checkbox" disabled={locked || (pinned && slot === 1)} checked={block.slots.includes(slot)}
         onChange={event => set({ slots: event.target.checked ? [...block.slots, slot].sort() : block.slots.filter(value => value !== slot) })} />{slot}</label>)}</fieldset>}
     {(block.type === "research" || (block.type === "condition" && block.field === "lab_level")) &&
-      <label className="flex flex-col gap-1">Lab<select disabled={locked} value={block.lab_id} onChange={event => set({ lab_id: event.target.value })}
+      <label className="flex flex-col gap-1">Lab<select disabled={locked || (block.type === "research" && pinned)} value={block.lab_id}
+        onChange={event => set(block.type === "research" ? { lab_id: event.target.value, to_level: 1 } : { lab_id: event.target.value })}
         className="rounded border border-border bg-background px-2 py-1">{labs.map(lab => <option key={lab.id} value={lab.id}>{lab.name}</option>)}</select></label>}
-    {block.type === "research" && <label className="flex flex-col gap-1">To level<input type="number" min={1} step={1} disabled={locked}
-      value={block.to_level} onChange={event => set({ to_level: Number(event.target.value) })} className="rounded border border-border bg-background px-2 py-1" /></label>}
+    {block.type === "research" && (() => {
+      const labMax = labs.find(lab => lab.id === block.lab_id)?.max_level ?? null;
+      return <label className="flex flex-col gap-1">To level<input type="number" min={1} max={labMax ?? undefined} step={1} disabled={locked}
+        value={block.to_level} onChange={event => {
+          const raw = event.target.value;
+          if (raw === "") return;
+          const parsed = Number(raw);
+          if (!Number.isFinite(parsed)) return;
+          set({ to_level: Math.max(1, labMax !== null ? Math.min(Math.round(parsed), labMax) : Math.round(parsed)) });
+        }} className="rounded border border-border bg-background px-2 py-1" /></label>;
+    })()}
     {block.type === "lab_pool" && <>
       <fieldset className="flex flex-col gap-1"><legend>Labs in the pool</legend>{labs.map(lab => <label key={lab.id} className="flex items-center gap-1">
         <input type="checkbox" disabled={locked} checked={block.lab_ids.includes(lab.id)}
           onChange={event => set({ lab_ids: event.target.checked ? [...block.lab_ids, lab.id] : block.lab_ids.filter(id => id !== lab.id) })} />{lab.name}</label>)}</fieldset>
       <label className="flex flex-col gap-1">Selection<select disabled={locked} value={block.selection ?? ""} onChange={event => set({ selection: event.target.value || undefined })}
         className="rounded border border-border bg-background px-2 py-1"><option value="">Inherit strategy rule</option><option value="ordered">In order</option><option value="cheapest">Cheapest</option></select></label>
-      <label className="flex flex-col gap-1">Max duration (seconds)<input type="number" min={60} disabled={locked} value={block.max_seconds ?? ""}
-        onChange={event => set({ max_seconds: optional(event.target.value) })} className="rounded border border-border bg-background px-2 py-1" /></label>
-      <label className="flex flex-col gap-1">Max price (% of wallet)<input type="number" min={1} max={100} disabled={locked} value={block.max_price_pct_of_wallet ?? ""}
-        onChange={event => set({ max_price_pct_of_wallet: optional(event.target.value) })} className="rounded border border-border bg-background px-2 py-1" /></label>
+      <label className="flex flex-col gap-1">Max duration (seconds){poolRule?.max_seconds != null && <span className="text-muted-foreground"> · rule caps at {poolRule.max_seconds}</span>}
+        <input type="number" min={60} max={poolRule?.max_seconds ?? undefined} placeholder={poolRule?.max_seconds != null ? String(poolRule.max_seconds) : undefined}
+          disabled={locked} value={block.max_seconds ?? ""}
+          onChange={event => set({ max_seconds: optional(event.target.value) })} className="rounded border border-border bg-background px-2 py-1" /></label>
+      <label className="flex flex-col gap-1">Max price (% of wallet){poolRule?.max_price_pct_of_wallet != null && <span className="text-muted-foreground"> · rule caps at {poolRule.max_price_pct_of_wallet}</span>}
+        <input type="number" min={1} max={poolRule?.max_price_pct_of_wallet ?? 100} placeholder={poolRule?.max_price_pct_of_wallet != null ? String(poolRule.max_price_pct_of_wallet) : undefined}
+          disabled={locked} value={block.max_price_pct_of_wallet ?? ""}
+          onChange={event => set({ max_price_pct_of_wallet: optional(event.target.value) })} className="rounded border border-border bg-background px-2 py-1" /></label>
       <p className="text-muted-foreground sm:col-span-2">Unset limits inherit the strategy's lab pool rule; a block may only be stricter.</p>
     </>}
     {block.type === "condition" && <>
-      <label className="flex flex-col gap-1">Fact<select disabled={locked} value={block.field} onChange={event => set({ field: event.target.value, ...(event.target.value === "lab_level" ? { lab_id: labs[0]?.id } : { lab_id: undefined }) })}
-        className="rounded border border-border bg-background px-2 py-1"><option value="best_tier_1_wave">Highest Tier 1 wave</option><option value="game_speed_maxed">Game Speed maxed (1 = yes)</option><option value="lab_level">Lab level</option></select></label>
+      <label className="flex flex-col gap-1">Fact<select disabled={locked} value={block.field} onChange={event => {
+          const field = event.target.value as typeof block.field;
+          const value = field === "best_tier_1_wave" ? 30 : 1;
+          set({ field, value, ...(field === "lab_level" ? { lab_id: labs[0]?.id } : { lab_id: undefined }) });
+        }} className="rounded border border-border bg-background px-2 py-1"><option value="best_tier_1_wave">Highest Tier 1 wave</option><option value="game_speed_maxed">Game Speed maxed (1 = yes)</option><option value="lab_level">Lab level</option></select></label>
       <label className="flex flex-col gap-1">Comparison<select disabled={locked} value={block.cmp} onChange={event => set({ cmp: event.target.value })}
         className="rounded border border-border bg-background px-2 py-1"><option value="gte">at least</option><option value="lte">at most</option><option value="gt">more than</option><option value="lt">less than</option><option value="eq">equal to</option></select></label>
-      <label className="flex flex-col gap-1">Value<input type="number" min={0} disabled={locked} value={block.value} onChange={event => set({ value: Number(event.target.value) })}
-        className="rounded border border-border bg-background px-2 py-1" /></label>
+      {block.field === "game_speed_maxed"
+        ? <label className="flex flex-col gap-1">Value<select disabled={locked} value={block.value} onChange={event => set({ value: Number(event.target.value) })}
+            className="rounded border border-border bg-background px-2 py-1"><option value={0}>0 · not maxed</option><option value={1}>1 · maxed</option></select></label>
+        : <label className="flex flex-col gap-1">Value<input type="number" min={0} disabled={locked} value={block.value} onChange={event => set({ value: Number(event.target.value) })}
+            className="rounded border border-border bg-background px-2 py-1" /></label>}
     </>}
-    {block.type === "unlock_lab_slot" && <label className="flex flex-col gap-1">Lab slot<select disabled={locked} value={block.slot} onChange={event => set({ slot: Number(event.target.value) })}
+    {block.type === "unlock_lab_slot" && <label className="flex flex-col gap-1">Lab slot<select disabled={locked || pinned} value={block.slot} onChange={event => set({ slot: Number(event.target.value) })}
       className="rounded border border-border bg-background px-2 py-1">{[2, 3, 4, 5].map(slot => <option key={slot} value={slot}>{slot}</option>)}</select></label>}
     {block.type === "card_slots" && <>
       <label className="flex flex-col gap-1">Up to slot<input type="number" min={2} max={10} disabled={locked} value={block.up_to} onChange={event => set({ up_to: Number(event.target.value) })}
@@ -250,6 +279,7 @@ function BlockInspector({ block, locked, catalog, onChange }: { block: ResourceB
         className="rounded border border-border bg-background px-2 py-1"><option value="card_missions">Card-buy missions</option><option value="until_cards">Until I have these cards</option></select></label>
       {block.purpose === "until_cards" && <label className="flex flex-col gap-1">Cards (comma separated)<input disabled={locked} value={(block.cards ?? []).join(", ")}
         onChange={event => set({ cards: event.target.value.split(",").map(card => card.trim()).filter(Boolean) })} className="rounded border border-border bg-background px-2 py-1" /></label>}
+      {block.purpose === "until_cards" && !(block.cards ?? []).length && <p role="alert" className="text-danger sm:col-span-2">Pick at least one card.</p>}
     </>}
   </div>;
 }

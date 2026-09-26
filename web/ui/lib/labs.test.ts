@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { BuildRouteDocument } from "./buildRoute";
-import { appendChild, containerFor, DEFAULT_RULES, duration, findResourceBlock, isAutomated, legacyGemBlocks,
+import { appendChild, containerFor, DEFAULT_RULES, duration, findResourceBlock, isAutomated, laneProblems, legacyGemBlocks,
   legacyLabBlocks, moveWithin, newResourceBlock, nowText, rulesOf, slotTone, splitPreview, withRules,
-  type AutomatedBlock, type LabBlock, type SlotPlan } from "./labs";
+  type AutomatedBlock, type GemBlock, type LabBlock, type SlotPlan } from "./labs";
 
 const baseline = {
   workshop: { id: "workshop.default", mode: "blocks", blocks: [], priority_ids: [], banned_upgrade_ids: [],
@@ -95,5 +95,53 @@ describe("blocks", () => {
     expect(findResourceBlock(blocks, "wait.2")).toEqual(wait);
     blocks = moveWithin(blocks, "wait.2", -1) as LabBlock[];
     expect(blocks[0].type === "slot_track" && blocks[0].children.map(child => child.id)).toEqual(["wait.2", "legacy.labs.game_speed"]);
+  });
+});
+
+describe("laneProblems", () => {
+  it("flags gem slots that unlock out of order and until_cards with no cards", () => {
+    const blocks: GemBlock[] = [
+      { id: "g2", type: "unlock_lab_slot", slot: 2 },
+      { id: "g4", type: "unlock_lab_slot", slot: 4 },
+      { id: "g3", type: "unlock_lab_slot", slot: 3 },
+      { id: "empty", type: "buy_cards", purpose: "until_cards", cards: [] },
+      { id: "missions", type: "buy_cards", purpose: "card_missions" },
+    ];
+    expect(laneProblems("gems", blocks, DEFAULT_RULES)).toEqual({
+      g3: "Lab slots must unlock in increasing order.",
+      empty: "Pick at least one card.",
+    });
+  });
+
+  it("flags a slot track with no slots and a slot claimed by two tracks", () => {
+    const blocks: LabBlock[] = [
+      { id: "slot1", type: "slot_track", slots: [1], children: [
+        { id: "gs", type: "research", lab_id: "labs.game-speed", to_level: 7 }] },
+      { id: "empty", type: "slot_track", slots: [], children: [] },
+      { id: "dupe", type: "slot_track", slots: [1, 3], children: [] },
+    ];
+    expect(laneProblems("labs", blocks, DEFAULT_RULES)).toEqual({
+      empty: "A slot track needs at least one slot.",
+      dupe: "Lab slot 1 is already claimed by another track.",
+    });
+  });
+
+  it("flags a lab pool looser than the strategy rule, nested in a track or a condition branch", () => {
+    const tightRules = { ...DEFAULT_RULES, labs: { ...DEFAULT_RULES.labs,
+      pool: { selection: "cheapest" as const, max_price_pct_of_wallet: 10, max_seconds: 1800 } } };
+    const blocks: LabBlock[] = [
+      { id: "slot1", type: "slot_track", slots: [1], children: [
+        { id: "gs", type: "research", lab_id: "labs.game-speed", to_level: 7 }] },
+      { id: "slot2", type: "slot_track", slots: [2], children: [
+        { id: "pool.seconds", type: "lab_pool", lab_ids: ["labs.coins-wave"], max_seconds: 3600 }] },
+      { id: "slot3", type: "slot_track", slots: [3], children: [
+        { id: "cond", type: "condition", field: "best_tier_1_wave", cmp: "gte", value: 30, then: [
+          { id: "pool.pct", type: "lab_pool", lab_ids: ["labs.coins-wave"], max_price_pct_of_wallet: 50 }], else: [] }] },
+    ];
+    expect(laneProblems("labs", blocks, tightRules)).toEqual({
+      "pool.seconds": "This pool's max duration is looser than the strategy rule.",
+      "pool.pct": "This pool's max price is looser than the strategy rule.",
+    });
+    expect(laneProblems("labs", blocks, DEFAULT_RULES)).toEqual({});
   });
 });

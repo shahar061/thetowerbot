@@ -222,6 +222,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
             if (pos) setTarget({ ...pos, index: pos.index + 1 }); }} onTarget={setTarget} onDrop={drop} onMove={move} onDrag={setDrag} />
             : <ResourceBlocks kind={lane as "gems" | "labs"} gems={strategy.baseline.gems} labs={strategy.baseline.labs} locked={locked}
                 automated={labsSnapshot?.automated ?? []} catalog={labsSnapshot?.reference ?? null} hideGemSpendLimit
+                rules={rulesOf(strategy.baseline)}
                 onGemsChange={gems => { if (locked) startCopy(); else edit({ ...strategy.baseline, gems }); }}
                 onLabsChange={labs => { if (locked) startCopy(); else edit({ ...strategy.baseline, labs }); }} />}
           <div className={styles.pathEnd}>One confirmed purchase → refresh facts → decide again</div>
@@ -236,7 +237,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
         </aside>}
     </div>
     {programLane === "workshop" && <div className={styles.guardrails} inert={busy}>
-      <label>Spend limit · % of available coins<input aria-label="Workshop spend limit" type="number" min={0} max={100} disabled={locked} value={strategy.baseline.workshop.coin_spend_limit_pct}
+      <label>Spend limit · % of available coins<input aria-label="Workshop spend limit" type="number" min={10} max={100} disabled={locked} value={strategy.baseline.workshop.coin_spend_limit_pct}
         onChange={event => { const rules = rulesOf(strategy.baseline); edit(withRules(strategy.baseline, { ...rules, coins: { ...rules.coins, workshop_spend_limit_pct: Number(event.target.value) } })); }} /></label>
       <div className={styles.banArea} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (locked) { startCopy(); return; } if (drag && "preset" in drag && drag.preset.startsWith("upgrade:")) { const id = drag.preset.slice(8); edit({ ...strategy.baseline, workshop: { ...strategy.baseline.workshop, banned_upgrade_ids: [...new Set([...strategy.baseline.workshop.banned_upgrade_ids, id])] } }); } setDrag(null); }}>
         <strong>Never Buy <span>{strategy.baseline.workshop.banned_upgrade_ids.length}</span></strong><div className={styles.bannedItems}>{strategy.baseline.workshop.banned_upgrade_ids.map(id => <button key={id} type="button" disabled={locked} aria-label={`Allow ${names.get(id) ?? id}`} onClick={() => edit({ ...strategy.baseline, workshop: { ...strategy.baseline.workshop, banned_upgrade_ids: strategy.baseline.workshop.banned_upgrade_ids.filter(value => value !== id) } })}>{names.get(id) ?? id}<X size={12} /></button>)}</div>
