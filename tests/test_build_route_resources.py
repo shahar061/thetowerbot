@@ -93,3 +93,19 @@ def test_blocks_mode_resource_evaluation_names_the_next_planned_block() -> None:
     result = evaluate_resources(route, replace(_facts(), lab_slot2_owned=True, game_speed_maxed=True))
     assert (result.gem_step.action, result.gem_step.status) == ("unlock_lab_slot_3", "planned")
     assert (result.lab_step.action, result.lab_step.status) == ("research_labs.attack-speed", "planned")
+
+
+def test_blocks_mode_lab_step_never_raises_when_no_track_owns_slot_1() -> None:
+    """A slot-1 track is required at save time, but resource_evaluation must
+    stay defensive: a labs.blocks tuple built any other way (e.g. an account
+    override) with no slot-1 track must degrade to "no future plan", not
+    raise StopIteration into the caller."""
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))
+    raw["baseline"]["labs"].update(mode="blocks", blocks=list(template_lab_blocks()))
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    no_slot_1 = replace(route, labs=replace(route.labs, blocks=(
+        {"id": "labs.slot2", "type": "slot_track", "slots": [2], "children": []},
+    )))
+    result = evaluate_resources(no_slot_1, replace(_facts(), lab_slot2_owned=True, game_speed_maxed=True))
+    assert (result.lab_step.action, result.lab_step.status) == ("game_speed_maxed", "supported")

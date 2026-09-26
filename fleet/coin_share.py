@@ -48,11 +48,15 @@ def waiting_lab_price(route: Any, lab_record: Mapping[str, Any] | None) -> int |
     return price if type(price) is int and price > 0 else None
 
 
-def workshop_paused(route: Any, lab_record: Mapping[str, Any] | None) -> bool:
-    """labs_first: Workshop waits while the automated lab waits for coins."""
+def workshop_paused(route: Any, lab_record: Mapping[str, Any] | None,
+                     wallet: int | None = None) -> bool:
+    """labs_first: Workshop waits while the wallet can't yet cover the
+    automated lab's price - the same condition the UI's splitPreview uses,
+    so the worker and the preview never disagree about "paused"."""
     rules = getattr(route, "rules", None)
+    price = waiting_lab_price(route, lab_record)
     return (rules is not None and rules.coins.lab_share.mode == "labs_first"
-            and waiting_lab_price(route, lab_record) is not None)
+            and price is not None and (wallet is None or wallet < price))
 
 
 class LabCoinJar:

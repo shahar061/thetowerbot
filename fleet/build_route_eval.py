@@ -123,7 +123,9 @@ def _future_gem_action(route: EffectiveRoute) -> str | None:
 def _future_lab_action(route: EffectiveRoute) -> str | None:
     if route.labs.mode != "blocks":
         return next((step for step in route.labs.steps if step != "research_game_speed"), None)
-    track = next(item for item in route.labs.blocks if 1 in item["slots"])
+    track = next((item for item in route.labs.blocks if 1 in item["slots"]), None)
+    if track is None:
+        return None
     for block in track["children"][1:]:
         return f"research_{block['lab_id']}" if block["type"] == "research" else block["type"]
     return None

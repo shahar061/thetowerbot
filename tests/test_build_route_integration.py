@@ -9,7 +9,7 @@ from pathlib import Path
 
 import db
 from account_state import AccountState
-from fleet.build_route import RouteDocument
+from fleet.build_route import RouteDocument, RouteRules
 from fleet.build_route_eval import RouteFacts
 from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route_store import BuildRouteStore
@@ -335,6 +335,46 @@ def test_labs_first_pauses_workshop_after_the_tutorial_grant(tmp_path: Path) -> 
                                               game_speed_level=2))
     progress.workshop_worthwhile = lambda: True  # type: ignore[method-assign]
     assert progress.shopping_policy(base).workshop != ()
+
+
+def test_paused_workshop_publishes_a_paused_plan_not_the_unrunnable_buy(tmp_path: Path) -> None:
+    """While labs_first pauses Workshop, the published reroll-plan.json must
+    say so - not describe a buy that `workshop=()` guarantees never runs."""
+    progress = _progress(tmp_path)
+    published = []
+    progress._publish = lambda decision: published.append(decision)  # type: ignore[method-assign]
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
+    _game_speed_waits(progress)
+    progress.note_lab_slot2("owned", 200)
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
+    progress.shopping_policy(base)  # the tutorial grant visit; not paused yet
+    _bought_once(progress)
+    published.clear()
+    paused = progress.shopping_policy(base)
+    assert paused.workshop == ()
+    assert len(published) == 1
+    decision = published[0]
+    assert decision.state == "save_coins"
+    assert "paused" in decision.reason.lower()
+    assert "lab" in decision.reason.lower()
+
+
+def test_resource_rules_falls_back_to_defaults_when_resolve_route_breaks(
+        tmp_path: Path, monkeypatch) -> None:
+    """A bad account override must not escape into the live main-menu loop;
+    resource_rules fails closed to today's defaults, matching the existing
+    RouteUnavailable fallback."""
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
+    assert progress.resource_rules().coins.lab_share.mode == "labs_first"
+
+    def _boom(*args, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr("fleet.reroll_progress.resolve_route", _boom)
+    assert progress.resource_rules() == RouteRules()
 
 
 def test_gems_keep_raises_the_card_gem_floor(tmp_path: Path) -> None:

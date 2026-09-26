@@ -62,6 +62,17 @@ def test_only_an_automated_lab_waiting_for_coins_holds_coins() -> None:
     assert not coin_share.workshop_paused(route(coins={"lab_share": {"mode": "labs_first"}}), None)
 
 
+def test_workshop_paused_agrees_with_the_wallet_not_just_the_lab_state() -> None:
+    """The worker's pause must match the UI's splitPreview: paused only when
+    the live wallet cannot cover the waiting lab's price, not merely because
+    the lab record says wait_coins."""
+    labs_first = route(coins={"lab_share": {"mode": "labs_first"}})
+    assert not coin_share.workshop_paused(labs_first, WAITING, wallet=2500)  # wallet covers price exactly
+    assert not coin_share.workshop_paused(labs_first, WAITING, wallet=3000)  # wallet covers price with room
+    assert coin_share.workshop_paused(labs_first, WAITING, wallet=2499)      # wallet short of price
+    assert coin_share.workshop_paused(labs_first, WAITING, wallet=None)      # wallet unknown: fail closed
+
+
 def test_settle_grows_once_per_visit_and_resets(tmp_path: Path) -> None:
     jar = coin_share.LabCoinJar(tmp_path, "a1")
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 20}})

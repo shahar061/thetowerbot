@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import asdict, replace
@@ -34,6 +35,7 @@ from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
+logger = logging.getLogger(__name__)
 
 
 class RerollProgress:
@@ -86,7 +88,12 @@ class RerollProgress:
             route = self.route_runtime.current()
         except RouteUnavailable:
             return RouteRules()
-        return resolve_route(route, self.root.name, self.account_id).rules
+        try:
+            return resolve_route(route, self.root.name, self.account_id).rules
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("resource_rules: resolve_route failed for %s (%s); using defaults",
+                           self.account_id, exc)
+            return RouteRules()
 
     def lab_due(self, now: float | None = None, *,
                 wallet_coins: int | None = None,
@@ -406,7 +413,7 @@ class RerollProgress:
                 # Grows at most once per visit key: this runs on every menu scan.
                 jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,
                                            facts.visit_id or "", time.time())
-                paused = coin_share.workshop_paused(effective, lab_record)
+                paused = coin_share.workshop_paused(effective, lab_record, facts.wallet_coins)
                 facts = replace(facts, lab_coin_jar=jar)
                 route_wallet = facts.wallet_coins
                 self.route_runtime.publish_facts(facts)
@@ -434,12 +441,12 @@ class RerollProgress:
             self._route_evaluation = None
             self.route_policy_revision = route.revision if route is not None else None
             plan = self.decision()
-        self._publish(plan)
         # A fresh reroll account must enter Workshop once to claim its 50-coin
         # tutorial grant. Keep this first visit bounded to the starter budget;
         # the buyer still checks the live wallet and price before every tap.
         if (self.initial_workshop_due() and plan.stage != "strategy_observe"
                 and plan.item is not None and plan.category is not None):
+            self._publish(plan)
             return replace(base, enabled=base.enabled,
                            workshop=(ShoppingRule(plan.item, plan.category),),
                            allow_unlocks=True, coin_budget=50, coin_budget_pct=None,
@@ -448,7 +455,15 @@ class RerollProgress:
             # labs_first: an automated lab waits for coins, so Workshop holds
             # every coin until the lab check starts it. Claims, the tutorial
             # grant and Cards are not Workshop visits, so they continue.
+            # Publish that Workshop is paused instead of the buy `plan` above:
+            # that plan cannot run while paused, and publishing it anyway
+            # would show a "next buy" on the fleet UI that never happens.
+            price = coin_share.waiting_lab_price(effective, lab_record)
+            self._publish(replace(plan, state="save_coins", upgrade_id=None, item=None, category=None,
+                                  price=None, reason=f"Workshop paused: saving coins for the next "
+                                  f"automated lab ({price} coins)."))
             return replace(base, workshop=())
+        self._publish(plan)
         if plan.stage == "strategy_observe":
             ids = self._route_evaluation.trace.observation_ids
             rows = tuple(ShoppingRule(upgrades.by_id(uid).name, upgrades.by_id(uid).category)
