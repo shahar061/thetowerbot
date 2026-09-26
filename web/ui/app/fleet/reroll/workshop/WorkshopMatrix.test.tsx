@@ -57,6 +57,20 @@ describe("WorkshopMatrix", () => {
     expect(table.queryByRole("button", { name: "Air_1" })).toBeNull();
     expect(table.getByRole("row", { name: /Attack Speed/ }).textContent).toContain("read 1.10");
   });
+
+  it("focuses the ?worker= emulator and lists its recent buys under the matrix", async () => {
+    const focused = { ...member("Air_2"), recent_workshop_purchases: [
+      { at: 1, item: "Coins / Kill Bonus", category: "UTILITY", cost: 126, reason: "Random draw (71%)" },
+      { at: 0, item: "Thorns", category: "DEFENSE", cost: 60, reason: null }] };
+    render(<WorkshopMatrix members={[member("Air_1"), focused]} focusWorker="Air_2" />);
+    const table = within(await screen.findByRole("region", { name: "Workshop levels" }));
+    await table.findByRole("row", { name: /Attack Speed/ });
+    expect(table.queryByRole("button", { name: "Air_1" })).toBeNull();
+    const list = screen.getByRole("list", { name: "Recent Workshop buys for Air_2" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(within(rows[0]).getByText("126 coins · Random draw (71%)")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("60 coins · Reason not recorded")).toBeInTheDocument();
+  });
 });
 
 it("prints prices the way the game does", () => {
