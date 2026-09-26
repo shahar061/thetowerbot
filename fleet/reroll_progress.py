@@ -678,7 +678,15 @@ class RerollProgress:
             return evaluation.trace.reason
         return f"Random draw ({odds:.0%}) · {evaluation.trace.reason}"
 
-    def workshop_worthwhile(self) -> bool:
+    def workshop_worthwhile(self, *, publish_estimate: bool = False) -> bool:
+        """Whether a Workshop visit could buy the planned upgrade now.
+
+        `publish_estimate` is for the GAME_OVER caller only. A skipped visit
+        retries without passing the menu that republishes the plan, so the
+        fleet card would keep the last menu balance run after run; publish
+        the run-payout estimate instead. The menu caller must not: its plan
+        was just published from a fresh balance read.
+        """
         if self.route_error is not None:
             return False
         if self._route_evaluation is not None and self._route_evaluation.decision is not None:
@@ -689,6 +697,9 @@ class RerollProgress:
             _, purchases = self._history()
             wallet, _ = self._pricing(purchases)
             plan = replace(self._route_evaluation.decision, wallet_coins=wallet)
+            if plan.state == "save_coins" and plan.item is not None and plan.price is not None:
+                plan = replace(plan, reason=f"Saving for {plan.item} ({wallet}/{plan.price} coins, "
+                                            "estimated from run payouts)")
         else:
             plan = self.decision()
         worthwhile = (plan.upgrade_id is not None and
@@ -698,6 +709,8 @@ class RerollProgress:
         if note is not None and note != self._last_skip_note:
             RerollJournal(self.root.parent.parent).append(
                 instance=self.root.name, level="info", kind="workshop_skip", message=note)
+            if publish_estimate:
+                self._publish(plan)
         self._last_skip_note = note
         return worthwhile
 
