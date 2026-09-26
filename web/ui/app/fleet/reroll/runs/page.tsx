@@ -44,7 +44,7 @@ export default function FleetRunsPage(): React.JSX.Element {
   })));
   const shown = all.filter(run => !off.has(run.emulator))
     .filter(run => !recordsOnly || run.wave_record || run.coin_record);
-  const active = all.find(run => runKey(run) === selected) ?? null;
+  const active = shown.find(run => runKey(run) === selected) ?? null;
   const now = Date.now() / 1000;
 
   return <main className="flex h-full flex-col gap-4 p-6">

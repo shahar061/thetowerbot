@@ -53,6 +53,19 @@ describe("FleetRunsPage", () => {
     expect(screen.queryByRole("complementary", { name: "Run details" })).toBeNull();
   });
 
+  it("closes the side panel when the selected run's emulator is toggled off", async () => {
+    fetchAccountRunHistory.mockResolvedValue([run(2)]);
+    fetchAccountRunUpgrades.mockResolvedValue(null);
+    workspace.pool.members = [member("Air_1")];
+    render(<FleetRunsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run #2 on Air_1" }));
+    expect(await screen.findByRole("complementary", { name: "Run details" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Air_1", pressed: true }));
+
+    expect(screen.queryByRole("complementary", { name: "Run details" })).toBeNull();
+  });
+
   it("keeps other emulators when one fails and says no purchase record when there is none", async () => {
     fetchAccountRunHistory.mockImplementation((key: string) => key === "worker:Air_1"
       ? Promise.reject(new Error("worker offline")) : Promise.resolve([run(9)]));
