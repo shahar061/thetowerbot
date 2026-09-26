@@ -730,3 +730,33 @@ def test_fixed_wave_condition_trace_is_unchanged() -> None:
 def test_relative_wave_validation_errors(change: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         blocks.validate_program([{**relative_condition(), **change}], 'battle')
+
+
+def turtle_battle_facts(best: int | None, wave: int) -> RouteFacts:
+    row = lambda value: {'status': 'available', 'value': value, 'price': 10, 'observed_at': 100}
+    sample = battle_facts(defense_absolute=row(500.0), thorns=row(5.0), cash_per_wave=row(5.0),
+                          health_regen=row(0.0))
+    return replace(sample, best_tier_1_wave=best, wave=wave)
+
+
+@pytest.mark.parametrize('best,wave,upgrade', [
+    (90, 11, 'cash_per_wave'),   # strong account: economy until wave 20 (cap)
+    (20, 11, 'thorns'),          # weak account: economy ended at wave 10, Thorns 21 step
+    (None, 6, 'thorns'),         # unknown best: economy ended at floor 5
+])
+def test_turtle_battle_template_scales_with_best_wave(best: int | None, wave: int, upgrade: str) -> None:
+    program = list(blocks.template_program('turtle', 'battle'))
+    assert [b['id'] for b in program] == ['turtle.battle.emergency', 'turtle.battle.ahead', 'turtle.battle.early',
+                                          'turtle.battle.wave40', 'turtle.battle.survival']
+    result = blocks.evaluate_program(route(program, lane='battle'), turtle_battle_facts(best, wave), None, 'battle')
+    assert result.decision.upgrade_id == upgrade
+
+
+def test_turtle_battle_template_keeps_def_abs_ahead_and_buys_cheap_defense() -> None:
+    program = list(blocks.template_program('turtle', 'battle'))
+    thin = replace(turtle_battle_facts(90, 50), upgrade_rows={
+        **turtle_battle_facts(90, 50).upgrade_rows,
+        'defense_absolute': {'status': 'available', 'value': 150.0, 'price': 10, 'observed_at': 100}})
+    assert blocks.evaluate_program(route(program, lane='battle'), thin, None, 'battle').decision.upgrade_id == 'defense_absolute'
+    survival = next(b for b in program if b['id'] == 'turtle.battle.survival')
+    assert survival['upgrade_ids'] == ['health', 'defense_percent', 'health_regen', 'damage', 'attack_speed']

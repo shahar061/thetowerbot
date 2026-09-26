@@ -266,12 +266,17 @@ def _battle_template(policy: str) -> list[dict[str, Any]]:
                   'coins_per_wave', 'damage', 'attack_speed'],
                   label='Battle priorities', targets={**economy, 'thorns': 51, 'coins_per_wave': 10}),
         ]
-    thorns = {'id': 'turtle.battle.wave40', 'type': 'condition', 'label': 'Thorns steps by wave',
-              'field': 'wave', 'op': 'lte', 'value': 40,
+    def relative(pct: int, floor: int, cap: int) -> dict[str, int]:
+        return {'pct': pct, 'floor': floor, 'cap': cap}
+
+    thorns = {'id': 'turtle.battle.wave40', 'type': 'condition', 'label': 'Thorns steps by best wave',
+              'field': 'wave', 'op': 'lte', 'relative': relative(40, 5, 40),
               'then': [_pool('turtle.battle.thorns11', ['thorns'], targets={'thorns': 11})],
-              'else': [{'id': 'turtle.battle.wave80', 'type': 'condition', 'field': 'wave', 'op': 'lte', 'value': 80,
+              'else': [{'id': 'turtle.battle.wave80', 'type': 'condition', 'field': 'wave', 'op': 'lte',
+                        'relative': relative(80, 8, 80),
                         'then': [_pool('turtle.battle.thorns21', ['thorns'], targets={'thorns': 21})],
-                        'else': [{'id': 'turtle.battle.wave160', 'type': 'condition', 'field': 'wave', 'op': 'lte', 'value': 160,
+                        'else': [{'id': 'turtle.battle.wave160', 'type': 'condition', 'field': 'wave', 'op': 'lte',
+                                  'relative': relative(110, 12, 160),
                                   'then': [_pool('turtle.battle.thorns34', ['thorns'], targets={'thorns': 34})],
                                   'else': [_pool('turtle.battle.thorns51', ['thorns'], targets={'thorns': 51})]}]}]}
     return [
@@ -281,11 +286,15 @@ def _battle_template(policy: str) -> list[dict[str, Any]]:
              _pool('turtle.battle.emergency.buy', ['defense_absolute']),
              {'id': 'turtle.battle.emergency.wait', 'type': 'wait',
               'label': 'Defense Absolute needed but not purchasable'}]}], 'else': []},
+        {'id': 'turtle.battle.ahead', 'type': 'condition', 'label': 'Keep Def Abs ahead',
+         'field': 'def_abs_coverage', 'op': 'lt', 'value': 2,
+         'then': [_pool('turtle.battle.ahead.buy', ['defense_absolute'], wallet_share_pct=30)], 'else': []},
         {'id': 'turtle.battle.early', 'type': 'condition', 'label': 'Early economy',
-         'field': 'wave', 'op': 'lte', 'value': 20,
+         'field': 'wave', 'op': 'lte', 'relative': relative(50, 5, 20),
          'then': [_pool('turtle.battle.economy', list(economy), targets=economy)], 'else': []},
         thorns,
-        _pool('turtle.battle.survival', ['health', 'damage', 'attack_speed'], label='Survival'),
+        _pool('turtle.battle.survival', ['health', 'defense_percent', 'health_regen', 'damage', 'attack_speed'],
+              label='Survival'),
     ]
 
 
