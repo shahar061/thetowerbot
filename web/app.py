@@ -1493,6 +1493,12 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get("/api/fleet/labs")
+    def fleet_labs_snapshot() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "labs_snapshot", None)):
+            raise HTTPException(status_code=503, detail="fleet_labs_unavailable")
+        return fleet.labs_snapshot()
+
     def _build_route_capability() -> Any:
         if fleet is None or not callable(getattr(fleet, "build_route_store", None)):
             raise HTTPException(status_code=503, detail="build_route_unavailable")
