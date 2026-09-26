@@ -21,7 +21,7 @@ from fleet.reroll_planner import (FILLER_SHARE, STARTER_MAX_PRICE, UTILITY_CEILI
                                   UTILITY_TARGET_COINS, RerollDecision,
                                   RerollFacts, choose_next, project_next)
 from fleet.reroll_variants import read_variant
-from fleet.workshop_prices import WorkshopPrices, PriceQuote, catalog_price
+from fleet.workshop_prices import CATALOG, WorkshopPrices, PriceQuote, catalog_price
 from fleet.reroll_survival import prioritize_survival
 from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route import resolve_route
@@ -33,6 +33,10 @@ from lab_plan import LabCadence, LabDecision
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
 
+# An unexplained debit smaller than this cannot be a hidden Workshop
+# purchase, so it cannot have moved a Workshop price.
+CHEAPEST_WORKSHOP_PRICE = min(price for upgrade in CATALOG["upgrades"].values()
+                              for price in upgrade.get("next_coins", []) if price > 0)
 
 
 class RerollProgress:
@@ -611,7 +615,8 @@ class RerollProgress:
                 elif verdict not in {"bought", "free"}:
                     if upgrade:
                         invalidated[upgrade.id] = max(row["ts"], invalidated.get(upgrade.id, 0))
-            if row["kind"] == "UNEXPLAINED" and row["delta"] is not None and row["delta"] < 0:
+            if (row["kind"] == "UNEXPLAINED" and row["delta"] is not None
+                    and row["delta"] <= -CHEAPEST_WORKSHOP_PRICE):
                 # A reconciliation emitted for the very frame we just read
                 # invalidates older rows, not prices observed on that frame.
                 moment = (anchor["observed_at"] if anchor and row["observed"] == anchor["coins"]
