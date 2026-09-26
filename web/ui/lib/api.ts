@@ -83,6 +83,11 @@ export const fetchAccountMetrics = () => getJson<AccountMetrics>("/api/account-m
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
 export const fetchReroll = () => getJson<RerollSnapshot>("/api/fleet/reroll", { cache: "no-store" }, false);
 export const fetchBuildRoute = () => getJson<BuildRouteDocument>("/api/fleet/reroll/route", { cache: "no-store" }, false);
+export interface FleetTiming { menu_interval: number }
+export interface FleetTimingSaved extends FleetTiming { workers_updated: number; workers_not_running: number }
+export const fetchFleetTiming = () => getJson<FleetTiming>("/api/fleet/reroll/timing", { cache: "no-store" }, false);
+export const saveFleetTiming = (timing: FleetTiming) =>
+  send<FleetTimingSaved>("/api/fleet/reroll/timing", "PUT", timing, "fleet");
 export const fetchFleetStrategies = () => getJson<StrategyLibrary>("/api/fleet/reroll/strategies", { cache: "no-store" }, false);
 export const saveFleetStrategy = (input: SaveStrategyInput, expectedRevision: number) =>
   send<StrategyLibrary>("/api/fleet/reroll/strategies", "POST", { ...input, expected_revision: expectedRevision }, "fleet");
