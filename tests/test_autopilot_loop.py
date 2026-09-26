@@ -80,6 +80,9 @@ def test_reroll_collects_stats_once_from_a_clear_main_menu(
         def note_stats_requested(self):
             self.requested = True
 
+        def note_menu_wallet(self, coins):
+            pass
+
     bot = bot_on_main_menu(Shopping())
     progress = Progress()
     bot.reroll_progress = progress
