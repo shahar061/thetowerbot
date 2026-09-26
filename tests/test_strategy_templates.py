@@ -34,7 +34,7 @@ def battle(wave: int, **rows: dict[str, Any]) -> RouteFacts:
             'damage': row(100.), 'attack_speed': row(2.), 'cash_per_wave': row(10.),
             'coins_per_kill_bonus': row(1.25), 'cash_bonus': row(1.25), 'coins_per_wave': row(10.)}
     base.update({uid: row(*value) for uid, value in rows.items()})
-    return RouteFacts('account', 'Air_38', 'battle', 100, 101, run_id=7, wave=wave, battle_cash=100,
+    return RouteFacts('account', 'Air_38', 'battle', 100, 101, best_tier_1_wave=90, run_id=7, wave=wave, battle_cash=100,
         enemy_damage=10.0, upgrade_rows=base, run_purchases={}, visit_id='visit')
 
 

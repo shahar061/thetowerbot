@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { StrategyBlock } from "@/lib/strategyStudio";
-import { BLOCK_PRESETS, GUIDE_BLOCKS, blockTitle, childGroups, findBlock, guideAnchor, insertBlock, locateBlock, makeBlock, updateBlock } from "./strategyBlocks";
+import { BLOCK_PRESETS, GUIDE_BLOCKS, blockTitle, childGroups, findBlock, guideAnchor, insertBlock, locateBlock, makeBlock, relativeWaveLimit, updateBlock } from "./strategyBlocks";
 
 const tree: StrategyBlock[] = [{ id: "econ", type: "budget", metric: "utility_spent", target: 350, ceiling: 400, blocks: [
   { id: "goal", type: "save_for", goal: [{ id: "pool", type: "pool", upgrade_ids: ["cash_per_wave"], selection: "priority" }] }] },
@@ -38,4 +38,11 @@ test("every palette block type has a guide entry", () => {
 
 test("a block label overrides the generated title", () => {
   expect(blockTitle({ id: "x", type: "wait", label: "Keep coins" }, new Map())).toBe("Keep coins");
+});
+
+test("relative wave conditions title and limit", () => {
+  const block: StrategyBlock = { id: "c", type: "condition", field: "wave", op: "lte",
+    relative: { pct: 50, floor: 5, cap: 30 }, then: [], else: [] };
+  expect(blockTitle(block, new Map())).toBe("If current wave ≤ 50% of best (5–30)");
+  expect([null, 8, 24, 90].map(best => relativeWaveLimit({ pct: 50, floor: 5, cap: 30 }, best))).toEqual([5, 5, 12, 30]);
 });

@@ -333,3 +333,21 @@ test("selecting a goal pool inserts new blocks after its save-for block", async 
   expect(blocks.map((block: { type: string }) => block.type)).toEqual(["save_for", "wait"]);
   expect(blocks[0].goal).toHaveLength(1);
 });
+
+test("inspector switches a wave condition between fixed and % of best", () => {
+  const onChange = vi.fn();
+  const fixed = { id: "c", type: "condition" as const, field: "wave" as const, op: "lte" as const, value: 30, then: [], else: [] };
+  const { rerender } = render(<StrategyBlockInspector block={fixed} lane="battle" catalog={catalog} locked={false}
+    onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Threshold type"), { target: { value: "relative" } });
+  expect(onChange).toHaveBeenLastCalledWith({ id: "c", type: "condition", field: "wave", op: "lte",
+    relative: { pct: 50, floor: 5, cap: 30 }, then: [], else: [] });
+  const relative = { ...onChange.mock.lastCall![0] };
+  rerender(<StrategyBlockInspector block={relative} lane="battle" catalog={catalog} locked={false}
+    onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByText("Best 10 → wave 5 · best 40 → 20 · best 90 → 30")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Percent of best wave"), { target: { value: "40" } });
+  expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ relative: { pct: 40, floor: 5, cap: 30 } }));
+  fireEvent.change(screen.getByLabelText("Account fact"), { target: { value: "wallet" } });
+  expect(onChange).toHaveBeenLastCalledWith({ id: "c", type: "condition", field: "wallet", op: "lte", value: 30, then: [], else: [] });
+});
