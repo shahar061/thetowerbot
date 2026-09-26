@@ -259,6 +259,11 @@ def render_summary(
         skips = snapshot.get("skips")
         lines.append(f"Skips: {_tally(skips)}" if isinstance(skips, Mapping) else "Skips: unavailable")
 
+    # Never behind a field toggle: a worker the watchdog paused waits for
+    # a person, and the digest is how that person hears about it.
+    if snapshot.get("stalled"):
+        lines.insert(1, f"Stalled: no progress ({snapshot['stalled']}); paused for you")
+
     last_error = snapshot.get("last_error")
     if "last_error" in selected:
         lines.append(f"Last error: {last_error}" if last_error else "Last error: none")

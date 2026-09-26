@@ -67,6 +67,9 @@ def render(event: events.Event) -> str:
             )
         case events.BotError():
             return f"{ts} ERROR  {event.message}"
+        case events.WorkerStalled():
+            detail = event.button or event.snapshot_path
+            return f"{ts} STALL  {event.stage} {event.reason} {detail}".rstrip()
         case _:
             return f"{ts} {event.type}"
 

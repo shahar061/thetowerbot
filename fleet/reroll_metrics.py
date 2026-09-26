@@ -151,6 +151,8 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
             if screen in {"IN_RUN", "MAIN_MENU", "GAME_OVER", "UNKNOWN"}:
                 result["game_screen"] = screen
             result["battle_cash"] = status.get("wallet")
+            if status.get("stalled"):
+                result["error"] = f"stalled ({status['stalled']}), paused"
             run = status.get("run")
             if isinstance(run, dict):
                 result["run_duration_seconds"] = run.get("elapsed")

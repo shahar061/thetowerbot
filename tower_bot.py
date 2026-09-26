@@ -63,6 +63,7 @@ import db
 import digits
 import events
 import gem_claim
+import stall_watchdog
 import jitter
 import ledger
 import ocr
@@ -211,6 +212,10 @@ class TowerBot:
         # either under a running one has no correct answer. This is the
         # "applies on next Start" boundary the dashboard labels.
         self.tracker = screens.ScreenTracker(confirmations=screen_confirmations)
+        self.stall_dir = unknown_dir if unknown_dir is not None else config.UNKNOWN_DIR
+        self.stall_watchdog = stall_watchdog.StallWatchdog(
+            time.time, no_effect_limit=config.STALL_NO_EFFECT_LIMIT,
+            blocked_limit=config.STALL_BLOCKED_SECONDS)
         self.snapshots = SnapshotWriter(
             unknown_dir if unknown_dir is not None else config.UNKNOWN_DIR,
             config.UNKNOWN_MIN_INTERVAL,
@@ -774,6 +779,30 @@ class TowerBot:
                 or self.cards_intro.active
                 or (self.lab_visit is not None and self.lab_visit.active))
 
+    def _pause_for_stall(self, boxes: tuple[ocr.TextBox, ...]) -> None:
+        """Give up on a stall: keep the evidence, pause, and say so."""
+        reason = self.stall_watchdog.reason or "stalled"
+        stem = self.stall_dir / f"stall-{time.strftime('%Y%m%d-%H%M%S')}"
+        snapshot = ""
+        try:
+            import cv2
+            self.stall_dir.mkdir(parents=True, exist_ok=True)
+            if cv2.imwrite(str(stem.with_suffix(".png")), self.screen):
+                snapshot = str(stem.with_suffix(".png"))
+            stem.with_suffix(".json").write_text(json.dumps(
+                [{"text": b.text, "confidence": float(b.confidence), "rect": list(b.rect)}
+                 for b in boxes], indent=2) + "\n", encoding="utf-8")
+        except Exception:  # noqa: BLE001 - missing evidence must not stop the pause
+            logger.exception("Could not save the stall evidence")
+        changed = self.controls.apply({"paused": True})
+        if changed:
+            self.bus.publish(events.ControlChanged(changed=changed, source="watchdog"))
+        logger.error("No progress (%s) and no safe way out; paused. Evidence: %s",
+                     reason, snapshot or "not saved")
+        self.bus.publish(events.WorkerStalled(
+            reason=reason, stage="paused", snapshot_path=snapshot))
+        self.stall_watchdog.reset()
+
     def _cancel_walks(self, reason: str, detail: str) -> None:
         """End whichever walk is armed. Each cancel is idempotent."""
         for walk in (self.collection, self.visit, self.claim,
@@ -850,6 +879,7 @@ class TowerBot:
         self._battle_backstop_scan = False
         tutorial_claim = None
         unlocked = None
+        escape = None
         preflight_boxes = None
         battle_context = (reading.state in (screens.ScreenState.IN_RUN,
                                             screens.ScreenState.GAME_OVER)
@@ -857,6 +887,11 @@ class TowerBot:
                               and reading.cash_top_left is not None))
         info_dismiss = None
         if self.supervisor is not None:
+            recovery_status = getattr(self.supervisor, "status", None)
+            watched = callable(recovery_status)
+            had_pending = watched and recovery_status().pending_action
+            stall_verdict = self.stall_watchdog.verdict() if watched else None
+            stall_reason = self.stall_watchdog.reason or ""
             observed_screen = reading.state.value
             if observed_screen == "UNKNOWN":
                 try:
@@ -912,6 +947,13 @@ class TowerBot:
                             and footer.rect is not None
                             and footer.rect[1] > self.screen.shape[0] * .85):
                         observed_screen = "INBOX"
+                # Last, so it outranks every reader: a stall means whatever
+                # this frame was named, taps on it have stopped working.
+                if (stall_verdict == stall_watchdog.ESCAPE
+                        and not settings.paused):
+                    escape = stall_watchdog.escape_button(boxes)
+                    if escape is not None:
+                        observed_screen = stall_watchdog.SCREEN_ID
                 online_required, session_conflict = popup_flags(boxes)
                 readable = True
             except Exception:  # noqa: BLE001 - an unreadable modal may cover an anchor
@@ -926,6 +968,19 @@ class TowerBot:
                 online_required=online_required, readable=readable,
                 session_conflict=session_conflict,
             )
+            if watched:
+                if settings.paused:
+                    self.stall_watchdog.reset()
+                else:
+                    self.stall_watchdog.note(had_pending=had_pending,
+                                             reason=recovery_status().reason)
+                    verdict = self.stall_watchdog.verdict()
+                    if verdict == stall_watchdog.PAUSE or (
+                            verdict == stall_watchdog.ESCAPE
+                            and stall_verdict == stall_watchdog.ESCAPE
+                            and escape is None):
+                        self._pause_for_stall(preflight_boxes or ())
+                        return False
             if recovery is not RecoveryState.READY:
                 self.autopilot.suspend("Device recovery blocked actions")
                 # A blocked pass returns before any walk's advance() runs, so
@@ -944,6 +999,17 @@ class TowerBot:
                         self._recovery_blocked_scans = 0
                 return False
             self._recovery_blocked_scans = 0
+            if escape is not None:
+                label, point = escape
+                logger.warning("No progress (%s); pressing %s at %s to get out.",
+                               stall_reason, label, point)
+                self.bus.publish(events.WorkerStalled(
+                    reason=stall_reason, stage="escape", button=label))
+                self.device.click(*point)
+                self.stall_watchdog.escaped()
+                self.bus.publish(events.Tapped(
+                    action="stall:escape", x=point[0], y=point[1], score=1.0))
+                return True
             if unlocked is not None:
                 if (self.reroll_progress is not None
                         and unlocked_screen.is_labs_unlock(unlocked.caption)):
