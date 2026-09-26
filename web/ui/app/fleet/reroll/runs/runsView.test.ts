@@ -47,6 +47,10 @@ describe("recordTip and totalCoins", () => {
     expect(recordTip("coin", row({ coin_record: "standing", coin_prev: null }))).toBe("Coin record · first run · still standing");
     expect(recordTip("wave", row({}))).toBeNull();
   });
+  it("says just 'broken' when a broken record has no breaker id", () => {
+    expect(recordTip("wave", row({ tier: 1, wave_record: "broken", wave_prev: { run_id: 3, value: 9 }, wave_broken_by: null })))
+      .toBe("Wave record at T1 · beat #3 (9) · broken");
+  });
   it("prefers the server total and falls back to earned + ad", () => {
     expect(totalCoins(row({ total_coins: 90 }))).toBe(90);
     expect(totalCoins(row({ coins: 50, ad_coins: 10 }))).toBe(60);

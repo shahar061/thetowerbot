@@ -46,6 +46,8 @@ export function recordTip(kind: "wave" | "coin", run: RunRow): string | null {
   const breaker = kind === "wave" ? run.wave_broken_by : run.coin_broken_by;
   const head = kind === "wave" ? `Wave record at T${run.tier}` : "Coin record";
   const beat = prev ? `beat #${prev.run_id} (${prev.value})` : "first run";
-  const tail = state === "broken" && breaker ? `broken by #${breaker}` : "still standing";
+  const tail = state === "broken"
+    ? (typeof breaker === "number" ? `broken by #${breaker}` : "broken")
+    : "still standing";
   return `${head} · ${beat} · ${tail}`;
 }
