@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from fleet.build_route import RouteDocument, resolve_route
 from fleet.build_route_eval import RouteFacts, evaluate_resources
+from fleet.resource_blocks import template_gem_blocks, template_lab_blocks
 
 
 def _route(steps: list[str] | None = None):
@@ -51,3 +54,32 @@ def test_unverified_resource_state_never_authorizes_spend() -> None:
                                                    lab_decision_kind=None))
     assert result.gem_step.status == "unknown"
     assert result.lab_step.status == "unknown"
+
+
+def test_blocks_mode_lanes_round_trip_and_steps_shape_still_works() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))
+    raw["baseline"]["labs"].update(mode="blocks", blocks=list(template_lab_blocks()))
+    route = RouteDocument.from_dict(raw)
+    assert route.baseline.gems.blocks[0]["slot"] == 2
+    assert RouteDocument.from_dict(route.to_dict()) == route
+    assert RouteDocument.compatibility().baseline.gems.mode == "steps"
+
+
+@pytest.mark.parametrize(("lane", "blocks", "message"), [
+    ("gems", [{"id": "c", "type": "buy_cards", "purpose": "card_missions"}], "start by unlocking lab slot 2"),
+    ("labs", [{"id": "t", "type": "slot_track", "slots": [1], "children": [{"id": "w", "type": "wait"}]}],
+     "must start with Game Speed"),
+])
+def test_invalid_resource_blocks_are_rejected_on_save(lane: str, blocks: list, message: str) -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"][lane].update(mode="blocks", blocks=blocks)
+    with pytest.raises(ValueError, match=message):
+        RouteDocument.from_dict(raw)
+
+
+def test_blocks_require_blocks_mode() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["gems"]["blocks"] = list(template_gem_blocks())
+    with pytest.raises(ValueError, match="blocks require blocks mode"):
+        RouteDocument.from_dict(raw)
