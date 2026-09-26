@@ -28,7 +28,7 @@ import type { MilestoneRoadmap } from "./milestoneRoadmap";
 import type { AccountMetrics } from "./accountMetrics";
 import type { TelegramMode, TelegramProfile, TelegramSettingsResponse } from "./telegram";
 import type { BuildRouteDocument, BuildRoutePreview, BuildRouteRevisions, BuildRouteRebindPreview } from "./buildRoute";
-import type { SaveStrategyInput, StrategyLibrary } from "./strategyStudio";
+import type { SaveStrategyInput, StrategyLedger, StrategyLibrary } from "./strategyStudio";
 
 /** An HTTP failure that kept its status code.
  *
@@ -91,7 +91,9 @@ export const saveFleetTiming = (timing: FleetTiming) =>
 export const fetchFleetStrategies = () => getJson<StrategyLibrary>("/api/fleet/reroll/strategies", { cache: "no-store" }, false);
 export const saveFleetStrategy = (input: SaveStrategyInput, expectedRevision: number) =>
   send<StrategyLibrary>("/api/fleet/reroll/strategies", "POST", { ...input, expected_revision: expectedRevision }, "fleet");
-export const assignFleetStrategy = (strategyId: string, strategyVersion: number,
+export const fetchStrategyLedger = () =>
+  getJson<StrategyLedger>("/api/fleet/reroll/strategies/ledger", { cache: "no-store" }, false);
+export const assignFleetStrategy =(strategyId: string, strategyVersion: number,
   workers: { worker: string; account_id: string }[], expectedRevision: number) =>
   send<BuildRouteDocument>("/api/fleet/reroll/strategies/assign", "POST", {
     strategy_id: strategyId, strategy_version: strategyVersion, workers, expected_revision: expectedRevision,

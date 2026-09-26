@@ -26,5 +26,13 @@ export type StrategyDefinition = {
 export type StrategyLibrary = { revision: number; templates: StrategyDefinition[]; strategies: StrategyDefinition[] };
 export type StrategyAssignment = { account_id: string; strategy_id: string; strategy_version: number; strategy_name: string;
   baseline: BuildRouteDocument["baseline"] };
-export type SaveStrategyInput = { name: string; source_template: StrategyDefinition["source_template"]; baseline: BuildRouteDocument["baseline"]; strategy_id?: string };
+// Strategy ledger: derived server-side from route revisions and saved versions.
+export type StrategyLedgerPin = { strategy_id: string; strategy_version: number; strategy_name: string };
+export type StrategyLedgerEntry =
+  | { kind: "assigned" | "reassigned" | "unassigned"; at: number; route_revision: number; actor: string;
+      worker: string; account_id: string; before: StrategyLedgerPin | null; after: StrategyLedgerPin | null }
+  | { kind: "saved"; at: number; strategy_id: string; strategy_name: string; strategy_version: number;
+      source_template: string };
+export type StrategyLedger = { entries: StrategyLedgerEntry[] };
+export type SaveStrategyInput ={ name: string; source_template: StrategyDefinition["source_template"]; baseline: BuildRouteDocument["baseline"]; strategy_id?: string };
 export type StrategyWorker = { name: string; account_id?: string | null; hidden?: boolean };

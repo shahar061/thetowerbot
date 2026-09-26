@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import logging
 import time
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from events import EventBus
@@ -197,6 +199,45 @@ def test_protected_template_can_be_assigned_without_creating_a_copy(tmp_path: Pa
     assert assignment["strategy_version"] == 1
     assert assignment["baseline"]["workshop"]["mode"] == "blocks"
     assert client.get("/api/fleet/reroll/strategies").json()["revision"] == 0
+
+
+def test_strategy_ledger_records_saves_and_reassignments_newest_first(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    _registered_worker(tmp_path, "ACCOUNT-A", "ACCOUNT-A")
+    client = _client(tmp_path, active_names=("Air_38",))
+    assert client.get("/api/fleet/reroll/strategies/ledger").json() == {"entries": []}
+    worker = [{"worker": "Air_38", "account_id": "ACCOUNT-A"}]
+    assert client.post("/api/fleet/reroll/strategies/assign", json={
+        "expected_revision": 0, "strategy_id": "turtle", "strategy_version": 1,
+        "workers": worker}).status_code == 200
+    baseline = client.get("/api/fleet/reroll/strategies").json()["templates"][1]["baseline"]
+    strategy = client.post("/api/fleet/reroll/strategies", json={
+        "expected_revision": 0, "name": "Eco Wall", "source_template": "turtle",
+        "baseline": baseline}).json()["strategies"][0]
+    with caplog.at_level(logging.INFO, logger="fleet.setup"):
+        assert client.post("/api/fleet/reroll/strategies/assign", json={
+            "expected_revision": 1, "strategy_id": strategy["id"], "strategy_version": 1,
+            "workers": worker}).status_code == 200
+    assert "Strategy assigned: Air_38 → Eco Wall v1 (was Turtle v1), route rev 2" in caplog.messages
+
+    entries = client.get("/api/fleet/reroll/strategies/ledger").json()["entries"]
+    assert [entry["kind"] for entry in entries] == ["reassigned", "saved", "assigned"]
+    assert entries[0]["worker"] == "Air_38" and entries[0]["actor"] == "operator"
+    assert entries[0]["before"]["strategy_name"] == "Turtle"
+    assert entries[0]["after"] == {"strategy_id": strategy["id"], "strategy_version": 1,
+                                   "strategy_name": "Eco Wall"}
+    assert entries[1]["strategy_name"] == "Eco Wall" and entries[1]["strategy_version"] == 1
+    limited = client.get("/api/fleet/reroll/strategies/ledger", params={"limit": 1}).json()
+    assert [entry["kind"] for entry in limited["entries"]] == ["reassigned"]
+    # Like /api/runs, an out-of-range limit is clamped rather than refused.
+    clamped = client.get("/api/fleet/reroll/strategies/ledger", params={"limit": 0}).json()
+    assert len(clamped["entries"]) == 1
+
+
+def test_strategy_ledger_is_unavailable_without_fleet_capability() -> None:
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                   db_path=None))
+    assert client.get("/api/fleet/reroll/strategies/ledger").status_code == 503
 
 
 def test_generic_publish_cannot_forge_or_tamper_strategy_snapshots(tmp_path: Path) -> None:

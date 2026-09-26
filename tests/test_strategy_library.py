@@ -1,4 +1,6 @@
 """Saved copies are versioned independently of published account assignments."""
+import json
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -137,3 +139,19 @@ def test_concurrent_duplicate_saves_cannot_create_two_names(tmp_path: Path) -> N
         outcomes = list(pool.map(save_copy, ["My build", "MY BUILD"]))
     assert sorted(outcomes) == ["duplicate", "saved"]
     assert len(StrategyLibrary(tmp_path).read()["strategies"]) == 1
+
+
+def test_save_stamps_saved_at_and_old_rows_without_it_still_load(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    baseline = library.read()["templates"][0]["baseline"]
+    # A library written before saves were timestamped.
+    (tmp_path / "strategy-library.json").write_text(json.dumps({"revision": 1, "versions": [
+        {"id": "strategy-old", "name": "Old", "version": 1, "source_template": "opening",
+         "baseline": baseline, "builtin": False}]}), encoding="utf-8")
+    assert library.version("strategy-old", 1)["name"] == "Old"
+    before = time.time()
+    saved = library.save(expected_revision=1, name="Old", source_template="opening",
+                         baseline=baseline, strategy_id="strategy-old")
+    latest = saved["strategies"][0]
+    assert latest["version"] == 2 and before <= latest["saved_at"] <= time.time()
+    assert "saved_at" not in library.version("strategy-old", 1)
