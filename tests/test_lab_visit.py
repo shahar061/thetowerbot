@@ -11,7 +11,8 @@ import cv2
 import pytest
 
 import config
-from lab_screen import LabPickerReading, read_picker
+from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading,
+                        read_confirmation, read_home, read_picker)
 from lab_visit import LabVisit
 import ocr
 from supervisor import RecoveryState
@@ -145,6 +146,48 @@ def test_purchase_requires_two_matching_affordable_frames_and_coin_delta() -> No
     assert result.status == "started"
     assert result.observed_coin_spend == 300
     assert len(result.confirmed_readings) == 2
+
+
+@pytest.mark.parametrize(("after", "status"), [
+    (114, "started"),  # "2.61K" was a real 2614; 2614 - 2500 = 114
+    (60, "failed"),    # further from 110 than "2.61K" can hide
+])
+def test_research_debit_is_proved_within_the_abbreviated_coin_header(
+    after: int, status: str,
+) -> None:
+    def picker(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:
+        reading = read_picker(screen, text)
+        if not reading.page:
+            return reading
+        assert reading.game_speed is not None
+        return replace(reading, coin_balance=2610, buy_point=(290, 719),
+                       game_speed=replace(reading.game_speed, level=2, cost=2500.,
+                                          status="available"))
+
+    def confirmation(screen: object, text: tuple[ocr.TextBox, ...]) -> LabConfirmationReading:
+        reading = read_confirmation(screen, text)
+        return replace(reading, coin_balance=2610, price=2500) if reading.page else reading
+
+    def home(screen: object, text: tuple[ocr.TextBox, ...]) -> LabHomeReading:
+        reading = read_home(screen, text)
+        return (replace(reading, coin_balance=after)
+                if reading.slot_status == "researching" else reading)
+
+    visit = LabVisit(vision.TemplateCache(Path("templates")), home_reader=home,
+                     picker_reader=picker, confirmation_reader=confirmation)
+    device = Device()
+    visit.request()
+    with patch("lab_visit.tap", side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        for step, name in enumerate((
+                "menu_labs_slot1_affordable", "menu_labs_game_speed_affordable",
+                "menu_labs_game_speed_affordable", "menu_labs_game_speed_confirmation",
+                "menu_labs_game_speed_confirmation", "menu_labs_game_speed_running",
+                "menu_labs_game_speed_running", "menu_labs_game_speed_running")):
+            visit.advance(frame(name), boxes(name), device, 10 + step)
+        result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 20)
+    assert result is not None
+    assert result.status == status
+    assert result.observed_coin_spend == (2500 if status == "started" else 0)
 
 
 def test_changed_confirmation_price_cancels_without_spending() -> None:
