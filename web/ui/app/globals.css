@@ -183,6 +183,13 @@
   --currency-tickets: light-dark(oklch(0.66 0.12 118), oklch(0.80 0.12 118));
   --currency-bits:    light-dark(oklch(0.56 0.15 262), oklch(0.72 0.13 262));
 
+  /* One hue per Workshop tab, read by the Workshop cubes. They echo the
+     in-game tabs (red attack, blue defense, green utility) but sit off the
+     machine-state hues: attack leans rose, utility leans teal. */
+  --ws-attack:  light-dark(oklch(0.58 0.19 12),  oklch(0.66 0.18 12));
+  --ws-defense: light-dark(oklch(0.56 0.15 250), oklch(0.66 0.14 250));
+  --ws-utility: light-dark(oklch(0.58 0.12 170), oklch(0.66 0.12 170));
+
   /* The nav rail is the one recessed plane, so it reads as chrome rather than
      as another card. */
   --sidebar: var(--rail);
