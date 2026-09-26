@@ -62,6 +62,7 @@ import config
 import db
 import digits
 import events
+import free_ticket
 import gem_claim
 import jitter
 import ledger
@@ -850,6 +851,7 @@ class TowerBot:
         self._battle_backstop_scan = False
         tutorial_claim = None
         unlocked = None
+        ticket = None
         preflight_boxes = None
         battle_context = (reading.state in (screens.ScreenState.IN_RUN,
                                             screens.ScreenState.GAME_OVER)
@@ -884,6 +886,14 @@ class TowerBot:
                         observed_screen = "LAB_PICKER"
                     elif lab_screen.read_home(self.screen, boxes).page:
                         observed_screen = "LABS"
+                # The Free Ticket offer covers the main menu without hiding
+                # its anchors, so it is looked for on MAIN_MENU too; its
+                # reveal shares the milestone reward modal's SKIP + CLAIM
+                # layout, so it is named before the milestone parse runs.
+                if observed_screen in ("UNKNOWN", "MAIN_MENU"):
+                    ticket = free_ticket.read(self.screen, boxes)
+                    if ticket is not None:
+                        observed_screen = ticket.screen
                 if observed_screen == "UNKNOWN":
                     # Recovery preflight runs before MilestonesReadings.scan.
                     # A valid ladder or reward modal must be named here or the
@@ -955,6 +965,15 @@ class TowerBot:
                 self.device.click(*unlocked.ok)
                 self.bus.publish(events.Tapped(
                     action="unlocked:ok", x=unlocked.ok[0], y=unlocked.ok[1], score=1.0))
+                return True
+            if ticket is not None:
+                if settings.paused:
+                    return False
+                logger.info("Claiming the tournament Free Ticket (%s).", ticket.screen)
+                self.device.click(*ticket.claim)
+                self.bus.publish(events.Tapped(
+                    action="free_ticket:claim", x=ticket.claim[0], y=ticket.claim[1],
+                    score=1.0))
                 return True
             if tutorial_claim is not None:
                 if settings.paused:
