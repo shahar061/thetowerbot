@@ -109,7 +109,7 @@ def labs_snapshot(root: Path, workers: Iterable[str], now: float | None = None) 
     for worker in workers:
         try:
             rows.append(_row(root, worker, route, route_error, moment))
-        except (OSError, ValueError, TypeError, KeyError):
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             logger.exception("Labs view unavailable for %s", worker)
             rows.append(_unknown(worker, None, "Lab evidence unavailable"))
     return {"workers": rows, "automated": automated_list(), "reference": lab_catalog.reference()}

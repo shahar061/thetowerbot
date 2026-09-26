@@ -102,6 +102,15 @@ def test_a_corrupt_route_falls_back_to_defaults_and_says_why(tmp_path: Path) -> 
     assert row["state"] == "ok" and "Route unavailable" in row["reason"]
 
 
+def test_a_worker_with_a_corrupt_database_is_an_unknown_row(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_38", "account-a")
+    _registered(tmp_path, "Air_39", "account-b")
+    (root / "tower_bot.db").write_bytes(b"not a sqlite file")
+    rows = {row["worker"]: row for row in labs_snapshot(tmp_path, ["Air_38", "Air_39"], now=1000.)["workers"]}
+    assert rows["Air_38"]["state"] == "unknown" and rows["Air_38"]["plan"] is None
+    assert rows["Air_39"]["state"] == "ok"
+
+
 def _client(root: Path, names: tuple[str, ...]) -> TestClient:
     fleet = FleetSetupService(root, qualification_root=root / "qualifications")
     fleet._reroll_pool = SimpleNamespace(members=lambda: [{"name": name} for name in names])
