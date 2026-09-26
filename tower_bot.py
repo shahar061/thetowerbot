@@ -80,8 +80,8 @@ from affordability import (
     DigitAffordability,
 )
 from autopilot import AutopilotState, BattleAutopilot
-from combat_context import RunIdentity, build_revision
-from perception import panel_visible, read_cash
+from combat_context import RunIdentity, build_revision, frame_combat
+from perception import observe_frame, panel_visible, read_cash
 from control import Controls, Live
 from device import EmulatorError, Image, capture_screen, connect_device, tap
 from fleet.runtime import RuntimeIsolationError, WorkerRuntime, reserve_endpoint
@@ -1617,16 +1617,23 @@ class TowerBot:
                 # could not navigate back off it either. `step()` takes no
                 # anchor; it re-reads the panel from the frame itself.
                 if not speed_changed and not commands:
+                    # One read of this frame serves both the route decision
+                    # and the step. The context alone would hand the route
+                    # the previous scan's wave, already expired at the battle
+                    # scan pace, and a route without a wave turns buying off.
+                    observation = observe_frame(self.screen, "battle", reads=reads)
+                    combat = frame_combat(self.autopilot.context.combat(time.time()), observation)
                     battle_policy = (self.reroll_progress.battle_policy(
                         settings.strategy.autopilot,
                         self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)),
                         run_id=self.runs.current_id,
-                        wave=(int(value) if (value := self.autopilot.context.combat(time.time()).get("wave")) is not None else None),
+                        wave=(int(value) if (value := combat.get("wave")) is not None else None),
                         cash=self.wallet,
-                        combat=self.autopilot.context.combat(time.time()))
+                        combat=combat)
                                      if self.reroll_progress is not None else settings.strategy.autopilot)
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
-                                                   cash=self.wallet, cooldown=settings.strategy.click_cooldown,
+                                                   cash=self.wallet, observation=observation,
+                                                   cooldown=settings.strategy.click_cooldown,
                                                    run_id=self.runs.current_id,
                                                    identity=self.run_identity(settings),
                                                    elapsed=self.runs.elapsed(time.monotonic()),

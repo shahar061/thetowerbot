@@ -178,6 +178,18 @@ def build_revision(account_state: Any | None) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def frame_combat(stored: Mapping[str, float], frame: Observation) -> dict[str, float]:
+    """`stored` facts, overlaid with the HUD facts `frame` itself read.
+
+    A battle scan decides before the autopilot stores its frame, so what the
+    context holds is the previous scan's - older than the HUD window at the
+    battle scan pace. The frame on screen is the current evidence.
+    """
+    current = {name: value for name, raw in frame.combat.items()
+               if name in HUD_FACTS and (value := _numeric(raw)) is not None}
+    return {**stored, **current}
+
+
 class CombatContext:
     """Separate, run-bound observations of the battle currently on screen."""
 

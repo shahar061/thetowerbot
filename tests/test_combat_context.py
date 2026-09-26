@@ -335,3 +335,25 @@ def test_the_build_revision_is_read_through_the_public_account_snapshot() -> Non
     assert build_revision(None) is None
     assert build_revision(SimpleNamespace(snapshot=lambda: {"revision": None})) is None
     assert build_revision(SimpleNamespace(snapshot=lambda: {"revision": {"revision_id": 12}})) == 12
+
+
+# --- the frame being decided on ------------------------------------------------
+
+
+def test_the_current_frame_supplies_the_wave_the_stored_context_has_let_expire() -> None:
+    """A battle scan decides before the autopilot stores this frame, so the
+    stored wave is the previous scan's - over two seconds old at a 2s scan
+    pace, and expired. The frame on screen still names the wave."""
+    from combat_context import CombatContext, RunIdentity, frame_combat
+    context = CombatContext()
+    context.observe(observed("in_run_early", now=100.), identity=RunIdentity(run_id=1), now=100.)
+    assert "wave" not in context.combat(103.)
+    combat = frame_combat(context.combat(103.), observed("in_run_early", now=103.))
+    assert combat["wave"] == 1
+    assert combat["enemy_damage"] == pytest.approx(1.18)
+
+
+def test_a_fact_the_current_frame_did_not_read_keeps_its_stored_value() -> None:
+    from combat_context import frame_combat
+    frame = replace(observed("in_run_early"), combat={})
+    assert frame_combat({"wave": 7.}, frame) == {"wave": 7.}
