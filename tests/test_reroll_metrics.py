@@ -98,15 +98,19 @@ def test_unverified_live_account_does_not_supply_wallet(tmp_path: Path) -> None:
     assert "game_screen" not in result
 
 
-def test_plan_requires_bound_account_and_recent_observation(tmp_path: Path) -> None:
+def test_plan_requires_bound_account_but_survives_a_quiet_run(tmp_path: Path) -> None:
     bot_db.bind_account(tmp_path / "tower_bot.db", "42")
     path = tmp_path / "reroll-plan.json"
     path.write_text(json.dumps({"account_id": "other", "observed_at": time.time()}))
     read = lambda: observed_metrics(tmp_path, account_key="worker:Air_2", account_id="42",
                                     web_port=0, running=False)
     assert "reroll_plan" not in read()
-    path.write_text(json.dumps({"account_id": "42", "observed_at": time.time() - 121}))
+    path.write_text(json.dumps({"account_id": "42", "observed_at": "soon"}))
     assert "reroll_plan" not in read()
+    # The worker only republishes from the main menu, so a plan goes quiet for
+    # the whole run. It stays visible; the UI labels its age instead.
+    path.write_text(json.dumps({"account_id": "42", "observed_at": time.time() - 900}))
+    assert read()["reroll_plan"]["account_id"] == "42"
     path.write_text(json.dumps({"account_id": "42", "observed_at": time.time(),
                                 "item": "Damage", "state": "buy"}))
     assert read()["reroll_plan"]["item"] == "Damage"

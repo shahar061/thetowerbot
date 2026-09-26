@@ -166,8 +166,7 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
     try:
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         if (account_bound and plan.get("account_id") == account_id
-                and isinstance(plan.get("observed_at"), (int, float))
-                and time.time() - plan["observed_at"] <= 120):
+                and isinstance(plan.get("observed_at"), (int, float))):
             result["reroll_plan"] = plan
     except (OSError, ValueError, TypeError):
         pass

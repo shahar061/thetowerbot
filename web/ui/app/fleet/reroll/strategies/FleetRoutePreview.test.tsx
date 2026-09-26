@@ -72,3 +72,16 @@ test("decision inspector explains the selected evidence without inventing battle
   expect(screen.getByRole("region", { name: "Decision details" })).toHaveTextContent("Revision 2");
   expect(screen.getByText("Live battle intent unavailable")).toBeInTheDocument();
 });
+
+test("keeps the last selected buy visible and labels its age once the worker goes quiet", () => {
+  vi.useFakeTimers({ now: 1_000 * 1_000 });
+  try {
+    const member = structuredClone(members[1]);
+    member.reroll_plan!.observed_at = 1_000 - 7 * 60;
+    render(<FleetRoutePreview members={[member]} savedRevision={2} />);
+    expect(screen.getByText("Defense Absolute")).toBeInTheDocument();
+    expect(screen.getByText("Projected · as of 7m ago")).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
