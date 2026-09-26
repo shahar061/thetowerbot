@@ -13,6 +13,7 @@ from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading
                         read_confirmation, read_home, read_picker)
 import ocr
 import pages
+from transactions import abbreviation_slack
 import vision
 from labs import LabJob, LabsReading
 
@@ -168,6 +169,14 @@ class LabVisit:
         return True
 
     @staticmethod
+    def _debit_proved(purchase: LabDecision, balance: int) -> bool:
+        """Above 1000 the coin header reads "2.61K", hiding the low digits."""
+        assert purchase.wallet_coins is not None and purchase.price is not None
+        expected = purchase.wallet_coins - purchase.price
+        return abs(balance - expected) <= (abbreviation_slack(purchase.wallet_coins)
+                                           + abbreviation_slack(balance))
+
+    @staticmethod
     def _recorded_home(screen: Image, home: LabHomeReading) -> LabsReading:
         height, width = screen.shape[:2]
         complete = home.slots_owned == 1 and home.job is not None
@@ -313,7 +322,7 @@ class LabVisit:
                         and home.coin_balance is not None
                         and purchase.wallet_coins is not None
                         and purchase.price is not None
-                        and home.coin_balance == purchase.wallet_coins - purchase.price):
+                        and self._debit_proved(purchase, home.coin_balance)):
                     previous = self._confirmed_reading
                     if previous is None:
                         self._confirmed_reading = home

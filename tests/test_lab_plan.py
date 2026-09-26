@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+import config
 
 from lab_screen import LabHomeReading, LabPickerReading
 from labs import LabEntry, LabJob
@@ -111,6 +116,28 @@ def test_confirmed_next_level_unlocks_x2_speed_after_restart(tmp_path: Path) -> 
         "unknown", "researching", .99, (96, 615, 290, 40)), None),
         None), now=1100.)
     assert resumed.speed_target() == 2.0
+
+
+@pytest.mark.parametrize(("level", "maxed", "ceiling"), [
+    (1, False, 1.5),  # "Game Speed Lv.1": nothing researched yet
+    (3, False, 2.5),  # "Lv.3" is next, so two researches are done
+    (7, False, 4.5),
+    (7, True, 5.0),   # every research done: the row shows the last level
+])
+def test_speed_ceiling_follows_completed_game_speed_research(
+    tmp_path: Path, level: int, maxed: bool, ceiling: float,
+) -> None:
+    from lab_plan import LabCadence, decide
+
+    cadence = LabCadence(tmp_path / "worker", "ACCOUNT-A")
+    cadence.note(decide(idle(), row(level=level, maximum=level if maxed else None, cost=12000., balance=4000,
+                                    status="maxed" if maxed else "unavailable",
+                                    point=None)), now=1000.)
+    speeds = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0)
+    with patch.object(config, "TARGET_SPEEDS", speeds):
+        assert cadence.speed_target() == ceiling
+    # A value the widget cannot read is never the target.
+    assert cadence.speed_target() == min(ceiling, max(config.TARGET_SPEEDS))
 
 
 def test_legacy_lab_record_gets_one_new_level_check(tmp_path: Path) -> None:

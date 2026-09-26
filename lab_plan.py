@@ -178,10 +178,18 @@ class LabCadence:
                                       "observed_at": now})
 
     def speed_target(self) -> float:
-        """Aim at x2.0 only after a later Game Speed row proves Lv.1 finished."""
+        """The fastest readable speed the completed Game Speed research allows.
+
+        The base ceiling is x1.5 and each research adds x0.5, up to x5.0. The
+        row names the next level ("Lv.3" means two are done) until it is
+        maxed, when it names the last one.
+        """
         record = self._record()
         level = record.get("game_speed_level") if record is not None else None
-        ceiling = 2.0 if type(level) is int and level >= 2 else 1.5
+        completed = 0
+        if type(level) is int and level >= 1:
+            completed = level if record.get("kind") == "done" else level - 1
+        ceiling = 1.5 + .5 * completed
         return max(value for value in config.TARGET_SPEEDS if value <= ceiling)
 
     def note(self, decision: LabDecision, now: float) -> None:
