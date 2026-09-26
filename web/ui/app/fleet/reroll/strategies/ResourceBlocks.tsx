@@ -251,7 +251,7 @@ function BlockInspector({ block, locked, catalog, pinned, poolRule, onChange }: 
         <input type="number" min={1} max={poolRule?.max_price_pct_of_wallet ?? 100} placeholder={poolRule?.max_price_pct_of_wallet != null ? String(poolRule.max_price_pct_of_wallet) : undefined}
           disabled={locked} value={block.max_price_pct_of_wallet ?? ""}
           onChange={event => set({ max_price_pct_of_wallet: optional(event.target.value) })} className="rounded border border-border bg-background px-2 py-1" /></label>
-      <p className="text-muted-foreground sm:col-span-2">Unset limits inherit the strategy's lab pool rule; a block may only be stricter.</p>
+      <p className="text-muted-foreground sm:col-span-2">Unset limits inherit the strategy&apos;s lab pool rule; a block may only be stricter.</p>
     </>}
     {block.type === "condition" && <>
       <label className="flex flex-col gap-1">Fact<select disabled={locked} value={block.field} onChange={event => {
