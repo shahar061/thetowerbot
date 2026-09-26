@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError, activateStrategy, deleteStrategy, fetchControl, fetchErrors,
   fetchRunEvents, fetchRuns, fetchStats, fetchStatus, fetchStrategies,
-  fetchStrategy, fetchUnknown, patchControl, saveStrategy, shutdown,
+  fetchStrategy, fetchUnknown, patchControl, reachableDashboardUrl, saveStrategy, shutdown,
   startBot, stopBot,
   fetchAdvisor, importAdvisor, stageAdvisor, postCommand,
   fetchFleet, requestFleetProvision,
@@ -477,5 +477,17 @@ describe("failures", () => {
       .mockResolvedValueOnce({ ok: false, status: 409, json: () => Promise.resolve({ detail: "the bot is already running" }) });
     const err = await startBot().catch((e: unknown) => e);
     expect((err as ApiError).status).toBe(409);
+  });
+});
+
+describe("reachableDashboardUrl", () => {
+  it("leaves loopback worker URLs alone on the laptop", () => {
+    expect(reachableDashboardUrl("http://127.0.0.1:10053/", { protocol: "http:", hostname: "127.0.0.1" })).toBe("http://127.0.0.1:10053/");
+    expect(reachableDashboardUrl("http://127.0.0.1:10053/", { protocol: "http:", hostname: "localhost" })).toBe("http://127.0.0.1:10053/");
+  });
+
+  it("points loopback worker URLs at the tailnet host, keeping the port", () => {
+    expect(reachableDashboardUrl("http://127.0.0.1:10053/", { protocol: "https:", hostname: "mac.tail1234.ts.net" }))
+      .toBe("https://mac.tail1234.ts.net:10053/");
   });
 });

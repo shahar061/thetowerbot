@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 const state = vi.hoisted(() => ({ pathname: "/", errors: vi.fn(), strategies: vi.fn() }));
@@ -52,4 +52,19 @@ test.each([
   if (pathname === "/settings/") {
     await waitFor(() => expect(screen.getByText("single-strategy")).toBeInTheDocument());
   }
+});
+
+test("phone menu names the current page, toggles the list, and closes on navigation", () => {
+  state.pathname = "/runs/";
+  const view = render(<Sidebar />);
+  const toggle = screen.getByRole("button", { name: "Open menu" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(toggle.nextElementSibling).toHaveTextContent("Runs");
+  expect(document.getElementById("nav-panel")).toHaveClass("hidden");
+  fireEvent.click(toggle);
+  expect(screen.getByRole("button", { name: "Close menu" })).toHaveAttribute("aria-expanded", "true");
+  expect(document.getElementById("nav-panel")).not.toHaveClass("hidden");
+  state.pathname = "/stats/";
+  view.rerender(<Sidebar />);
+  expect(screen.getByRole("button", { name: "Open menu" })).toHaveAttribute("aria-expanded", "false");
 });

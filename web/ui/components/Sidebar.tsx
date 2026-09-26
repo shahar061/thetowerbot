@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, BookOpen, Compass, Contact, ChartLine, FlaskConical, List, Map, Monitor, Power, Receipt, Settings2, SlidersHorizontal, Swords, TriangleAlert, Wrench,
+  Activity, BookOpen, Compass, Contact, ChartLine, FlaskConical, List, Map, Menu, Monitor, Power, Receipt, Settings2, SlidersHorizontal, Swords, TriangleAlert, Wrench, X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -70,6 +70,9 @@ export function Sidebar(): React.JSX.Element {
   const connected = useConnected();
   const [errorCount, setErrorCount] = useState<number | null>(null);
   const [active, setActive] = useState<string | null>(null);
+  // Phone only: the rail collapses to a one-line bar and opens as a list.
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [pathname]);
 
   // Slow polls: neither of these changes often, and the rail is on every page.
   useEffect(() => {
@@ -96,7 +99,7 @@ export function Sidebar(): React.JSX.Element {
         href={href}
         aria-current={isActive ? "page" : undefined}
         className={cn(
-          "flex items-center gap-2.5 rounded-md border-l-2 border-transparent px-2.5 py-1.5 text-sm transition-colors",
+          "flex items-center gap-2.5 rounded-md border-l-2 border-transparent px-2.5 py-2.5 text-sm transition-colors md:py-1.5",
           isActive
             ? "border-l-primary bg-primary/12 font-medium text-foreground"
             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
@@ -116,53 +119,73 @@ export function Sidebar(): React.JSX.Element {
     );
   }
 
+  const groups = reroll ? FLEET_GROUPS : GROUPS;
+  const settings: Item = { href: reroll ? "/fleet/reroll/settings/" : "/settings/", label: "Settings", icon: Settings2 };
+  const current = [...groups.flatMap((group) => group.items), settings, GUIDE]
+    .find((item) => pathname.replace(/\/$/, "") === item.href.replace(/\/$/, ""));
+  const status = !reroll && <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
+    {selected?.running && connected ? "live" : "no bot"}
+  </StatusBadge>;
+
   return (
-    <nav className="flex shrink-0 gap-1 overflow-x-auto border-b bg-sidebar p-2 md:h-full md:w-52 md:flex-col md:gap-0 md:overflow-x-hidden md:overflow-y-auto md:border-b-0 md:border-r md:p-3">
-      <div className="hidden pb-4 pl-2.5 md:block">
-        <div className="font-mono text-xs font-bold uppercase tracking-[0.14em] text-primary">
-          The Tower
-        </div>
-        {/* Which strategy is loaded is the one piece of bot state worth
-            carrying on every page - it is what every rule on /strategy edits. */}
-        <div className="mt-0.5 truncate font-mono text-[10px] text-faint-foreground">
-          {reroll ? "Fleet workspace" : active ?? "…"}
-        </div>
-      </div>
-
-      <div aria-label="Workspace" className="flex shrink-0 items-center gap-1 rounded-md border p-1 md:mb-2 md:flex-col md:items-stretch">
-        <Link href="/" aria-current={!reroll ? "true" : undefined}
-          className={cn("whitespace-nowrap rounded px-2 py-1.5 text-xs", !reroll && "bg-primary/12 text-primary")}>Single emulator</Link>
-        <Link href="/fleet/reroll/" aria-current={reroll ? "true" : undefined}
-          className={cn("whitespace-nowrap rounded px-2 py-1.5 text-xs", reroll && "bg-primary/12 text-primary")}>Reroll fleet</Link>
-      </div>
-
-      {(reroll ? FLEET_GROUPS : GROUPS).map((group) => (
-        <div key={group.label} className="contents md:block">
-          <div className="hidden px-2.5 pb-1.5 pt-3 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-faint-foreground md:block">
-            {group.label}
-          </div>
-          {group.items.map(link)}
-        </div>
-      ))}
-
-      <div className="contents md:mt-auto md:block">
-        {link({ href: reroll ? "/fleet/reroll/settings/" : "/settings/", label: "Settings", icon: Settings2 })}
-        {link(GUIDE)}
-        <div className="mt-3 hidden items-center gap-2 md:flex">
-          {!reroll && <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
-            {selected?.running && connected ? "live" : "no bot"}
-          </StatusBadge>}
+    <nav className="flex max-h-dvh shrink-0 flex-col border-b bg-sidebar md:h-full md:w-52 md:border-b-0 md:border-r">
+      {/* Phone bar: where you are, whether anything is wrong, and the way out.
+          The full list would not fit across a phone, and a sideways strip
+          hides most of it. */}
+      <div className="flex items-center gap-2 px-2 py-1.5 md:hidden">
+        <button type="button" onClick={() => setOpen((value) => !value)}
+          aria-expanded={open} aria-controls="nav-panel" aria-label={open ? "Close menu" : "Open menu"}
+          className="flex size-10 items-center justify-center rounded-md hover:bg-accent/50">
+          {open ? <X className="size-5" aria-hidden="true" /> : <Menu className="size-5" aria-hidden="true" />}
+        </button>
+        <span className="truncate text-sm font-medium">{current?.label ?? (reroll ? "Reroll fleet" : "The Tower")}</span>
+        {!reroll && errorCount ? (
+          <Link href="/errors/" className="rounded-full bg-danger-surface px-2 py-0.5 font-mono text-[11px] font-bold text-danger">
+            {errorCount > 99 ? "99+" : errorCount} errors
+          </Link>
+        ) : null}
+        <div className="ml-auto flex items-center gap-2">
+          {status}
           <ThemeToggle />
         </div>
       </div>
 
-      {/* On the mobile strip the badge rides beside the theme toggle - the
-          rail is horizontal there and has no footer to sit in. */}
-      <div className="ml-auto flex items-center gap-2 self-center md:hidden">
-        {!reroll && <StatusBadge state={selected?.running && connected ? "live" : "warn"}>
-          {selected?.running && connected ? "live" : "no bot"}
-        </StatusBadge>}
-        <ThemeToggle />
+      <div id="nav-panel" className={cn("min-h-0 flex-col overflow-y-auto border-t p-3 md:flex md:h-full md:border-t-0", open ? "flex" : "hidden")}>
+        <div className="hidden pb-4 pl-2.5 md:block">
+          <div className="font-mono text-xs font-bold uppercase tracking-[0.14em] text-primary">
+            The Tower
+          </div>
+          {/* Which strategy is loaded is the one piece of bot state worth
+              carrying on every page - it is what every rule on /strategy edits. */}
+          <div className="mt-0.5 truncate font-mono text-[10px] text-faint-foreground">
+            {reroll ? "Fleet workspace" : active ?? "…"}
+          </div>
+        </div>
+
+        <div aria-label="Workspace" className="mb-2 flex flex-col gap-1 rounded-md border p-1">
+          <Link href="/" aria-current={!reroll ? "true" : undefined}
+            className={cn("whitespace-nowrap rounded px-2 py-2.5 text-sm md:py-1.5 md:text-xs", !reroll && "bg-primary/12 text-primary")}>Single emulator</Link>
+          <Link href="/fleet/reroll/" aria-current={reroll ? "true" : undefined}
+            className={cn("whitespace-nowrap rounded px-2 py-2.5 text-sm md:py-1.5 md:text-xs", reroll && "bg-primary/12 text-primary")}>Reroll fleet</Link>
+        </div>
+
+        {groups.map((group) => (
+          <div key={group.label}>
+            <div className="px-2.5 pb-1.5 pt-3 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-faint-foreground">
+              {group.label}
+            </div>
+            {group.items.map(link)}
+          </div>
+        ))}
+
+        <div className="mt-3 md:mt-auto">
+          {link(settings)}
+          {link(GUIDE)}
+          <div className="mt-3 hidden items-center gap-2 md:flex">
+            {status}
+            <ThemeToggle />
+          </div>
+        </div>
       </div>
     </nav>
   );

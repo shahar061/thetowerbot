@@ -79,7 +79,24 @@ export const previewTelegramMessage = (mode: TelegramMode, profile: TelegramProf
 export type AccountChoice = { key: string; account_id: string | null; instance: string | null;
   kind: "worker" | "unattributed"; running: boolean; dashboard_url: string | null; run_numbers?: number[] };
 export type AccountCatalog = { accounts: AccountChoice[]; active: string | null };
-export const fetchAccounts = () => getJson<AccountCatalog>("/api/accounts", { cache: "no-store" });
+export const fetchAccounts = () => getJson<AccountCatalog>("/api/accounts", { cache: "no-store" })
+  .then((catalog) => ({ ...catalog, accounts: catalog.accounts.map((account) => ({
+    ...account, dashboard_url: account.dashboard_url && reachableDashboardUrl(account.dashboard_url, window.location),
+  })) }));
+
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+// Workers report where they listen, which is always loopback. From a phone on
+// the tailnet that address is the phone itself, so keep the worker's port and
+// swap in the host this page was loaded from (Tailscale Serve exposes each
+// worker port there, see tools/tailscale-serve.sh).
+export function reachableDashboardUrl(url: string, here: Pick<Location, "protocol" | "hostname">): string {
+  const target = new URL(url);
+  if (!LOOPBACK.has(target.hostname) || LOOPBACK.has(here.hostname)) return url;
+  target.protocol = here.protocol;
+  target.hostname = here.hostname;
+  return target.href;
+}
 export const fetchMilestoneRoadmap = () => getJson<MilestoneRoadmap>("/api/milestone-roadmap", { cache: "no-store" });
 export const fetchAccountMetrics = () => getJson<AccountMetrics>("/api/account-metrics", { cache: "no-store" });
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
