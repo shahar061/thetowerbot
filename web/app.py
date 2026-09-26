@@ -214,6 +214,7 @@ class ControlPatch(BaseModel):
     paused: bool | None = None
     affordability: str | None = None
     interval: float | None = None
+    menu_interval: float | None = None
     click_cooldown: float | None = None
     auto_navigate: bool | None = None
     max_runs: int | None = None

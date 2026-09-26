@@ -68,6 +68,25 @@ def test_interval_must_be_in_range(interval: float) -> None:
     assert caught.value.field == "interval"
 
 
+@pytest.mark.parametrize("interval", [0.0, 0.05, 3601.0, -1.0])
+def test_menu_interval_must_be_in_range(interval: float) -> None:
+    with pytest.raises(ControlError) as caught:
+        a_strategy(menu_interval=interval)
+    assert caught.value.field == "menu_interval"
+
+
+def test_menu_interval_defaults_to_the_battle_default() -> None:
+    # A profile written before the split must keep scanning menus at the
+    # pace it always had.
+    assert a_strategy().menu_interval == config.SCAN_INTERVAL_SECONDS
+
+
+def test_interval_for_picks_the_battle_or_menu_pace() -> None:
+    strategy = a_strategy(interval=2.0, menu_interval=0.5)
+    assert strategy.interval_for(in_battle=True) == 2.0
+    assert strategy.interval_for(in_battle=False) == 0.5
+
+
 @pytest.mark.parametrize("threshold", [0.0, -0.1, 1.01])
 def test_threshold_must_be_a_normalised_score(threshold: float) -> None:
     with pytest.raises(ControlError) as caught:
@@ -118,6 +137,8 @@ def test_out_of_range_fields_name_themselves(field: str, value: object) -> None:
     [
         ("interval", 0.1),
         ("interval", 3600.0),
+        ("menu_interval", 0.1),
+        ("menu_interval", 3600.0),
         ("click_cooldown", 60.0),
         ("navigation_cooldown", 60.0),
         ("screen_confirmations", 1),
@@ -173,6 +194,7 @@ def test_a_rule_rejects_a_field_of_the_wrong_type(field: str, value: object) -> 
         ("auto_navigate", "maybe"),
         ("name", 123),
         ("interval", True),               # bool subclasses int: 1 second
+        ("menu_interval", True),
         ("screen_confirmations", True),
         ("max_runs", True),
         ("affordability", 7),
@@ -226,7 +248,7 @@ def test_actions_are_normalised_to_a_tuple() -> None:
 
 def test_dict_round_trip_preserves_everything() -> None:
     original = a_strategy(
-        interval=3.5, auto_navigate=True, max_runs=7,
+        interval=3.5, menu_interval=0.7, auto_navigate=True, max_runs=7,
         affordability="brightness", click_cooldown=0.5,
         navigation_cooldown=4.0, screen_confirmations=3,
         actions=(

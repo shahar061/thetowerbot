@@ -245,9 +245,14 @@ export function StrategyEditor({
 
       <SectionCard id="timing" title="Timing" contentClassName="flex flex-col gap-3">
         <NumberField
-          label="Scan interval (s)" value={value.interval} disabled={disabled}
+          label="Scan interval, in battle (s)" value={value.interval} disabled={disabled}
           min={0.1} max={3600} step={0.1}
           onCommit={(n) => set("interval", n)}
+        />
+        <NumberField
+          label="Scan interval, outside battle (s)" value={value.menu_interval}
+          disabled={disabled} min={0.1} max={3600} step={0.1}
+          onCommit={(n) => set("menu_interval", n)}
         />
         <NumberField
           label="Click cooldown (s)" value={value.click_cooldown} disabled={disabled}

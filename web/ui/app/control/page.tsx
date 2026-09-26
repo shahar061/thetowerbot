@@ -266,7 +266,7 @@ export default function ControlPage() {
       >
         <p className="font-mono text-sm font-medium">{s.name}</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          {s.interval}s scans · {s.affordability} · auto-navigate{" "}
+          {s.interval}s / {s.menu_interval}s scans · {s.affordability} · auto-navigate{" "}
           {s.auto_navigate ? "on" : "off"} ·{" "}
           {s.max_runs === null ? "unlimited runs" : `${s.max_runs} runs`}
         </p>

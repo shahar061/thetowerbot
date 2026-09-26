@@ -296,6 +296,9 @@ class TowerBot:
         self._best_wave: int | None = best_wave
         self._screen: Image | None = None
         self._last_click: dict[str, float] = {}
+        # Which pace run_forever waits at after this scan - see
+        # Strategy.interval_for. Starts False: the first frame is usually home.
+        self._last_scan_in_battle = False
         self._running = True
         # Makes the between-scan sleep interruptible. A plain time.sleep()
         # ignores stop(): PEP 475 means it resumes after a signal handler
@@ -887,6 +890,7 @@ class TowerBot:
                                             screens.ScreenState.GAME_OVER)
                           or (reading.state is screens.ScreenState.UNKNOWN
                               and reading.cash_top_left is not None))
+        self._last_scan_in_battle = battle_context
         info_dismiss = None
         if self.supervisor is not None:
             recovery_status = getattr(self.supervisor, "status", None)
@@ -1832,8 +1836,8 @@ class TowerBot:
 
         - `None` (the default, and what `BotRunner._run()` passes in
           production - see runner.py) means the dashboard owns the pace.
-          `self.controls.snapshot().strategy.interval`
-          is re-read at the top of every iteration, so a change made from the
+          `strategy.interval_for(...)` (battle or menu pace)
+          is re-read after every scan, so a change made from the
           browser takes effect on the very next sleep rather than requiring a
           restart.
         - An explicit number is a caller override. It is used exactly as
@@ -1850,12 +1854,14 @@ class TowerBot:
         than sleeping it out (which a plain time.sleep() would do - PEP 475
         resumes it after a signal handler returns instead of aborting it).
         """
-        startup_interval = (
-            self.controls.snapshot().strategy.interval if interval is None else interval
-        )
-        logger.info(
-            "Bot started - scanning every %.1fs. Ctrl+C to stop.", startup_interval
-        )
+        if interval is None:
+            live = self.controls.snapshot().strategy
+            logger.info(
+                "Bot started - scanning every %.1fs in battle, %.1fs outside. "
+                "Ctrl+C to stop.", live.interval, live.menu_interval,
+            )
+        else:
+            logger.info("Bot started - scanning every %.1fs. Ctrl+C to stop.", interval)
         while self._running:
             # Checked before run_once(): if the limit is already reached at
             # entry, the loop must return without scanning at all, not after
@@ -1876,8 +1882,19 @@ class TowerBot:
                     max_runs if max_runs is not None else capped.max_runs,
                 )
                 break
+            try:
+                self.run_once(max_runs=max_runs)
+            except EmulatorError as exc:
+                logger.error("Device error: %s", exc)
+                self._report(f"Device error: {exc}")
+                if self.supervisor is not None and self.supervisor.device is None:
+                    self.supervisor.recover()
+            except Exception as exc:  # noqa: BLE001 - one bad frame must not kill the loop
+                logger.exception("Unexpected error during scan")
+                self._report(f"Unexpected error during scan: {exc}")
             # Re-read every iteration (when interval is None) rather than
-            # once at the top of the loop - see the docstring above.
+            # once at the top of the loop - see the docstring above. Chosen
+            # after the scan, because the scan is what says battle or menu.
             if interval is None:
                 live = self.controls.snapshot().strategy
                 # spread(), not stretch(): unlike the cooldowns, the interval
@@ -1887,23 +1904,17 @@ class TowerBot:
                 # dial already at the floor cannot jitter below it into the
                 # busy loop that floor exists to prevent.
                 current_interval = max(
-                    MIN_INTERVAL, jitter.spread(live.interval, live.timing_jitter)
+                    MIN_INTERVAL,
+                    jitter.spread(
+                        live.interval_for(self._last_scan_in_battle),
+                        live.timing_jitter,
+                    ),
                 )
             else:
                 # An explicit override is used exactly as given - see the
                 # docstring. Tests pass 0.0 to run the loop without sleeping,
                 # and jittering that would reintroduce the sleep.
                 current_interval = interval
-            try:
-                self.run_once(max_runs=max_runs)
-            except EmulatorError as exc:
-                logger.error("Device error: %s - retrying in %.1fs", exc, current_interval)
-                self._report(f"Device error: {exc}")
-                if self.supervisor is not None and self.supervisor.device is None:
-                    self.supervisor.recover()
-            except Exception as exc:  # noqa: BLE001 - one bad frame must not kill the loop
-                logger.exception("Unexpected error during scan")
-                self._report(f"Unexpected error during scan: {exc}")
             if interval is None and self.autopilot.pending is not None:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.
