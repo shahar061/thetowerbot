@@ -51,6 +51,10 @@ describe("recordTip and totalCoins", () => {
     expect(recordTip("wave", row({ tier: 1, wave_record: "broken", wave_prev: { run_id: 3, value: 9 }, wave_broken_by: null })))
       .toBe("Wave record at T1 · beat #3 (9) · broken");
   });
+  it("formats a large previous value with thousands separators", () => {
+    expect(recordTip("coin", row({ coin_record: "standing", coin_prev: { run_id: 3, value: 12345 } })))
+      .toBe("Coin record · beat #3 (12,345) · still standing");
+  });
   it("prefers the server total and falls back to earned + ad", () => {
     expect(totalCoins(row({ total_coins: 90 }))).toBe(90);
     expect(totalCoins(row({ coins: 50, ad_coins: 10 }))).toBe(60);
