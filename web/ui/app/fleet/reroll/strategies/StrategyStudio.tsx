@@ -4,14 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, BookOpen, Copy, FlaskConical, Gem, GitBranch, Hammer, LockKeyhole, Maximize2, Minimize2, Monitor, Plus, Save, Shield, Sparkles, Swords, X } from "lucide-react";
-import { assignFleetStrategy, previewBuildRoute, saveFleetStrategy } from "@/lib/api";
+import { assignFleetStrategy, fetchStrategyLedger, previewBuildRoute, saveFleetStrategy } from "@/lib/api";
 import type { BuildRouteDocument, BuildRoutePreview } from "@/lib/buildRoute";
-import type { SpendingLane, StrategyBlock, StrategyDefinition, StrategyLibrary, StrategyWorker } from "@/lib/strategyStudio";
+import type { SpendingLane, StrategyBlock, StrategyDefinition, StrategyLedgerEntry, StrategyLibrary, StrategyWorker } from "@/lib/strategyStudio";
 import type { Upgrade } from "@/lib/types";
 import { ROOT_END, presetsForLane, findBlock, insertBlock, locateBlock, makeBlock, updateBlock, type BlockPreset, type BlockTarget } from "./strategyBlocks";
 import { StrategyCanvas, type BlockDrag } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
 import { RouteInspector } from "./RouteInspector";
+import { StrategyHistory } from "./StrategyHistory";
 import styles from "./studio.module.css";
 
 type Draft = StrategyDefinition & { dirty?: boolean };
@@ -46,7 +47,9 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<BuildRoutePreview | null>(null);
-  const all = [...library.templates, ...library.strategies];
+  const [ledger, setLedger] = useState<StrategyLedgerEntry[] | null>(null);
+  const [ledgerError, setLedgerError] = useState("");
+  const all =[...library.templates, ...library.strategies];
   const current = drafts[selectedId] ?? all.find(item => item.id === selectedId);
   const activeMembers = members.filter(member => !member.hidden && member.account_id);
   const names = useMemo(() => new Map(catalog.map(item => [item.id, item.name])), [catalog]);
@@ -63,6 +66,13 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     if (fullScreen) document.body.style.overflow = "hidden";
     return () => { document.removeEventListener("keydown", key); if (fullScreen) document.body.style.overflow = previous; };
   }, [fullScreen, copyOpen, assignOpen]);
+  // History is a side panel: its failure must never block editing, so it
+  // reports into its own error slot rather than the studio's.
+  function refreshLedger(): void {
+    fetchStrategyLedger().then(next => { setLedger(next.entries); setLedgerError(""); },
+      failure => setLedgerError(messageOf(failure)));
+  }
+  useEffect(refreshLedger, []);
 
   if (!current) return <p role="alert">No strategy templates available.</p>;
   const strategy = current;
@@ -153,6 +163,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
       if (!result) throw new Error("The saved strategy was not returned. Reload the library before retrying.");
       setLibrary(next); setDrafts(previous => { const copy = { ...previous }; delete copy[strategy.id]; delete copy[result.id]; return copy; });
       setSelectedId(result.id); setMessage(`Saved ${result.name} v${result.version}. Existing assignments stay on their saved version.`);
+      refreshLedger();
     } catch (failure) { setError(messageOf(failure)); } finally { setBusy(false); }
   }
   async function assign(): Promise<void> {
@@ -162,6 +173,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     try {
       const next = await assignFleetStrategy(strategy.id, strategy.version, workers, saved.revision);
       onPublished(next); setAssignOpen(false); setMessage(`${strategy.name} v${strategy.version} assigned to ${workers.length} emulator${workers.length === 1 ? "" : "s"}. Takes effect at the next safe decision.`);
+      refreshLedger();
     } catch (failure) { setError(messageOf(failure)); } finally { setBusy(false); }
   }
   async function inspectDecisions(): Promise<void> {
@@ -245,6 +257,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     </div>}
     {preview && <div className={styles.preview}><p className={styles.hint}>Hypothetical fleet-wide assignment · compare before choosing which emulators to assign.</p><RouteInspector preview={preview} members={members} /></div>}
     <div className={styles.assignmentsSummary}><h3>Fleet assignments</h3>{activeMembers.map(member => { const assignment = saved.assignments?.[member.name]; return <div key={member.name}><Monitor size={15} /><strong>{member.name}</strong><span>{assignment && assignment.account_id === member.account_id ? `${assignment.strategy_name} · v${assignment.strategy_version}` : assignment ? "Account changed · assignment inactive" : "Current fleet route"}</span></div>; })}</div>
+    <StrategyHistory entries={ledger} error={ledgerError} />
     <Dialog.Root open={copyOpen || assignOpen} onOpenChange={open => { if (!open && !busy) { setCopyOpen(false); setAssignOpen(false); } }}><Dialog.Portal><Dialog.Backdrop className={styles.modalBackdrop} /><Dialog.Popup className={`${styles.studio} ${styles.modal}`}>
       <div className={styles.modalHeading}><Dialog.Title>{copyOpen ? copyMode === "scratch" ? "Create strategy from scratch" : "Create your strategy" : "Assign saved strategy"}</Dialog.Title><button className={styles.iconButton} disabled={busy} type="button" aria-label="Close dialog" onClick={() => { setCopyOpen(false); setAssignOpen(false); }}><X size={18} /></button></div>
       {copyOpen ? <><Dialog.Description className={styles.hint}>{copyMode === "scratch" ? "Start with empty, non-spending purchase lanes. Add blocks, then save before assigning." : `Start from ${strategy.name}. The original stays protected.`}</Dialog.Description><label className={styles.fields}>Strategy name<input autoFocus maxLength={80} value={copyName} onChange={event => setCopyName(event.target.value)} onKeyDown={event => { if (event.key === "Enter") createCopy(); }} /></label></>

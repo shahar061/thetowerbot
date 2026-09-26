@@ -7,8 +7,9 @@ import { StrategyCanvas } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
 
 vi.mock("./studio.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
-const api = vi.hoisted(() => ({ save: vi.fn(), assign: vi.fn(), preview: vi.fn() }));
-vi.mock("@/lib/api", () => ({ saveFleetStrategy: api.save, assignFleetStrategy: api.assign, previewBuildRoute: api.preview }));
+const api = vi.hoisted(() => ({ save: vi.fn(), assign: vi.fn(), preview: vi.fn(), ledger: vi.fn() }));
+vi.mock("@/lib/api", () => ({ saveFleetStrategy: api.save, assignFleetStrategy: api.assign, previewBuildRoute: api.preview,
+  fetchStrategyLedger: api.ledger }));
 
 const baseline: BuildRouteDocument["baseline"] = {
   workshop: { id: "workshop.default", mode: "blocks", blocks: [
@@ -38,6 +39,7 @@ beforeEach(() => {
     id: "custom-1", builtin: false, name: input.name, source_template: input.source_template, baseline: input.baseline }] }));
   api.assign.mockResolvedValue({ ...route, revision: 5 });
   api.preview.mockResolvedValue({ saved_revision: 4, proposed_revision: 5, members: [] });
+  api.ledger.mockResolvedValue({ entries: [] });
 });
 
 function setup(): void {
@@ -108,6 +110,29 @@ test("assigns the saved version only to selected visible current accounts", asyn
   fireEvent.click(within(dialog).getByRole("button", { name: /Air_38/ }));
   fireEvent.click(within(dialog).getByRole("button", { name: "Assign to 1 emulator" }));
   await waitFor(() => expect(api.assign).toHaveBeenCalledWith("turtle", 1, [{ worker: "Air_39", account_id: "account-b" }], 4));
+});
+
+test("loads the strategy history on open and refreshes it after an assignment", async () => {
+  api.ledger.mockResolvedValueOnce({ entries: [] }).mockResolvedValueOnce({ entries: [
+    { kind: "assigned", at: 1_790_000_000, route_revision: 5, actor: "operator", worker: "Air_39", account_id: "account-b",
+      before: null, after: { strategy_id: "turtle", strategy_version: 1, strategy_name: "Turtle" } }] });
+  setup();
+  const history = screen.getByRole("region", { name: "History" });
+  expect(await within(history).findByText("No strategy changes yet")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+  const dialog = screen.getByRole("dialog", { name: "Assign saved strategy" });
+  fireEvent.click(within(dialog).getByRole("button", { name: /Air_38/ }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Assign to 1 emulator" }));
+  expect(await within(history).findByText("none → Turtle v1")).toBeInTheDocument();
+  expect(api.ledger).toHaveBeenCalledTimes(2);
+});
+
+test("refreshes the strategy history after a save", async () => {
+  setup();
+  await waitFor(() => expect(api.ledger).toHaveBeenCalledTimes(1));
+  copy();
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  await waitFor(() => expect(api.ledger).toHaveBeenCalledTimes(2));
 });
 
 test("keeps a side palette in fullscreen and exits with Escape", () => {

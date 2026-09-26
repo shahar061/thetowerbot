@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
 import json
+import time
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
@@ -112,10 +113,12 @@ class StrategyLibrary:
                 raise ValueError("saved strategy not found")
             if previous and previous[-1]["source_template"] != source_template:
                 raise ValueError("cannot change strategy source template")
+            # saved_at puts edits on the strategy ledger's timeline. Rows from
+            # before it existed simply lack it; nothing may require it.
             state["versions"].append({
                 "id": strategy_id or f"strategy-{uuid4().hex}", "name": name.strip(),
                 "version": len(previous) + 1, "source_template": source_template,
-                "baseline": validated, "builtin": False,
+                "baseline": validated, "builtin": False, "saved_at": time.time(),
             })
             state["revision"] += 1
             _write_json_atomic(self.path, state)

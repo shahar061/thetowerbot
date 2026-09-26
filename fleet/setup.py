@@ -346,8 +346,24 @@ class FleetSetupService:
                 "baseline": saved["baseline"],
             })
             overrides.pop(name, None)
-        return store.publish(replace(current, assignments=assignments, overrides=overrides),
-                             expected_revision, "operator")
+        published = store.publish(replace(current, assignments=assignments, overrides=overrides),
+                                  expected_revision, "operator")
+        # The ledger page is the full record; this line is for whoever is
+        # reading the coordinator log when a worker's behaviour changes.
+        for worker in workers:
+            name = worker["worker"]
+            was = current.assignments.get(name)
+            logger.info("Strategy assigned: %s → %s v%d (was %s), route rev %d",
+                        name, saved["name"], saved["version"],
+                        "unassigned" if was is None
+                        else f"{was.strategy_name} v{was.strategy_version}",
+                        published.revision)
+        return published
+
+    def strategy_ledger(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Assignment and edit history, derived from files this root already keeps."""
+        from fleet.strategy_ledger import read_ledger
+        return read_ledger(self.root, limit)
 
     def build_route_validate_bindings(self, route: Any) -> None:
         """Reject a draft bound to an account that has since been replaced."""

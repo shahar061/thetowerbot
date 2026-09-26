@@ -1574,6 +1574,14 @@ def create_app(
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             raise _build_route_error(exc) from exc
 
+    @app.get("/api/fleet/reroll/strategies/ledger")
+    def fleet_strategy_ledger(limit: int = 200) -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "strategy_ledger", None)):
+            raise HTTPException(status_code=503, detail="strategy_library_unavailable")
+        # Derived from history on each read, so there is no failure mode left
+        # to translate: unreadable files only cost their own entries.
+        return {"entries": fleet.strategy_ledger(max(1, min(limit, 1000)))}
+
     @app.get("/api/fleet/reroll/route/revisions")
     def fleet_build_route_revisions() -> dict[str, Any]:
         try:
