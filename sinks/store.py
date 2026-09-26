@@ -129,6 +129,8 @@ class StoreSink(QueueSink):
                     coins=event.coins,
                     tier=event.tier,
                     abandoned=event.abandoned,
+                    killed_by=event.killed_by,
+                    ad_coins=event.ad_coins,
                     scan_count=self._scans,
                     tap_count=self._taps,
                 )

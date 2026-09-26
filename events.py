@@ -117,6 +117,8 @@ class RunEnded(Event):
     coins: int | None = None
     tier: int | None = None
     abandoned: bool = False
+    killed_by: str | None = None
+    ad_coins: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
