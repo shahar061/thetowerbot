@@ -1,6 +1,6 @@
 """Walk the in-battle speed arrows and cut a readout template per step.
 
-config.SPEED_VALUES ships with x1.0 alone, because x1.0 is the only speed
+config.SPEED_TEMPLATE_VALUES shipped with x1.0 alone, because x1.0 is the only speed
 there is a committed frame for. This is the tool that fills in the rest: it
 taps `+` on a live run, saves the readout crop each time it changes, and
 stops when tapping stops changing it - which is how the account's actual
@@ -20,7 +20,7 @@ Then:
   1. Look at the files it wrote in templates/speed/harvest/.
   2. Rename each to templates/speed/x<value>.png - x1.0, x2.0, and so on,
      one decimal place, matching what the crop shows.
-  3. Put the same values in config.SPEED_VALUES, ascending.
+  3. Put the same values in config.SPEED_TEMPLATE_VALUES, ascending.
   4. Run: uv run pytest tests/test_speed_loop.py -k template
 
 Step 4 is the check that they agree; it fails naming any value with no
@@ -148,7 +148,7 @@ def main(argv: list[str]) -> int:
 
     print(f"\nWrote {len(crops)} crops to {OUT_DIR}")
     print("Rename each to templates/speed/x<value>.png, then list the values")
-    print("in config.SPEED_VALUES and run:")
+    print("in config.SPEED_TEMPLATE_VALUES and run:")
     print("  uv run pytest tests/test_speed_loop.py -k template")
     return 0
 

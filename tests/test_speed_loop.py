@@ -119,6 +119,23 @@ def test_a_target_above_the_reading_climbs(in_run: TowerBot) -> None:
     assert tapped_in(PLUS_BOX, in_run.device.taps)
 
 
+def test_the_battle_ocr_label_reads_speeds_past_the_templates(
+    in_run: TowerBot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The frame's pixels match the x1.0 template, but the battle OCR reads
+    "x2.5" in the widget. The OCR wins, so a x2.0 target steps DOWN - which
+    proves the scan loop hands its battle read to the speed reader."""
+    import ocr
+
+    label = ocr.TextBox("x2.5", .99, config.Rect(767, 1398, 80, 39))
+    monkeypatch.setattr(ocr.FrameReads, "battle", lambda self: (label,))
+    in_run.controls.apply({"target_speed": 2.0})
+    in_run.run_once()
+
+    assert tapped_in(MINUS_BOX, in_run.device.taps)
+    assert not tapped_in(PLUS_BOX, in_run.device.taps)
+
+
 def test_reroll_raises_speed_before_any_other_battle_action(
     in_run: TowerBot, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,13 +236,14 @@ def test_no_target_leaves_the_speed_alone(bot_in_run_paused: TowerBot) -> None:
 
 
 def test_every_listed_speed_has_a_readout_template() -> None:
-    """config.SPEED_VALUES and templates/speed/ have to agree: a value listed
-    without its template is a FileNotFoundError out of the scan loop the
-    first time the bot reads the widget. This is the check that lets read()
-    call templates.get() straight, with no defensive skip."""
+    """config.SPEED_TEMPLATE_VALUES and templates/speed/ have to agree: a
+    value listed without its template is a FileNotFoundError out of the scan
+    loop the first time the bot reads the widget. This is the check that lets
+    read() call templates.get() straight, with no defensive skip."""
+    assert set(config.SPEED_TEMPLATE_VALUES) <= set(config.SPEED_VALUES)
     missing = [
         value
-        for value in config.SPEED_VALUES
+        for value in config.SPEED_TEMPLATE_VALUES
         if not (config.TEMPLATE_DIR / config.speed_template(value)).exists()
     ]
     assert not missing, f"speeds with no readout template: {missing}"
@@ -233,7 +251,7 @@ def test_every_listed_speed_has_a_readout_template() -> None:
 
 def test_every_targetable_speed_is_one_the_bot_can_recognise() -> None:
     """TARGET_SPEEDS is a subset of SPEED_VALUES, never a list of its own. A
-    target with no readout template is one settle() would tap toward forever
+    target read() cannot report is one settle() would tap toward forever
     without ever matching it."""
     assert set(config.TARGET_SPEEDS) <= set(config.SPEED_VALUES)
 

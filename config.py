@@ -856,15 +856,20 @@ SPEED_PLUS_REGION: Region = Region(dx=864, dy=-265, w=65, h=66)
 # longer label ("x10.0") still fits without re-measuring.
 SPEED_READOUT_REGION: Region = Region(dx=733, dy=-255, w=126, h=50)
 
-# Every speed the arrows step through, in ascending order, each with a
-# readout template at templates/speed/<label>.png. Harvested off a live run
-# by tools/harvest_speed_glyphs.py, which is also how this list grows: a
-# value here without a template is a crash the first time the bot reads the
-# widget, so never add one by hand.
-#
-# x2.0 was harvested from a live account whose Game Speed Lv.1 had finished.
-# Later levels need their own measured readout templates before being added.
-SPEED_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0)
+# Every speed the arrows step through, in ascending order. x1.5 is the base
+# ceiling and each Game Speed research adds x0.5, up to x5.0 with all seven.
+# speed.read() takes these from the battle OCR's label in the readout region.
+SPEED_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0)
+
+# The speeds with a readout template at templates/speed/<label>.png, read
+# when the OCR misses the label. Harvested off a live run by
+# tools/harvest_speed_glyphs.py, which is also how this list grows: a value
+# here without a template is a crash the first time the bot reads the widget,
+# so never add one by hand.
+SPEED_TEMPLATE_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0)
+
+# An OCR speed label must be read at least this confidently to be believed.
+SPEED_OCR_MIN_CONFIDENCE: float = .9
 
 # The subset a strategy may aim for. x0.0 is deliberately excluded, and the
 # asymmetry with SPEED_VALUES above is the whole point.
