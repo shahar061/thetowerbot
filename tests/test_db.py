@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 import db
+import events
+from sinks.store import to_row
 
 
 def make_db(tmp_path: Path) -> sqlite3.Connection:
@@ -439,3 +441,64 @@ def test_run_purchases_come_back_in_purchase_order(tmp_path: Path) -> None:
         db.insert_event(conn, a_purchase(seq))
 
     assert [p["seq"] for p in db.run_purchases(conn, 1)] == [1, 2, 3]
+
+
+def _buy(conn: sqlite3.Connection, seq: int, run_id: int, upgrade_id: str | None, price: int | None) -> None:
+    db.insert_event(conn, to_row(events.BattlePurchased(
+        seq=seq, ts=100.0 + seq, item="x", upgrade_id=upgrade_id, price=price, value=None), run_id))
+
+
+def _finish(conn: sqlite3.Connection, run_id: int, **overrides: object) -> None:
+    fields: dict[str, object] = dict(started_at=0.0, ended_at=100.0 + run_id, wave=10, coins=50, tier=1,
+                                     abandoned=False, scan_count=0, tap_count=0)
+    fields.update(overrides)
+    db.finish_run(conn, run_id, **fields)  # type: ignore[arg-type]
+
+
+def test_connect_adds_killed_by_and_ad_coins_to_an_old_runs_table(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, "
+                "wave INTEGER, coins INTEGER, tier INTEGER, abandoned INTEGER NOT NULL DEFAULT 0, "
+                "scan_count INTEGER NOT NULL DEFAULT 0, tap_count INTEGER NOT NULL DEFAULT 0)")
+    old.execute("INSERT INTO runs (id, started_at) VALUES (1, 5.0)")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    assert {"killed_by", "ad_coins", "purpose"} <= columns
+    assert db.list_runs(conn)[0]["killed_by"] is None
+
+
+def test_finish_run_stores_killed_by_and_ad_coins(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _finish(conn, 1, killed_by="Tank", ad_coins=40)
+    run = db.list_runs(conn)[0]
+    assert (run["killed_by"], run["ad_coins"]) == ("Tank", 40)
+
+
+def test_finish_run_summarizes_purchases_once_per_upgrade(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    db.start_run(conn, 1, started_at=0.0)
+    _buy(conn, 1, 1, "damage", 10)
+    _buy(conn, 2, 1, "damage", None)
+    _buy(conn, 3, 1, "health", 7)
+    _buy(conn, 4, 1, None, 3)          # unattributable: skipped
+    _finish(conn, 1)
+    _finish(conn, 1)                   # repeated finish must not double count
+    rows = {r["upgrade_id"]: dict(r) for r in conn.execute("SELECT * FROM run_upgrades WHERE run_id = 1")}
+    assert set(rows) == {"damage", "health"}
+    assert (rows["damage"]["levels"], rows["damage"]["spent"], rows["damage"]["unpriced"]) == (2, 10, 1)
+    assert (rows["health"]["levels"], rows["health"]["spent"], rows["health"]["unpriced"]) == (1, 7, 0)
+
+
+def test_connect_backfills_summaries_for_finished_runs_with_purchase_events(tmp_path: Path) -> None:
+    path = tmp_path / "bot.db"
+    conn = db.connect(path)
+    _finish(conn, 1)
+    _buy(conn, 1, 1, "damage", 10)
+    conn.execute("DELETE FROM run_upgrades")
+    conn.commit()
+    conn.close()
+    conn = db.connect(path)
+    assert conn.execute("SELECT levels FROM run_upgrades WHERE run_id = 1 AND upgrade_id = 'damage'").fetchone()[0] == 1
