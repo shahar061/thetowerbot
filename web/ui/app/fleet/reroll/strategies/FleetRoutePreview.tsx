@@ -19,6 +19,15 @@ function stateLabel(state: string | null): string {
   return "Unknown";
 }
 
+// Workers republish their plan only from the main menu, so a plan goes quiet
+// for a whole run. Keep showing it, but say how old it is.
+function planAge(observedAt: number | null | undefined): string | null {
+  if (typeof observedAt !== "number") return null;
+  const seconds = Math.floor(Date.now() / 1000 - observedAt);
+  if (seconds < 120) return null;
+  return seconds < 3600 ? `as of ${Math.floor(seconds / 60)}m ago` : `as of ${Math.floor(seconds / 3600)}h ago`;
+}
+
 export function FleetRoutePreview({ members, savedRevision, showHistory = false }: {
   members: RerollMember[]; savedRevision: number | null; showHistory?: boolean;
 }): React.JSX.Element {
@@ -67,7 +76,8 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
         const priceSource = evaluation?.trace.price_source ?? plan?.price_source ?? null;
         const wallet = evaluation?.decision?.wallet_coins ?? plan?.wallet_coins ?? null;
         const reason = evaluation?.trace.reason ?? plan?.reason ?? "Waiting for verified Workshop observations.";
-        const status = stateLabel(evaluation?.status ?? (plan ? "projected" : null));
+        const age = evaluation ? null : planAge(plan?.observed_at);
+        const status = [stateLabel(evaluation?.status ?? (plan ? "projected" : null)), age].filter(Boolean).join(" · ");
         const revision = evaluation?.revision ?? member.route_revision_applied ?? null;
         const revisionState = member.route_error ? "Route blocked" : member.state === "paused" ? "Pending until next spend" :
           savedRevision === null ? "Route revision unknown" : revision === savedRevision ? "Applied" : "Route revision pending";
