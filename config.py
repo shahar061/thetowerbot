@@ -257,6 +257,14 @@ HELD_PAGE_SCAN_LIMIT: int = 10
 # few blocked scans a tap's frame transition legitimately costs.
 RECOVERY_BLOCKED_WALK_LIMIT: int = 30
 
+# The no-progress watchdog (stall_watchdog.py). Five inputs in a row that each
+# changed nothing, or five minutes blocked on an UNKNOWN frame, is a worker
+# stuck behind something no reader knows - an unseen popup - rather than a
+# slow transition. It then tries one safe-listed button, and pauses if that
+# does not get it moving.
+STALL_NO_EFFECT_LIMIT: int = 5
+STALL_BLOCKED_SECONDS: float = 300.0
+
 # --- Unknown-screen snapshots ---------------------------------------------
 UNKNOWN_DIR: Path = Path(__file__).parent / "unknown"
 UNKNOWN_MIN_INTERVAL: float = 30.0

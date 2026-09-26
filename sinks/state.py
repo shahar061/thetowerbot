@@ -30,6 +30,7 @@ class BotState:
         self.taps: Counter[str] = Counter()
         self.skips: Counter[str] = Counter()
         self.last_error: str | None = None
+        self.stalled: str | None = None
         self.started = time.monotonic()
         self.tail: deque[str] = deque(maxlen=tail)
         self.run_id: int | None = None
@@ -56,6 +57,7 @@ class BotState:
             self.run_taps = Counter()
             self.wallet = None
             self.last_error = None
+            self.stalled = None
             self.taps = Counter()
             self.skips = Counter()
             self.tail.clear()
@@ -95,6 +97,14 @@ class BotState:
                 case events.BotError():
                     self.last_error = event.message
                     self.tail.append(render(event))
+                case events.WorkerStalled() if event.stage == "paused":
+                    # Unlike last_error it survives the scans that follow:
+                    # a paused bot keeps scanning, and this is why it paused.
+                    self.stalled = event.reason
+                    self.tail.append(render(event))
+                case events.ControlChanged() if event.changed.get("paused") is False:
+                    self.stalled = None
+                    self.tail.append(render(event))
                 case _:
                     self.tail.append(render(event))
 
@@ -128,6 +138,7 @@ class BotState:
                 "run": run,
                 "wallet": self.wallet,
                 "last_error": self.last_error,
+                "stalled": self.stalled,
                 "tail": list(self.tail),
             }
 

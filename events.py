@@ -271,6 +271,17 @@ class ShoppingEnded(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class WorkerStalled(Event):
+    """The no-progress watchdog acted: stage "escape" pressed a safe-listed
+    button, stage "paused" gave up and paused the worker."""
+
+    reason: str
+    stage: str
+    button: str = ""
+    snapshot_path: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
 class UnknownScreen(Event):
     snapshot_path: str
     best_anchor: str
