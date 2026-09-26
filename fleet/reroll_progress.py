@@ -579,7 +579,8 @@ class RerollProgress:
         changes: list[tuple[float, int, int | None, int | None]] = []
         with db.reader(self.root / "tower_bot.db") as conn:
             rows = conn.execute("SELECT id,ts,kind,item,category,delta,balance_after,observed,detail,reason "
-                                "FROM ledger WHERE dry_run=0 AND ts>=? AND "
+                                # ROUTE_DECISION audits a weighted draw; it moves no coins.
+                                "FROM ledger WHERE dry_run=0 AND ts>=? AND kind!='ROUTE_DECISION' AND "
                                 "(currency='coins' OR (currency IS NULL AND kind='WORKSHOP_BUY') "
                                 "OR (kind='BUY_SKIPPED' AND reason='unconfirmed')) "
                                 "ORDER BY ts,id", (earliest,)).fetchall()
@@ -670,8 +671,16 @@ class RerollProgress:
     def workshop_worthwhile(self) -> bool:
         if self.route_error is not None:
             return False
-        plan = (self._route_evaluation.decision if self._route_evaluation is not None
-                and self._route_evaluation.decision is not None else self.decision())
+        if self._route_evaluation is not None and self._route_evaluation.decision is not None:
+            # The route decision was cached at the last menu visit. Asked on
+            # GAME_OVER, its wallet would never grow: the worker retries
+            # instead of going home, so no menu read ever refreshes it. Carry
+            # the choice forward with the run-payout projection instead.
+            _, purchases = self._history()
+            wallet, _ = self._pricing(purchases)
+            plan = replace(self._route_evaluation.decision, wallet_coins=wallet)
+        else:
+            plan = self.decision()
         worthwhile = (plan.upgrade_id is not None and
                       (plan.wallet_coins is None or plan.wallet_coins > 0) and
                       (plan.price is None or plan.wallet_coins is None or plan.wallet_coins >= plan.price))

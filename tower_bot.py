@@ -98,7 +98,7 @@ from sinks.sse import SseSink
 from sinks.state import BotState, StateSink
 from sinks.store import StoreSink
 from sinks.tui import TuiSink
-from strategy import MIN_INTERVAL, ControlError, Strategy, StrategyStore
+from strategy import MIN_INTERVAL, ControlError, Shopping, Strategy, StrategyStore
 from telegram_report import TelegramConfig, TelegramReporter
 from telegram_settings import TelegramSettingsStore, legacy_telegram_interval_from_env
 
@@ -203,9 +203,11 @@ class TowerBot:
                                           if reroll_progress is not None else None)
         self._last_lab_confirmation: tuple[float | None, int, int] | None = None
         self._reroll_shopping_policy = None
+        self._reroll_shopping_base = None
         if reroll_progress is not None:
             self.shopping.reroll_observe_price = reroll_progress.observe_price
             self.shopping.reroll_observe_prices = getattr(reroll_progress, "observe_prices", None)
+            self.shopping.reroll_replan = self._replan_reroll_shopping
         self.shopping.observations = self.autopilot.state
         # Read once, here, rather than per scan: both configure an object
         # that carries state across scans (the tracker's part-confirmed
@@ -609,6 +611,14 @@ class TowerBot:
         tier = self._ladder_tier
         best = self._best_wave if tier is None else self._tier_best_wave.get(tier)
         return best, self._claimed_wave.get(tier)
+
+    def _replan_reroll_shopping(self) -> Shopping | None:
+        """The strategy's next Workshop choice, mid-visit, after a purchase."""
+        if self.reroll_progress is None or self._reroll_shopping_base is None:
+            return None
+        policy = self.reroll_progress.shopping_policy(self._reroll_shopping_base)
+        self._reroll_shopping_policy = policy
+        return policy
 
     def _claim_owed(self, settings: Any) -> bool:
         """True if a due free claim is worth leaving the death screen for.
@@ -1147,6 +1157,7 @@ class TowerBot:
                         shopping_policy, enabled=False, workshop=())
                     self._reroll_shopping_policy = None
             elif state is screens.ScreenState.MAIN_MENU and not self.shopping.reconciliation_pending:
+                self._reroll_shopping_base = shopping_policy
                 shopping_policy = self.reroll_progress.shopping_policy(shopping_policy)
                 self._reroll_shopping_policy = shopping_policy
 

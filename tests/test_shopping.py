@@ -2156,3 +2156,40 @@ def test_zero_budget_price_probe_reads_expensive_reference_and_every_row(
     assert neighbors[0] == {'damage':100,'attack_speed':40,'critical_chance':20}
     assert device.taps == [] and session._pending is None
     assert session._categories == []
+
+
+# -- a strategy replans after every verified purchase ------------------------
+def test_a_strategy_visit_replans_after_each_purchase_until_coins_run_out(
+    session, monkeypatch
+) -> None:
+    """A strategy visit is budgeted to one planned item. After each verified
+    purchase the strategy is asked again, so the visit keeps spending on its
+    next choice instead of returning to battle with coins left."""
+    device = FakeDevice()
+    prices = [60, 85, 110, 5_000]
+    _escalating_row(session, monkeypatch, prices, coins=300)
+    def planned() -> Shopping:
+        price = prices[min(session._taps, len(prices) - 1)]
+        return a_policy(armed=True, coin_budget=price, workshop=(
+            ShoppingRule(name="Damage", category="ATTACK"),))
+    session.reroll_replan = planned
+    policy = planned()
+    session.begin(policy, run_count=1)
+
+    _keep_buying(session, device, policy)
+
+    assert [e.price for e in session._bus.of_type("Purchased")] == [60, 85, 110]
+    assert [e.reason for e in session._bus.of_type("PurchaseSkipped")] == ["unaffordable"]
+
+
+def test_a_strategy_visit_stops_when_the_replan_declines(session, monkeypatch) -> None:
+    device = FakeDevice()
+    _escalating_row(session, monkeypatch, [60, 85, 110], coins=300)
+    policy = a_policy(armed=True, coin_budget=60, workshop=(
+        ShoppingRule(name="Damage", category="ATTACK"),))
+    session.reroll_replan = lambda: dataclasses.replace(policy, enabled=False)
+    session.begin(policy, run_count=1)
+
+    _keep_buying(session, device, policy)
+
+    assert [e.price for e in session._bus.of_type("Purchased")] == [60]
