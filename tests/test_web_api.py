@@ -299,6 +299,26 @@ def test_run_upgrades_group_levels_by_workshop_tab_with_max_levels(harness) -> N
     assert (run["killed_by"], run["buys"], run["wave_record"]) == ("Tank", 2, "standing")
 
 
+def test_run_upgrades_totals_ignore_purchases_with_no_ladder_entry(harness) -> None:
+    """A stored `run_upgrades` row for an upgrade id the catalog does not
+    list (or that has no level ladder) must not inflate the header totals
+    past what the cards actually show."""
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.start_run(conn, 1, started_at=0.0)
+    db.insert_event(conn, a_battle_purchase(1))
+    db.insert_event(conn, a_battle_purchase(2, price=900, detail={"item": "?", "upgrade_id": "nonesuch"}))
+    db.finish_run(conn, 1, started_at=0.0, ended_at=60.0, wave=11, coins=80, tier=1,
+                  abandoned=False, scan_count=0, tap_count=0)
+    conn.close()
+
+    body = client.get("/api/runs/1/upgrades").json()
+
+    listed_levels = sum(item["levels"] for c in body["categories"] for item in c["items"])
+    assert listed_levels == 1
+    assert body["totals"] == {"levels": 1, "spent": 120, "unpriced": 0}
+
+
 def test_run_upgrades_is_null_without_a_record(harness) -> None:
     client, _, _, _, db_path, _ = harness
     conn = db.connect(db_path)

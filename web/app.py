@@ -959,7 +959,12 @@ def create_app(
                     "spent": row.get("spent", 0), "unpriced": row.get("unpriced", 0),
                 })
             categories.append({"name": category, "items": items})
-        totals = {key: sum(row[key] for row in rows) for key in ("levels", "spent", "unpriced")}
+        # Summed from the listed items, not `rows`: a stored upgrade_id with
+        # no ladder entry (uncatalogued, or an unlock with no level ladder)
+        # never becomes a card, so it must not inflate the header past what
+        # the cards actually show.
+        listed = [item for category in categories for item in category["items"]]
+        totals = {key: sum(item[key] for item in listed) for key in ("levels", "spent", "unpriced")}
         return {"categories": categories, "totals": totals}
 
     @app.get("/api/events/stream")
