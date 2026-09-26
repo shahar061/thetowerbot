@@ -132,6 +132,19 @@ def test_legacy_limit_edit_wins_over_a_stale_rule() -> None:
     assert RouteDocument.from_dict(only_rules).baseline.workshop.coin_spend_limit_pct == 55
 
 
+def test_dual_written_limits_load_consistently() -> None:
+    raw = RouteDocument.from_dict(_route()).to_dict()
+    raw["baseline"]["workshop"]["coin_spend_limit_pct"] = 40
+    raw["baseline"]["rules"]["coins"]["workshop_spend_limit_pct"] = 40
+    raw["baseline"]["gems"]["spend_limit_pct"] = 60
+    raw["baseline"]["rules"]["gems"]["spend_limit_pct"] = 60
+    route = RouteDocument.from_dict(raw)
+    assert route.baseline.rules.coins.workshop_spend_limit_pct == 40
+    assert route.baseline.rules.gems.spend_limit_pct == 60
+    assert route.baseline.workshop.coin_spend_limit_pct == 40
+    assert route.baseline.gems.spend_limit_pct == 60
+
+
 def test_override_coin_limit_maps_to_the_rule() -> None:
     raw = _route()
     raw["overrides"] = {"Air_38": {"account_id": "a1", "patches": {

@@ -51,6 +51,16 @@ def test_rollback_creates_new_revision_without_mutating_history(tmp_path: Path) 
     assert [route.revision for route in store.revisions()] == [one.revision, two.revision, rolled.revision]
 
 
+def test_publishing_a_rules_only_change_lists_rules_as_changed(tmp_path: Path) -> None:
+    store = BuildRouteStore(tmp_path)
+    one = store.publish(RouteDocument.compatibility(), 0, "operator")
+    changed = replace(one, baseline=replace(one.baseline, rules=replace(
+        one.baseline.rules, labs=replace(one.baseline.rules.labs, auto_start=False))))
+    store.publish(changed, 1, "operator")
+    history = json.loads((tmp_path / "build-route-history" / "2.json").read_text())
+    assert history["audit"]["changed_rule_ids"] == ["rules"]
+
+
 def test_failed_atomic_replace_keeps_previous_revision_readable(tmp_path: Path,
                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
     store = BuildRouteStore(tmp_path)

@@ -395,7 +395,10 @@ def _migrated_rules(value: object, workshop_raw: Mapping[str, object],
                     gems: GemRoute) -> RouteRules:
     """Rules own the moved limits. Without rules, the old fields fill them; with
     rules, an explicit old field that disagrees is a pre-rules writer's edit and
-    wins, so an older client's change is never silently dropped."""
+    wins, so an older client's change is never silently dropped.
+
+    Contract: every rules-aware writer must write BOTH the old field and the
+    rule; the old field wins whenever it is explicitly present."""
     if value is None:
         return RouteRules().with_limits(workshop.coin_spend_limit_pct, gems.spend_limit_pct)
     rules = RouteRules.from_dict(value)
