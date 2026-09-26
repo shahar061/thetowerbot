@@ -191,7 +191,8 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                 observed=event.gems_before if cards else event.coins_before,
                 dry_run=event.dry_run,
                 detail={**({"verdict": event.verdict} if event.verdict else {}),
-                        **({"transaction_key": event.transaction_key} if event.transaction_key else {})},
+                        **({"transaction_key": event.transaction_key} if event.transaction_key else {}),
+                        **({"reason": event.reason} if event.reason else {})},
                 **base,
             ),)
 

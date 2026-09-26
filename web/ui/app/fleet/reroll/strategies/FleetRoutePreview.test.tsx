@@ -97,3 +97,17 @@ test("names each emulator's assigned strategy and flags one left behind by an ac
   expect(within(cards[1]).getByText("Strategy: Stale v1 · inactive, account changed")).toBeInTheDocument();
   expect(within(cards[2]).getByText("Strategy: Fleet baseline")).toBeInTheDocument();
 });
+
+test("lists the latest Workshop buys with their cost and reason", () => {
+  const member = structuredClone(members[0]);
+  member.recent_workshop_purchases = [
+    { at: 1, item: "Coins / Kill Bonus", category: "UTILITY", cost: 126, reason: "Random draw (71%)" },
+    { at: 0, item: "Thorns", category: "DEFENSE", cost: 60, reason: null },
+  ];
+  render(<FleetRoutePreview members={[member]} savedRevision={2} />);
+  const list = screen.getByRole("list", { name: "Recent Workshop buys for Air_38" });
+  const rows = within(list).getAllByRole("listitem");
+  expect(within(rows[0]).getByText("Coins / Kill Bonus")).toBeInTheDocument();
+  expect(within(rows[0]).getByText("126 coins · Random draw (71%)")).toBeInTheDocument();
+  expect(within(rows[1]).getByText("60 coins · Reason not recorded")).toBeInTheDocument();
+});

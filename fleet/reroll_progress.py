@@ -668,6 +668,16 @@ class RerollProgress:
         self.observe_prices({upgrade_id: price}, wallet)
         self._publish(self.decision())
 
+    def purchase_reason(self, upgrade_id: str) -> str | None:
+        """Why the current route decision picked this upgrade, if it did."""
+        evaluation = self._route_evaluation
+        if evaluation is None or evaluation.decision is None or evaluation.decision.upgrade_id != upgrade_id:
+            return None
+        odds = evaluation.trace.eligible_odds.get(upgrade_id)
+        if odds is None:
+            return evaluation.trace.reason
+        return f"Random draw ({odds:.0%}) · {evaluation.trace.reason}"
+
     def workshop_worthwhile(self) -> bool:
         if self.route_error is not None:
             return False

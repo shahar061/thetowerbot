@@ -216,3 +216,21 @@ def test_a_weighted_draw_audit_row_does_not_erase_the_wallet(tmp_path: Path) -> 
             "INSERT INTO ledger(ts,kind,item,category,currency,dry_run,reason) "
             "VALUES (?,'ROUTE_DECISION','Damage','ATTACK','coins',0,'draw')", (time.time() + 1,))
     assert progress.route_facts().wallet_coins == 580
+
+
+def test_purchase_reason_names_a_random_draw_and_its_odds(tmp_path: Path) -> None:
+    from fleet.build_route_eval import DecisionTrace, RouteEvaluation
+    from fleet.reroll_planner import RerollDecision
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    decision = RerollDecision("account-a", "strategy", "goal", "buy", "coins_per_kill_bonus",
+                              "Coins / Kill Bonus", "UTILITY", 126, 700, None, "Eligible pool")
+    drawn = DecisionTrace("eco.stage1.pool", "Eligible pool",
+                          eligible_odds={"coins_per_kill_bonus": .714, "cash_bonus": .286})
+    progress._route_evaluation = RouteEvaluation("account-a", 1, "projected", decision, drawn, None)
+    assert progress.purchase_reason("coins_per_kill_bonus") == "Random draw (71%) · Eligible pool"
+
+    progress._route_evaluation = replace(progress._route_evaluation,
+                                         trace=DecisionTrace("turtle.thorns", "Save for goal: buy Thorns"))
+    assert progress.purchase_reason("coins_per_kill_bonus") == "Save for goal: buy Thorns"
+    assert progress.purchase_reason("damage") is None

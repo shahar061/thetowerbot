@@ -39,6 +39,11 @@ function strategyLabel(member: RerollMember, assignments: Record<string, Strateg
   return assignment.account_id === member.account_id ? name : `${name} · inactive, account changed`;
 }
 
+function boughtAgo(at: number): string {
+  const minutes = Math.max(0, Math.floor((Date.now() / 1000 - at) / 60));
+  return minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`;
+}
+
 export function FleetRoutePreview({ members, savedRevision, assignments, showHistory = false }: {
   members: RerollMember[]; savedRevision: number | null; assignments?: Record<string, StrategyAssignment>; showHistory?: boolean;
 }): React.JSX.Element {
@@ -136,6 +141,15 @@ export function FleetRoutePreview({ members, savedRevision, assignments, showHis
               {resources ? <><p>Gems: {resources.gem_step.action.replaceAll("_", " ")} · {resources.gem_step.status}</p><p>Labs: {resources.lab_step.action.replaceAll("_", " ")} · {resources.lab_step.status}</p></> : <p>Path unknown</p>}
               <p>Gems {member.wallet_gems ?? "—"}</p></section>
           </div>
+          {!!member.recent_workshop_purchases?.length && <section className="space-y-1">
+            <h4 className="text-sm font-medium">Recent Workshop buys</h4>
+            <ol aria-label={`Recent Workshop buys for ${member.name}`} className="space-y-1">
+              {member.recent_workshop_purchases.map(buy => <li key={`${buy.at}:${buy.item}`} className="rounded-lg border border-border bg-background/40 px-2 py-1 text-xs">
+                <div className="flex justify-between gap-2"><span className="font-medium">{buy.item}</span><span className="text-muted-foreground">{boughtAgo(buy.at)}</span></div>
+                <p className="text-muted-foreground">{`${buy.cost ?? "?"} coins · ${buy.reason ?? "Reason not recorded"}`}</p>
+              </li>)}
+            </ol>
+          </section>}
           {showHistory && <section aria-label={`Battle evidence for ${member.name}`} className="space-y-1">
             <h4 className="text-sm font-medium">Battle evidence</h4>
             <p className="text-xs text-muted-foreground">Confirmed purchases below describe the latest recorded run.</p>

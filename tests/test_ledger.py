@@ -820,3 +820,12 @@ def test_repair_trusts_a_catalog_price_across_an_unreadable_payout(tmp_path: Pat
                                  ("RUN_PAYOUT", None, None),
                                  ("UNEXPLAINED", 1019, 1840),
                                  ("BUY_SKIPPED", 0, 1840)]
+
+
+def test_a_workshop_purchase_keeps_the_reason_it_was_chosen() -> None:
+    (line,) = ledger.classify(
+        events.Purchased(item="Health", category="DEFENSE", price=75, coins_before=1770,
+                         dry_run=False, verdict="bought", spent=75,
+                         reason="Random draw (71%)", seq=7, ts=1000.0))
+
+    assert line.detail == {"verdict": "bought", "reason": "Random draw (71%)"}
