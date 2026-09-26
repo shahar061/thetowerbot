@@ -278,6 +278,34 @@ def test_a_run_that_bought_nothing_reports_zeroed_totals(harness) -> None:
     assert body["totals"] == {"count": 0, "spent": 0, "unpriced": 0, "by_category": {}}
 
 
+def test_run_upgrades_group_levels_by_workshop_tab_with_max_levels(harness) -> None:
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.start_run(conn, 1, started_at=0.0)
+    db.insert_event(conn, a_battle_purchase(1))
+    db.insert_event(conn, a_battle_purchase(2, price=None))
+    db.finish_run(conn, 1, started_at=0.0, ended_at=60.0, wave=11, coins=80, tier=1,
+                  abandoned=False, scan_count=0, tap_count=0, killed_by="Tank", ad_coins=0)
+    conn.close()
+    body = client.get("/api/runs/1/upgrades").json()
+    attack = next(c for c in body["categories"] if c["name"] == "ATTACK")
+    damage = next(i for i in attack["items"] if i["upgrade_id"] == "damage")
+    assert (damage["levels"], damage["spent"], damage["unpriced"], damage["max_level"]) == (2, 120, 1, 6000)
+    assert [c["name"] for c in body["categories"]] == ["ATTACK", "DEFENSE", "UTILITY"]
+    assert all(not i["upgrade_id"].startswith("unlock_") for c in body["categories"] for i in c["items"])
+    assert body["totals"] == {"levels": 2, "spent": 120, "unpriced": 1}
+    run = client.get("/api/runs").json()[0]
+    assert (run["killed_by"], run["buys"], run["wave_record"]) == ("Tank", 2, "standing")
+
+
+def test_run_upgrades_is_null_without_a_record(harness) -> None:
+    client, _, _, _, db_path, _ = harness
+    conn = db.connect(db_path)
+    db.start_run(conn, 1, started_at=0.0)
+    conn.close()
+    assert client.get("/api/runs/1/upgrades").json() is None
+
+
 def test_unknown_lists_snapshots_newest_first(harness) -> None:
     client, _, _, _, _, unknown_dir = harness
     (unknown_dir / "1000.png").write_bytes(b"one")
