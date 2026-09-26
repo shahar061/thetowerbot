@@ -146,6 +146,25 @@ def test_battle_policy_only_allows_the_evaluated_upgrade(tmp_path: Path) -> None
     assert [rule.upgrade_id for rule in policy.rules] == ["cash_per_wave"]
 
 
+def test_battle_blocks_send_autopilot_to_the_stale_priority_row(tmp_path: Path) -> None:
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["battle"] = {"mode": "blocks", "blocks": [
+        {"id": "eco", "type": "pool", "upgrade_ids": ["cash_bonus"], "selection": "priority"},
+        {"id": "hp", "type": "pool", "upgrade_ids": ["health"], "selection": "priority"}]}
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    progress._history = lambda: (1, {})  # type: ignore[method-assign]
+    now = time.time()
+    rows = {"cash_bonus": {"status": "unknown", "value": None, "price": None, "observed_at": now - 90},
+            "health": {"status": "available", "value": 1, "price": 5, "observed_at": now}}
+    policy = progress.battle_policy(AutopilotPolicy(enabled=True), rows,
+                                    run_id=7, wave=5, cash=100)
+    assert policy.observe_only
+    assert [rule.upgrade_id for rule in policy.rules] == ["cash_bonus"]
+
+
 def test_worker_projection_respects_published_never_buy(tmp_path: Path) -> None:
     worker_root = _registered(tmp_path, "Air_38", "account-a")
     progress = RerollProgress(worker_root, "account-a", AccountState())

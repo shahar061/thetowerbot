@@ -556,8 +556,8 @@ class RerollProgress:
                 from fleet.strategy_blocks import program_upgrade_ids
                 self.route_runtime.acknowledge(route.revision, self.account_id)
                 observe_only = evaluation.status != "observed" or evaluation.decision is None
-                ids = (program_upgrade_ids(effective.battle.blocks) if observe_only else
-                       (evaluation.decision.upgrade_id,))
+                ids = (evaluation.trace.observation_ids or program_upgrade_ids(effective.battle.blocks)
+                       if observe_only else (evaluation.decision.upgrade_id,))
                 return replace(base, enabled=True, preset="manual", purpose="milestone",
                     rules=tuple(UpgradeRule(uid, target=(evaluation.decision.target if not observe_only else None))
                                 for uid in ids),
