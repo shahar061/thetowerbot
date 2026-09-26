@@ -85,3 +85,15 @@ test("keeps the last selected buy visible and labels its age once the worker goe
     vi.useRealTimers();
   }
 });
+
+test("names each emulator's assigned strategy and flags one left behind by an account change", () => {
+  const assignments = {
+    Air_38: { account_id: "account-a", strategy_id: "eco", strategy_version: 2, strategy_name: "Turtle Eco Wall", baseline: {} },
+    Air_39: { account_id: "someone-else", strategy_id: "old", strategy_version: 1, strategy_name: "Stale", baseline: {} },
+  } as unknown as Parameters<typeof FleetRoutePreview>[0]["assignments"];
+  render(<FleetRoutePreview members={members} savedRevision={2} assignments={assignments} />);
+  const cards = screen.getAllByRole("article", { name: /Strategy for/ });
+  expect(within(cards[0]).getByText("Strategy: Turtle Eco Wall v2")).toBeInTheDocument();
+  expect(within(cards[1]).getByText("Strategy: Stale v1 · inactive, account changed")).toBeInTheDocument();
+  expect(within(cards[2]).getByText("Strategy: Fleet baseline")).toBeInTheDocument();
+});
