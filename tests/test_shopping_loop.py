@@ -411,3 +411,25 @@ def test_auto_start_off_visit_keeps_the_saved_lab_evidence(bot_on_main_menu) -> 
     bot._finish_lab_visit(LabVisitResult("observed", "auto_start_off", LabDecision("inspect")))
     bot.reroll_progress.note_lab_observation.assert_not_called()
     bot.reroll_progress.note_lab_coin_debit.assert_not_called()
+
+
+def test_reroll_policy_sees_this_frames_menu_balance(bot_on_main_menu) -> None:
+    """After an unconfirmed spend the ledger's wallet is unknown until a
+    fresh menu balance proves it. The policy is decided on the first menu
+    frame after a run, so that frame's balance must be recorded first, or the
+    route answers "wallet unknown" and navigation starts the next battle."""
+    bot = bot_on_main_menu(a_policy())
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy()
+    progress.stats_due.return_value = False
+    progress.initial_workshop_due.return_value = False
+    bot.reroll_progress = progress
+    bot.lab_visit = None
+    bot.runs.completed = 1
+
+    bot.run_once()
+
+    names = [name for name, _, _ in progress.mock_calls]
+    assert "note_menu_wallet" in names and "shopping_policy" in names
+    assert names.index("note_menu_wallet") < names.index("shopping_policy")
+    assert bot.shopping.active

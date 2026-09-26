@@ -989,6 +989,11 @@ class ShoppingSession:
         """
         self._exhausted.add(name)
         self._completed_unlocks.add(upgrade_id)
+        # The strategy's plan was this unlock, so without a new choice the
+        # visit has no rule left and ends having bought nothing. A plan that
+        # names the unlock again is exhausted by _completed_unlocks without
+        # another replan, so this cannot loop.
+        self._replan_due = self.reroll_replan is not None
         self._bus.publish(events.PurchaseSkipped(
             item=name, reason="already_unlocked",
             detail="the rows it grants are on the tab", coins_before=coins))
@@ -1067,8 +1072,16 @@ class ShoppingSession:
             self._pending = None
             self._spend(self._close(pending.key, price=before.price, wallet_before=pending.coins,
                                     wallet_after=coins, effect_changed=None).spent, coins=True)
-            self._bus.publish(events.PurchaseSkipped(item=before.name, reason="unconfirmed",
-                                                    detail="purchase did not produce a readable change"))
+            # What the last frame read, per clause of the checks above, so an
+            # unproven unlock says which proof was missing instead of nothing.
+            new_rows = sorted(r.upgrade_id for r in observation.rows
+                              if r.upgrade_id not in pending.visible_ids)
+            evidence = (f"tab={observation.category} tile={'gone' if after is None else after.status}"
+                        f" coins={coins} before={pending.coins} price={before.price}"
+                        f" new_rows={','.join(new_rows) or 'none'}")
+            self._bus.publish(events.PurchaseSkipped(
+                item=before.name, reason="unconfirmed",
+                detail=f"purchase did not produce a readable change ({evidence})"))
             if self.observations is not None:
                 self.observations.decision("blocked", f"Workshop purchase of {before.name} was not confirmed")
             self._abort(device, shopping, screen, "purchase acknowledgement was inconclusive")

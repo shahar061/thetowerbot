@@ -1440,6 +1440,10 @@ def test_an_unconfirmed_workshop_tap_ends_the_visit_with_an_unknown_spend(
     (ended,) = session._bus.of_type("ShoppingEnded")
     assert ended.aborted and ended.spent is None
     assert session._bus.of_type("Purchased") == []
+    # The skip names what the last frame read, so a failed proof is diagnosable.
+    (skipped,) = [s for s in session._bus.of_type("PurchaseSkipped") if s.reason == "unconfirmed"]
+    assert "tab=ATTACK" in skipped.detail and "price=5" in skipped.detail
+    assert "tile=available" in skipped.detail and "new_rows=none" in skipped.detail
 
 
 def test_ending_a_visit_mid_confirmation_leaves_its_spend_unknown(
@@ -2208,3 +2212,52 @@ def test_a_verified_purchase_records_why_the_strategy_chose_it(session, monkeypa
 
     assert [e.reason for e in session._bus.of_type("Purchased")] == ["Save for goal"]
     assert asked == ["damage"]
+
+
+# -- a retired unlock hands the visit back to the strategy -------------------
+def _unlock_already_bought(monkeypatch) -> Shopping:
+    rows = (_tab_row("damage", "Damage"), _tab_row("range", "Attack Range"),
+            _tab_row("damage_per_meter", "Damage / Meter"))
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
+                        Observation("ATTACK", rows, {}, None, 1, 270))
+    return a_policy(armed=True, workshop=(
+        ShoppingRule(name="Unlock Range Upgrades", category="ATTACK"),))
+
+
+def test_a_retired_unlock_asks_the_strategy_for_its_next_choice(
+    session, monkeypatch, fake_header,
+) -> None:
+    """The plan was an unlock the account had already bought. Retiring it
+    left the visit with no rule, so it ended with coins unspent while the
+    strategy had already moved on to the next item."""
+    policy = _unlock_already_bought(monkeypatch)
+    following = a_policy(armed=True, workshop=(ShoppingRule(name="Damage", category="ATTACK"),))
+    session.reroll_replan = lambda: following
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+
+    for _ in range(2):
+        session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                          frame("menu_workshop_attack"), device, policy)
+
+    assert [s.reason for s in session._bus.of_type("PurchaseSkipped")] == ["already_unlocked"]
+    assert session._replanned is following
+    assert device.taps, "the visit ended instead of buying the strategy's next choice"
+
+
+def test_a_replan_that_names_the_retired_unlock_again_ends_the_visit(
+    session, monkeypatch, fake_header,
+) -> None:
+    policy = _unlock_already_bought(monkeypatch)
+    session.reroll_replan = lambda: policy
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+
+    for _ in range(4):
+        session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                          frame("menu_workshop_attack"), device, policy)
+
+    assert session._categories == []
+    assert device.taps == []
+    assert [s.reason for s in session._bus.of_type("PurchaseSkipped")] == [
+        "already_unlocked", "already_unlocked"]

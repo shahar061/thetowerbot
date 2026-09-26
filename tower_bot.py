@@ -1169,6 +1169,19 @@ class TowerBot:
 
         state = self.tracker.state
         shopping_policy = settings.strategy.shopping
+        # The menu header, read once per menu frame. The reroll policy below
+        # must see this frame's balance: after an unconfirmed spend the
+        # ledger's wallet is unknown, and only a fresh menu reading proves it
+        # again. Read after the policy, the first menu frame after a run
+        # decided "wallet unknown" and navigation started the next battle.
+        menu_header: tuple[tuple[int, int] | None, int | None, int | None] | None = None
+        if (self.reroll_progress is not None and not self.shopping.active
+                and not self.shopping.reconciliation_pending
+                and state is screens.ScreenState.MAIN_MENU
+                and reading.state is screens.ScreenState.MAIN_MENU):
+            menu_anchor = pages.classify_page(self.screen, self.templates).top_left
+            menu_header = (menu_anchor, *header_numbers(self.screen, "MAIN_MENU", menu_anchor))
+            self.reroll_progress.note_menu_wallet(menu_header[1])
         if self.reroll_progress is not None:
             if self.shopping.active and self._reroll_shopping_policy is not None:
                 shopping_policy = self._reroll_shopping_policy
@@ -1722,9 +1735,10 @@ class TowerBot:
             self._mail_badge = menu_badges.read_badge(
                 self.screen, self.templates, 'mail') is not None
             self._last_menu_badge_check_at = time.time()
-            menu_anchor = pages.classify_page(self.screen, self.templates).top_left
-            menu_coins, menu_gems = header_numbers(
-                self.screen, "MAIN_MENU", menu_anchor)
+            if menu_header is None:
+                menu_anchor = pages.classify_page(self.screen, self.templates).top_left
+                menu_header = (menu_anchor, *header_numbers(self.screen, "MAIN_MENU", menu_anchor))
+            menu_anchor, menu_coins, menu_gems = menu_header
             if self.reroll_progress is not None:
                 self.reroll_progress.note_menu_wallet(menu_coins)
                 self.reroll_progress.resource_evaluation(menu_coins, menu_gems)
