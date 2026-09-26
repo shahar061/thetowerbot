@@ -203,6 +203,8 @@ class Purchased(Event):
     verdict: str | None = None
     spent: int | None = None
     transaction_key: str | None = None
+    # Why the buyer chose this row (a strategy rule, a random draw), if known.
+    reason: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

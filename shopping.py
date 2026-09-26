@@ -245,6 +245,8 @@ class ShoppingSession:
         # Asked after each verified purchase for the strategy's next choice;
         # returns a Shopping to continue the visit with, or None to finish.
         self.reroll_replan: Any | None = None
+        # Asked, by upgrade id, why a verified purchase was chosen.
+        self.reroll_purchase_reason: Any | None = None
         self._replan_due = False
         self._replanned: Shopping | None = None
         self._templates = templates
@@ -1008,6 +1010,8 @@ class ShoppingSession:
             coins_before=coins, dry_run=dry_run,
             verdict=None if outcome is None else outcome.verdict.value,
             spent=None if outcome is None else outcome.spent,
+            reason=(self.reroll_purchase_reason(row.upgrade_id)
+                    if not dry_run and self.reroll_purchase_reason is not None else None),
         ))
         if not dry_run and self.observations is not None:
             self.observations.verified(verified or row)

@@ -60,6 +60,7 @@ export type RerollMember = { name: string; endpoint: string; lease_id: string; s
   lifetime_coins?: number | null; lifetime_coins_incomplete?: boolean;
   game_started?: string | null; account_age_days?: number | null; recent_cps?: number | null;
   workshop_upgrades_bought?: number | null;
+  recent_workshop_purchases?: { at: number; item: string; category: string; cost: number | null; reason: string | null }[];
   reroll_plan?: RerollPlan | null;
   wallet_gems?: number | null; wallet_stones?: number | null; wallet_medals?: number | null;
   uw_result?: string | null; observed_at?: number | null; error?: string | null;

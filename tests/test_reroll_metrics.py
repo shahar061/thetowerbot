@@ -182,3 +182,34 @@ def test_observed_metrics_report_play_time_to_wave_20(tmp_path: Path) -> None:
         conn.execute("INSERT INTO runs (id, started_at, ended_at, tier, wave, coins) VALUES (2, 700, 1000, 1, 22, 5)")
     result = observed_metrics(tmp_path, account_key="k", account_id="42", web_port=0, running=False)
     assert result["play_seconds_to_t1w20"] == 900 and "play_seconds_so_far" not in result
+
+
+def test_recent_workshop_purchases_carry_cost_and_reason(tmp_path: Path) -> None:
+    db = tmp_path / "tower_bot.db"
+    bot_db.bind_account(db, "42")
+    with sqlite3.connect(db) as conn:
+        def buy(ts: float, item: str, spent: int, detail: dict) -> int:
+            return conn.execute(
+                "INSERT INTO ledger(ts,kind,item,category,currency,delta,dry_run,detail) "
+                "VALUES(?,'WORKSHOP_BUY',?,'UTILITY','coins',?,0,?)",
+                (ts, item, -spent, json.dumps(detail))).lastrowid
+        buy(1, "Oldest", 1, {"verdict": "bought"})
+        for ts in range(2, 6):
+            buy(ts, f"Item {ts}", ts * 10, {"verdict": "bought", "reason": f"Rule {ts}"})
+        buy(6, "Unproven", 9, {"verdict": "unproven"})
+        drawn = buy(7, "Coins / Kill Bonus", 126, {"verdict": "bought"})
+        conn.execute(
+            "INSERT INTO ledger(ts,kind,item,category,currency,dry_run,reason,detail) "
+            "VALUES(8,'ROUTE_DECISION','Coins / Kill Bonus','UTILITY','coins',0,'draw',?)",
+            (json.dumps({"purchase_event_id": drawn,
+                         "eligible_odds": {"coins_per_kill_bonus": .714, "cash_bonus": .286},
+                         "selected_upgrade_id": "coins_per_kill_bonus"}),))
+
+    recent = observed_metrics(tmp_path, account_key="worker:Air_2", account_id="42",
+                              web_port=0, running=False)["recent_workshop_purchases"]
+
+    assert [(row["item"], row["cost"], row["reason"]) for row in recent] == [
+        ("Coins / Kill Bonus", 126, "Random draw (71%)"),
+        ("Item 5", 50, "Rule 5"), ("Item 4", 40, "Rule 4"),
+        ("Item 3", 30, "Rule 3"), ("Item 2", 20, "Rule 2")]
+    assert recent[0]["at"] == 7

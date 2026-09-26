@@ -2193,3 +2193,18 @@ def test_a_strategy_visit_stops_when_the_replan_declines(session, monkeypatch) -
     _keep_buying(session, device, policy)
 
     assert [e.price for e in session._bus.of_type("Purchased")] == [60]
+
+
+def test_a_verified_purchase_records_why_the_strategy_chose_it(session, monkeypatch) -> None:
+    device = FakeDevice()
+    _escalating_row(session, monkeypatch, [60, 5_000], coins=300)
+    asked: list[str] = []
+    session.reroll_purchase_reason = lambda upgrade_id: asked.append(upgrade_id) or "Save for goal"
+    policy = a_policy(armed=True, coin_budget=60, workshop=(
+        ShoppingRule(name="Damage", category="ATTACK"),))
+    session.begin(policy, run_count=1)
+
+    _keep_buying(session, device, policy)
+
+    assert [e.reason for e in session._bus.of_type("Purchased")] == ["Save for goal"]
+    assert asked == ["damage"]

@@ -208,6 +208,7 @@ class TowerBot:
             self.shopping.reroll_observe_price = reroll_progress.observe_price
             self.shopping.reroll_observe_prices = getattr(reroll_progress, "observe_prices", None)
             self.shopping.reroll_replan = self._replan_reroll_shopping
+            self.shopping.reroll_purchase_reason = getattr(reroll_progress, "purchase_reason", None)
         self.shopping.observations = self.autopilot.state
         # Read once, here, rather than per scan: both configure an object
         # that carries state across scans (the tracker's part-confirmed

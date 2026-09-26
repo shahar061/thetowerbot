@@ -33,6 +33,41 @@ def play_to_t1w20(rows: Iterable[tuple[float, float, int | None, int | None]]
     return None, played
 
 
+def recent_workshop_purchases(db: sqlite3.Connection, limit: int = 5) -> list[dict[str, Any]]:
+    """The latest verified Workshop buys, with what they cost and why.
+
+    Purchases record their reason from the route decision. A weighted draw
+    confirmed before that also left a ROUTE_DECISION audit row naming it.
+    """
+    rows = db.execute(
+        "SELECT id, ts, item, category, delta, price, detail FROM ledger "
+        "WHERE kind='WORKSHOP_BUY' AND dry_run=0 "
+        "AND json_extract(detail, '$.verdict') IN ('bought','free') "
+        "ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()
+    draws: dict[int, float] = {}
+    for (detail,) in db.execute(
+            "SELECT detail FROM ledger WHERE kind='ROUTE_DECISION' "
+            "AND json_extract(detail, '$.purchase_event_id') IN (%s)" % ",".join("?" * len(rows)),
+            [row["id"] for row in rows]):
+        try:
+            audit = json.loads(detail)
+            draws[audit["purchase_event_id"]] = audit["eligible_odds"][audit["selected_upgrade_id"]]
+        except (ValueError, TypeError, KeyError):
+            continue
+    recent = []
+    for row in rows:
+        try:
+            reason = json.loads(row["detail"] or "{}").get("reason")
+        except (ValueError, AttributeError):
+            reason = None
+        if reason is None and row["id"] in draws:
+            reason = f"Random draw ({draws[row['id']]:.0%})"
+        recent.append({"at": row["ts"], "item": row["item"], "category": row["category"],
+                       "cost": -row["delta"] if row["delta"] is not None else row["price"],
+                       "reason": reason})
+    return recent
+
+
 def read_play(db_path: Path) -> tuple[float | None, float] | None:
     """`play_to_t1w20` over a worker database, or None if it cannot be read."""
     if not Path(db_path).is_file():
@@ -91,6 +126,7 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                     "ORDER BY id DESC LIMIT 3").fetchall()
                 best = db.execute(
                     "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL").fetchone()[0]
+                result["recent_workshop_purchases"] = recent_workshop_purchases(db)
                 bought = db.execute(
                     "SELECT COUNT(*) FROM ledger WHERE kind='WORKSHOP_BUY' AND dry_run=0 "
                     "AND json_extract(detail, '$.verdict') IN ('bought','free')"
