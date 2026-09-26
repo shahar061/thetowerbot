@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { deviceColor } from "@/lib/rerollState";
 import type { RerollMember } from "@/lib/fleet";
+import type { StrategyAssignment } from "@/lib/strategyStudio";
 import { WorkerBattlePurchases } from "../Purchases";
 import { DecisionInspector, type DecisionSelection } from "./DecisionInspector";
 import styles from "./routeCanvas.module.css";
@@ -28,8 +29,18 @@ function planAge(observedAt: number | null | undefined): string | null {
   return seconds < 3600 ? `as of ${Math.floor(seconds / 60)}m ago` : `as of ${Math.floor(seconds / 3600)}h ago`;
 }
 
-export function FleetRoutePreview({ members, savedRevision, showHistory = false }: {
-  members: RerollMember[]; savedRevision: number | null; showHistory?: boolean;
+// Mirrors resolve_route: an assignment applies only to the account it was
+// made for; after an account change the worker runs the legacy defaults.
+function strategyLabel(member: RerollMember, assignments: Record<string, StrategyAssignment> | undefined): string | null {
+  if (!assignments) return null;
+  const assignment = assignments[member.name];
+  if (!assignment) return "Fleet baseline";
+  const name = `${assignment.strategy_name} v${assignment.strategy_version}`;
+  return assignment.account_id === member.account_id ? name : `${name} · inactive, account changed`;
+}
+
+export function FleetRoutePreview({ members, savedRevision, assignments, showHistory = false }: {
+  members: RerollMember[]; savedRevision: number | null; assignments?: Record<string, StrategyAssignment>; showHistory?: boolean;
 }): React.JSX.Element {
   const [scope, setScope] = useState("fleet");
   const [selection, setSelection] = useState<DecisionSelection | null>(null);
@@ -88,6 +99,7 @@ export function FleetRoutePreview({ members, savedRevision, showHistory = false 
           <header className="space-y-1 border-b border-border pb-3">
             <h3 className="font-heading text-base font-semibold" style={{ color: deviceColor(member.name) }}>{member.name}</h3>
             <p className="font-mono text-xs text-muted-foreground">Account {member.account_id ?? "not verified"}</p>
+            {strategyLabel(member, assignments) !== null && <p className="text-sm font-medium">Strategy: {strategyLabel(member, assignments)}</p>}
             <p className="text-xs text-muted-foreground">Variant: {member.variant_name ?? member.variant ?? "Not assigned"}</p>
             <p className="text-xs text-muted-foreground">Phase: {plan ? phase(plan.stage) : "Unknown"}</p>
             <p className="text-xs" aria-label={`Route status for ${member.name}`}>{revisionState}</p>

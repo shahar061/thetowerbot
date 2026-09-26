@@ -48,7 +48,7 @@ export default function StrategiesPage(): React.JSX.Element {
         Fleet roads <span className="block text-xs font-normal opacity-75">See each account&apos;s next step</span>
       </button>
     </div>
-    {tab === "roads" && !!members.length && <FleetRoutePreview members={members} savedRevision={savedRevision} showHistory />}
+    {tab === "roads" && !!members.length && <FleetRoutePreview members={members} savedRevision={savedRevision} assignments={route?.assignments ?? undefined} showHistory />}
     <div hidden={tab !== "builder"}>{route && catalog && library && <StrategyStudio library={library} saved={route} catalog={catalog} members={members}
       onPublished={next => { setRoute(next); setSavedRevision(next.revision); }} />}</div>
     {!!pool?.variant_comparison?.length && <details className="rounded-xl border border-border bg-card p-4">
