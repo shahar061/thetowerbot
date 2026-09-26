@@ -174,7 +174,7 @@ export function WorkshopMatrix({ members, focusWorker = null, initialView }: {
       cheapest={member => cheapest.get(memberIdentity(member)) ?? new Set()}
       errors={member => results[memberIdentity(member)]?.error ?? null}
       now={now} focused={focus !== null} onFocus={toggleFocus} collapsed={collapsed} onToggle={toggleCategory} />
-    : <div className="max-h-[75vh] overflow-auto">
+    : <div className="max-h-[75vh] overflow-auto no-scrollbar">
       <table className="w-full min-w-[480px] border-separate border-spacing-0 text-sm">
         <thead className="sticky top-0 z-20 bg-card">
           <tr>
