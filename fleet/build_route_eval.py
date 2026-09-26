@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from fleet.build_route import BattleBranch, BattlePhase, EffectiveRoute
+from fleet.coin_share import spendable_wallet, workshop_ceiling, workshop_limit_pct
 from fleet.reroll_planner import (DRAW_SHARPNESS, RerollDecision, RerollFacts,
                                   _ban_closure, choose_next)
 import builds
@@ -61,6 +62,7 @@ class RouteFacts:
     confirmed_purchases: Mapping[str, int] | None = None
     run_purchases: Mapping[str, int] | None = None
     price_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    lab_coin_jar: int = 0
 
 
 @dataclass(frozen=True)
@@ -300,14 +302,15 @@ def evaluate_workshop(route: EffectiveRoute, facts: RouteFacts,
         return RouteEvaluation.unknown("Account evidence is stale", facts)
     if facts.wallet_coins is None or facts.wallet_coins < 0:
         return RouteEvaluation.unknown("Workshop wallet is unknown", facts)
-    spend_ceiling = facts.wallet_coins * route.workshop.coin_spend_limit_pct // 100
+    jar = facts.lab_coin_jar
+    spend_ceiling = workshop_ceiling(route, facts.wallet_coins, jar)
+    limit = workshop_limit_pct(route)
     edited = route.workshop.mode == "priorities"
     decision = choose_next(RerollFacts(
         facts.account_id, facts.best_tier_1_wave, facts.purchases,
-        facts.values, facts.wallet_coins, facts.lifetime_coins,
+        facts.values, spendable_wallet(facts.wallet_coins, jar), facts.lifetime_coins,
         facts.prices,
-        spend_fraction=(route.workshop.coin_spend_limit_pct / 100
-                        if edited or route.workshop.coin_spend_limit_pct < 100 else None),
+        spend_fraction=(limit / 100 if edited or limit < 100 else None),
         draw_sharpness=None if edited else DRAW_SHARPNESS,
         variant=facts.variant,
         utility_spent_coins=facts.utility_spent_coins,

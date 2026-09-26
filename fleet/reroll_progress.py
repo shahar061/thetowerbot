@@ -29,6 +29,7 @@ from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle
                                     evaluate_resources, evaluate_workshop,
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
+from fleet.coin_share import workshop_ceiling
 from lab_plan import LabCadence, LabDecision
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule
@@ -415,7 +416,7 @@ class RerollProgress:
         budget = base.coin_budget
         if route is not None and route.revision > 0 and plan.wallet_coins is not None:
             effective = resolve_route(route, self.root.name, self.account_id)
-            ceiling = plan.wallet_coins * effective.workshop.coin_spend_limit_pct // 100
+            ceiling = workshop_ceiling(effective, plan.wallet_coins, facts.lab_coin_jar)
             budget = ceiling if budget is None else min(budget, ceiling)
         if plan.stage == "strategy" and plan.price is not None:
             budget = plan.price if budget is None else min(budget, plan.price)
