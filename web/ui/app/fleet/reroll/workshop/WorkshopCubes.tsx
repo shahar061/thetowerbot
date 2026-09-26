@@ -110,7 +110,7 @@ export function WorkshopCubes({ members, catalog, visible, rowsOf, cheapest, err
 }): React.JSX.Element {
   return <div>
     <TotalsChart members={members} catalog={catalog} rowsOf={rowsOf} errors={errors} focused={focused} onFocus={onFocus} />
-    <div className="max-h-[75vh] space-y-4 overflow-auto p-4">
+    <div className="max-h-[75vh] space-y-4 overflow-auto p-4 no-scrollbar">
       {CATEGORIES.map(category => {
         const items = visible.filter(item => item.category === category);
         if (!items.length) return null;

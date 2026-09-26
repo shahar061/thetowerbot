@@ -13,7 +13,8 @@ function WorkshopContent(): React.JSX.Element {
   const { pool, loading, error } = useRerollWorkspace();
   const params = useSearchParams();
   const focusWorker = params?.get("worker") ?? null;
-  const view = params?.get("view") === "cubes" ? "cubes" : "table";
+  const viewParam = params?.get("view");
+  const view = viewParam === "cubes" || viewParam === "table" ? viewParam : undefined;
   const members = [...(pool?.members ?? [])].filter(member => !member.hidden).sort((a, b) => a.name.localeCompare(b.name));
   return <main className="space-y-6">
     <header><p className="mb-2 font-mono text-xs uppercase tracking-[.22em] text-primary">Fleet intelligence / workshop</p>
