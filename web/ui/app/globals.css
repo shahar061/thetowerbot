@@ -301,3 +301,7 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* Scrolls, but draws no bar (fleet Runs table and panel). */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
