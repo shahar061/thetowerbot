@@ -95,21 +95,29 @@ class AutopilotState:
 
 
 def battle_tab_point(screen: Image, category: str) -> tuple[int, int] | None:
-    """Three icon tabs, calibrated on both measured portrait heights.
+    """Three icon tabs, or four once Ultimate Weapons unlock (Tier 1 wave 60).
 
-    Verify the three cell borders before using their centers. A fourth tab or
-    changed layout fails closed. Arrival is checked from OCR on the next frame.
+    Verify every cell border of a layout before using its centers. Attack,
+    Defense and Utility are the first three cells either way; the fourth is
+    Ultimate Weapons. A bar matching neither layout - or both - fails closed.
+    Arrival is checked from OCR on the next frame.
     """
     h, w = screen.shape[:2]
     if not supported_frame(w, h) or category not in ("ATTACK", "DEFENSE", "UTILITY"):
         return None
     grey = cv2.cvtColor(screen[h-80:h-20], cv2.COLOR_BGR2GRAY)
-    for x in (0, w//3, 2*w//3, w-1):
+
+    def border(x: int) -> bool:
         strip = grey[:, max(0, x-14):min(w, x+15)]
-        if not (strip > 100).mean(axis=0).max() > .65:
-            return None
+        return bool((strip > 100).mean(axis=0).max() > .65)
+
+    # A three-tab bar's middle icon sits on the four-tab midline, so neither
+    # layout may be accepted on a partial set of borders.
+    layouts = [n for n in (3, 4) if all(border(min(w - 1, w * i // n)) for i in range(n + 1))]
+    if len(layouts) != 1:
+        return None
     index = ("ATTACK", "DEFENSE", "UTILITY").index(category)
-    return (int(w * (index + .5) / 3), h - 50)
+    return (int(w * (index + .5) / layouts[0]), h - 50)
 
 
 def scroll_panel(device: Any, screen: Image, heading_y: int, *, down: bool) -> None:
