@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import sqlite3
 import time
@@ -137,6 +138,35 @@ def _reconstructed_resources(worker_root: Path, worker: str,
         lab_price=(lab.get("price") if lab and type(lab.get("price")) is int else None),
     )
     return _lane(facts, "account-bound lab cadence", max_age=600.)
+
+
+def read_lab_slots(worker_root: Path, account_id: str) -> dict[int, dict[str, Any]]:
+    """Read L2 observations for planning only; persisted evidence cannot authorize input."""
+    account_key = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+    path = worker_root / f"lab-runtime-{account_key}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if (not isinstance(payload, dict) or payload.get("version") != 1
+            or not isinstance(payload.get("scope"), dict)
+            or payload["scope"].get("account_id") != account_id
+            or not isinstance(payload.get("slots"), list)):
+        return {}
+    result: dict[int, dict[str, Any]] = {}
+    for record in payload["slots"]:
+        if (not isinstance(record, dict) or not isinstance(record.get("scope"), dict)
+                or record["scope"] != payload["scope"]):
+            continue
+        slot = record.get("slot")
+        if (type(slot) is not int or not 1 <= slot <= 5 or slot in result
+                or record.get("state") not in {"unknown", "owned_unread", "locked", "idle", "researching"}):
+            continue
+        # This file may have been written under a previous worker lease. Keep
+        # its observation for display, but remove its authority to start work.
+        result[slot] = {**record, "confirmed": False, "evidence_status": "historical",
+                        "preview_only": True}
+    return result
 
 
 def load_preview_facts(root: Path, worker_root: Path, worker: str,

@@ -19,6 +19,8 @@ from strategy import Shopping
 from supervisor import RecoveryState, RecoveryStatus
 from tests.conftest import _shopping_bot
 from stall_watchdog import ESCAPE, PAUSE, StallWatchdog
+from runtime_progress import ProgressRecorder
+from fleet.identity import Attempt
 
 
 class Clock:
@@ -240,3 +242,41 @@ def test_an_unknown_screen_stall_escapes_with_its_reason(tmp_path: Path) -> None
     bot.run_once()
     assert bot.device.taps == [(540, 1475)]
     assert [e.reason for e in stalls(bot)] == ['unknown_screen_61s']
+
+
+def test_battle_scans_continue_while_unreadable_workshop_goal_starves(
+    tmp_path: Path, bot_in_run_on: Any,
+) -> None:
+    clock = Clock()
+    progress = ProgressRecorder(
+        tmp_path / 'heartbeat.json',
+        attempt=Attempt.new('worker', 'endpoint', 'lease', 'attempt'),
+        account_id='account', boot_id='boot', pid=123,
+        clock=clock, monotonic=clock,
+    )
+    bot = bot_in_run_on('in_run_lit')
+    bot.progress = progress
+    progress.observe_capability('workshop', 'actionable_unknown', 'price-unreadable', 20)
+    for wave in (11, 12, 13):
+        clock.now += 10
+        progress.meaningful_progress('wave', str(wave))
+        bot.run_once()
+    assert progress.health()['status'] == 'healthy'
+    assert progress.health()['capabilities']['workshop']['status'] == 'starved'
+    assert progress.snapshot()['scan_sequence'] == 3
+
+
+def test_paused_bot_records_expected_wait_without_resetting_capability(
+    tmp_path: Path,
+) -> None:
+    progress = ProgressRecorder(
+        tmp_path / 'heartbeat.json',
+        attempt=Attempt.new('worker', 'endpoint', 'lease', 'attempt'),
+        account_id='account', boot_id='boot', pid=123,
+    )
+    bot = stalled_bot(tmp_path)
+    bot.progress = progress
+    bot.controls.apply({'paused': True})
+    bot.run_once()
+    assert progress.health()['status'] == 'expected_wait'
+    assert progress.snapshot()['wait_reason'] == 'pause'

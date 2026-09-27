@@ -82,6 +82,7 @@ class _PendingClaim:
     mission_id: str | None
     coins: int | None
     gems: int | None
+    completed_target: int | None
 
 
 class Step(Enum):
@@ -179,7 +180,11 @@ class MissionsClaim(ControlTaps):
                 return
             if self._step is Step.IDLE:
                 return
-            self._finish('failed', reason, detail, time.time() if now is None else now)
+            moment = time.time() if now is None else now
+            if self._pending is not None:
+                self._uncertain(reason, detail, moment)
+            else:
+                self._finish('failed', reason, detail, moment)
 
     # -- one step ----------------------------------------------------------
     def advance(self, *, screen: Image, device: Any, templates: Any,
@@ -222,14 +227,23 @@ class MissionsClaim(ControlTaps):
     def _claim_step(self, screen: Image, device: Any, templates: Any,
                     evidence: dict[str, Any], moment: float) -> ClaimAction | None:
         if evidence['error'] is not None:
+            if self._pending is not None:
+                return self._uncertain('missions_unreadable', 'The missions page became unreadable '
+                                       'after a reward tap; its outcome is unresolved.', moment)
             return self._refuse('missions_unreadable', 'The missions page was reached but '
                                 'could not be read; nothing was claimed.', moment)
         if evidence['screen_id'] != MISSIONS_SCREEN:
+            if self._pending is not None and self._waited >= self._budget:
+                return self._uncertain('missions_not_reached', 'The missions page was lost '
+                                       'after a reward tap; its outcome is unresolved.', moment)
             return self._wait('missions_not_reached', 'The missions page was not observed '
                               'after the missions control was tapped.', moment)
 
         completed = evidence['completed']
         if completed is None:
+            if self._pending is not None:
+                return self._uncertain('counter_unreadable', 'The counter became unreadable '
+                                       'after a reward tap; its outcome is unresolved.', moment)
             # The counter IS the success test. Without it a claim cannot be
             # verified, and an unverifiable claim is worse than none: nothing
             # afterwards could say whether the reward was taken.
@@ -241,13 +255,24 @@ class MissionsClaim(ControlTaps):
             claimed, before = self._pending
             if completed <= before:
                 return self._wait_for_claim_confirmation(claimed, moment)
-            self._pending = None
-            self._waited = 0
-            self._claimed += 1
+            if (completed != before + 1
+                    or claimed.completed_target is not None
+                    and evidence.get('completed_target') != claimed.completed_target
+                    or any(isinstance(item, (list, tuple)) and len(item) >= 2
+                           and item[0] == claimed.mission_id and item[1] == claimed.raw_text
+                           for item in evidence.get('visible', ()))):
+                return self._uncertain('claim_evidence_mismatch', 'The counter or mission '
+                                       'cards changed ambiguously after the reward tap.', moment)
             self._publish(events.MissionClaimed(
                 mission=claimed.raw_text, mission_id=claimed.mission_id,
                 coins=claimed.coins, gems=claimed.gems,
                 completed_before=before, completed_after=completed))
+            # Publication through MissionReceiptBus fsyncs the receipt. If
+            # that fails, keep _pending and retry on the next scan; no second
+            # reward button can be reached before this commit succeeds.
+            self._pending = None
+            self._waited = 0
+            self._claimed += 1
 
         visible = tuple(evidence.get('visible', ()))
         if self._scroll_pending is not None:
@@ -280,9 +305,23 @@ class MissionsClaim(ControlTaps):
             return self._return_home(screen, device, templates, moment)
 
         target = claims[0]
+        prepare = getattr(self._bus, 'prepare_claim', None)
+        if prepare is not None:
+            prepare(mission=target.raw_text, mission_id=target.mission_id,
+                    coins=target.coins, gems=target.gems,
+                    completed_before=completed,
+                    completed_target=evidence.get('completed_target'),
+                    visible_before=list(evidence.get('visible', ())), now=moment)
         self._pending = (_PendingClaim(target.raw_text, target.mission_id,
-                                       target.coins, target.gems), completed)
-        return self._tap_point(target, device, moment)
+                                       target.coins, target.gems,
+                                       evidence.get('completed_target')), completed)
+        action = self._tap_point(target, device, moment)
+        if action is None:
+            discard = getattr(self._bus, 'discard_prepared_claim', None)
+            if discard is not None:
+                discard(moment)
+            self._pending = None
+        return action
 
     def _return_home(self, screen: Image, device: Any, templates: Any,
                      moment: float) -> ClaimAction | None:

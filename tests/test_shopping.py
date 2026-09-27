@@ -10,6 +10,7 @@ inferred from the events.
 
 from pathlib import Path
 from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 
 import cv2
 import dataclasses
@@ -46,6 +47,23 @@ class _NoRowTemplates(vision.TemplateCache):
         return super().get(name)
 
 
+def _scoped_session(*args, **kwargs):
+    from account_state import AccountState, AccountRepository
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    import time
+    temporary = None
+    if kwargs.get('journal') is None:
+        temporary = TemporaryDirectory(prefix='shopping-test-')
+        kwargs['journal'] = transactions.TransactionJournal(Path(temporary.name) / 'bot.db')
+    session = shopping_mod.ShoppingSession(*args, **kwargs)
+    session._test_temporary_journal = temporary
+    session.account_state = AccountState(AccountRepository(session.journal.path))
+    session.account_state.bind_scope(FactScope('test-account','test-lease','test-generation',0),
+                                    identity=IdentityEvidence('test-account',time.time(),'test-identity'))
+    return session
+
+
 class FakeDevice:
     """Records taps instead of sending them."""
 
@@ -67,8 +85,13 @@ def test_only_legacy_identity_can_purchase_an_affordable_observed_row(
 ) -> None:
     row = ObservedUpgrade(upgrade_id, name, "ATTACK", "workshop", 1, 5,
                           "available", 1, config.Rect(0, 0, 100, 100), (50, 80))
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("ATTACK", (row,), {}, None, 1, 270))
+    def observed(screen, *_):
+        import time
+        now = time.time()
+        return Observation("ATTACK", (dataclasses.replace(row, observed_at=now),), {}, None, now, 270, context="workshop",
+                           frame_digest=hashlib.sha256(screen.tobytes()).hexdigest(),
+                           frame_width=screen.shape[1], frame_height=screen.shape[0])
+    monkeypatch.setattr(shopping_mod, "observe_frame", observed)
     policy = a_policy(armed=True, coin_budget=100, workshop=(
         ShoppingRule(name=name, category="ATTACK", target=2),
     ))
@@ -136,6 +159,17 @@ def frame(name: str):
     return img
 
 
+def physical_observation(screen, source: Observation) -> Observation:
+    """Give a synthetic OCR result the identity of the frame it describes."""
+    import time
+    now = time.time()
+    return dataclasses.replace(source,
+        rows=tuple(dataclasses.replace(row, observed_at=now) for row in source.rows),
+        observed_at=now, context="workshop",
+        frame_digest=hashlib.sha256(screen.tobytes()).hexdigest(),
+        frame_width=screen.shape[1], frame_height=screen.shape[0])
+
+
 def a_policy(**over) -> Shopping:
     base = dict(
         enabled=True,
@@ -153,7 +187,7 @@ def a_policy(**over) -> Shopping:
 
 @pytest.fixture
 def session():
-    return shopping_mod.ShoppingSession(
+    return _scoped_session(
         templates=vision.TemplateCache(config.TEMPLATE_DIR),
         bus=Recorder(),
         reader=digits.NumberReader(),
@@ -495,8 +529,8 @@ def test_a_row_whose_price_cannot_be_read_is_skipped_rather_than_guessed(
     priceless = ObservedUpgrade("unlock_cash_bonuses", "Unlock Cash Bonuses", "UTILITY",
                                 "workshop", None, None, "unreadable", 1,
                                 tiles.Rect(30, 500, 1020, 196), None)
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("UTILITY", (priceless,), {}, None, 1, 270))
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
+                        physical_observation(screen, Observation("UTILITY", (priceless,), {}, None, 1, 270)))
     policy = a_policy(workshop=(
         ShoppingRule(name="Unlock Cash Bonuses",
                      category="UTILITY"),
@@ -761,7 +795,16 @@ def test_the_gem_floor_stops_card_buying(session, fake_header) -> None:
     assert any(s.reason == "capped" for s in skips)
 
 
-def test_card_buying_stops_at_the_per_visit_cap(session, fake_header) -> None:
+def _historical_pending_card(session) -> None:
+    """A pre-calibration worker already sent this action; never send it again."""
+    import time
+    txn = session._open_intent(item="x1",category="CARDS",currency="gems",price=20,
+        wallet_before=400,armed=True,before={"observed_at":time.time(),"frame_digest":"old-card"})
+    session._mark_acted(txn)
+    session._pending_card = shopping_mod.PendingCard("x1",20,400,key=txn.key)
+
+
+def test_card_rehearsal_stops_at_the_per_visit_cap(session, fake_header) -> None:
     """fake_header replaces a direct session._gems poke.
 
     The balance now has to actually fall for the first buy to count - a
@@ -770,7 +813,7 @@ def test_card_buying_stops_at_the_per_visit_cap(session, fake_header) -> None:
     confirmation, is what has to stop the rest.
     """
     device = FakeDevice()
-    policy = a_policy(armed=True, cards=CardPolicy(
+    policy = a_policy(armed=False, cards=CardPolicy(
         enabled=True, gem_floor=0, max_per_visit=1
     ))
     session.begin(policy, run_count=1)
@@ -784,7 +827,7 @@ def test_card_buying_stops_at_the_per_visit_cap(session, fake_header) -> None:
     assert len(bought) == 1
 
 
-def test_a_card_tap_is_not_a_purchase_until_the_gems_move(
+def test_cards_without_semantic_reader_are_unavailable_before_tapping(
     session, fake_header
 ) -> None:
     """A card tap buys nothing on its own.
@@ -805,16 +848,17 @@ def test_a_card_tap_is_not_a_purchase_until_the_gems_move(
 
     session.advance(frame("menu_cards"), device, policy)
 
-    assert device.taps, "400 gems against a 20-gem batch: it should have tapped"
+    assert device.taps == []
+    assert session._bus.of_type("ShoppingUnavailable")
     assert [e for e in session._bus.of_type("Purchased") if e.category == "CARDS"] == [], (
         "the gems have not been re-read yet, so nothing proves a card was opened"
     )
 
 
-def test_a_card_purchase_is_recorded_once_the_gems_fall_by_its_price(
+def test_historical_card_debit_alone_remains_unproven(
     session, fake_header
 ) -> None:
-    """The other half: real evidence does confirm it, exactly once."""
+    """A historical exact gem debit remains reserved without card semantics."""
     device = FakeDevice()
     policy = a_policy(armed=True, cards=CardPolicy(
         enabled=True, gem_floor=0, max_per_visit=1
@@ -822,14 +866,16 @@ def test_a_card_purchase_is_recorded_once_the_gems_fall_by_its_price(
     session.begin(policy, run_count=1)
     session._step = shopping_mod.Step.BUY_CARDS
     fake_header["gems"] = 400
-    session.advance(frame("menu_cards"), device, policy)
+    _historical_pending_card(session)
 
     fake_header["gems"] = 380  # the x1 batch costs 20
     session.advance(frame("menu_cards"), device, policy)
 
     bought = [e for e in session._bus.of_type("Purchased") if e.category == "CARDS"]
-    assert len(bought) == 1
-    assert bought[0].price == 20
+    assert bought == []
+    assert session.journal.open_transactions()
+    assert session.currencies.committed("gems") == 20
+    assert device.taps == []
 
 
 def test_a_card_tap_left_unanswered_cannot_be_confirmed_by_a_later_visit(
@@ -863,11 +909,10 @@ def test_a_card_tap_left_unanswered_cannot_be_confirmed_by_a_later_visit(
     )
 
 
-def test_a_card_tap_is_journalled_before_it_is_sent(tmp_path, fake_header) -> None:
-    """The durable half. `_pending_card` dies with the process; the journal
-    row is what a restart can still read."""
+def test_unavailable_cards_never_create_an_intent_or_send_input(tmp_path, fake_header) -> None:
+    """Uncalibrated card semantics block a new reservation as well as input."""
     journal = transactions.TransactionJournal(tmp_path / "bot.db")
-    session = shopping_mod.ShoppingSession(
+    session = _scoped_session(
         templates=vision.TemplateCache(config.TEMPLATE_DIR),
         bus=Recorder(),
         reader=digits.NumberReader(),
@@ -884,15 +929,15 @@ def test_a_card_tap_is_journalled_before_it_is_sent(tmp_path, fake_header) -> No
     session.advance(frame("menu_cards"), device, policy)
 
     still_open = journal.open_transactions()
-    assert [t.item for t in still_open] == ["x1"]
-    assert still_open[0].stage == transactions.Stage.ACTED
-    assert still_open[0].price == 20
+    assert still_open == ()
+    assert device.taps == []
+    assert session._bus.of_type("ShoppingUnavailable")
 
 
 def test_card_preflight_denial_closes_unsent_intent(tmp_path, monkeypatch,
                                                    fake_header) -> None:
     journal = transactions.TransactionJournal(tmp_path / "bot.db")
-    session = shopping_mod.ShoppingSession(
+    session = _scoped_session(
         templates=vision.TemplateCache(config.TEMPLATE_DIR),
         bus=Recorder(), reader=digits.NumberReader(), journal=journal,
     )
@@ -927,7 +972,7 @@ def test_a_tap_a_dead_process_left_open_is_not_sent_again(tmp_path, fake_header)
     ))
     dead.record_action(txn.key, at=1.0)
 
-    session = shopping_mod.ShoppingSession(
+    session = _scoped_session(
         templates=vision.TemplateCache(config.TEMPLATE_DIR),
         bus=Recorder(),
         reader=digits.NumberReader(),
@@ -950,18 +995,12 @@ def test_a_tap_a_dead_process_left_open_is_not_sent_again(tmp_path, fake_header)
     assert any(s.reason == "unreconciled" for s in skips)
 
 
-def test_a_visit_that_ended_cleanly_does_not_block_the_next_one(
+def test_a_visit_that_ended_without_proof_keeps_the_spending_gate_closed(
     tmp_path, fake_header
 ) -> None:
-    """The counterweight to the refusal above.
-
-    A crash leaves an attempt open because nothing got the chance to close
-    it, and that is what blocks the next process. A visit that ends in an
-    orderly way did get that chance, so it takes it - otherwise one
-    unconfirmed card would stop the bot from ever shopping again.
-    """
+    """Ending a visit cannot turn an unanswered purchase into permission to retry."""
     journal = transactions.TransactionJournal(tmp_path / "bot.db")
-    session = shopping_mod.ShoppingSession(
+    session = _scoped_session(
         templates=vision.TemplateCache(config.TEMPLATE_DIR),
         bus=Recorder(),
         reader=digits.NumberReader(),
@@ -974,27 +1013,32 @@ def test_a_visit_that_ended_cleanly_does_not_block_the_next_one(
     session.begin(policy, run_count=1)
     session._step = shopping_mod.Step.BUY_CARDS
     fake_header["gems"] = 400
-    session.advance(frame("menu_cards"), device, policy)  # tapped, unanswered
+    _historical_pending_card(session)
     session.reset()
 
-    assert journal.open_transactions() == (), (
-        "an orderly end answers what it opened, even if the answer is "
-        "'nobody knows'"
+    assert journal.open_transactions()[0].stage is transactions.Stage.ACTED, (
+        "ending a visit cannot erase an unknown action outcome"
     )
 
-    assert session.begin(policy, run_count=2) is True
+    # A held reconciliation never starts a new spending visit.
+    assert session.begin(policy, run_count=2) is False
     session._step = shopping_mod.Step.BUY_CARDS
     session.advance(frame("menu_cards"), device, policy)
-    assert len(device.taps) == 2
+    assert device.taps == []
 
 
 def _journalled_workshop_session(path, monkeypatch):
     """A session over a real journal, with one affordable ATTACK row."""
     row = ObservedUpgrade("damage", "Damage", "ATTACK", "workshop", 1, 5,
                           "available", 1, config.Rect(0, 0, 100, 100), (50, 80))
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("ATTACK", (row,), {}, None, 1, 270))
-    return shopping_mod.ShoppingSession(
+    def observed(screen, *_):
+        import time
+        now = time.time()
+        return Observation("ATTACK", (dataclasses.replace(row, observed_at=now),), {}, None, now, 270, context="workshop",
+                           frame_digest=hashlib.sha256(screen.tobytes()).hexdigest(),
+                           frame_width=screen.shape[1], frame_height=screen.shape[0])
+    monkeypatch.setattr(shopping_mod, "observe_frame", observed)
+    return _scoped_session(
         templates=vision.TemplateCache(config.TEMPLATE_DIR),
         bus=Recorder(),
         reader=digits.NumberReader(),
@@ -1059,7 +1103,7 @@ def test_workshop_unknown_tap_outcome_keeps_intent(tmp_path, monkeypatch,
         session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
                           frame("menu_workshop_attack"), FakeDevice(), policy)
 
-    assert session.journal.open_transactions()[0].stage is transactions.Stage.INTENDED
+    assert session.journal.open_transactions()[0].stage is transactions.Stage.ACTED
 
 
 def test_a_workshop_tap_a_dead_process_left_open_is_not_sent_again(
@@ -1097,8 +1141,14 @@ class _Page:
 
     def __init__(self, monkeypatch, *rows: ObservedUpgrade) -> None:
         self.rows = rows
-        monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                            Observation("ATTACK", self.rows, {}, None, 1, 270))
+        def observed(screen, *_):
+            import time
+            now = time.time()
+            return Observation("ATTACK", tuple(dataclasses.replace(r, observed_at=now) for r in self.rows),
+                               {}, None, now, 270, context="workshop",
+                               frame_digest=hashlib.sha256(screen.tobytes()).hexdigest(),
+                               frame_width=screen.shape[1], frame_height=screen.shape[0])
+        monkeypatch.setattr(shopping_mod, "observe_frame", observed)
 
 
 def _step(session, device, policy) -> None:
@@ -1124,9 +1174,8 @@ def _restart_workshop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
     monkeypatch.setattr(shopping_mod, "observe_frame", observe)
     def session() -> shopping_mod.ShoppingSession:
-        value = shopping_mod.ShoppingSession(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
+        value = _scoped_session(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
                                             digits.NumberReader(), journal=transactions.TransactionJournal(path))
-        value.account_state = AccountState(AccountRepository(path))
         return value
 
     dead = session()
@@ -1193,7 +1242,7 @@ def test_restart_ambiguous_workshop_stays_blocked_across_resets_and_visits(
     clock[0] += 1
     _step(session, device, policy)
     session.reset()
-    assert session.begin(policy, 2)
+    assert not session.begin(policy, 2)  # No new spending visit while unresolved.
     # A menu navigation or modal acknowledgement must also be refused.
     session.advance(frame("menu_cards"), device, policy)
     assert device.taps == []
@@ -1202,7 +1251,7 @@ def test_restart_ambiguous_workshop_stays_blocked_across_resets_and_visits(
     assert session._bus.of_type("Purchased") == []
 
 
-def test_restart_without_its_proof_page_closes_unproven_after_the_timeout(
+def test_restart_without_its_proof_page_stays_pending_after_the_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_header: dict,
 ) -> None:
     session, page, clock, path = _restart_workshop(tmp_path, monkeypatch, fake_header)
@@ -1216,25 +1265,24 @@ def test_restart_without_its_proof_page_closes_unproven_after_the_timeout(
     clock[0] += 1
     assert session._recover_transaction(off_page, frame("menu_cards"))
     assert device.taps == []
-    assert not session.reconciliation_pending
-    txn, outcome = transactions.TransactionJournal(path).recovered_visit()[0]
-    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
+    assert session.reconciliation_pending
+    assert transactions.TransactionJournal(path).open_transactions()[0].stage == transactions.Stage.ACTED
     assert session._spent is None
-    assert "Damage" in session._exhausted
-    skip = session._bus.of_type("PurchaseSkipped")[-1]
-    assert skip.reason == "unproven"
 
-
-def test_restart_card_wallet_proof_counts_against_card_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_restart_card_exact_debit_retains_original_reservation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                          fake_header: dict) -> None:
     path = tmp_path / "bot.db"
     dead = transactions.TransactionJournal(path)
-    txn = dead.open(transactions.Intent(item="x1", category="CARDS", currency="gems", price=20,
-                                        wallet_before=400, ts=1.))
+    from evidence_scope import FactScope, BalanceInterval
+    scope = FactScope('test-account','test-lease','test-generation',0)
+    dead.currencies.bind_scope(scope)
+    txn = dead.prepare(transactions.Intent(item="x1", category="CARDS", currency="gems", price=20,
+                                        wallet_before=400, ts=1.), scope=scope,
+                       balance=BalanceInterval('gems',400,400,scope,1.,'original-card-frame'))
     dead.record_action(txn.key, at=1.)
     clock = [20.]
     monkeypatch.setattr(shopping_mod.time, "time", lambda: clock[0])
-    session = shopping_mod.ShoppingSession(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
+    session = _scoped_session(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
         digits.NumberReader(), journal=transactions.TransactionJournal(path))
     policy = a_policy(armed=True, workshop=(), cards=CardPolicy(enabled=True, gem_floor=0, max_per_visit=1))
     session.begin(policy, 1)
@@ -1245,8 +1293,9 @@ def test_restart_card_wallet_proof_counts_against_card_cap(tmp_path: Path, monke
     session.advance(frame("menu_cards"), device, policy)
     assert device.taps == []
 
-    assert session.journal.open_transactions() == ()
-    assert (session._cards_bought, session._spent) == (1, 20)
+    assert session.journal.open_transactions()[0].key == txn.key
+    assert session.currencies.committed("gems") == 20
+    assert (session._cards_bought, session._spent) == (0, None)
     session._buy_cards(SimpleNamespace(page="CARDS", top_left=None), frame("menu_cards"), device, policy)
     assert device.taps == []
 
@@ -1271,7 +1320,7 @@ def test_restart_owns_the_frame_after_runner_reset_without_begin(tmp_path: Path,
     txn = journal.open(transactions.Intent(item="x1", category="CARDS", currency="gems",
                                           price=20, wallet_before=400, ts=1.))
     journal.record_action(txn.key, at=1.)
-    session = shopping_mod.ShoppingSession(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
+    session = _scoped_session(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
                                           digits.NumberReader(), journal=journal)
     assert session.active
     session.reset()
@@ -1299,9 +1348,10 @@ def test_scan_loop_restart_cannot_navigate_around_an_unreconciled_tap(
     assert journal.open_transactions()[0].stage == transactions.Stage.ACTED
 
 
-def test_restart_blocks_other_scan_loop_actions_before_reconciliation(
+def test_restart_pending_purchase_never_blocks_battle_actions(
     tmp_path: Path, bot_in_run, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Ruling: an unresolved purchase blocks spending only, never battle flow."""
     bot = bot_in_run(a_policy(armed=True))
     journal = transactions.TransactionJournal(tmp_path / "bot.db")
     txn = journal.open(transactions.Intent(item="x1", category="CARDS", currency="gems",
@@ -1315,8 +1365,9 @@ def test_restart_blocks_other_scan_loop_actions_before_reconciliation(
 
     monkeypatch.setattr(bot, "_manage_speed", speed_action)
     bot.run_once()
-    assert bot.device.taps == []
+    assert bot.device.taps == [(10, 10)]  # The battle action proceeds.
     assert journal.open_transactions()[0].stage == transactions.Stage.ACTED
+    assert bot.shopping.reconciliation_pending
 
 
 def test_second_restart_restores_reconciled_visit_before_later_actions(
@@ -1328,7 +1379,7 @@ def test_second_restart_restores_reconciled_visit_before_later_actions(
     _step(session, FakeDevice(), _workshop_policy())
     clock[0] += 1
     _step(session, FakeDevice(), _workshop_policy())
-    restarted = shopping_mod.ShoppingSession(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
+    restarted = _scoped_session(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
         digits.NumberReader(), journal=transactions.TransactionJournal(path))
     restarted.reset()
     assert restarted.active
@@ -1338,7 +1389,7 @@ def test_second_restart_restores_reconciled_visit_before_later_actions(
     assert (restarted._bought, restarted._spent, restarted._coin_spent) == (1, 5, 5)
     # Ending the recovered visit makes a new process idle, with one durable debit.
     restarted._end_visit(device, _workshop_policy(), frame("menu_workshop_attack"), aborted=False)
-    assert not shopping_mod.ShoppingSession(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
+    assert not _scoped_session(vision.TemplateCache(config.TEMPLATE_DIR), Recorder(),
         digits.NumberReader(), journal=transactions.TransactionJournal(path)).active
     with db.reader(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM ledger WHERE kind = 'WORKSHOP_BUY'").fetchone()[0] == 1
@@ -1420,9 +1471,8 @@ def test_an_unproven_spend_stops_a_bounded_visit_budget(
     _step(session, device, policy)  # Attack Speed would fit in 100 coins
 
     assert len(device.taps) == 1, "a visit whose spend is unknown taps no more"
-    skips = [s for s in session._bus.of_type("PurchaseSkipped") if s.item == "Attack Speed"]
-    assert [s.reason for s in skips] == ["budget"]
-
+    assert session.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+    assert any(s.reason == 'unreconciled' for s in session._bus.of_type('PurchaseSkipped'))
 
 def test_an_unconfirmed_workshop_tap_ends_the_visit_with_an_unknown_spend(
     tmp_path, monkeypatch, fake_header
@@ -1460,12 +1510,12 @@ def test_ending_a_visit_mid_confirmation_leaves_its_spend_unknown(
 
     (ended,) = session._bus.of_type("ShoppingEnded")
     assert ended.spent is None
-    assert session.journal.open_transactions() == ()
+    assert session.journal.open_transactions()[0].stage is transactions.Stage.ACTED
 
 
-def test_a_confirmed_card_carries_the_journal_verdict(tmp_path, fake_header) -> None:
+def test_historical_card_exact_debit_has_no_confirmed_journal_verdict(tmp_path, fake_header) -> None:
     journal = transactions.TransactionJournal(tmp_path / "bot.db")
-    session = shopping_mod.ShoppingSession(
+    session = _scoped_session(
         templates=vision.TemplateCache(config.TEMPLATE_DIR),
         bus=Recorder(),
         reader=digits.NumberReader(),
@@ -1478,13 +1528,13 @@ def test_a_confirmed_card_carries_the_journal_verdict(tmp_path, fake_header) -> 
     session.begin(policy, run_count=1)
     session._step = shopping_mod.Step.BUY_CARDS
     fake_header["gems"] = 400
-    session.advance(frame("menu_cards"), device, policy)
+    _historical_pending_card(session)
     fake_header["gems"] = 380
     session.advance(frame("menu_cards"), device, policy)
 
-    (bought,) = [e for e in session._bus.of_type("Purchased") if e.category == "CARDS"]
-    assert (bought.verdict, bought.spent) == ("bought", 20)
-    assert session._spent == 20
+    assert not session._bus.of_type("Purchased")
+    assert session.journal.open_transactions()
+    assert session.currencies.committed("gems") == 20
 
 
 def test_an_unconfirmed_card_ends_the_visit_with_an_unknown_spend(
@@ -1497,6 +1547,7 @@ def test_an_unconfirmed_card_ends_the_visit_with_an_unknown_spend(
     session.begin(policy, run_count=1)
     session._step = shopping_mod.Step.BUY_CARDS
     fake_header["gems"] = 400
+    _historical_pending_card(session)
     for _ in range(4):
         session.advance(frame("menu_cards"), device, policy)
 
@@ -1597,6 +1648,7 @@ def test_a_blinded_screen_does_not_write_the_row_off(session, fake_header) -> No
     session.begin(policy, run_count=1)
     session.advance(frame("menu_main"), device, policy)
     session.advance(frame("menu_workshop_attack"), device, policy)   # buys Damage
+    fake_header["coins"] -= session._pending.row.price
     session.advance(frame("menu_workshop_attack_escalated"), device, policy)
     session.advance(frame("menu_workshop_info_panel"), device, policy)
 
@@ -1621,6 +1673,7 @@ def test_a_blinded_screen_is_tapped_clear(session, fake_header) -> None:
     session.begin(policy, run_count=1)
     session.advance(frame("menu_main"), device, policy)
     session.advance(frame("menu_workshop_attack"), device, policy)
+    fake_header["coins"] -= session._pending.row.price
     session.advance(frame("menu_workshop_attack_escalated"), device, policy)
     session.advance(frame("menu_workshop_info_panel"), device, policy)
 
@@ -1660,6 +1713,7 @@ def test_a_screen_that_stays_blind_ends_the_visit(session, fake_header) -> None:
     session.begin(policy, run_count=1)
     session.advance(frame("menu_main"), device, policy)
     session.advance(frame("menu_workshop_attack"), device, policy)
+    fake_header["coins"] -= session._pending.row.price
     session.advance(frame("menu_workshop_attack_escalated"), device, policy)
     session.advance(frame("menu_workshop_info_panel"), device, policy)
     session.advance(frame("menu_workshop_info_panel"), device, policy)
@@ -1780,8 +1834,8 @@ def _escalating_row(session, monkeypatch, prices, *, coins=1770):
                                1 + _index(), prices[_index()], "available", 1,
                                config.Rect(0, 0, 100, 100), (50, 80))
 
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("ATTACK", (_row(),), {}, None, 1, 270))
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
+                        physical_observation(screen, Observation("ATTACK", (_row(),), {}, None, 1, 270)))
     monkeypatch.setattr(shopping_mod, "header_numbers", lambda *_:
                         (coins - sum(prices[:min(session._taps, len(prices))]), 40))
 
@@ -1897,8 +1951,8 @@ def test_an_unlock_is_retired_by_the_rows_it_granted_being_on_the_tab(
     """
     rows = (_tab_row("damage", "Damage"), _tab_row("range", "Attack Range"),
             _tab_row("damage_per_meter", "Damage / Meter"))
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("ATTACK", rows, {}, None, 1, 270))
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
+                        physical_observation(screen, Observation("ATTACK", rows, {}, None, 1, 270)))
     policy = a_policy(armed=True, workshop=(
         ShoppingRule(name="Unlock Range Upgrades", category="ATTACK"),
     ))
@@ -1954,8 +2008,8 @@ def test_the_search_for_a_spent_unlock_stops_when_its_rows_scroll_into_view(
         Observation("ATTACK", (_tab_row("damage_per_meter", "Damage / Meter"),),
                     {}, None, 1, 270),
     ]
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        scrolled[min(len(device.swipes), 1)])
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
+                        physical_observation(screen, scrolled[min(len(device.swipes), 1)]))
     policy = a_policy(armed=True, workshop=(
         ShoppingRule(name="Unlock Range Upgrades", category="ATTACK"),
     ))
@@ -1973,9 +2027,9 @@ def test_the_search_for_a_spent_unlock_stops_when_its_rows_scroll_into_view(
 # -- a budget that keeps pace with the prices --------------------------------
 def _priced_row(session, monkeypatch, price: int) -> None:
     row = _tab_row("damage", "Damage")
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("ATTACK", (dataclasses.replace(row, price=price),),
-                                    {}, None, 1, 270))
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
+                        physical_observation(screen, Observation("ATTACK", (dataclasses.replace(row, price=price),),
+                                    {}, None, 1, 270)))
 
 
 @pytest.mark.parametrize("coins,taps", [(1000, 0), (4000, 1)])
@@ -2030,8 +2084,8 @@ def test_reroll_observes_neighbor_prices_but_not_pending_receipts(
         dataclasses.replace(_tab_row("damage", "Damage"), price=300),
         dataclasses.replace(_tab_row("attack_speed", "Attack Speed"), price=30),
     )
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("ATTACK", rows, {}, None, 1, 270))
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
+                        physical_observation(screen, Observation("ATTACK", rows, {}, None, 1, 270)))
     seen = []
     session.reroll_observe_prices = lambda prices, coins: seen.append((prices, coins))
     policy = a_policy(armed=True, coin_budget=500, workshop=(
@@ -2142,8 +2196,8 @@ def test_zero_budget_price_probe_reads_expensive_reference_and_every_row(
         dataclasses.replace(_tab_row('attack_speed', 'Attack Speed'), price=40),
         dataclasses.replace(_tab_row('critical_chance', 'Critical Chance'), price=20),
     )
-    monkeypatch.setattr(shopping_mod, 'observe_frame', lambda *_:
-        Observation('ATTACK', rows, {}, None, 1, 270))
+    monkeypatch.setattr(shopping_mod, 'observe_frame', lambda screen, *_:
+        physical_observation(screen, Observation('ATTACK', rows, {}, None, 1, 270)))
     observed: list[tuple[str, int | None]] = []
     neighbors: list[dict[str, int]] = []
     session.reroll_observe_price = lambda uid, _balance, price: observed.append((uid, price))
@@ -2218,8 +2272,8 @@ def test_a_verified_purchase_records_why_the_strategy_chose_it(session, monkeypa
 def _unlock_already_bought(monkeypatch) -> Shopping:
     rows = (_tab_row("damage", "Damage"), _tab_row("range", "Attack Range"),
             _tab_row("damage_per_meter", "Damage / Meter"))
-    monkeypatch.setattr(shopping_mod, "observe_frame", lambda *_:
-                        Observation("ATTACK", rows, {}, None, 1, 270))
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
+                        physical_observation(screen, Observation("ATTACK", rows, {}, None, 1, 270)))
     return a_policy(armed=True, workshop=(
         ShoppingRule(name="Unlock Range Upgrades", category="ATTACK"),))
 

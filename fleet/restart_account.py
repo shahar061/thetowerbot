@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable
 
 from fleet.account_creation import AccountFrame
+from fleet.identity import IdentityEvidence
 from supervisor import DeviceSupervisor, RecoveryBlocked, RecoveryState
 
 
@@ -43,7 +44,7 @@ def verify_restart_account(
     supervisor: DeviceSupervisor, expected_account: str,
     clock: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
-) -> None:
+) -> IdentityEvidence:
     """Use only observed controls to reach Account and prove the live ID.
 
     The worker is still blocked for normal bot actions. This bounded identity
@@ -137,7 +138,7 @@ def verify_restart_account(
         if frame.conflict_dialog:
             raise RecoveryBlocked("session conflict after account verification")
         if frame.screen == "home":
-            return
+            return IdentityEvidence(account.account_id, account.observed_at, account.evidence_ref)
         if frame.screen not in {"settings", "unknown"}:
             raise RecoveryBlocked("settings dialog close was not verified")
         sleep(.5)

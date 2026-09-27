@@ -126,6 +126,19 @@ describe("laneProblems", () => {
     });
   });
 
+  it("validates per-slot pause and blocked policy while old tracks keep their defaults", () => {
+    const track: LabBlock = { id: "slot1", type: "slot_track", slots: [1], children: [
+      { id: "speed", type: "research", lab_id: "labs.game-speed", to_level: 7 }] };
+    expect(laneProblems("labs", [track], DEFAULT_RULES)).toEqual({});
+    expect(laneProblems("labs", [{ ...track, paused: true, on_blocked: "skip" }], DEFAULT_RULES)).toEqual({});
+    expect(laneProblems("labs", [{ ...track, on_blocked: "drop" as "wait" }], DEFAULT_RULES)).toEqual({
+      slot1: "When blocked, choose Wait or Skip for now.",
+    });
+    expect(laneProblems("labs", [{ ...track, slot_policies: { "2": { paused: true } } }], DEFAULT_RULES)).toEqual({
+      slot1: "Slot policies must name slots in this track.",
+    });
+  });
+
   it("flags a lab pool looser than the strategy rule, nested in a track or a condition branch", () => {
     const tightRules = { ...DEFAULT_RULES, labs: { ...DEFAULT_RULES.labs,
       pool: { selection: "cheapest" as const, max_price_pct_of_wallet: 10, max_seconds: 1800 } } };

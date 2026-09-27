@@ -31,9 +31,10 @@ from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
 from fleet import coin_share
+from fleet.resource_blocks import LabFacts, LabPlan, evaluate_lab_plan
 from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
 from policy import AutopilotPolicy, UpgradeRule
-from strategy import Shopping, ShoppingRule
+from strategy import Shopping, ShoppingRule, Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,29 @@ class RerollProgress:
 
     def note_lab_observation(self, decision: LabDecision, now: float | None = None) -> None:
         self.lab_cadence.note(decision, time.time() if now is None else now)
+
+    def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None,
+                          wallet_gems: int | None = None, now: float | None = None) -> LabPlan | None:
+        """Plan from this account's assigned revision and scoped slot observations."""
+        if self.route_runtime is None or getattr(getattr(runtime, "scope", None), "account_id", None) != self.account_id:
+            return None
+        observed_now = time.time() if now is None else now
+        facts = self.account_state.lab_facts(runtime, now=observed_now)
+        if facts is None:
+            return None
+        # Caller policy may reduce, never enlarge, the shared conservative budget.
+        available = (min(facts.available_coins, available_coins)
+                     if type(facts.available_coins) is int and type(available_coins) is int
+                     and available_coins >= 0 else None)
+        gems = facts.wallet_gems
+        if wallet_gems is not None:
+            gems = (min(gems, wallet_gems) if type(gems) is int and type(wallet_gems) is int
+                    and wallet_gems >= 0 else None)
+        facts = replace(facts, available_coins=available, wallet_coins=available,
+                        wallet_gems=gems,
+                        jar=self.coin_jar.amount(quiet=True))
+        route = self.route_runtime.current()
+        return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
 
     def resource_evaluation(self, wallet_coins: int | None,
                             wallet_gems: int | None) -> None:
@@ -615,6 +639,15 @@ class RerollProgress:
         levels = revision.get("lab_levels")
         if levels is None:
             return "unknown"
+        scope = self.account_state.verified_scope
+        expected = {f"labs.workshop-{category}-discount" for category in ("attack", "defense", "utility")}
+        zero = {fact.get("concept_id") for fact in levels
+                if scope is not None and fact.get("scope") == asdict(scope)
+                and ((fact.get("status") == "verified" and fact.get("value") == 0)
+                     or (fact.get("status") == "available" and fact.get("value") == 1))
+                and 0 <= time.time() - (fact.get("evidence") or {}).get("observed_at", 0) <= 30}
+        if zero == expected:
+            return "none"
         discounts = sorted((fact.get("concept_id"), fact.get("status"), fact.get("value"))
                            for fact in levels if "workshop-" in str(fact.get("concept_id"))
                            and "discount" in str(fact.get("concept_id")))
@@ -710,6 +743,18 @@ class RerollProgress:
                 if price is not None:
                     quotes[uid] = PriceQuote(price, 0, "catalog_estimate")
         return wallet, quotes
+
+    def price_quotes(self) -> dict[str, PriceQuote]:
+        """Typed planning evidence; callers must retain live row/wallet checks."""
+        _, purchases = self._history()
+        return self._pricing(purchases)[1]
+
+    def inspection_resolved(self) -> bool:
+        if self.route_runtime is not None:
+            self.shopping_policy(Strategy.from_config().shopping)
+            return self._route_evaluation is not None and self._route_evaluation.status != "unknown"
+        decision = self.decision()
+        return decision.price is not None and decision.wallet_coins is not None
 
     def observe_prices(self, prices: Mapping[str, int | None], wallet: int | None) -> None:
         """Learn all readable rows during an already necessary Workshop visit."""

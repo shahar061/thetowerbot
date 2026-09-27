@@ -47,6 +47,38 @@ def setup() -> tuple[LabVisit, Device]:
     return LabVisit(vision.TemplateCache(Path("templates"))), Device()
 
 
+@pytest.fixture
+def secured_visit(tmp_path):
+    """Recorded visits use the real shared safety authority and prior idle captures."""
+    from account_state import AccountState, AccountRepository
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    from lab_runtime import LabRuntime
+    from lab_screen import read_slots
+    from transactions import TransactionJournal
+    journal = TransactionJournal(tmp_path / 'bot.db')
+    account = AccountState(AccountRepository(journal.path))
+    scope = FactScope('account', 'lease', 'generation', 0)
+    account.bind_scope(scope, identity=IdentityEvidence('account', 1., 'identity'))
+    runtime = LabRuntime(tmp_path, 'account', lease_id='lease', generation='generation')
+    for stamp in (8., 9.):
+        runtime.observe(read_slots(frame('menu_labs_slot1_affordable'),
+                                   boxes('menu_labs_slot1_affordable'), observed_at=stamp))
+
+    def build(**kwargs) -> LabVisit:
+        clock = [10.]
+        visit = LabVisit(vision.TemplateCache(Path('templates')), journal=journal,
+            account_state=account, runtime=runtime, wall_clock=lambda: clock[0], **kwargs)
+        advance = visit.advance
+
+        def captured(screen, text, device, now):
+            clock[0] = float(now)
+            return advance(screen, text, device, now, observed_at=float(now), capture_scope=scope)
+        visit.advance = captured
+        return visit
+    return build
+
+
 def test_lab_tab_state_distinguishes_visible_lock_from_unlocked_tab() -> None:
     visit, _ = setup()
 
@@ -60,6 +92,20 @@ def test_unreadable_lab_tab_stays_unknown() -> None:
     unreadable[:] = 0
 
     assert visit.tab_status(unreadable) == "unknown"
+
+
+def test_read_only_slot_observer_receives_all_five_slots_with_wall_clock() -> None:
+    observed = []
+    visit = LabVisit(vision.TemplateCache(Path("templates")),
+                     slot_observer=observed.append, wall_clock=lambda: 1000.)
+    visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))
+    visit.advance(frame("menu_labs_active"), boxes("menu_labs_active"), Device(), 10.)
+
+    assert len(observed) == 1
+    assert observed[0].observed_at == 1000.
+    assert observed[0].strip_read()
+    assert len(observed[0].jobs) == 5
+    assert visit.last_tap is None
 
 
 def affordable(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:
@@ -120,8 +166,8 @@ def test_active_lab_dialog_is_named_to_recovery_preflight(
     assert guard.screen == expected_screen
 
 
-def test_purchase_requires_two_matching_affordable_frames_and_coin_delta() -> None:
-    visit = LabVisit(vision.TemplateCache(Path("templates")))
+def test_purchase_requires_two_matching_affordable_frames_and_coin_delta(secured_visit) -> None:
+    visit = secured_visit()
     device = Device()
     visit.request()
     now = 10
@@ -146,7 +192,8 @@ def test_purchase_requires_two_matching_affordable_frames_and_coin_delta() -> No
     assert result is not None
     assert result.status == "started"
     assert result.observed_coin_spend == 300
-    assert len(result.confirmed_readings) == 2
+    assert result.transaction_key is not None
+    assert visit.runtime.snapshot().slots[0].transaction_id == result.transaction_key
 
 
 @pytest.mark.parametrize(("after", "status"), [
@@ -154,7 +201,7 @@ def test_purchase_requires_two_matching_affordable_frames_and_coin_delta() -> No
     (60, "failed"),    # further from 110 than "2.61K" can hide
 ])
 def test_research_debit_is_proved_within_the_abbreviated_coin_header(
-    after: int, status: str,
+    after: int, status: str, secured_visit,
 ) -> None:
     def picker(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:
         reading = read_picker(screen, text)
@@ -162,7 +209,7 @@ def test_research_debit_is_proved_within_the_abbreviated_coin_header(
             return reading
         assert reading.game_speed is not None
         return replace(reading, coin_balance=2610, buy_point=(290, 719),
-                       game_speed=replace(reading.game_speed, level=2, cost=2500.,
+                       game_speed=replace(reading.game_speed, cost=2500.,
                                           status="available"))
 
     def confirmation(screen: object, text: tuple[ocr.TextBox, ...]) -> LabConfirmationReading:
@@ -174,7 +221,7 @@ def test_research_debit_is_proved_within_the_abbreviated_coin_header(
         return (replace(reading, coin_balance=after)
                 if reading.slot_status == "researching" else reading)
 
-    visit = LabVisit(vision.TemplateCache(Path("templates")), home_reader=home,
+    visit = secured_visit(home_reader=home,
                      picker_reader=picker, confirmation_reader=confirmation)
     device = Device()
     visit.request()
@@ -186,9 +233,12 @@ def test_research_debit_is_proved_within_the_abbreviated_coin_header(
                 "menu_labs_game_speed_running", "menu_labs_game_speed_running")):
             visit.advance(frame(name), boxes(name), device, 10 + step)
         result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 20)
-    assert result is not None
-    assert result.status == status
-    assert result.observed_coin_spend == (2500 if status == "started" else 0)
+    if status == 'started':
+        assert result is not None and result.status == 'started'
+        assert result.observed_coin_spend == 2500
+    else:
+        assert result is None
+        assert visit.journal.open_transactions()  # conflicting wallet remains reserved
 
 
 def test_changed_confirmation_price_cancels_without_spending() -> None:
@@ -209,8 +259,8 @@ def test_changed_confirmation_price_cancels_without_spending() -> None:
     assert len(device.taps) == 3  # Lab 1, row, Cancel; never Research.
 
 
-def test_research_tap_without_running_job_times_out_and_cancels() -> None:
-    visit, device = setup()
+def test_research_tap_without_running_job_times_out_and_cancels(secured_visit) -> None:
+    visit, device = secured_visit(), Device()
     visit.request()
     with patch("lab_visit.tap", side_effect=lambda _device, x, y: device.taps.append((x, y))):
         visit.advance(frame("menu_labs_slot1_affordable"), boxes("menu_labs_slot1_affordable"), device, 10)
@@ -224,15 +274,15 @@ def test_research_tap_without_running_job_times_out_and_cancels() -> None:
         for second in range(15, 30):
             visit.advance(frame("menu_labs_game_speed_confirmation"),
                           boxes("menu_labs_game_speed_confirmation"), device, second)
-        assert visit.last_tap is not None and visit.last_tap[0] == "cancel_confirmation"
+        assert device.taps.count((753, 1653)) == 1
+        assert visit.journal.open_transactions()
         visit.advance(frame("menu_labs_game_speed_affordable"),
                       boxes("menu_labs_game_speed_affordable"), device, 30)
         visit.advance(frame("menu_labs_slot1_affordable"),
                       boxes("menu_labs_slot1_affordable"), device, 31)
         result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 32)
-    assert result is not None
-    assert result.status == "failed"
-    assert result.observed_coin_spend == 0
+    assert visit.journal.open_transactions()
+    assert result is None or result.observed_coin_spend == 0
 
 
 def test_changed_price_resets_confirmation_and_timeout_records_no_purchase() -> None:
@@ -272,7 +322,7 @@ def test_labs_intro_popup_is_closed_before_lab_one_is_read() -> None:
     assert visit.last_tap is not None and visit.last_tap[0] == "open_lab_one"
 
 
-def test_lab_one_is_checked_first_then_second_lab_unlocks_with_verified_debit() -> None:
+def test_lab_one_is_checked_but_synthetic_slot_two_evidence_does_not_enable_unlock(secured_visit) -> None:
     from lab_screen import read_home
 
     image = frame("menu_labs_slot1_idle")
@@ -289,7 +339,7 @@ def test_lab_one_is_checked_first_then_second_lab_unlocks_with_verified_debit() 
     )
     assert read_home(image, locked).slot2_price == 100
     assert read_home(image, owned).slot2_status == "owned"
-    visit, device = setup()
+    visit, device = secured_visit(), Device()
     visit.request()
     picker = frame("menu_labs_game_speed_picker")
     picker_text = boxes("menu_labs_game_speed_picker")
@@ -300,22 +350,16 @@ def test_lab_one_is_checked_first_then_second_lab_unlocks_with_verified_debit() 
         visit.advance(picker, picker_text, device, 12.)
         assert visit.last_tap is not None and visit.last_tap[0] == "close_picker"
         visit.advance(image, locked, device, 13.)
-        assert visit.last_tap is None
-        visit.advance(image, locked, device, 14.)
-        assert visit.last_tap is not None and visit.last_tap[0] == "unlock_lab_two"
-        assert device.taps[-1] == (price.rect.x + price.rect.w // 2,
-                                   price.rect.y + price.rect.h // 2)
-        visit.advance(image, owned, device, 15.)
-        visit.advance(image, owned, device, 16.)
-        visit.advance(image, owned, device, 17.)
         assert visit.last_tap is not None and visit.last_tap[0] == "return_to_battle"
-        result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 18.)
-    assert result is not None
-    assert result.status == "observed"
+        # These forged OCR boxes once enabled an unlock test. They prove only
+        # reader shape, never a live route or an authorized gem spend.
+        visit.advance(image, owned, device, 14.)
+        result = visit.advance(frame("menu_main_labs_unlocked"), (), device, 15.)
+    assert result is not None and result.status == "observed"
     assert result.decision.kind == "wait_coins"
-    assert result.slot2_status == "owned"
-    assert result.observed_gem_spend == 100
-    assert result.gems_before == 119 and result.gem_balance == 19
+    assert result.observed_gem_spend == 0
+    assert visit.journal.open_transactions() == ()
+    assert (price.rect.x + price.rect.w // 2, price.rect.y + price.rect.h // 2) not in device.taps
 
 
 def test_auto_start_off_looks_but_never_opens_the_picker() -> None:
@@ -338,4 +382,4 @@ def test_lab_two_unlock_respects_the_switch_and_the_gem_floor() -> None:
         assert visit._unlock_lab_two(home, Device()) is False
     visit = LabVisit(vision.TemplateCache(Path("templates")))
     visit.request(LabVisitOptions(min_gems=150))
-    assert visit._unlock_lab_two(home, Device()) is True  # first matching read; no tap yet
+    assert visit._unlock_lab_two(home, Device()) is False  # no recorded unlock sequence

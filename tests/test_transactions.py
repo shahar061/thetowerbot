@@ -329,3 +329,179 @@ def test_reading_tolerance_adds_each_readings_abbreviation_and_each_rounded_amou
     assert transactions.reading_tolerance(2610, 2614) == 20
     assert transactions.reading_tolerance(450, 451, rounded_amounts=2) == 2
     assert transactions.reading_tolerance(12300, rounded_amounts=1) == 101
+
+
+def _scoped(journal, *, wallet=13, lower=None):
+    from evidence_scope import FactScope, BalanceInterval
+    from currencies import CurrencyRepository
+    scope = FactScope('acct', 'lease', 'generation', 0)
+    CurrencyRepository(journal.path).bind_scope(scope)
+    balance = BalanceInterval('coins', wallet if lower is None else lower, wallet,
+                              scope, 1., 'frame')
+    return scope, balance
+
+
+def test_prepare_is_atomic_and_duplicate_safe(tmp_path):
+    from currencies import CurrencyRepository
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal)
+    txn = journal.prepare(_intent(), scope=scope, balance=balance)
+    assert txn.scope == scope
+    assert journal.prepare(_intent(), scope=scope, balance=balance).key == txn.key
+    assert CurrencyRepository(journal.path).committed('coins') == 10
+    with pytest.raises(transactions.TransactionInFlight):
+        transactions.TransactionJournal(journal.path).prepare(_intent(ts=2.), scope=scope, balance=balance)
+
+
+def test_prepare_conservative_bound_shared_reserves_and_wrong_scope(tmp_path):
+    from currencies import CurrencyRepository
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal, wallet=1000, lower=990)
+    assert journal.prepare(_intent(price=995), scope=scope, balance=balance) is None
+    assert journal.prepare(_intent(), scope=dataclasses.replace(scope, epoch=1), balance=balance) is None
+    repo = CurrencyRepository(journal.path)
+    assert repo.reserve('lab:1', 'coins', 985, wallet=1000)
+    assert journal.prepare(_intent(), scope=scope, balance=balance) is None
+    assert not journal.open_transactions()
+
+
+def test_failed_prepare_cannot_leave_reservation(tmp_path):
+    from currencies import CurrencyRepository
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal)
+    with journal._connect() as conn:
+        conn.execute("CREATE TRIGGER crash_intent BEFORE INSERT ON transactions BEGIN SELECT RAISE(ABORT, 'crash'); END")
+    with pytest.raises(Exception, match='crash'):
+        journal.prepare(_intent(), scope=scope, balance=balance)
+    assert CurrencyRepository(journal.path).committed('coins') == 0
+    assert not journal.open_transactions()
+
+
+def test_scoped_uncertainty_retains_original_intent_and_reservation(tmp_path):
+    from currencies import CurrencyRepository
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal)
+    txn = journal.prepare(_intent(), scope=scope, balance=balance)
+    journal.record_action(txn.key, at=2.)
+    outcome = journal.resolve(txn.key, wallet_after=None, effect_changed=None, ts=3., scope=scope)
+    assert outcome.spent is None
+    assert journal.open_transactions()[0].scope == scope
+    journal.close_unproven(txn.key, reason='timeout', now=4.)
+    assert journal.open_transactions()[0].stage == transactions.Stage.ACTED
+    assert CurrencyRepository(journal.path).committed('coins') == 10
+    assert journal.reconcile(txn.key, _recovery(scope=dataclasses.replace(scope, epoch=1)), now=3.).spent is None
+    assert journal.reconcile(txn.key, _recovery(scope=scope), now=3.).spent == 10
+    assert CurrencyRepository(journal.path).committed('coins') == 0
+
+
+def test_prepare_rejects_stale_catalog_and_unknown_bound(tmp_path):
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal)
+    assert journal.prepare(_intent(), scope=scope, balance=dataclasses.replace(balance, lower=None)) is None
+    intent = _intent(before={'catalog_revision': 'old', 'modifier_revision': 'm1'})
+    assert journal.prepare(intent, scope=scope, balance=balance) is None
+
+
+def test_full_generation_restart_reconciles_without_replay_and_ingests_receipt_once(tmp_path):
+    import json
+    from account_state import AccountState, AccountRepository
+    from evidence_scope import FactScope, BalanceInterval
+    from fleet.identity import IdentityEvidence
+    from fleet.input_lease import InputLease
+    from mission_receipts import ingest_receipts
+    from notification_state import NotificationState
+    root = tmp_path / 'worker'
+    root.mkdir()
+    path = root / 'bot.db'
+    db.bind_account(path,'acct')
+    first = FactScope('acct','lease','a' * 32,2)
+    second = dataclasses.replace(first,generation='b' * 32)
+    (root / 'checkpoints').mkdir()
+    binding = dict(worker_id='worker',account_id='acct',lease_id='lease',attempt_id='attempt',
+                   endpoint='endpoint',created_at=.1,observed_at=.5,evidence_ref='original-id')
+    for scope, predecessor in ((first,None),(second,first.generation)):
+        (root / 'checkpoints' / f'{scope.generation}.json').write_text(json.dumps({**binding,
+            'generation':scope.generation,'predecessor_generation':predecessor}))
+    (root / 'fleet-registration.json').write_text(json.dumps(dict(account_id='acct',job_id='attempt',
+        state='registered',instance='worker',endpoint='endpoint',lease_id='lease',
+        binding=str(root / 'checkpoints' / f'{second.generation}.json'))))
+    old = AccountState(AccountRepository(path))
+    old.bind_scope(first,identity=IdentityEvidence('acct',1.,'id-a'),runtime_root=root)
+    journal = transactions.TransactionJournal(path)
+    txn = journal.prepare(_intent(),scope=first,balance=BalanceInterval('coins',13,13,first,1.,'frame'))
+    journal.record_action(txn.key,at=2.)
+    notification = NotificationState(root / 'mission-notification-state-archive-a.json',scope={
+        'account_id':'acct','lease_id':'lease','generation':first.generation,'attempt_id':'attempt','fact_epoch':2})
+    notification.begin('missions',2.)
+    notification.prepare_claim(mission='Damage',mission_id='d',coins=0,gems=2,
+        completed_before=1,completed_target=5,visible_before=[['d','Damage']],now=2.)
+    notification.record_receipt(events.MissionClaimed(mission='Damage',mission_id='d',coins=0,gems=2,
+        completed_before=1,completed_after=2),3.)
+    InputLease(root / 'input-lease.json').grant(second.generation)
+    restarted = AccountState(AccountRepository(path))
+    assert restarted.persisted_epoch == 2
+    restarted.bind_scope(second,identity=IdentityEvidence('acct',4.,'id-b'),runtime_root=root)
+    proof = restarted.continuity(first,now=5.)
+    assert proof is not None
+    new_balance = BalanceInterval('coins',3,3,second,5.,'frame-after')
+    with pytest.raises(transactions.TransactionInFlight):
+        journal.prepare(_intent(ts=5.,price=1,wallet_before=3),scope=second,balance=new_balance)
+    evidence = _recovery(scope=second,continuity=proof,observed_at=5.)
+    outcome = journal.reconcile(txn.key,evidence,now=5.)
+    assert outcome.spent == 10
+    assert journal._require(txn.key).scope == first
+    assert journal.reconcile(txn.key,evidence,now=6.) == outcome
+    assert journal.currencies.committed('coins') == 0
+    # Old confirmed reward remains importable after explicit invalidation and hours of delay.
+    restarted.invalidate_scope('manual_play')
+    assert restarted.verified_scope is None
+    assert restarted.continuity(first,now=1000.) is None
+    keys = ingest_receipts(root,restarted,now=1000.)
+    assert len(keys) == 1
+    assert ingest_receipts(root,restarted,now=2000.) == keys
+    with db.reader(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM ledger WHERE kind='WORKSHOP_BUY'").fetchone()[0] == 1
+        rows = conn.execute("SELECT currency,delta,balance_after FROM ledger WHERE kind='MISSION_CLAIM'").fetchall()
+        assert [tuple(r) for r in rows] == [('coins',0,None),('gems',2,None)]
+
+
+def test_multiple_connections_cannot_prepare_two_spends_or_release_unknown_reserve(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from currencies import CommitmentError
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope,balance = _scoped(journal,wallet=100)
+    other = transactions.TransactionJournal(journal.path)
+    def prepare(args):
+        owner, stamp = args
+        try:
+            return owner.prepare(_intent(ts=stamp),scope=scope,balance=balance)
+        except transactions.TransactionInFlight:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rows = list(pool.map(prepare,((journal,1.),(other,2.))))
+    assert sum(r is not None for r in rows) == 1
+    txn = next(r for r in rows if r is not None)
+    with pytest.raises(CommitmentError):
+        journal.currencies.release(f'purchase:{txn.key}','coins')
+    assert other.currencies.committed('coins') == 10
+
+
+def test_scoped_prepared_but_undispatched_restart_can_refute_without_replay(tmp_path):
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope,balance = _scoped(journal)
+    txn = journal.prepare(_intent(),scope=scope,balance=balance)
+    evidence = _recovery(scope=scope,effect_changed=False,wallet_after=13)
+    outcome = journal.reconcile(txn.key,evidence,now=3.)
+    assert outcome.verdict == transactions.Verdict.REFUTED
+    assert outcome.spent == 0
+    assert journal.currencies.committed('coins') == 0
+    assert not journal.open_transactions()
+
+
+def test_original_wallet_cannot_be_reused_after_confirmed_spend(tmp_path):
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope,balance = _scoped(journal)
+    txn = journal.prepare(_intent(),scope=scope,balance=balance)
+    journal.record_action(txn.key,at=2.)
+    assert journal.reconcile(txn.key,_recovery(scope=scope),now=3.).spent == 10
+    assert journal.prepare(_intent(ts=4.),scope=scope,balance=balance) is None

@@ -9,15 +9,18 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { useAccountSelection } from "@/lib/AccountSelection";
 import { addRerollMembers, hideRerollMembers, pauseReroll, removeRerollMember, restoreRerollMembers, setRerollConcurrency, startNewReroll, startReroll } from "@/lib/api";
-import type { RerollMember } from "@/lib/fleet";
+import { validatedOverview, type RerollMember } from "@/lib/fleet";
 import { deletable, failureHint, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { DeviceCard } from "./DeviceCard";
 import { FleetLiveCard, verifiedWorkerAccount } from "./FleetLiveCard";
+import { FleetOverviewSummary, FLEET_EVIDENCE_TTL_SECONDS } from "./FleetOverviewSummary";
+import { useFleetLabs } from "./FleetLabsContext";
 import { AccountInspector } from "./AccountInspector";
 import { useRerollWorkspace } from "./RerollWorkspace";
 import { NewRerollDialog } from "./NewRerollDialog";
 import { RerollCard } from "./RerollCard";
+import { RecoverySettingsPanel } from "./RecoverySettingsPanel";
 
 function stateLabel(value: string): string { return standingFor(value).label; }
 
@@ -34,6 +37,7 @@ export default function RerollPage(): React.JSX.Element {
 
 function FleetLivePage(): React.JSX.Element {
   const { pool, setPool, refresh, loading, error: poolError } = useRerollWorkspace();
+  const { snapshot: labsSnapshot, error: labsError } = useFleetLabs();
   const [picker, setPicker] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -44,6 +48,8 @@ function FleetLivePage(): React.JSX.Element {
   const [confirmingBulk, setConfirmingBulk] = useState(false);
   const [dialog, setDialog] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
+  const [freshnessTick, setFreshnessTick] = useState(0);
+  const renderedAtMs = Date.now();
   const { accounts } = useAccountSelection();
   const search = useSearchParams()?.toString() ?? "";
   const [inspection, setInspection] = useState<{ worker: string; account: string; identity: string } | null>(null);
@@ -81,6 +87,42 @@ function FleetLivePage(): React.JSX.Element {
   // Deleting a card only hides it: Start all / Pause all still cover every
   // member, so those (and the empty state) go by allMembers.
   const allMembers = useMemo(() => pool?.members ?? [], [pool]);
+  useEffect(() => {
+    // An unchanged failed poll need not rerender React. Schedule the next
+    // evidence expiry independently so a once-current badge cannot persist.
+    let nextDeadlineMs = Infinity;
+    const consider = (at: number | null | undefined): void => {
+      if (at == null || !Number.isFinite(at) || at * 1000 > renderedAtMs) return;
+      const deadlineMs = Math.floor((at + FLEET_EVIDENCE_TTL_SECONDS) * 1000) + 1;
+      if (deadlineMs > renderedAtMs) nextDeadlineMs = Math.min(nextDeadlineMs, deadlineMs);
+    };
+    for (const member of allMembers) {
+      const overview = validatedOverview(member);
+      consider(overview?.observed_at);
+      consider(overview?.current_run?.observed_at);
+      consider(member.workshop_evaluation?.evidence_at);
+      consider(member.battle_evaluation?.evidence_at);
+      consider(member.resource_evaluation?.observed_at);
+    }
+    for (const row of labsSnapshot?.workers ?? []) {
+      consider(row.read_at);
+      consider(row.plan?.evaluated_at);
+      for (const slot of row.plan?.slots ?? []) consider(slot.now.read_at);
+    }
+    const timer = Number.isFinite(nextDeadlineMs)
+      ? window.setTimeout(() => setFreshnessTick(value => value + 1), Math.max(0, nextDeadlineMs - Date.now()))
+      : null;
+    const onVisible = (): void => {
+      if (document.visibilityState !== "visible") return;
+      setFreshnessTick(value => value + 1);
+      void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [allMembers, labsSnapshot, freshnessTick, refresh, renderedAtMs]);
   const members = useMemo(() => allMembers.filter(member => !member.hidden), [allMembers]);
   const hiddenMembers = useMemo(() => allMembers.filter(member => member.hidden), [allMembers]);
   // Restoring the last hidden card removes the Hidden chip it was chosen from.
@@ -150,6 +192,7 @@ function FleetLivePage(): React.JSX.Element {
     />
     {loading && <p role="status" className="text-sm text-muted-foreground">Loading fleet…</p>}
     {(error || poolError) && <p role="alert" className="rounded-lg border border-danger bg-danger-surface p-3 text-sm text-danger">{error || poolError}</p>}
+    {labsError && <p role="status" className="rounded-lg border border-warn/40 bg-warn-surface p-3 text-sm text-warn">Labs evidence unavailable: {labsError}. Slot summaries are unknown until the shared feed refreshes.</p>}
     {pool?.operation && pool.operation.state !== "done" && <p role="status" aria-label="Reroll operation"
       className={cn("rounded-lg border p-3 text-sm", pool.operation.state === "failed" ? "border-danger bg-danger-surface text-danger" : "border-warn/40 bg-warn-surface text-warn")}>
       {pool.operation.state === "failed" ? `Last operation failed: ${pool.operation.error}${failureHint(pool.operation.error) ? ` - ${failureHint(pool.operation.error)}` : ""}` :
@@ -157,6 +200,9 @@ function FleetLivePage(): React.JSX.Element {
           : pool.operation.kind === "remove" ? `Removing ${pool.operation.target} from the reroll…`
           : `Adding ${pool.operation.target ?? "emulators"}… a stopped emulator boots first to check The Tower has never been opened`}
     </p>}
+
+    <FleetOverviewSummary members={allMembers} />
+    <RecoverySettingsPanel compact />
 
     <RerollCard title="Fleet controls" tone={census.attention ? "warn" : census.live ? "live" : undefined}>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
@@ -169,18 +215,18 @@ function FleetLivePage(): React.JSX.Element {
 
       <div className="flex flex-wrap items-center gap-2">
         {run
-          ? <><Button variant="outline" disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>New reroll</Button>
-              <Button disabled={operating} onClick={() => setPicker(true)}>Add emulators</Button></>
-          : <Button disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>Start a reroll</Button>}
-        <Button variant="outline" disabled={busy || !allMembers.length || operating} onClick={() => void act(() => startReroll())}>Start all</Button>
-        <Button variant="outline" disabled={busy || !allMembers.length || operating} onClick={() => void act(() => pauseReroll())}>Pause all</Button>
+          ? <><Button className="min-h-11" variant="outline" disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>New reroll</Button>
+              <Button className="min-h-11" disabled={operating} onClick={() => setPicker(true)}>Add emulators</Button></>
+          : <Button className="min-h-11" disabled={busy || operating} onClick={() => { setDialogError(null); setDialog(true); }}>Start a reroll</Button>}
+        <Button className="min-h-11" variant="outline" disabled={busy || !allMembers.length || operating} onClick={() => void act(() => startReroll())}>Start all</Button>
+        <Button className="min-h-11" variant="outline" disabled={busy || !allMembers.length || operating} onClick={() => void act(() => pauseReroll())}>Pause all</Button>
         <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
           Concurrent workers
-          <select aria-label="Concurrent workers" value={limit} onChange={event => setLimit(Number(event.target.value))} className="rounded-md border bg-background px-2 py-1 text-foreground">
+          <select aria-label="Concurrent workers" value={limit} onChange={event => setLimit(Number(event.target.value))} className="min-h-11 rounded-md border bg-background px-2 py-1 text-foreground">
             {[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}
           </select>
         </label>
-        <Button variant="outline" disabled={busy || limit === (pool?.concurrency_limit ?? 2)} onClick={() => void act(() => setRerollConcurrency(limit))}>Save limit</Button>
+        <Button className="min-h-11" variant="outline" disabled={busy || limit === (pool?.concurrency_limit ?? 2)} onClick={() => void act(() => setRerollConcurrency(limit))}>Save limit</Button>
       </div>
       {limit === 4 && <p role="status" className="rounded-lg border border-warn/40 bg-warn-surface p-2.5 text-sm text-warn">Four concurrent emulators can strain memory and slow other apps. Start with two, then increase the limit while watching macOS memory pressure.</p>}
 
@@ -193,21 +239,20 @@ function FleetLivePage(): React.JSX.Element {
           const eligible = candidate.state === "ready" || candidate.state === "start_required";
           return <label key={candidate.name} className={cn("flex items-start gap-2 rounded-lg border p-2", eligible ? "border-border" : "border-border bg-muted/40 opacity-70")}><input type="checkbox" disabled={!eligible || busy} checked={selected.includes(candidate.name)} onChange={event => setSelected(current => event.target.checked ? [...current, candidate.name] : current.filter(name => name !== candidate.name))} className="mt-0.5" /><span><strong>{candidate.name}</strong> <span className="font-mono text-xs text-faint-foreground">{candidate.endpoint}</span> · {stateLabel(candidate.state)}{!eligible && <span className="block text-danger">Unavailable: {candidate.state.replaceAll("_", " ")}</span>}</span></label>;
         })}</div>
-        <div className="mt-3 flex gap-2"><Button disabled={busy || !selected.length} onClick={add}>Add selected</Button><Button variant="outline" onClick={() => { setPicker(false); setSelected([]); }}>Cancel</Button></div>
+        <div className="mt-3 flex gap-2"><Button className="min-h-11" disabled={busy || !selected.length} onClick={add}>Add selected</Button><Button className="min-h-11" variant="outline" onClick={() => { setPicker(false); setSelected([]); }}>Cancel</Button></div>
       </div>}
     </RerollCard>
 
 
-    {!!allMembers.length && <RerollCard
-      title="Devices"
-      action={<div className="flex flex-wrap items-center gap-1">{FILTERS.map(option => (
+    {!!allMembers.length && <RerollCard title="Devices">
+      <div className="flex flex-wrap items-center gap-2">{FILTERS.map(option => (
         <button
           key={option.id}
           type="button"
           aria-pressed={view === option.id}
           onClick={() => setFilter(option.id)}
           className={cn(
-            "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+            "min-h-11 rounded-full border px-3 py-2 text-sm transition-colors",
             view === option.id
               ? "border-primary bg-primary/12 text-foreground"
               : "border-border text-muted-foreground hover:bg-muted",
@@ -216,26 +261,25 @@ function FleetLivePage(): React.JSX.Element {
           {option.label} <span className={cn("font-mono", option.count ? option.tone : "text-faint-foreground")}>{option.count}</span>
         </button>
       ))}
-        <Button size="xs" variant="outline" className="ml-1" disabled={busy || operating || !bulkTargets.length}
+        <Button variant="outline" className="ml-1 min-h-11" disabled={busy || operating || !bulkTargets.length}
           onClick={() => view === "hidden" ? bulk() : setConfirmingBulk(true)}>
           {view === "hidden" ? "Restore all" : "Delete all"}
         </Button>
-      </div>}
-    >
-      {shown.length ? <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">{shown.map(member => (
-        <FleetLiveCard key={`${member.name}:${member.account_key}:${member.account_id}`} member={member} account={accountFor(member)} onInspect={() => inspect(member)}
+      </div>
+      {shown.length ? <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,22rem),1fr))] gap-3">{shown.map(member => (
+        <FleetLiveCard key={`${member.name}:${member.account_key}:${member.account_id}`} member={member} account={accountFor(member)} labsSnapshot={labsError ? null : labsSnapshot} onInspect={() => inspect(member)}
           actions={<>
-            <Button size="xs" variant="outline" disabled={busy || operating} onClick={() => void act(() => startReroll(member.name))}>Start</Button>
-            <Button size="xs" variant="outline" disabled={busy || operating} onClick={() => void act(() => pauseReroll(member.name))}>Pause</Button>
-            {deletable(member) && <Button size="xs" variant="ghost" disabled={busy || operating}
+            <Button className="min-h-11" variant="outline" disabled={busy || operating} onClick={() => void act(() => startReroll(member.name))}>Start</Button>
+            <Button className="min-h-11" variant="outline" disabled={busy || operating} onClick={() => void act(() => pauseReroll(member.name))}>Pause</Button>
+            {deletable(member) && <Button className="min-h-11" variant="ghost" disabled={busy || operating}
               aria-label={member.hidden ? `Restore ${member.name}` : `Delete ${member.name} from the list`}
               onClick={() => void act(() => (member.hidden ? restoreRerollMembers : hideRerollMembers)([member.name]))}>{member.hidden ? "Restore" : "Hide"}</Button>}
           </>} />
       ))}</div> : <p className="text-sm text-muted-foreground">No device matches this filter.</p>}
       <ConfirmDialog open={confirmingBulk} onOpenChange={setConfirmingBulk}
         title={`Delete ${bulkTargets.length} ${bulkTargets.length === 1 ? "device" : "devices"} from the list?`}
-        footer={<><Button variant="outline" onClick={() => setConfirmingBulk(false)}>Cancel</Button>
-          <Button onClick={() => { setConfirmingBulk(false); bulk(); }}>Delete {bulkTargets.length}</Button></>}>
+        footer={<><Button className="min-h-11" variant="outline" onClick={() => setConfirmingBulk(false)}>Cancel</Button>
+          <Button className="min-h-11" onClick={() => { setConfirmingBulk(false); bulk(); }}>Delete {bulkTargets.length}</Button></>}>
         <p>Only cards that aren&apos;t Ready or Running are deleted, and only from this list. Their workers and emulators keep running, and Start all and Pause all still include them. Bring them back from the Hidden filter.</p>
       </ConfirmDialog>
     </RerollCard>}

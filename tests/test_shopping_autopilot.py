@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
+import time
 
 import numpy as np
 import pytest
@@ -11,7 +14,11 @@ import config
 import events
 import ocr
 import shopping
+import transactions
+from account_state import AccountRepository, AccountState
 from autopilot import AutopilotState
+from evidence_scope import FactScope
+from fleet.identity import IdentityEvidence
 from perception import Observation, ObservedUpgrade
 from strategy import Shopping, ShoppingRule
 
@@ -23,15 +30,25 @@ def row(name: str = "Damage", upgrade_id: str = "damage", *, price: int | None =
 
 
 def observation(*rows: ObservedUpgrade) -> Observation:
-    return Observation("ATTACK", rows, {}, None, 1, 270)
+    now = time.time()
+    screen = np.zeros((2400, 1080, 3), dtype=np.uint8)
+    return Observation("ATTACK", tuple(replace(item, observed_at=now) for item in rows),
+                       {}, None, now, 270, context="workshop",
+                       frame_digest=hashlib.sha256(screen.tobytes()).hexdigest(),
+                       frame_width=screen.shape[1], frame_height=screen.shape[0])
 
 
 @pytest.fixture
-def harness(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     published: list[events.Event] = []
     taps: list[tuple[int, int]] = []
     state = SimpleNamespace(observation=observation(row()), coins=1000, scrolls=[])
-    session = shopping.ShoppingSession(None, SimpleNamespace(publish=published.append), None)
+    journal = transactions.TransactionJournal(tmp_path / "bot.db")
+    session = shopping.ShoppingSession(None, SimpleNamespace(publish=published.append), None,
+                                       journal=journal)
+    session.account_state = AccountState(AccountRepository(journal.path))
+    session.account_state.bind_scope(FactScope("test-account", "test-lease", "test-generation", 0),
+                                    identity=IdentityEvidence("test-account", time.time(), "test-identity"))
     session.observations = AutopilotState()
     monkeypatch.setattr(shopping, "observe_frame", lambda *_: state.observation, raising=False)
     monkeypatch.setattr(shopping, "header_numbers", lambda *_: (state.coins, 40))
@@ -50,6 +67,8 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         return policy
 
     def step(policy: Shopping) -> None:
+        current = state.observation
+        state.observation = replace(observation(*current.rows), category=current.category)
         session._buy_rows(reading, screen, None, policy)
 
     return SimpleNamespace(session=session, state=state, taps=taps, events=published,
@@ -87,13 +106,14 @@ def test_purchase_waits_for_changed_value_or_price(harness: SimpleNamespace) -> 
     assert harness.session.observations.snapshot()["verified_purchases"] == 1
 
 
-def test_unchanged_purchase_aborts_without_another_buy(harness: SimpleNamespace) -> None:
+def test_unchanged_purchase_stays_pending_without_another_buy(harness: SimpleNamespace) -> None:
     policy = harness.start()
     harness.step(policy)
     for _ in range(3):
         harness.step(policy)
     assert harness.taps == [(350, 480)]
-    assert not harness.session.active
+    assert harness.session.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+    assert harness.session._spent is None
     assert not any(isinstance(e, events.Purchased) for e in harness.events)
 
 

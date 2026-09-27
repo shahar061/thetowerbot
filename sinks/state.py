@@ -38,6 +38,7 @@ class BotState:
         self.runs_completed = 0
         self.wallet: int | None = None
         self.run_taps: Counter[str] = Counter()
+        self.recovery: dict[str, Any] | None = None
 
     def reset(self) -> None:
         """Forget the previous bot. Called by BotRunner on every start.
@@ -58,6 +59,7 @@ class BotState:
             self.wallet = None
             self.last_error = None
             self.stalled = None
+            self.recovery = None
             self.taps = Counter()
             self.skips = Counter()
             self.tail.clear()
@@ -102,6 +104,10 @@ class BotState:
                     # a paused bot keeps scanning, and this is why it paused.
                     self.stalled = event.reason
                     self.tail.append(render(event))
+                case events.RecoveryStatusChanged():
+                    # Replaced wholesale; routine status changes stay out of the tail.
+                    from recovery_status import redact
+                    self.recovery = redact(event.status)
                 case events.ControlChanged() if event.changed.get("paused") is False:
                     self.stalled = None
                     self.tail.append(render(event))
@@ -139,6 +145,7 @@ class BotState:
                 "wallet": self.wallet,
                 "last_error": self.last_error,
                 "stalled": self.stalled,
+                "recovery": dict(self.recovery) if self.recovery is not None else None,
                 "tail": list(self.tail),
             }
 

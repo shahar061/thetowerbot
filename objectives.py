@@ -222,10 +222,12 @@ def _has_unlock(revision: AccountRevision, concept_id: str) -> bool | None:
 
 
 def _lab_at_least(revision: AccountRevision, concept_id: str, level: int) -> bool | None:
-    levels = _facts(revision.lab_levels)
-    if levels is None:
+    if revision.lab_levels is None:
         return None
-    current = levels.get(concept_id)
+    from account_state import completed_lab_level
+    # An available picker Lv.N means only N-1 is completed.
+    current = next((completed_lab_level(f.status, f.value) for f in revision.lab_levels
+                    if f.concept_id == concept_id), None)
     if current is None:
         return False
     return bool(current >= level)

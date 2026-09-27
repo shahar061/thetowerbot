@@ -29,6 +29,8 @@ from missions_visit import MissionsVisit
 from account_state import AccountState
 
 import logging
+import hashlib
+import os
 from dataclasses import asdict
 import math
 import re
@@ -45,9 +47,14 @@ from control import Controls
 from device import EmulatorError, IdentityError
 from bluestacks import BlueStacksAdapter, HostBoundConnect
 from fleet.identity import Attempt, IdentityEvidence
+from evidence_scope import FactScope
+from fleet.input_lease import InputLease, InputLeaseExpired
+from runtime_identity import PROCESS_IDENTITY
+from runtime_records import PROCESS_BOOT_ID, RuntimeRecords
+from runtime_progress import ProgressRecorder
 from frames import FrameBuffer
 from sinks.state import BotState
-from supervisor import DeviceSupervisor, GuardedDevice, RecoveryState
+from supervisor import DeviceSupervisor, GuardedDevice, RecoveryBlocked, RecoveryState
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +72,12 @@ class RunnerError(Exception):
     def __init__(self, message: str, status_code: int) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def _openrouter_key() -> str | None:
+    """The only recovery key source. Called lazily by the coordinator, and only
+    when the effective recovery mode is shadow or assist; never logged."""
+    return os.environ.get("CLAUDE_OPENROUTER_API_KEY") or None
 
 
 def _default_bot_factory(**kwargs: Any) -> Any:
@@ -103,14 +116,29 @@ class BotRunner:
         host_instance: str | None = None,
         host_popup_checker: Callable[[str], str] | None = None,
         reroll_progress: Any | None = None,
+        runtime_records_path: Path | None = None,
+        recovery_root: Path | None = None,
+        recovery_key_loader: Callable[[], str | None] = _openrouter_key,
+        recovery_service_factory: Callable[..., Any] | None = None,
     ) -> None:
         self._bus = bus
+        # O4 recovery. The coordinator is built per bot on a supervised,
+        # attempt-scoped worker; settings default to off (no incident, no
+        # transport, no key read). One instance is retained until its
+        # shutdown is confirmed and is never hidden by a replacement.
+        self._recovery_root = recovery_root
+        self._recovery_key_loader = recovery_key_loader
+        self._recovery_service_factory = recovery_service_factory
+        self._recovery: Any | None = None
         self._controls = controls
         self._state = state
         self._templates = templates
         self._device_factory = device_factory
         self._unknown_dir = unknown_dir
         self._reroll_progress = reroll_progress
+        self._runtime_records = (RuntimeRecords(runtime_records_path)
+                                 if runtime_records_path is not None else None)
+        self._progress: ProgressRecorder | None = None
         self._attempt = attempt
         self._binding_path = binding_path
         self._supervisor_path = supervisor_path
@@ -135,6 +163,10 @@ class BotRunner:
         self._shopping = shopping
         self.autopilot_state = AutopilotState()
         self.account_state = account_state or AccountState()
+        from transactions import TransactionJournal
+        safety_journal = getattr(shopping, 'journal', None)
+        if isinstance(safety_journal, TransactionJournal):
+            self.account_state.attach_safety_storage(safety_journal.path)
         # One transaction object for the runner's whole lifetime, handed to
         # every bot it starts - the same reason account_state is shared. The
         # browser arms it here; the scan loop is what walks it.
@@ -216,10 +248,58 @@ class BotRunner:
                         raise RunnerError("identity incident: binding mismatch", 409)
                 else:
                     self._attempt.persist(self._binding_path, evidence)
+                self._bind_fact_scope(evidence)
+                if self._progress is not None:
+                    self._progress.bind_account(evidence.account_id)
             except Exception:
                 if self._supervisor is not None:
                     self._supervisor.invalidate_identity("identity_persist_failed")
                 raise
+
+    def _verify_account_walk(self, expected_account: str) -> None:
+        """Home -> Settings -> Account -> Home, every tap under the input fence."""
+        from fleet.account_observer import StagingAccountObserver
+        from fleet.restart_account import verify_restart_account
+        from supervisor import IdentityWalkDevice
+
+        supervisor, attempt = self._supervisor, self._attempt
+        if supervisor is None or attempt is None or self._unknown_dir is None:
+            raise RecoveryBlocked("account evidence unavailable")
+        raw_device = supervisor.device
+        if raw_device is None:
+            raise RecoveryBlocked("device unavailable for account verification")
+        info = raw_device.app_info(self._game_package)
+        version = getattr(info, "version_name", None)
+        if not isinstance(version, str) or not version.strip():
+            raise RecoveryBlocked("reroll game version unavailable")
+        observer = StagingAccountObserver(
+            self._unknown_dir, endpoint=attempt.endpoint,
+            allowed_versions=frozenset({version}))
+        identity_evidence = verify_restart_account(
+            device=IdentityWalkDevice(supervisor), observe=observer,
+            supervisor=supervisor, expected_account=expected_account)
+        self._bind_fact_scope(identity_evidence)
+
+    def reverify_identity(self) -> None:
+        """Bounded mid-run re-verification, called from the scan thread only.
+
+        Paced by ``identity_reverify.IdentityReverifier``. It re-proves the
+        registered account and re-binds the (possibly epoch-advanced) scope;
+        it never invents an identity for a worker that has none.
+        """
+        supervisor = self._supervisor
+        expected = supervisor.expected_account if supervisor is not None else None
+        if self._reroll_progress is None or not expected:
+            raise RecoveryBlocked("in-process account re-verification unavailable")
+        self._verify_account_walk(expected)
+
+    def _bind_fact_scope(self, evidence: IdentityEvidence) -> None:
+        if self._attempt is None:
+            return
+        self.account_state.bind_scope(FactScope(
+            evidence.account_id, self._attempt.lease_id, self._attempt.generation,
+            self.account_state.persisted_epoch), identity=evidence,
+            runtime_root=self._runtime_records.path.parent if self._runtime_records else None)
 
     def _verified_account(self) -> str | None:
         """Retain only a consistent account bound to this worker attempt."""
@@ -248,7 +328,7 @@ class BotRunner:
                     raise RunnerError(f"identity incident: {label} account unverified", 503)
 
         accounts: set[str] = set()
-        matching_binding: dict[str, Any] | None = None
+        bindings_by_generation: dict[str, dict[str, Any]] = {}
         for path in self._binding_path.parent.glob("*.json"):
             if re.fullmatch(r"[0-9a-f]{32}", path.stem) is None:
                 continue
@@ -270,7 +350,7 @@ class BotRunner:
                         or created <= 0 or observed < created):
                     raise RunnerError("identity incident: incomplete account binding", 503)
                 accounts.add(account)
-                matching_binding = row
+                bindings_by_generation[row["generation"]] = row
         if len(accounts) > 1:
             raise RunnerError("identity incident: conflicting account bindings", 503)
         account = next(iter(accounts), None)
@@ -299,22 +379,23 @@ class BotRunner:
                 row = json.loads(first_launch_journal.read_text(encoding="utf-8"))
                 evidence = row.get("evidence")
                 final = evidence[-1] if isinstance(evidence, list) and evidence else None
+                original_binding = bindings_by_generation.get(row.get("generation"))
                 if (designated is None or designated.source_lineage is None
                         or row.get("state") != "verified" or row.get("account_id") != account
                         or row.get("instance") != host_instance
                         or row.get("source_lineage") != designated.source_lineage
                         or any(row.get(key) != getattr(self._attempt, key)
-                               for key in ("worker_id", "endpoint", "lease_id", "attempt_id",
-                                           "generation", "created_at"))
-                        or not row.get("app_version") or matching_binding is None
+                               for key in ("worker_id", "endpoint", "lease_id", "attempt_id"))
+                        or not row.get("app_version") or original_binding is None
+                        or row.get("created_at") != original_binding.get("created_at")
                         or not isinstance(evidence, list)
                         or not any(isinstance(item, dict) and item.get("action") == "i_agree"
                                    for item in evidence)
                         or not isinstance(final, dict) or final.get("screen") != "account"
                         or final.get("account_id") != account
                         or final.get("app_version") != row["app_version"]
-                        or final.get("observed_at") != matching_binding["observed_at"]
-                        or final.get("evidence_ref") != matching_binding["evidence_ref"]):
+                        or final.get("observed_at") != original_binding["observed_at"]
+                        or final.get("evidence_ref") != original_binding["evidence_ref"]):
                     raise ValueError("unverified first-launch journal")
             except (OSError, ValueError, TypeError, AttributeError):
                 raise RunnerError("identity incident: first-launch account unverified", 503) from None
@@ -462,7 +543,37 @@ class BotRunner:
             return self.milestones_claim.snapshot()
 
     # -- lifecycle ---------------------------------------------------------
-    def start(self) -> dict[str, Any]:
+    def _record_start_failure(self, exc: Exception) -> None:
+        if self._runtime_records is None or self._attempt is None:
+            return
+        reason = str(exc)
+        fingerprint = hashlib.sha256(
+            f"startup:{type(exc).__name__}:{reason}".encode()
+        ).hexdigest()
+        try:
+            self._runtime_records.incident(
+                generation=self._attempt.generation, fingerprint=fingerprint,
+                phase="startup", reason=reason, outcome="failed",
+            )
+        except Exception:
+            logger.exception("Could not persist startup incident")
+
+    def _publish_runtime_start(self) -> None:
+        if self._runtime_records is not None and self._attempt is not None:
+            try:
+                self._runtime_records.start(
+                    self._attempt, PROCESS_IDENTITY,
+                    boot_id=PROCESS_BOOT_ID, pid=os.getpid(),
+                )
+                self._progress = ProgressRecorder(
+                    self._runtime_records.path.with_name('worker-heartbeat.json'),
+                    attempt=self._attempt, account_id=self._verified_account(),
+                    boot_id=PROCESS_BOOT_ID, pid=os.getpid(),
+                )
+            except Exception as exc:
+                raise RunnerError(f"runtime startup record unavailable: {exc}", 503) from exc
+
+    def start(self, *, operator: bool = True) -> dict[str, Any]:
         """Connect, build a bot, spawn the worker. Raises RunnerError.
 
         The device connection happens HERE rather than at launch, which is
@@ -470,22 +581,59 @@ class BotRunner:
         the feed, not exit 1 from a process that never served anything.
         """
         with self._lock:
+            if self._attempt is not None and self._runtime_records is not None:
+                from fleet.worker_intent import read_intent, write_intent
+                intent_root = self._runtime_records.path.parent
+                intent = read_intent(intent_root)
+                if intent is not None:
+                    scope = {key: getattr(self._attempt, key) for key in (
+                        "worker_id", "endpoint", "lease_id", "attempt_id")}
+                    if any(intent.get(key) != value for key, value in scope.items()):
+                        raise RunnerError("bot operator intent identity changed", 409)
+                    if intent["desired_state"] == "stopped" and not operator:
+                        raise RunnerError("bot stopped by operator", 409)
+                if operator:
+                    write_intent(intent_root, self._attempt, self._verified_account(), "running")
             if self._running_locked():
                 raise RunnerError("the bot is already running", 409)
             # Reap a finished thread before reusing the slot, so a bot that
             # ended on its own does not block the next start.
             self._reap_locked()
 
+            published_start = False
             if self._attempt is not None and self._attempt_started:
                 previous = self._attempt
-                self._attempt = Attempt.new(
+                next_attempt = Attempt.new(
                     previous.worker_id, previous.endpoint,
                     previous.lease_id, previous.attempt_id,
                 )
+                if self._runtime_records is not None and self._host_adapter is not None:
+                    try:
+                        runtime_root = self._runtime_records.path.parent
+                        if (runtime_root / "fleet-registration.json").exists():
+                            from fleet.worker_generation import rotate_registered_attempt
+
+                            def publish_attempt(attempt: Attempt, binding: Path) -> None:
+                                self._attempt = attempt
+                                self._binding_path = binding
+                                self._publish_runtime_start()
+
+                            next_attempt, self._binding_path = rotate_registered_attempt(
+                                runtime_root, previous, next_attempt, publish_attempt)
+                            published_start = True
+                        else:
+                            InputLease(runtime_root / "input-lease.json").rotate(
+                                previous.generation, next_attempt.generation)
+                    except InputLeaseExpired as exc:
+                        raise RunnerError("input generation revoked", 409) from exc
+                self._attempt = next_attempt
                 if self._binding_path is not None:
                     self._binding_path = (
                         self._binding_path.parent / f"{self._attempt.generation}.json"
                     )
+
+            if not published_start:
+                self._publish_runtime_start()
 
             try:
                 if self._supervisor_path is not None and self._attempt is not None:
@@ -514,6 +662,15 @@ class BotRunner:
                         quarantine_on_exhaustion=self._host_adapter is not None,
                         exhaustion_cooldown=(HOST_RECOVERY_COOLDOWN
                                              if self._host_adapter is not None else None),
+                        progress=self._progress,
+                        input_lease=(InputLease(self._runtime_records.path.parent /
+                                                "input-lease.json")
+                                     if self._runtime_records is not None
+                                     and self._host_adapter is not None else None),
+                        identity_invalidated=self.account_state.invalidate_scope,
+                        input_generation=(self._attempt.generation
+                                          if self._runtime_records is not None
+                                          and self._host_adapter is not None else None),
                     )
                     self._supervisor.recover()
                     if self._supervisor.device is None:
@@ -522,31 +679,20 @@ class BotRunner:
                             raise IdentityError(f"identity incident: {failure.reason}")
                         raise EmulatorError(failure.reason)
                     if self._reroll_progress is not None:
-                        from fleet.account_observer import StagingAccountObserver
-                        from fleet.restart_account import verify_restart_account
-
                         if self._unknown_dir is None or expected_account is None:
                             raise RecoveryBlocked("reroll account evidence unavailable")
-                        raw_device = self._supervisor.device
-                        info = raw_device.app_info(self._game_package)
-                        version = getattr(info, "version_name", None)
-                        if not isinstance(version, str) or not version.strip():
-                            raise RecoveryBlocked("reroll game version unavailable")
-                        observer = StagingAccountObserver(
-                            self._unknown_dir, endpoint=self._attempt.endpoint,
-                            allowed_versions=frozenset({version}))
-                        verify_restart_account(
-                            device=raw_device, observe=observer,
-                            supervisor=self._supervisor, expected_account=expected_account)
+                        self._verify_account_walk(expected_account)
                     device = GuardedDevice(self._supervisor)
                 else:
                     device = self._device_factory()
             except RunnerError as exc:
+                self._record_start_failure(exc)
                 self._error = str(exc)
                 self._bus.publish(events.IdentityIncident(message=str(exc)))
                 self._bus.publish(events.BotError(message=str(exc)))
                 raise
             except EmulatorError as exc:
+                self._record_start_failure(exc)
                 self._error = str(exc)
                 # Published outside the lock would be tidier, but publish()
                 # never blocks (see events.EventBus) so holding it is safe.
@@ -555,6 +701,7 @@ class BotRunner:
                 self._bus.publish(events.BotError(message=str(exc)))
                 raise RunnerError(str(exc), 503) from None
             except Exception as exc:  # noqa: BLE001 - anything else is still fatal to a start
+                self._record_start_failure(exc)
                 self._error = str(exc)
                 self._bus.publish(
                     events.BotError(message=str(exc), traceback=traceback.format_exc())
@@ -572,6 +719,7 @@ class BotRunner:
                         aliases.add(f"emulator-{port - 1}")
                 if self._device_serial not in aliases:
                     message = f"identity incident: connected transport does not match {endpoint}"
+                    self._record_start_failure(IdentityError(message))
                     self._bus.publish(events.IdentityIncident(message=message))
                     self._error = message
                     self._device_serial = None
@@ -657,8 +805,15 @@ class BotRunner:
                 unknown_dir=self._unknown_dir,
                 supervisor=self._supervisor,
             )
+            if self._progress is not None:
+                bot_kwargs['progress'] = self._progress
+            recovery = self._build_recovery_locked()
+            if recovery is not None:
+                bot_kwargs['recovery'] = recovery
             if self._reroll_progress is not None:
                 bot_kwargs["reroll_progress"] = self._reroll_progress
+                if self._supervisor is not None:
+                    bot_kwargs["identity_reverifier"] = self.reverify_identity
             bot = self._bot_factory(**bot_kwargs)
 
             self._bot = bot
@@ -676,7 +831,12 @@ class BotRunner:
             }
 
     def _run(self, bot: Any) -> None:
+        receipts = None
         try:
+            if self._runtime_records is not None and self.account_state.safety_path is not None:
+                from mission_receipts import MissionReceiptReconciler
+                receipts = MissionReceiptReconciler(self._runtime_records.path.parent, self.account_state)
+                receipts.start()
             bot.run_forever()
         except Exception as exc:  # noqa: BLE001 - a crashed loop must not be silent
             logger.exception("the scan loop stopped with an error")
@@ -686,6 +846,16 @@ class BotRunner:
             with self._lock:
                 self._error = str(exc)
         finally:
+            if receipts is not None:
+                receipts.stop()
+            recovery = getattr(bot, "recovery", None)
+            if recovery is not None:
+                # On the scan thread, after the loop exited: the coordinator
+                # is scan-thread affine. close() never joins.
+                try:
+                    recovery.close()
+                except Exception:  # noqa: BLE001
+                    logger.exception("recovery coordinator close failed")
             # Whether it ended by Stop, by its run cap, or by raising, the
             # next bot must not reissue this one's run ids.
             with self._lock:
@@ -707,6 +877,54 @@ class BotRunner:
                     "The scan loop ended before the claim finished.",
                 )
                 self._harvest_locked(bot)
+
+    def _recovery_fleet_root(self) -> Path | None:
+        if self._recovery_root is not None:
+            return self._recovery_root
+        if self._runtime_records is None:
+            return None
+        worker_root = self._runtime_records.path.parent
+        if not (worker_root / "fleet-registration.json").exists():
+            return None
+        return worker_root.parent.parent  # <fleet>/workers/<worker>
+
+    def _build_recovery_locked(self) -> Any | None:
+        previous = self._recovery
+        if previous is not None:
+            if not previous.shutdown_complete:
+                message = ("recovery_shutdown_pending: the previous recovery coordinator has "
+                           "not confirmed shutdown; recovery stays off for this bot")
+                logger.error(message)
+                self._bus.publish(events.BotError(message=message))
+                return None
+            self._recovery = None
+        root = self._recovery_fleet_root()
+        if (root is None or self._attempt is None or self._supervisor is None
+                or self._progress is None or self._runtime_records is None):
+            return None
+        try:
+            from recovery_coordinator import RecoveryCoordinator
+            kwargs: dict[str, Any] = {}
+            if self._recovery_service_factory is not None:
+                kwargs["service_factory"] = self._recovery_service_factory
+            self._recovery = RecoveryCoordinator(
+                root, worker=self._attempt.worker_id,
+                status_path=self._runtime_records.path.parent / "recovery-status.json",
+                key_loader=self._recovery_key_loader, **kwargs)
+        except Exception:  # noqa: BLE001 - recovery must never block a start
+            logger.exception("recovery coordinator unavailable; recovery stays off")
+            return None
+        return self._recovery
+
+    def recovery_shutdown(self) -> dict[str, bool] | None:
+        """Retained coordinator's shutdown state, surfaced for operators/tests."""
+        with self._lock:
+            recovery = self._recovery
+        if recovery is None:
+            return None
+        complete = recovery.shutdown_complete
+        failed = recovery.status().get("blocker") == "shutdown_failed"
+        return {"complete": complete, "failed": failed}
 
     def _harvest_locked(self, bot: Any) -> None:
         try:
@@ -732,8 +950,10 @@ class BotRunner:
             self._bot = None
             self._since = None
 
-    def stop(self, timeout: float = 7.0) -> dict[str, Any]:
-        """End the current bot. Idempotent, and never brings the server down.
+    def stop(self, timeout: float = 7.0, *, operator: bool = True) -> dict[str, Any]:
+        """End the current bot. Process cleanup preserves operator intent.
+
+        Explicit stops persist intent; ``operator=False`` is for server cleanup.
 
         Bounded join: bot.stop() interrupts the between-scan wait immediately
         whatever the interval, so this only ever waits out a scan already in
@@ -760,6 +980,14 @@ class BotRunner:
         was made and the loop has not honoured it yet.
         """
         with self._lock:
+            if operator and self._attempt is not None and self._runtime_records is not None:
+                from fleet.worker_intent import write_intent
+                try:
+                    account = self._verified_account()
+                except RunnerError:
+                    account = None  # A damaged audit must not prevent the stop.
+                write_intent(self._runtime_records.path.parent, self._attempt,
+                             account, "stopped")
             bot, thread = self._bot, self._thread
             if bot is None or thread is None:
                 self._reap_locked()

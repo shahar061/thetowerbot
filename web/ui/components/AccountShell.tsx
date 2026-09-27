@@ -19,7 +19,7 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
   const remote = selected?.running && selected.dashboard_url && typeof window !== "undefined"
     && new URL(selected.dashboard_url).origin !== window.location.origin;
 
-  if (reroll) return <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">{children}</main>;
+  if (reroll) return <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-4">{children}</main>;
 
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
     {/* Pinned on desktop only: on a phone it would hold a quarter of the

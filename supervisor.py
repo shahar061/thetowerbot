@@ -7,12 +7,14 @@ import logging
 import math
 import os
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
 from device import EmulatorError, IdentityError, endpoint_matches
+from fleet.input_lease import InputLease, InputLeaseExpired
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,14 @@ class DeviceSupervisor:
         quarantine_on_exhaustion: bool = False,
         exhaustion_cooldown: float | None = None,
         no_effect_timeout: float = NO_EFFECT_TIMEOUT,
+        progress: Any | None = None,
+        input_lease: InputLease | None = None,
+        input_generation: str | None = None,
+        identity_invalidated: Callable[[str], None] | None = None,
     ) -> None:
         if not endpoint or max_attempts < 1 or base_backoff < 0:
             raise ValueError("valid endpoint and bounded retry policy required")
+        self.command_generation = 0
         self.path = Path(path)
         self.endpoint = endpoint
         self.connect = connect
@@ -80,6 +87,12 @@ class DeviceSupervisor:
         # ADB server restart), so it may rest and retry instead of quarantining.
         self.exhaustion_cooldown = exhaustion_cooldown
         self.no_effect_timeout = no_effect_timeout
+        self.progress = progress
+        self.input_lease = input_lease
+        self.input_generation = input_generation
+        self.identity_invalidated = identity_invalidated
+        if input_lease is not None and not input_generation:
+            raise ValueError("input generation required with lease")
         self._cooldown_until: float | None = None
         self._device: Any | None = None
         self._connected_at: float | None = None
@@ -94,6 +107,10 @@ class DeviceSupervisor:
         self._pending_since: float | None = None
         self._pending_action: str | None = None
         self.current_account: str | None = None
+        # Wall-clock time since a connected device lost its verified account.
+        # Persisted so the fleet monitor can tell a transient re-verification
+        # from a worker that stays blocked forever while scans still complete.
+        self._unverified_since: float | None = None
         if self.path.exists():
             self._load()
 
@@ -144,7 +161,13 @@ class DeviceSupervisor:
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._device is not None and self.current_account is None:
+            if self._unverified_since is None:
+                self._unverified_since = self.clock()
+        else:
+            self._unverified_since = None
         data = {
+            "account_unverified_since": self._unverified_since,
             "endpoint": self.endpoint, "expected_account": self.expected_account,
             "serial": self._serial, "state": self._state.value,
             "reason": self._reason, "attempts": self._attempts,
@@ -175,7 +198,17 @@ class DeviceSupervisor:
                               self._pending_digest is not None, self._serial,
                               self._next_retry_at)
 
+    def _invalidate_facts(self, reason: str) -> None:
+        if self.identity_invalidated is None:
+            return
+        try:
+            self.identity_invalidated(reason)
+        except Exception:  # noqa: BLE001 - never mask the transport failure being handled
+            logger.exception("fact scope invalidation failed (%s); identity stays unverified", reason)
+
     def disconnected(self) -> None:
+        self.command_generation += 1
+        self._invalidate_facts("device_disconnected")
         self._device = None
         self._connected_at = None
         self.current_account = None
@@ -187,6 +220,11 @@ class DeviceSupervisor:
             self._save()
 
     def recover(self) -> RecoveryState:
+        with (self.progress.phase('recovery', 60)
+              if self.progress is not None else nullcontext()):
+            return self._recover()
+
+    def _recover(self) -> RecoveryState:
         """Reconnect at most max_attempts times; never adopt another serial."""
         if self._state is RecoveryState.QUARANTINED:
             return self._state
@@ -227,6 +265,7 @@ class DeviceSupervisor:
                 self._reason = "wrong_device"
                 self._save()
                 return self._state
+            self.command_generation += 1
             self._device = device
             self._connected_at = self.clock()
             self.current_account = None
@@ -240,6 +279,7 @@ class DeviceSupervisor:
                     current = device.app_current()
                     package = getattr(current, "package", None)
                     if package != self.game_package:
+                        self._assert_input_current()
                         device.app_start(self.game_package)
                         self._reason = "game_relaunched"
                 except Exception:  # noqa: BLE001 - no guessing on an unreadable app state
@@ -315,12 +355,16 @@ class DeviceSupervisor:
             self._state, self._reason = RecoveryState.QUARANTINED, "wrong_account"
             self._save()
             raise RecoveryBlocked("wrong account")
+        if self.current_account != account_id:
+            self.command_generation += 1
         self.expected_account = account_id
         self.current_account = account_id
         self._save()
 
     def invalidate_identity(self, reason: str) -> None:
         """Refuse actions if verified evidence could not be durably bound."""
+        self.command_generation += 1
+        self._invalidate_facts(reason)
         self.current_account = None
         if self._state is not RecoveryState.QUARANTINED:
             self._state, self._reason = RecoveryState.BLOCKED, reason
@@ -329,8 +373,10 @@ class DeviceSupervisor:
     def _clear_pending(self) -> None:
         self._pending_digest = self._pending_since = self._pending_action = None
 
-    def _action(self, perform: Callable[[], None], description: str) -> None:
+    def _action(self, perform: Callable[[], None], description: str,
+                guard: Callable[[], bool] | None = None) -> None:
         """Checkpoint one input before sending it to the verified endpoint."""
+        self._assert_input_current()
         if (self._state is not RecoveryState.READY or self._device is None
                 or self._pending_digest is not None or self._last_digest is None
                 or self._last_observed_at is None
@@ -346,14 +392,55 @@ class DeviceSupervisor:
         self._state, self._reason = RecoveryState.BLOCKED, "action_unconfirmed"
         self._save()
         try:
-            perform()
+            with (self.progress.phase('input', 20)
+                  if self.progress is not None else nullcontext()):
+                self._assert_input_current()
+                if guard is not None and not guard():
+                    raise RecoveryPreflightBlocked("recovery_scope_changed")
+                self.command_generation += 1
+                perform()
+        except RecoveryPreflightBlocked:
+            self._clear_pending()
+            self._state, self._reason = RecoveryState.BLOCKED, "input_generation_revoked"
+            self._save()
+            raise
         except Exception as exc:  # noqa: BLE001 - the tap may have landed
             self.disconnected()
             raise RecoveryBlocked("action outcome unknown") from exc
 
+    def _assert_input_current(self) -> None:
+        if self.input_lease is None:
+            return
+        assert self.input_generation is not None
+        try:
+            self.input_lease.assert_current(self.input_generation)
+        except InputLeaseExpired as exc:
+            raise RecoveryPreflightBlocked("input_generation_revoked") from exc
+
+    def identity_tap(self, x: int, y: int) -> None:
+        """One account-verification navigation tap under the input fence.
+
+        The identity walk is what makes the supervisor READY again, so it
+        cannot require READY; it still requires the current input generation
+        and a connected, unquarantined device.
+        """
+        self._assert_input_current()
+        if self._device is None or self._state is RecoveryState.QUARANTINED:
+            raise RecoveryBlocked("device is not available for identity verification")
+        try:
+            self.command_generation += 1
+            self._device.click(x, y)
+        except Exception as exc:  # noqa: BLE001 - the tap may have landed
+            self.disconnected()
+            raise RecoveryBlocked("identity navigation outcome unknown") from exc
+
     def tap(self, x: int, y: int) -> None:
         """Checkpoint the action before issuing exactly one ADB click."""
         self._action(lambda: self._device.click(x, y), f"tap ({x}, {y})")
+
+    def recovery_tap(self, x: int, y: int, *, guard: Callable[[], bool]) -> None:
+        """Revalidate recovery immediately after checkpoint, at the input boundary."""
+        self._action(lambda: self._device.click(x, y), f"recovery tap ({x}, {y})", guard)
 
     def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
         """A panel scroll has the same evidence and replay guard as a tap."""
@@ -363,6 +450,22 @@ class DeviceSupervisor:
     @property
     def device(self) -> Any | None:
         return self._device
+
+
+class IdentityWalkDevice:
+    """The raw device surface for an identity walk; clicks go through the fence."""
+
+    def __init__(self, supervisor: DeviceSupervisor) -> None:
+        self.supervisor = supervisor
+
+    def __getattr__(self, name: str) -> Any:
+        device = self.supervisor.device
+        if device is None:
+            raise RecoveryBlocked("device unavailable")
+        return getattr(device, name)
+
+    def click(self, x: int, y: int) -> None:
+        self.supervisor.identity_tap(x, y)
 
 
 class GuardedDevice:
@@ -380,7 +483,9 @@ class GuardedDevice:
         if device is None:
             raise RecoveryBlocked("device unavailable")
         try:
-            return device.screenshot(**kwargs)
+            with (self.supervisor.progress.phase('capture', 20)
+                  if self.supervisor.progress is not None else nullcontext()):
+                return device.screenshot(**kwargs)
         except Exception as exc:  # noqa: BLE001 - transport may have died
             self.supervisor.disconnected()
             raise RecoveryBlocked("screencap failed") from exc

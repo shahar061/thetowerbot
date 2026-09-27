@@ -13,19 +13,23 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock, local
 from typing import Any, Callable, Iterator, Sequence
 from uuid import uuid4
 
 from fleet.identity import Attempt
+from fleet.input_lease import InputLease
 from fleet.runtime import WorkerRuntime
+from fleet.runtime import RuntimeIsolationError, reserve_endpoint
+from runtime_identity import PROCESS_IDENTITY
+from runtime_records import PROCESS_BOOT_ID
 
 
 Member = dict[str, str]
 Status = dict[str, Any]
 
 
-def _spawn(args: Sequence[str]) -> int:
+def _spawn(args: Sequence[str]) -> subprocess.Popen[Any]:
     arguments = list(args)
     try:
         root = Path(arguments[arguments.index("--runtime-root") + 1])
@@ -38,20 +42,62 @@ def _spawn(args: Sequence[str]) -> int:
     worker_root.mkdir(parents=True, exist_ok=True)
     with (worker_root / "worker.log").open("a", encoding="utf-8") as output:
         return subprocess.Popen(arguments, start_new_session=True,
-                                stdout=output, stderr=subprocess.STDOUT).pid
+                                stdout=output, stderr=subprocess.STDOUT)
+
+
+class _OwnedChild:
+    """Keep the child unreaped between its final poll and numeric signal.
+
+    Every supervisor poll and signal uses this one lock. A child which exits
+    after poll remains an unreaped zombie until the signal operation finishes,
+    so the OS cannot assign its PID to another process in that interval.
+    """
+
+    def __init__(self, process: Any) -> None:
+        self.process = process
+        self.pid = process.pid
+        self.lock = RLock()
+
+    def alive(self) -> bool:
+        with self.lock:
+            return self.process.poll() is None
+
+    def signal(self, callback: Callable[[int], None]) -> bool:
+        with self.lock:
+            if self.process.poll() is not None:
+                return False
+            callback(self.pid)
+            return True
 
 
 def _process_identity(pid: int) -> tuple[str, ...] | None:
     if pid <= 0:
         return None
-    result = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="],
-                            capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="],
+                                capture_output=True, text=True, check=False, timeout=2)
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("process_identity_timeout") from exc
     if result.returncode != 0 or not result.stdout.strip():
         return None
     try:
         return tuple(shlex.split(result.stdout.strip()))
     except ValueError:
         return None
+
+
+def _process_birth(pid: int) -> str | None:
+    """A second PID proof: argv alone cannot distinguish a reused PID."""
+    if pid <= 0:
+        return None
+    try:
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
+                                capture_output=True, text=True, check=False, timeout=2)
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("process_birth_timeout") from exc
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _terminate(pid: int) -> None:
@@ -74,8 +120,9 @@ class RerollSupervisor:
                  enroll: Callable[[Member, WorkerRuntime, Attempt], Status],
                  start_instance: Callable[[Member], None] | None = None,
                  wait_booted: Callable[[Member], None] | None = None,
-                 spawn: Callable[[Sequence[str]], int] = _spawn,
+                 spawn: Callable[[Sequence[str]], Any] = _spawn,
                  process_identity: Callable[[int], Sequence[str] | None] = _process_identity,
+                 process_birth: Callable[[int], str | None] | None = None,
                  terminate: Callable[[int], None] = _terminate,
                  force_kill: Callable[[int], None] = _force_kill,
                  max_concurrent_workers: int = 2,
@@ -94,19 +141,50 @@ class RerollSupervisor:
         self.wait_booted = wait_booted
         self.spawn = spawn
         self.process_identity = process_identity
+        self.process_birth = (_process_birth if process_identity is _process_identity
+                              and process_birth is None else process_birth)
         self.terminate = terminate
         self.force_kill = force_kill
         self.state_root = self.root / "reroll-processes"
+        self._owned: dict[str, _OwnedChild] = {}
+        self._worker_mutexes: dict[str, RLock] = {}
+        self._worker_mutex_guard = Lock()
+        self._lock_depth = local()
 
     @contextmanager
     def _locked(self, name: str) -> Iterator[None]:
-        self.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (self.state_root / f"{name}.lock").open("a+") as file:
-            fcntl.flock(file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+        with self._worker_mutex_guard:
+            mutex = self._worker_mutexes.setdefault(name, RLock())
+        with mutex:
+            depth = getattr(self._lock_depth, name, 0)
+            if depth:
+                setattr(self._lock_depth, name, depth + 1)
+                try:
+                    yield
+                finally:
+                    setattr(self._lock_depth, name, depth)
+                return
+            self.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with (self.state_root / f"{name}.lock").open("a+") as file:
+                fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+                setattr(self._lock_depth, name, 1)
+                try:
+                    yield
+                finally:
+                    setattr(self._lock_depth, name, 0)
+                    fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+
+    def _same_record(self, name: str, expected: Status | None) -> bool:
+        if expected is None:
+            return True
+        current = self._read(name)
+        return current is not None and all(current.get(key) == expected.get(key) for key in (
+            "pid", "process_birth", "attempt_id", "lease_id", "endpoint",
+            "input_generation", "args", "spawned_at"))
+
+    def _owned_child(self, name: str, pid: int) -> _OwnedChild | None:
+        child = self._owned.get(name)
+        return child if child is not None and child.pid == pid else None
 
     @contextmanager
     def _capacity_locked(self) -> Iterator[None]:
@@ -189,10 +267,24 @@ class RerollSupervisor:
         record = self._read(name)
         if record is None:
             return {"name": name, "state": "paused"}
+        if (self.root / "workers" / name / "generation-transition.json").exists():
+            return {"name": name, "state": "identity_changed",
+                    "error": "generation_transition_incomplete"}
         if any(record.get(key) != member[key] for key in ("name", "endpoint", "lease_id")):
             return {"name": name, "state": "identity_changed"}
         pid = record.get("pid")
         if isinstance(pid, int) and pid > 0:
+            child = self._owned_child(name, pid)
+            if child is None:
+                if self.process_identity(pid) is None:
+                    return {"name": name, "state": "stopped", "pid": pid}
+                return {"name": name, "state": "identity_changed", "pid": pid,
+                        "error": "owned_child_unavailable"}
+            if not child.alive():
+                if self.process_identity(pid) is not None:
+                    return {"name": name, "state": "identity_changed", "pid": pid}
+                return {"name": name, "state": "paused" if record.get("state") == "stopping"
+                        else "stopped", "pid": pid}
             observed = self.process_identity(pid)
             if observed is None:
                 if record.get("state") == "stopping":
@@ -204,6 +296,8 @@ class RerollSupervisor:
                 return status
             if tuple(observed) != tuple(record.get("args", ())):
                 return {"name": name, "state": "identity_changed", "pid": pid}
+            if not self._birth_matches(record):
+                return {"name": name, "state": "identity_changed", "pid": pid}
             if record.get("state") == "stopping":
                 return {"name": name, "state": "stopping", "pid": pid}
             return {"name": name, "state": "running", "pid": pid,
@@ -211,6 +305,13 @@ class RerollSupervisor:
         if record.get("state") == "starting" and record.get("owner_pid") != os.getpid():
             return {"name": name, "state": "interrupted"}
         return {"name": name, "state": record.get("state", "paused")}
+
+    def _birth_matches(self, record: Status) -> bool:
+        if self.process_birth is None:
+            return True
+        expected = record.get("process_birth")
+        return (isinstance(expected, str) and bool(expected)
+                and self.process_birth(record["pid"]) == expected)
 
     def reconcile(self, snapshot: dict[str, Any] | None = None) -> dict[str, Status]:
         members = self._members(snapshot)
@@ -236,21 +337,98 @@ class RerollSupervisor:
                 "--web-port", str(runtime.web_port), "--web", "--no-telegram",
                 "--game-package", "com.TechTreeGames.TheTower")
 
-    def start(self, name: str) -> Status:
+    @staticmethod
+    def _registration_generation(registration: Status) -> str | None:
+        try:
+            return json.loads(Path(registration["binding"]).read_text(encoding="utf-8"))["generation"]
+        except FileNotFoundError:
+            return None  # Synthetic enrollment harnesses only.
+
+    def _rotated_registration(self, name: str, member: Member, runtime: WorkerRuntime,
+                              registration: Status, expected: Status | None,
+                              cancelled: Callable[[], bool] | None) -> Status:
+        if expected is None or cancelled is not None and cancelled():
+            raise ValueError("recovery_cancelled_or_unscoped")
+        source_path = Path(registration["binding"])
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        old_generation = expected.get("input_generation")
+        if ((source.get("generation") != old_generation
+                and source.get("predecessor_generation") != old_generation)
+                or source.get("account_id") != registration["account_id"]
+                or any(source.get(key) != value for key, value in (
+                    ("worker_id", name), ("endpoint", member["endpoint"]),
+                    ("lease_id", member["lease_id"]),
+                    ("attempt_id", registration["job_id"])))):
+            raise ValueError("recovery_binding_changed")
+        generation = uuid4().hex
+        fresh_path = runtime.checkpoint_root / f"{generation}.json"
+        payload = {**source, "generation": generation,
+                   "predecessor_generation": old_generation,
+                   "origin_generation": source.get("origin_generation", old_generation)}
+        descriptor = os.open(fresh_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(payload, output, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        updated = {**registration, "binding": str(fresh_path)}
+        path = runtime.root / "fleet-registration.json"
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(updated, output, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return updated
+
+    def start(self, name: str, *, recovery: bool = False,
+              expected: Status | None = None,
+              cancelled: Callable[[], bool] | None = None) -> Status:
         members = self._members()
         if name not in members:
             return {"name": name, "state": "failed", "error": "instance_not_in_pool"}
         member = members[name]
         with self._locked(name):
+            old: Status | None = None
             try:
+                if not self._same_record(name, expected):
+                    return {"name": name, "state": "identity_changed", "error": "process_changed"}
+                if cancelled is not None and cancelled():
+                    return {"name": name, "state": "cancelled"}
+                old = self._read(name)
+                if recovery and old is not None and old.get("desired_state") == "paused":
+                    return {"name": name, "state": "paused"}
                 current = self._status(name, member)
                 if current["state"] in {"running", "identity_changed", "starting", "unverified", "stopping"}:
                     return current
+                try:
+                    with reserve_endpoint(member["endpoint"]):
+                        pass
+                except RuntimeIsolationError as exc:
+                    raise ValueError("endpoint_lock_held") from exc
                 if member["state"] not in {"ready", "start_required", "tower_already_opened"}:
                     return {"name": name, "state": "failed", "error": member["state"]}
                 number = int(name.rsplit("_", 1)[-1])
                 runtime = WorkerRuntime.for_worker(self.root / "workers", name, 10000 + number)
                 attempt = Attempt.new(name, member["endpoint"], member["lease_id"], uuid4().hex)
+                # Coordinator evidence is a pending launch, never the child's
+                # runtime identity. The child writes its own hash and PID.
+                launch_identity = {
+                    "revision": PROCESS_IDENTITY.revision,
+                    "source_hash": PROCESS_IDENTITY.source_hash,
+                    "boot_id": PROCESS_BOOT_ID,
+                    "coordinator_pid": os.getpid(),
+                }
                 with self._capacity_locked():
                     occupied = sum(self._status(other_name, other)["state"] in {"running", "starting", "unverified", "identity_changed", "stopping"}
                                    for other_name, other in self._members().items() if other_name != name)
@@ -259,7 +437,8 @@ class RerollSupervisor:
                     self._save(name, {"name": name, "endpoint": member["endpoint"],
                                       "lease_id": member["lease_id"], "state": "starting",
                                       "pid": None, "attempt_id": attempt.attempt_id,
-                                      "owner_pid": os.getpid()})
+                                      "owner_pid": os.getpid(),
+                                      "launch_identity": launch_identity})
                 # First launches run in parallel: the host driver serializes only the
                 # Manager presses, and the first-launch staging lease is shared.
                 if member["state"] == "start_required" and self.start_instance is not None:
@@ -306,6 +485,17 @@ class RerollSupervisor:
                     raise ValueError("worker_registration_unverified")
                 if not isinstance(registration.get("job_id"), str) or not registration["job_id"]:
                     raise ValueError("worker_registration_attempt_missing")
+                restart = isinstance(old, dict) and isinstance(old.get("pid"), int)
+                if restart and not old.get("input_generation"):
+                    raise ValueError("restart_generation_unavailable")
+                if restart and old.get("input_generation"):
+                    prior_lease = InputLease(runtime.root / "input-lease.json")
+                    prior = prior_lease._read()
+                    if prior is not None and prior["current"]:
+                        prior_lease.revoke(old["input_generation"], "worker_restarting")
+                if recovery or restart:
+                    registration = self._rotated_registration(name, member, runtime, registration,
+                                                              expected or old, cancelled)
                 attempt = Attempt.new(name, member["endpoint"], member["lease_id"],
                                       registration["job_id"])
                 from fleet import reroll_timing
@@ -314,20 +504,65 @@ class RerollSupervisor:
                 args = self._args(member, runtime, attempt)
                 record = {"name": name, "endpoint": member["endpoint"],
                           "lease_id": member["lease_id"], "attempt_id": attempt.attempt_id,
+                          "input_generation": self._registration_generation(registration),
                           "pid": None, "args": args, "state": "starting",
-                          "owner_pid": os.getpid()}
+                          "owner_pid": os.getpid(), "launch_identity": launch_identity,
+                          "desired_state": "running"}
                 self._save(name, record)
+                # A stopped PID does not prove that its ADB lock was released.
+                try:
+                    with reserve_endpoint(member["endpoint"]):
+                        pass
+                except RuntimeIsolationError as exc:
+                    raise ValueError("endpoint_lock_held") from exc
+                try:
+                    bound = json.loads(Path(registration["binding"]).read_text(encoding="utf-8"))
+                    generation = bound.get("generation")
+                    if (bound.get("worker_id") != name or bound.get("endpoint") != member["endpoint"]
+                            or bound.get("lease_id") != member["lease_id"]
+                            or bound.get("attempt_id") != attempt.attempt_id
+                            or not isinstance(generation, str) or not generation):
+                        raise ValueError("input_generation_binding_changed")
+                    input_lease = InputLease(runtime.root / "input-lease.json")
+                    if not restart:
+                        input_lease.grant(generation)
+                except FileNotFoundError:
+                    # Synthetic enrollment harnesses have no on-disk binding.
+                    pass
                 with self._launch_lock:
+                    if cancelled is not None and cancelled():
+                        return {"name": name, "state": "cancelled"}
                     delay = self.start_stagger_seconds - (time.monotonic() - self._last_start)
                     if delay > 0:
                         time.sleep(delay)
-                    pid = self.spawn(args)
+                    if cancelled is not None and cancelled():
+                        if old is not None:
+                            self._save(name, old)
+                        return {"name": name, "state": "cancelled"}
+                    if recovery:
+                        from fleet.worker_intent import read_intent
+                        intent = read_intent(runtime.root)
+                        if intent is not None and intent["desired_state"] == "stopped":
+                            if old is not None:
+                                self._save(name, old)
+                            return {"name": name, "state": "paused",
+                                    "reason": "operator_stop"}
+                    if restart:
+                        input_lease.handoff(old["input_generation"], generation)
+                    process = self.spawn(args)
                     self._last_start = time.monotonic()
-                if not isinstance(pid, int) or pid <= 0:
+                pid = getattr(process, "pid", None)
+                if not isinstance(pid, int) or pid <= 0 or not callable(getattr(process, "poll", None)):
                     raise ValueError("spawned_process_pid_unavailable")
+                self._owned[name] = _OwnedChild(process)
                 record["pid"] = pid
+                record["process_birth"] = (self.process_birth(pid)
+                                           if self.process_birth is not None else None)
+                record["spawned_at"] = time.time()
                 record["state"] = "unverified"
                 self._save(name, record)
+                if not self._birth_matches(record):
+                    return {"name": name, "state": "unverified", "pid": pid}
                 observed = self.process_identity(pid)
                 if observed is None:
                     return {"name": name, "state": "unverified", "pid": pid}
@@ -337,8 +572,14 @@ class RerollSupervisor:
                 self._save(name, record)
                 return self._status(name, member)
             except Exception as exc:
+                if cancelled is not None and cancelled():
+                    if old is not None:
+                        self._save(name, old)
+                    return {"name": name, "state": "cancelled"}
                 failed = {"name": name, "state": "failed", "error": str(exc)}
-                self._save(name, {**member, **failed})
+                saved = self._read(name)
+                if saved is None or not isinstance(saved.get("pid"), int):
+                    self._save(name, {**member, **failed})
                 return failed
 
     def start_all(self) -> dict[str, Status]:
@@ -349,29 +590,49 @@ class RerollSupervisor:
             results = list(workers.map(self.start, members))
         return dict(zip(members, results))
 
-    def pause(self, name: str) -> Status:
+    def pause(self, name: str, *, recovery: bool = False,
+              expected: Status | None = None) -> Status:
         members = self._members()
         if name not in members:
             return {"name": name, "state": "failed", "error": "instance_not_in_pool"}
         member = members[name]
         with self._locked(name):
             try:
+                if not self._same_record(name, expected):
+                    return {"name": name, "state": "identity_changed", "error": "process_changed"}
                 current = self._status(name, member)
                 if current["state"] != "running":
+                    if not recovery:
+                        record = self._read(name)
+                        if record is not None and record.get("state") != "starting":
+                            record["desired_state"] = "paused"
+                            self._save(name, record)
                     return current
                 record = self._read(name)
                 assert record is not None
                 pid = record["pid"]
-                if tuple(self.process_identity(pid) or ()) != tuple(record["args"]):
+                child = self._owned_child(name, pid)
+                if child is None:
+                    return {"name": name, "state": "identity_changed", "error": "owned_child_unavailable"}
+                if (tuple(self.process_identity(pid) or ()) != tuple(record["args"])
+                        or not self._birth_matches(record)):
                     return {"name": name, "state": "identity_changed", "pid": pid}
-                self.terminate(pid)
+                lease_path = self.root / "workers" / name / "input-lease.json"
+                lease = InputLease(lease_path)
+                current_lease = lease._read()
+                if current_lease is not None and current_lease["current"]:
+                    lease.revoke(current_lease["generation"], "worker_stopping")
+                if not recovery:
+                    record["desired_state"] = "paused"
                 record["state"] = "stopping"
                 self._save(name, record)
+                child.signal(self.terminate)
                 return self._status(name, member)
             except Exception as exc:
                 return {"name": name, "state": "failed", "error": str(exc)}
 
-    def kill(self, name: str) -> Status:
+    def kill(self, name: str, *, recovery: bool = False,
+             expected: Status | None = None) -> Status:
         """SIGKILL a worker that ignored SIGTERM, after re-proving its identity."""
         members = self._members()
         if name not in members:
@@ -379,17 +640,34 @@ class RerollSupervisor:
         member = members[name]
         with self._locked(name):
             try:
+                if not self._same_record(name, expected):
+                    return {"name": name, "state": "identity_changed", "error": "process_changed"}
                 current = self._status(name, member)
                 if current["state"] not in {"running", "stopping"}:
+                    if not recovery:
+                        record = self._read(name)
+                        if record is not None and record.get("state") != "starting":
+                            record["desired_state"] = "paused"
+                            self._save(name, record)
                     return current
                 record = self._read(name)
                 assert record is not None
                 pid = record["pid"]
-                if tuple(self.process_identity(pid) or ()) != tuple(record["args"]):
+                child = self._owned_child(name, pid)
+                if child is None:
+                    return {"name": name, "state": "identity_changed", "error": "owned_child_unavailable"}
+                if (tuple(self.process_identity(pid) or ()) != tuple(record["args"])
+                        or not self._birth_matches(record)):
                     return {"name": name, "state": "identity_changed", "pid": pid}
-                self.force_kill(pid)
+                lease = InputLease(self.root / "workers" / name / "input-lease.json")
+                current_lease = lease._read()
+                if current_lease is not None and current_lease["current"]:
+                    lease.revoke(current_lease["generation"], "worker_killed")
+                if not recovery:
+                    record["desired_state"] = "paused"
                 record["state"] = "stopping"
                 self._save(name, record)
+                child.signal(self.force_kill)
                 return self._status(name, member)
             except Exception as exc:
                 return {"name": name, "state": "failed", "error": str(exc)}

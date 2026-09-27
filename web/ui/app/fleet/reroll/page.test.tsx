@@ -1,16 +1,18 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
 import { RerollWorkspaceProvider } from "./RerollWorkspace";
 import { PastRerolls } from "./PastRerolls";
-import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchReroll, fetchRerollJournal, hideRerollMembers, listRerolls, removeRerollMember, restoreRerollMembers, startNewReroll, startReroll } from "@/lib/api";
-import type { RerollMember, RerollPlan } from "@/lib/fleet";
+import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchRecoverySettings, fetchReroll, fetchRerollJournal, hideRerollMembers, listRerolls, removeRerollMember, restoreRerollMembers, startNewReroll, startReroll } from "@/lib/api";
+import type { RecoverySettingsResponse } from "@/lib/recovery";
+import type { FleetOverview, RerollMember, RerollPlan } from "@/lib/fleet";
 
 const navigation = vi.hoisted(() => ({ search: "" }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(navigation.search) }));
 const choose = vi.fn();
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
-vi.mock("@/lib/api", () => ({ fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), hideRerollMembers: vi.fn(), restoreRerollMembers: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn() }));
+vi.mock("./FleetLabsContext", () => ({ useFleetLabs: () => ({ snapshot: null, loading: false, error: null, refresh: vi.fn() }) }));
+vi.mock("@/lib/api", () => ({ ApiError: class ApiError extends Error { status = 0; }, fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), hideRerollMembers: vi.fn(), restoreRerollMembers: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn(), fetchRecoverySettings: vi.fn(), saveRecoverySettings: vi.fn() }));
 
 // Named separately so a test that extends the plan keeps its full type -
 // spreading `members[0].reroll_plan` inferred it as optional and lost it.
@@ -34,7 +36,19 @@ beforeEach(() => {
   vi.mocked(fetchAccountWorkshopPurchases).mockResolvedValue({ lines: [], balances: { coins: null, gems: null }, rehearsals: 0, next: null });
   vi.mocked(fetchAccountRuns).mockResolvedValue([]);
   vi.mocked(fetchAccountRunPurchases).mockResolvedValue({ purchases: [], totals: { count: 0, spent: 0, unpriced: 0, by_category: {} } });
+  vi.mocked(fetchRecoverySettings).mockResolvedValue(recoverySettings);
 });
+
+// The Live page embeds the compact recovery summary; it reads real settings.
+const recoverySettings: RecoverySettingsResponse = {
+  settings: { mode: "off", model: "openai/gpt-5.4-nano", deadline_seconds: 15, max_calls: 2,
+    max_actions: 3, cooldown_seconds: 600, incident_limit_microusd: 50_000, daily_limit_microusd: 1_000_000 },
+  shadow_worker: null, settings_revision: 1,
+  policy: { active: { incident_limit_microusd: 50_000, daily_limit_microusd: 1_000_000, max_calls: 2,
+    revision: 1, disabled_request_id: null },
+    requested: { incident_limit_microusd: 50_000, daily_limit_microusd: 1_000_000, max_calls: 2 },
+    requested_policy_conflict: false },
+  assist_allowed_actions: [], status: { producer: "unknown", workers: [] } };
 
 test("worker cards collapse and scoped ledger shows confirmed purchases", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [{
@@ -83,11 +97,87 @@ test("running workers have distinct account summaries without switching global s
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members });
   render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
   expect(await screen.findByText("Golden Tower offered")).toBeInTheDocument();
-  expect(screen.getByText("Account 100")).toBeInTheDocument();
-  expect(screen.getByText("Account 200")).toBeInTheDocument();
+  expect(screen.getByText(/Account 100 ·/)).toBeInTheDocument();
+  expect(screen.getByText(/Account 200 ·/)).toBeInTheDocument();
   expect(screen.getAllByText("Live intent unavailable")).toHaveLength(2);
+  expect(screen.getByRole("region", { name: "Fleet health overview" })).toHaveTextContent("2Health unknown");
   fireEvent.click(screen.getByRole("button", { name: "Inspect Air_2" }));
   expect(choose).not.toHaveBeenCalled();
+});
+
+test("hidden active workers remain in the semantic fleet summary", async () => {
+  const now = Date.now() / 1000;
+  const hiddenOverview: FleetOverview = { account_id: "200", lease_id: "b", attempt_id: "hidden-attempt",
+    observed_at: now - 10,
+    health: { state: "attention", reason: "Needs operator choice", last_completed_scan_at: now - 10,
+      last_progress_at: now - 20, incidents_open: null },
+    current_run: null, last_completed_run: null,
+    currency: { coins_lower: null, coins_upper: null, reserved: null, available_lower: null, gems: null },
+    missions: { state: "unknown", reason: null, last_claim_at: null }, strategy: null,
+    source: { revision: null, hash: null }, recovery: null, unknown_count: 2, blockers: [] };
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [members[0],
+    { ...members[1], hidden: true, overview: hiddenOverview }] });
+  render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
+  const summary = await screen.findByRole("region", { name: "Fleet health overview" });
+  await waitFor(() => expect(summary).toHaveTextContent("2 accounts"));
+  expect(within(summary).getByText("1", { selector: '[data-count="attention"]' })).toBeInTheDocument();
+  expect(screen.queryByRole("article", { name: "Air_2 live overview" })).not.toBeInTheDocument();
+});
+
+test("live claims expire at the evidence deadline despite identical failed fleet polls", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-27T12:00:00.000Z"));
+  const observedAt = Date.now() / 1000 - 100;
+  const overview: FleetOverview = { account_id: "100", lease_id: "a", attempt_id: "same-attempt",
+    observed_at: observedAt,
+    health: { state: "progressing", reason: "Recent progress", last_completed_scan_at: observedAt,
+      last_progress_at: observedAt, incidents_open: null },
+    current_run: { id: 9, tier: 1, wave: 42, speed: 3, coins: null, observed_at: observedAt },
+    last_completed_run: null,
+    currency: { coins_lower: null, coins_upper: null, reserved: null, available_lower: null, gems: null },
+    missions: { state: "unknown", reason: null, last_claim_at: null }, strategy: null,
+    source: { revision: null, hash: null }, recovery: null, unknown_count: 1, blockers: [] };
+  vi.mocked(fetchReroll).mockResolvedValueOnce({ candidates: [], members: [{ ...members[0],
+    overview, route_revision_applied: 12,
+    resource_evaluation: { account_id: "100", revision: 12, observed_at: observedAt,
+      gem_step: { action: "wait", status: "planned", reason: "Gem target pending" },
+      lab_step: { action: "speed", status: "supported", reason: "Waiting for timer" } },
+  }] }).mockRejectedValue(new Error("same network failure"));
+  const view = render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(within(screen.getByRole("article", { name: "Air_1 live overview" })).getByText("Progressing")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Air_1 current run" })).toHaveTextContent("W42");
+    expect(screen.getByRole("region", { name: "Air_1 objective and next action" })).toHaveTextContent("Waiting for timer");
+    await act(async () => { await vi.advanceTimersByTimeAsync(19_000); });
+    expect(within(screen.getByRole("article", { name: "Air_1 live overview" })).getByText("Progressing")).toBeInTheDocument();
+    expect(screen.getByText("same network failure")).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(within(screen.getByRole("region", { name: "Fleet health overview" })).getByText("1", {
+      selector: '[data-count="unknown"]',
+    })).toBeInTheDocument();
+    expect(within(screen.getByRole("article", { name: "Air_1 live overview" })).getByText("Health unknown")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Air_1 current run" })).toHaveTextContent("No verified current run");
+    expect(screen.getByRole("region", { name: "Air_1 objective and next action" })).not.toHaveTextContent("Waiting for timer");
+    expect(vi.mocked(fetchReroll)).toHaveBeenCalledTimes(5);
+    fireEvent(document, new Event("visibilitychange"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(vi.mocked(fetchReroll)).toHaveBeenCalledTimes(6);
+  } finally {
+    view.unmount();
+    const pendingTimers = vi.getTimerCount();
+    vi.useRealTimers();
+    expect(pendingTimers).toBe(0);
+  }
+});
+
+test("fleet filters and primary card actions have phone-sized hit areas", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members });
+  render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
+  await screen.findByRole("article", { name: "Air_2 live overview" });
+  for (const name of ["Start all", "Pause all", "Start", "Pause", "Delete Air_2 from the list", "Delete all", "Needs you 1"]) {
+    for (const button of screen.getAllByRole("button", { name })) expect(button).toHaveClass("min-h-11");
+  }
 });
 
 test("worker shows ten ordered Workshop buys including defense unlocks", async () => {
@@ -115,7 +205,9 @@ test("start failure is visible and four workers warn about resources", async () 
   vi.mocked(startReroll).mockRejectedValue(new Error("supervisor unavailable"));
   render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
   fireEvent.click(await screen.findByRole("button", { name: "Start all" }));
+  // The start failure is the page's only alert; the recovery summary is loaded, not failing.
   expect(await screen.findByRole("alert")).toHaveTextContent("supervisor unavailable");
+  expect(await screen.findByText(/Saved mode/)).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Concurrent workers"), { target: { value: "4" } });
   expect(screen.getByText(/Four concurrent emulators/)).toBeInTheDocument();
 });

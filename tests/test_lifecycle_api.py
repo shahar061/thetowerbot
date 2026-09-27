@@ -76,6 +76,27 @@ def test_start_starts_the_bot_and_not_the_shutdown(wired) -> None:
     assert not shutdown.is_set()
 
 
+def test_fleet_monitor_lives_with_api_lifespan() -> None:
+    class Fleet:
+        def __init__(self) -> None:
+            self.starts = 0
+            self.stops = 0
+
+        def start_monitor(self) -> None:
+            self.starts += 1
+
+        def stop_monitor(self) -> None:
+            self.stops += 1
+
+    fleet = Fleet()
+    app = create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                     db_path=None, fleet=fleet)
+    with TestClient(app) as client:
+        assert fleet.starts == 1
+        assert client.get("/api/status").status_code == 200
+    assert fleet.stops == 1
+
+
 def test_starting_a_running_bot_is_a_409(wired) -> None:
     client, runner, _ = wired
     runner.fail_with = RunnerError("already running", 409)

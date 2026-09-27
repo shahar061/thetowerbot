@@ -24,6 +24,8 @@ from cards_intro import CardsIntro, popup_visible as cards_popup_visible
 import battle_upgrade_info
 import milestones_badge
 import menu_badges
+from notification_state import MissionReceiptBus, NotificationState
+from evidence_scope import FactScope
 import mail_screen
 import nav_arrow
 from milestones_claim import MilestonesClaim
@@ -31,18 +33,22 @@ from milestones_screen import MilestonesReadings, parse_frame as parse_milestone
 from missions_claim import MissionsClaim
 from missions_screen import MissionsReadings
 from missions_visit import MissionsVisit
-from lab_plan import LabDecision
+from lab_plan import LabDecision, LabVisitOptions
 from lab_visit import LabVisit
+from lab_routes import research_gate, unlock_gate
 import lab_screen
+from identity_reverify import IdentityReverifier
 from labs import LabsState
 from account_state import AccountState, AccountRepository
 from account_screens import ScreenReadings
 
 import argparse
+import hashlib
 import dataclasses
 import ipaddress
 import json
 import logging
+import os
 import signal
 import sys
 import threading
@@ -50,7 +56,7 @@ import time
 import traceback
 from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from adbutils import AdbDevice
 
@@ -72,6 +78,7 @@ import ocr
 import pages
 import screens
 import speed
+from maintenance_schedule import DueAction, MaintenanceSchedule
 import transactions
 import unlocked_screen
 import vision
@@ -90,6 +97,8 @@ from fleet.identity import Attempt
 from frames import FrameBuffer
 from navigate import Navigator
 from runner import BotRunner, RunnerError
+from runtime_identity import PROCESS_IDENTITY
+from runtime_records import PROCESS_BOOT_ID, RuntimeRecords
 from supervisor import DeviceSupervisor, RecoveryState
 from runs import RunTracker
 from shopping import ShoppingSession, header_numbers
@@ -105,6 +114,9 @@ from telegram_settings import TelegramSettingsStore, legacy_telegram_interval_fr
 
 logger = logging.getLogger("tower_bot")
 _FAILED_MILESTONES_RETRY_SECONDS = 60.
+# A planned Lab start that ended without a verified start is not re-armed for
+# the same (slot, research, level, revision) and slot evidence until this passes.
+LAB_ACTION_BACKOFF_SECONDS = 900.
 
 
 def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
@@ -126,6 +138,12 @@ def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
 # --------------------------------------------------------------------------
 # Bot
 # --------------------------------------------------------------------------
+def _recovery_frame_image(frame: Any) -> Any:
+    """Lazy import: recovery modules load only when recovery is in use."""
+    from recovery_image import encode_recovery_image
+    return encode_recovery_image(frame)
+
+
 class TowerBot:
     def __init__(
         self,
@@ -153,6 +171,9 @@ class TowerBot:
         unknown_dir: Path | None = None,
         supervisor: DeviceSupervisor | None = None,
         reroll_progress: Any | None = None,
+        progress: Any | None = None,
+        recovery: Any | None = None,
+        identity_reverifier: Callable[[], None] | None = None,
     ) -> None:
         self.account_state = account_state
         self._screen_readings = account_state.screen_readings if account_state is not None else ScreenReadings()
@@ -176,6 +197,7 @@ class TowerBot:
         self.cards_intro = CardsIntro()
         self.device = device
         self.supervisor = supervisor
+        self.progress = progress
         self.templates = templates
         self.bus = bus
         # Optional: --tui and --once have nobody to show a frame to, and every
@@ -197,12 +219,31 @@ class TowerBot:
         self.wallet: int | None = None
         self.autopilot = BattleAutopilot(autopilot_state, bus, account_state)
         self.shopping.account_state = account_state
+        safety_journal = getattr(self.shopping, 'journal', None)
+        if account_state is not None and isinstance(safety_journal, transactions.TransactionJournal):
+            account_state.attach_safety_storage(safety_journal.path)
         self.reroll_progress = reroll_progress
-        self.lab_visit: LabVisit | None = (LabVisit(templates)
-                                          if reroll_progress is not None else None)
+        self.lab_runtime = None
+        self.maintenance = MaintenanceSchedule()
+        self.maintenance_status: str | None = None
+        self._deadline_speed: DueAction | None = None
+        self._lab_visit_revision: int | None = None
+        # Planned Lab choices whose route is uncalibrated: visible, never executed.
+        self.lab_route_pending: tuple[str, ...] = ()
+        # Last armed planned Lab start: (key, slot evidence, backoff-until).
+        self._lab_action_last: tuple[tuple, tuple | None, float] | None = None
+        self.lab_visit: LabVisit | None = (LabVisit(templates, journal=safety_journal,
+            account_state=account_state, slot_observer=self._observe_lab_runtime,
+            authorize=self._authorize_lab, event_sink=self.bus.publish)
+            if reroll_progress is not None or account_state is not None and safety_journal is not None else None)
         self.lab_state: LabsState | None = (LabsState(account_state)
-                                          if reroll_progress is not None else None)
+                                          if self.lab_visit is not None else None)
+        self._bind_lab_runtime()
         self._last_lab_confirmation: tuple[float | None, int, int] | None = None
+        self._last_wave_progress: tuple[int | None, int] | None = None
+        self._last_verified_purchases = self.autopilot.state.snapshot()['verified_purchases']
+        self._research_until: float | None = None
+        self._progress_wait: tuple[str, str, float] | None = None
         self._reroll_shopping_policy = None
         self._reroll_shopping_base = None
         if reroll_progress is not None:
@@ -210,6 +251,8 @@ class TowerBot:
             self.shopping.reroll_observe_prices = getattr(reroll_progress, "observe_prices", None)
             self.shopping.reroll_replan = self._replan_reroll_shopping
             self.shopping.reroll_purchase_reason = getattr(reroll_progress, "purchase_reason", None)
+            self.shopping.price_quotes = getattr(reroll_progress, 'price_quotes', None)
+            self.shopping.inspection_resolved = getattr(reroll_progress, 'inspection_resolved', None)
         self.shopping.observations = self.autopilot.state
         # Read once, here, rather than per scan: both configure an object
         # that carries state across scans (the tracker's part-confirmed
@@ -221,6 +264,23 @@ class TowerBot:
         self.stall_watchdog = stall_watchdog.StallWatchdog(
             time.time, no_effect_limit=config.STALL_NO_EFFECT_LIMIT,
             blocked_limit=config.STALL_BLOCKED_SECONDS)
+        # O4 model-assisted recovery: a RecoveryCoordinator the runner owns
+        # and closes. Stepped only on this scan thread; see _step_recovery.
+        self.recovery = recovery
+        # Bounded in-process account re-verification (runner-provided, reroll
+        # workers only). Shared with the Workshop inspection so a stale
+        # identity cannot hold a pending purchase forever.
+        self.identity_reverification: IdentityReverifier | None = (
+            IdentityReverifier(identity_reverifier) if identity_reverifier is not None else None)
+        self.shopping.identity_reverifier = self.identity_reverification
+        self._recovery_screen: str | None = None
+        self._recovery_screen_generation = 0
+        self._recovery_dispatched: Any = None
+        self._recovery_acted = False
+        self._recovery_status_key: str | None = None
+        self._recovery_failed = False
+        if recovery is not None and isinstance(safety_journal, transactions.TransactionJournal):
+            recovery.set_journal(safety_journal)
         self.snapshots = SnapshotWriter(
             unknown_dir if unknown_dir is not None else config.UNKNOWN_DIR,
             config.UNKNOWN_MIN_INTERVAL,
@@ -289,6 +349,10 @@ class TowerBot:
         self._missions_badge = False
         self._mail_badge = False
         self._last_menu_badge_check_at: float | None = None
+        self._notifications = NotificationState()
+        self._notification_scope: dict[str, Any] | None = None
+        self._capture_sequence = 0
+        self._mission_attempt = False
         self._mail_recovery_taps = 0
         self._mail_recovery_at = float('-inf')
         # The account's best-ever wave. Seeded here from whatever the caller
@@ -317,11 +381,60 @@ class TowerBot:
     # -- screen state ------------------------------------------------------
     def refresh_screen(self) -> Image:
         """Capture a fresh frame and keep it as the current screen."""
-        self._screen = capture_screen(self.device)
+        self._screen_fact_scope = self.account_state.verified_scope if self.account_state is not None else None
+        if self.progress is None:
+            self._screen = capture_screen(self.device)
+        else:
+            with self.progress.phase('capture', 20):
+                self._screen = capture_screen(self.device)
+            self.progress.observe_capture()
         self._screen_captured_at = time.time()
+        self._screen_captured_monotonic = time.monotonic()
+        self._capture_sequence += 1
+        self._bind_lab_runtime()
+        self._bind_notification_scope()
         if self.frames is not None:
             self.frames.publish(self._screen)
         return self._screen
+
+    def _bind_notification_scope(self) -> None:
+        """Use only an account-verified worker attempt for durable state."""
+        if self.progress is None:
+            return
+        heartbeat = self.progress.snapshot()
+        keys = ("account_id", "lease_id", "attempt_id", "generation")
+        if any(not isinstance(heartbeat.get(key), str) or not heartbeat[key]
+               for key in keys):
+            return
+        scope = {key: heartbeat[key] for key in keys}
+        verified = (getattr(self.account_state, "verified_scope", None)
+                    if self.account_state is not None else None)
+        if (isinstance(verified, FactScope)
+                and verified.account_id == scope["account_id"]
+                and verified.lease_id == scope["lease_id"]
+                and verified.generation == scope["generation"]):
+            scope["fact_epoch"] = verified.epoch
+        if scope != self._notification_scope:
+            if self._notification_scope is not None and self._mission_attempt:
+                self.claim.cancel("account_scope_changed",
+                                  "Mission claim scope changed before confirmation.")
+                self._mission_attempt = False
+            self._notifications = NotificationState(
+                self.progress.path.with_name("mission-notification-state.json"),
+                scope=scope)
+            self._notification_scope = scope
+
+    def _observe_menu_notifications(self, now: float) -> None:
+        """Observe fixed menu controls even while paused; observation taps nothing."""
+        frame_id = f"{PROCESS_BOOT_ID}:{self._capture_sequence}"
+        missions = menu_badges.read_notification(self.screen, self.templates, "missions")
+        labs = menu_badges.read_notification(self.screen, self.templates, "labs")
+        self._notifications.observe("missions", missions, now, frame_id=frame_id)
+        self._notifications.observe("labs", labs, now, frame_id=frame_id)
+        self._missions_badge = missions is True
+        self._mail_badge = menu_badges.read_badge(
+            self.screen, self.templates, "mail") is not None
+        self._last_menu_badge_check_at = now
 
     @property
     def screen(self) -> Image:
@@ -601,6 +714,18 @@ class TowerBot:
         """
         if anchor is None or settings.paused:
             return False
+        if self.shopping.reconciliation_pending or self.autopilot.pending is not None:
+            self._maintenance_reason('pending_purchase')
+            return False
+
+        current = speed.read(self.screen, self.templates, anchor)
+        scope = getattr(self, '_screen_fact_scope', None)
+        captured = getattr(self, '_screen_captured_at', None)
+        if (self.lab_runtime is not None and self.account_state is not None
+                and scope is not None and scope == self.account_state.verified_scope
+                and captured is not None and self.account_state.accepts_capture(scope, captured)
+                and 0 <= time.time()-captured <= 30.):
+            self.lab_runtime.observe_speed(current, observed_at=captured)
 
         for command in commands:
             self.speed.tap(
@@ -613,15 +738,62 @@ class TowerBot:
         if commands:
             return True
 
-        return self.speed.settle(
+        manual = settings.strategy.target_speed
+        auto = settings.strategy.auto_fastest
+        target = manual
+        if target is None and self.reroll_progress is not None:
+            target = self.reroll_progress.speed_target()
+        if auto and manual is None:
+            capability = self.lab_runtime.snapshot().verified_speed if self.lab_runtime is not None else None
+            target = max(target or 0., capability or 0., current or 0.) or None
+        if manual is not None or auto:
+            for action in self.maintenance.due(time.time()):
+                if action.kind == 'speed_check' and current is not None and self.maintenance.claim(action):
+                    self.speed.rearm_completion(action.generation)
+                    self._deadline_speed = action
+            if auto and manual is None and self._deadline_speed is not None:
+                target = max(target or 0., self._deadline_speed.target_speed or 0.) or None
+        if self._deadline_speed is not None:
+            reason = ('speed_unreadable' if current is None else
+                      'speed_check_exhausted' if self.speed.exhausted else 'verifying_speed')
+            self._maintenance_reason(reason)
+
+        changed = self.speed.settle(
             self.screen,
             self.device,
             self.templates,
-            target=(self.reroll_progress.speed_target() if self.reroll_progress is not None
-                    else settings.strategy.target_speed),
+            target=target,
             anchor=anchor,
             tuning=settings.strategy,
         ) is not None
+        if any(a.reason == 'timer_correction_limit' for a in self.maintenance.due(time.time())):
+            self._maintenance_reason('timer_correction_limit')
+        elif self._deadline_speed is not None and not changed and self.speed.exhausted:
+            self._maintenance_reason('speed_check_exhausted')
+        return changed
+
+    def _maintenance_reason(self, reason: str) -> None:
+        if self.maintenance_status != reason:
+            self.bus.publish(events.Skipped(action='maintenance', reason=reason,
+                                           detail='Deadline verification: ' + reason))
+        self.maintenance_status = reason
+
+    def _update_maintenance(self, settings: Live, state: screens.ScreenState) -> None:
+        if self.lab_runtime is not None:
+            self.maintenance.observe(self.lab_runtime.snapshot())
+        self.maintenance.tick(time.time(), time.monotonic(), paused=settings.paused)
+        if not self.maintenance.due(time.time()):
+            self.maintenance_status = None
+            return
+        if settings.paused:
+            reason = 'paused'
+        elif self.shopping.reconciliation_pending or self.autopilot.pending is not None:
+            reason = 'pending_purchase'
+        elif state is not screens.ScreenState.IN_RUN or self._any_walk_active():
+            reason = 'unsafe_screen'
+        else:
+            reason = self.maintenance_status if self._deadline_speed is not None else 'due'
+        self._maintenance_reason(reason or 'due')
 
     def _ladder_waves(self) -> tuple[int | None, int | None]:
         """(best, claimed-at) for the ladder of the tier last played."""
@@ -645,6 +817,8 @@ class TowerBot:
         other errand happens to go home.
         """
         claims = settings.strategy.claims
+        if self._notifications.verification_due(time.time()):
+            return not self.claim.active and not self.milestones_claim.active
         return (claims.enabled and not self.claim.active and not self.milestones_claim.active
                 and self._claim_due(settings) is not None)
 
@@ -661,6 +835,11 @@ class TowerBot:
         claims = settings.strategy.claims
         best_wave, claimed_wave = self._ladder_waves()
         now = time.time()
+        mission_row = self._notifications.snapshot()["kinds"]["missions"]
+        mission_identity_unverified = (self.progress is not None
+            and self.account_state is not None
+            and (self._notification_scope is None
+                 or type(self._notification_scope.get("fact_epoch")) is not int))
         return claim_schedule.due(
             claim_schedule.ClaimState(
                 last_missions=self._last_claim.get("missions"),
@@ -669,15 +848,48 @@ class TowerBot:
                 claimed_best_wave=claimed_wave,
                 milestones_badge=(self._milestones_badge
                                   and now >= self._milestones_retry_at),
-                missions_badge=self._missions_badge,
+                # NotificationState owns mission edges and retry backoff. A
+                # raw one-frame badge may not bypass its confirmation gate.
+                missions_badge=False,
                 mail_badge=self._mail_badge,
                 last_mail=self._last_claim.get("mail"),
+                missions_notification_due=self._notifications.eligible("missions", now),
+                missions_blocked=(mission_row["uncertain"] or mission_row["in_flight"]
+                                  or mission_row["prior_uncertain"]
+                                  or self._notifications.snapshot()["pending_claim"] is not None
+                                  or mission_identity_unverified),
             ),
             now=now,
             missions_every_hours=claims.missions_every_hours,
             milestones_on_new_best=(claims.milestones_on_new_best
                                     and now >= self._milestones_retry_at),
         )
+
+    def _settle_mission_attempt(self) -> None:
+        """Record only a finished counter-confirmed walk as a current claim."""
+        if not self._mission_attempt or self.claim.active:
+            return
+        self._mission_attempt = False
+        result = self.claim.snapshot()["result"]
+        now = time.time()
+        if self._notifications.snapshot()["pending_claim"] is not None:
+            self._notifications.finish("missions", now, claimed=None)
+        elif result is not None and self.claim.snapshot()["claimed"] > 0:
+            self._notifications.finish("missions", now, claimed=True)
+        else:
+            self._notifications.finish("missions", now, claimed=False)
+
+    def _settle_lab_notification(self) -> None:
+        """A purple-dot Labs visit that ended without a result still ends.
+
+        Pause, walk cancels and scope changes cancel the visit without a
+        result, so ``_finish_lab_visit`` never runs; without this the labs
+        notification stays in flight for the whole worker attempt.
+        """
+        if self.lab_visit is not None and self.lab_visit.active:
+            return
+        if self._notifications.snapshot()["kinds"]["labs"]["in_flight"]:
+            self._notifications.finish("labs", time.time(), claimed=False)
 
     def _settle_milestones_attempt(self) -> None:
         """Commit a completed walk; roll back and back off after a failed one."""
@@ -734,7 +946,7 @@ class TowerBot:
         armed, so the caller can log it, or None.
         """
         claims = settings.strategy.claims
-        if not claims.enabled:
+        if settings.paused or not claims.enabled:
             return None
         if self.claim.active or self.milestones_claim.active:
             return None
@@ -750,6 +962,9 @@ class TowerBot:
         walk = self.claim if kind == "missions" else self.milestones_claim
         if not walk.request():
             return None
+        if kind == "missions":
+            self._notifications.begin("missions", time.time())
+            self._mission_attempt = True
         if kind == "milestones":
             self._milestones_attempt = (
                 self._ladder_tier, self._claimed_wave.get(self._ladder_tier),
@@ -810,6 +1025,151 @@ class TowerBot:
                 or self.cards_intro.active
                 or (self.lab_visit is not None and self.lab_visit.active))
 
+    # -- O4 recovery (scan thread only) -------------------------------------
+    def _recovery_active(self) -> bool:
+        """False once a coordinator failure latched recovery off for this bot."""
+        return self.recovery is not None and not self._recovery_failed
+
+    def _recovery_wanted(self, stall_verdict: str | None) -> bool:
+        recovery = self.recovery
+        return self._recovery_active() and (recovery.owns_lane or (
+            recovery.enabled and stall_verdict in (stall_watchdog.ESCAPE, stall_watchdog.PAUSE)))
+
+    def _recovery_journal(self) -> tuple[int, bool]:
+        journal = getattr(self.shopping, 'journal', None)
+        if isinstance(journal, transactions.TransactionJournal):
+            return journal.recovery_snapshot()  # Cached, nonblocking.
+        return 0, True  # No purchase journal: pending state unknown, so blocked.
+
+    def _recovery_context(self, settings: Any, screen: str, escape: Any) -> Any:
+        """This completed scan as an immutable RecoveryContext, or None when the
+        verified attempt scope is unavailable (then recovery is never used)."""
+        from recovery_policy import (RecoveryCandidate, RecoveryContext, RecoveryScope,
+                                     VerifiedControl)
+        if self.progress is None or self.supervisor is None:
+            return None
+        beat = self.progress.snapshot()
+        keys = ('worker_id', 'account_id', 'lease_id', 'attempt_id', 'generation', 'boot_id')
+        if any(not isinstance(beat.get(key), str) or not beat[key] for key in keys):
+            return None
+        epoch, pending = self._recovery_journal()
+        if screen != self._recovery_screen:
+            self._recovery_screen = screen
+            self._recovery_screen_generation += 1
+        candidates = ()
+        if escape is not None:
+            label, box = escape
+            height, width = self.screen.shape[:2]
+            rect = box.rect
+            candidates = (RecoveryCandidate(
+                candidate_id=f'stall:{label}', action_id='close_overlay', screen=screen,
+                control_generation=0, target=label, expected_postcondition='overlay_absent',
+                control=VerifiedControl(x=rect.x, y=rect.y, width=rect.w, height=rect.h,
+                                        frame_width=width, frame_height=height)),)
+        scope = RecoveryScope(
+            worker=beat['worker_id'], account_id=beat['account_id'], lease_id=beat['lease_id'],
+            attempt_id=beat['attempt_id'], attempt_generation=beat['generation'],
+            boot_id=beat['boot_id'], worker_generation=int(beat.get('clock_epoch') or 0),
+            strategy_revision=getattr(self.controls, 'recovery_revision', 0),
+            device_command_generation=getattr(self.supervisor, 'command_generation', 0),
+            pending_transaction_generation=epoch)
+        return RecoveryContext(
+            scope=scope, screen=screen, screen_generation=self._recovery_screen_generation,
+            observation_generation=self._capture_sequence,
+            observed_at_monotonic=getattr(self, '_screen_captured_monotonic', time.monotonic()),
+            candidates=candidates, paused=settings.paused,
+            identity_conflict=getattr(self.supervisor, 'current_account', None) != scope.account_id,
+            pending_transaction=pending)
+
+    def _recovery_live(self, scanned: Any) -> Any:
+        """The scanned context with the gates as they are right now, for the final
+        guard inside DeviceSupervisor.recovery_tap. Nonblocking; never reads the
+        supervisor's in-guard BLOCKED state as an identity conflict."""
+        epoch, pending = self._recovery_journal()
+        scope = scanned.scope.model_copy(update={
+            'device_command_generation': getattr(self.supervisor, 'command_generation', 0),
+            'strategy_revision': getattr(self.controls, 'recovery_revision', 0),
+            'pending_transaction_generation': epoch})
+        return scanned.model_copy(update={
+            'scope': scope, 'paused': self.controls.snapshot().paused,
+            'pending_transaction': pending,
+            'identity_conflict': getattr(self.supervisor, 'current_account', None)
+                                 != scope.account_id})
+
+    def _step_recovery(self, settings: Any, screen: str, escape: Any, *, stalled: bool,
+                       ready: bool, readable: bool, boxes: tuple[ocr.TextBox, ...],
+                       unrenamed: str = "UNKNOWN") -> bool:
+        """Advance the coordinator one scan. True means it owns the action lane.
+
+        Exceptions never end the scan loop: they return the lane to the
+        existing watchdog path.
+        """
+        self._recovery_acted = False
+        recovery = self.recovery
+        try:
+            context = self._recovery_context(settings, screen, escape)
+            if context is None:
+                return False
+            dispatched = self._recovery_dispatched
+            # Positive evidence only: a readable frame classified as a known
+            # screen, with trusted OCR, no spending/ad text, and neither the
+            # tapped label nor any higher-priority safe label anywhere. Anything
+            # else is "not confirmed" and times out to no_effect.
+            postcondition = bool(
+                dispatched is not None and readable
+                and unrenamed not in ("UNKNOWN", stall_watchdog.SCREEN_ID)
+                and stall_watchdog.overlay_absent(boxes, dispatched.target))
+
+            def dispatch(candidate: Any, guard: Any) -> None:
+                control = candidate.control
+                x, y = control.x + control.width // 2, control.y + control.height // 2
+                # The serial DeviceSupervisor re-runs guard after its durable
+                # checkpoint, immediately before the ADB click.
+                self.supervisor.recovery_tap(x, y, guard=guard)
+                self._recovery_dispatched, self._recovery_acted = candidate, True
+                self.bus.publish(events.Tapped(action=f'recovery:{candidate.target}',
+                                               x=x, y=y, score=1.0))
+
+            can_tap = ready and callable(getattr(self.supervisor, 'recovery_tap', None))
+            frame = self.screen
+            owned = recovery.step(
+                context, stalled=stalled, deterministic=False,
+                dispatch=dispatch if can_tap else None,
+                live_context=lambda: self._recovery_live(context),
+                semantic_postcondition=postcondition,
+                pause=lambda: self._pause_for_stall(boxes),
+                # Encoded only when a provider request is built (<=2 per incident).
+                image=lambda: _recovery_frame_image(frame))
+            if not recovery.owns_lane:
+                self._recovery_dispatched = None
+        except Exception:  # noqa: BLE001 - recovery must never end the scan loop
+            # Latch recovery off for this bot and give the lane back to the
+            # unchanged watchdog path (its counts are preserved, not reset).
+            logger.exception("Recovery coordinator step failed; recovery disabled for this bot")
+            self._recovery_failed = True
+            self._recovery_dispatched = None
+            try:
+                recovery.close()  # Scan thread; never joins. The runner re-closes safely.
+            except Exception:  # noqa: BLE001
+                logger.exception("Recovery coordinator close failed")
+            return False
+        self._publish_recovery_status()
+        return owned
+
+    def _publish_recovery_status(self) -> None:
+        if self.recovery is None:
+            return
+        try:
+            status = self.recovery.status()
+        except Exception:  # noqa: BLE001
+            return
+        key = json.dumps({k: v for k, v in status.items()
+                          if k not in ('observed_at', 'calls_observed_at', 'budget_observed_at')},
+                         sort_keys=True, default=str)
+        if key != self._recovery_status_key:
+            self._recovery_status_key = key
+            self.bus.publish(events.RecoveryStatusChanged(status=status))
+
     def _pause_for_stall(self, boxes: tuple[ocr.TextBox, ...]) -> None:
         """Give up on a stall: keep the evidence, pause, and say so."""
         reason = self.stall_watchdog.reason or "stalled"
@@ -842,18 +1202,200 @@ class TowerBot:
         if self.lab_visit is not None:
             self.lab_visit.cancel(reason)
 
+    def _observe_menu_wallet(self, coins: int | None, gems: int | None, *, evidence_ref: str) -> None:
+        """Publish this capture before maintenance policy; fetch time is never evidence."""
+        from evidence_scope import BalanceInterval, FactScope
+        scope = getattr(self, '_screen_fact_scope', None)
+        observed_at = getattr(self, '_screen_captured_at', None)
+        if (self.account_state is None or not isinstance(scope, FactScope)
+                or scope != self.account_state.verified_scope
+                or type(observed_at) not in (float, int)
+                or not 0 <= time.time() - observed_at <= 30):
+            return
+        for currency, amount in (('coins', coins), ('gems', gems)):
+            if amount is not None and (type(amount) is not int or amount < 0):
+                continue
+            self.account_state.observe_balance(BalanceInterval.from_reading(
+                currency, amount, scope, observed_at, evidence_ref))
+
+    def _observe_labs_capture(self, boxes: tuple[ocr.TextBox, ...]) -> None:
+        """Tag the current reader output before any maintenance input changes it."""
+        from evidence_scope import FactScope
+        from lab_runtime import _catalog_revision
+        scope = getattr(self, '_screen_fact_scope', None)
+        observed_at = getattr(self, '_screen_captured_at', None)
+        if (self.lab_state is None or self.account_state is None
+                or not isinstance(scope, FactScope) or scope != self.account_state.verified_scope
+                or type(observed_at) not in (float, int)
+                or not 0 <= time.time() - observed_at <= 30):
+            return
+        observation = lab_screen.read_slots(self.screen, boxes, observed_at=observed_at)
+        picker = lab_screen.read_picker(self.screen, boxes)
+        if picker.page and picker.game_speed is not None:
+            observation = dataclasses.replace(observation, entries=(picker.game_speed,))
+        self.lab_state.observe(observation, scope=scope, catalog_revision=_catalog_revision())
+
+    def _bind_lab_runtime(self) -> None:
+        from lab_runtime import LabRuntime, LabScope
+        scope = self.account_state.verified_scope if self.account_state else None
+        journal = getattr(self.shopping, 'journal', None)
+        if self.lab_visit is None:
+            return
+        if scope is None or not isinstance(journal, transactions.TransactionJournal):
+            self.lab_runtime = self.lab_visit.runtime = None
+            self.maintenance = MaintenanceSchedule()
+            self._deadline_speed = None
+            return
+        expected = LabScope(scope.account_id, scope.lease_id, scope.generation, scope.epoch)
+        if self.lab_runtime is None or self.lab_runtime.scope != expected:
+            if self.lab_visit.active:
+                self.lab_visit.cancel('account_scope_changed')
+            if self.maintenance.account_id != scope.account_id:
+                self.maintenance = MaintenanceSchedule(journal.path.parent, scope.account_id)
+            self._deadline_speed = None
+            self.lab_runtime = LabRuntime(journal.path.parent, scope.account_id,
+                lease_id=scope.lease_id, generation=scope.generation, epoch=scope.epoch)
+        self.lab_visit.runtime = self.lab_runtime
+
+    def _observe_lab_runtime(self, reading: LabsReading) -> None:
+        scope = getattr(self, '_screen_fact_scope', None)
+        if (self.lab_runtime is None or self.account_state is None or scope is None
+                or scope != self.account_state.verified_scope
+                or reading.observed_at != getattr(self, '_screen_captured_at', None)
+                or not self.account_state.accepts_capture(scope, reading.observed_at)
+                or not 0 <= time.time()-reading.observed_at <= 30):
+            return
+        self.lab_runtime.observe(reading)
+        self.maintenance.observe(self.lab_runtime.snapshot())
+        self.maintenance.acknowledge_observation(self.lab_runtime.snapshot(), now=time.time())
+
+    def _authorize_lab(self, operation: str, decision: LabDecision | None, now: float) -> bool:
+        """Recheck the assigned route, its calibration gate and shared funds at the spend boundary."""
+        if self.reroll_progress is None or self.account_state is None or self.lab_runtime is None:
+            return False
+        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        revision = route_runtime.current().revision if route_runtime is not None else None
+        if revision != self._lab_visit_revision:
+            return False
+        options = self.reroll_progress.lab_visit_options()
+        if operation == 'lab_unlock':
+            return (unlock_gate(2).enabled and options.unlock_slot2
+                    and options.min_gems == self.lab_visit._options.min_gems)
+        if not options.start_research or decision is None:
+            return False
+        slot, research, target = decision.slot, decision.research_id, decision.target_level
+        if not research_gate(slot, research).enabled:
+            return False
+        # A selected action binds slot, research, level and the strategy
+        # revision it was planned under; any drift refuses the spend.
+        selected = self.lab_visit.selected_action if self.lab_visit is not None else None
+        if selected is not None and (selected.slot, selected.research, selected.target_level,
+                                     selected.strategy_revision) != (slot, research, target,
+                                                                     decision.strategy_revision):
+            return False
+        if decision.strategy_revision is not None and decision.strategy_revision != revision:
+            return False
+        if route_runtime is None:
+            return (slot, research) == (1, 'labs.game-speed') and decision.strategy_revision is None
+        snapshot = self.lab_runtime.snapshot()
+        facts = self.account_state.lab_facts(snapshot, now=now)
+        if facts is None:
+            return False
+        plan = self.reroll_progress.lab_strategy_plan(snapshot, available_coins=facts.available_coins, now=now)
+        action = self.account_state.lab_action(plan, snapshot, revision=revision, now=now) if plan else None
+        return (action is not None and action.slot == slot and action.research == research
+                and action.target_level == target and action.strategy_revision == revision)
+
+    def _plan_lab_action(self, now: float) -> Any | None:
+        """One route-gated start from the assigned plan; uncalibrated choices only surface.
+
+        Uses the plan's route gates (via choose_lab_action and research_gate),
+        never automated_list(). Only called from the safe MAIN_MENU branch.
+        """
+        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        if (route_runtime is None or self.account_state is None or self.lab_runtime is None):
+            return None
+        snapshot = self.lab_runtime.snapshot()
+        facts = self.account_state.lab_facts(snapshot, now=now)
+        if facts is None:
+            return None
+        plan = self.reroll_progress.lab_strategy_plan(snapshot, available_coins=facts.available_coins, now=now)
+        if plan is None:
+            return None
+        self._note_lab_route_pending(plan)
+        action = self.account_state.lab_action(plan, snapshot, revision=route_runtime.current().revision, now=now)
+        if action is None or action.operation != 'start' or not research_gate(action.slot, action.research).enabled:
+            return None
+        return action
+
+    def _note_lab_route_pending(self, plan: Any) -> None:
+        """Publish uncalibrated planned work once per change, never per scan."""
+        pending = tuple(sorted(
+            f"Lab {slot.slot} {slot.next.lab_id}: {line}"
+            for slot in plan.slots if slot.next is not None and not slot.automated
+            for line in slot.why if line.startswith('Planning only:')))
+        gems_next = plan.gems.next.block_id if plan.gems.next is not None else None
+        pending += tuple(line for line in plan.gems.why
+                         if gems_next is not None and line.startswith(f'{gems_next}: Planning only:'))
+        if pending != self.lab_route_pending:
+            self.lab_route_pending = pending
+            if pending:
+                self.bus.publish(events.Skipped(action='labs', reason='lab_route_calibration_required',
+                                                detail='; '.join(pending)))
+
+    def _request_planned_lab_visit(self, now: float, due: bool) -> bool:
+        """Arm a Labs visit on the safe menu: the gated planned action, else the legacy check.
+
+        A planned start arms only for due work or a fresh plan/slot change, and
+        after any visit that did not verify a start, the same action backs off.
+        The legacy cadence-paced check (`due`) is unchanged; while nothing is
+        armed, BATTLE navigation proceeds normally.
+        """
+        options = self.reroll_progress.lab_visit_options()
+        action = self._plan_lab_action(now)
+        if action is not None:
+            key = (action.slot, action.research, action.target_level, action.strategy_revision)
+            record = next((r for r in getattr(self.lab_runtime.snapshot(), 'slots', ())
+                           if getattr(r, 'slot', None) == action.slot), None)
+            evidence = ((record.state, record.research_id, record.transaction_id)
+                        if record is not None else None)
+            last = self._lab_action_last
+            repeat = last is not None and last[0] == key and last[1] == evidence
+            if not (repeat and (now < last[2] or not due)):
+                if self.lab_visit.request(action, options=options):
+                    # Pessimistic: only a verified start clears the backoff.
+                    self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
+                    return True
+                return False
+        return due and self.lab_visit.request(None, options=options)
+
+    def _settle_planned_lab_attempt(self, result: Any) -> None:
+        """A verified start ends the backoff; the due requirement still applies."""
+        last = self._lab_action_last
+        if last is not None and self.lab_visit.selected_action is not None and result.status == 'started':
+            self._lab_action_last = (last[0], last[1], 0.)
+
     def _finish_lab_visit(self, result: Any) -> None:
         """Record only verified research and lab-slot purchases."""
+        self._settle_planned_lab_attempt(result)
+        lab_notice = self._notifications.snapshot()["kinds"]["labs"]
+        if lab_notice["in_flight"]:
+            # One visit may not clear every lab badge. Require a clear edge
+            # before a future generation; a persistent dot backs off.
+            self._notifications.finish("labs", time.time(), claimed=False)
         if self.reroll_progress is None:
             return
         if result.slot2_status in {"locked", "owned"}:
             self.reroll_progress.note_lab_slot2(result.slot2_status, result.gem_balance)
         if (result.gems_before is not None and result.observed_gem_spend == 100
-                and result.gem_balance == result.gems_before - 100):
+                and result.gem_balance == result.gems_before - 100 and result.unlock_transaction_key is None):
             self.bus.publish(events.LabSlotUnlocked(
                 slot=2, price=100, gems_before=result.gems_before,
                 gems_after=result.gem_balance))
         decision = result.decision
+        if (result.confirmed_job is not None
+                and result.confirmed_job.completes_at is not None):
+            self._research_until = result.confirmed_job.completes_at
         if result.status == "started" and result.confirmed_job is not None:
             self.reroll_progress.note_lab_observation(LabDecision(
                 "wait_running", job_completes_at=result.confirmed_job.completes_at,
@@ -867,11 +1409,12 @@ class TowerBot:
                     if self.lab_state is not None:
                         for observation in result.confirmed_readings:
                             self.lab_state.observe(observation)
-                    self.bus.publish(events.LabResearchStarted(
-                        concept_id="labs.game-speed", price=decision.price,
-                        coins_before=decision.wallet_coins,
-                        coins_after=decision.wallet_coins - decision.price,
-                        completes_at=result.confirmed_job.completes_at))
+                    if result.transaction_key is None:
+                        self.bus.publish(events.LabResearchStarted(
+                            concept_id="labs.game-speed", price=decision.price,
+                            coins_before=decision.wallet_coins,
+                            coins_after=decision.wallet_coins - decision.price,
+                            completes_at=result.confirmed_job.completes_at))
                     # The confirmed debit spent the lab savings.
                     self.reroll_progress.note_lab_coin_debit()
         else:
@@ -883,6 +1426,49 @@ class TowerBot:
                     "; Lab 2 unlocked" if result.observed_gem_spend == 100 else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:
+        """Record a scan only when its pass returned normally."""
+        if self.progress is None:
+            return self._run_once(max_runs)
+        self._progress_wait = None
+        with ocr.progress_scope(self.progress):
+            with self.progress.phase('scan', 90):
+                result = self._run_once(max_runs)
+                if self._screen is not None:
+                    settings = self.controls.snapshot()
+                    if settings.paused:
+                        self.progress.wait('pause', 'operator resumes the worker', time.time() + 3600)
+                    elif self._progress_wait is not None:
+                        self.progress.wait(*self._progress_wait)
+                    elif self._research_until is not None and self._research_until > time.time():
+                        self.progress.wait('research_running', 'Game Speed research finishes',
+                                           self._research_until)
+                    elif self.supervisor is not None and (
+                            recovery := self.supervisor.status()).retry_at is not None:
+                        self.progress.wait('cooldown', 'device recovery retry', recovery.retry_at)
+                    else:
+                        autopilot_wait = self.autopilot.state.snapshot()
+                        if autopilot_wait['phase'] == 'saving':
+                            self.progress.wait('funds', 'battle cash reaches the next upgrade price',
+                                               time.time() + 30)
+                        else:
+                            self.progress.clear_wait()
+                    autopilot = self.autopilot.state.snapshot()
+                    purchases = autopilot['verified_purchases']
+                    if purchases > self._last_verified_purchases:
+                        purchased = autopilot['last_purchase'] or {}
+                        kind = ('workshop_purchase' if purchased.get('context') == 'workshop'
+                                else 'battle_purchase')
+                        evidence = str(purchased.get('upgrade_id', 'unknown'))
+                        self.progress.meaningful_progress(
+                            kind, evidence)
+                        if kind == 'workshop_purchase':
+                            self.progress.observe_capability('workshop', 'progress', evidence, 120)
+                    self._last_verified_purchases = purchases
+                    self.progress.complete_scan(
+                        self.runs.current_id, hashlib.sha256(self._screen.tobytes()).hexdigest())
+        return result
+
+    def _run_once(self, max_runs: int | None = None) -> bool:
         """One scan pass over the configured actions. True if anything clicked.
 
         `max_runs` only suppresses auto-navigation. The scan that ends run N
@@ -891,7 +1477,28 @@ class TowerBot:
         started run N+1 in the emulator.
         """
         started = time.monotonic()
+        self._bind_notification_scope()
         self._settle_milestones_attempt()
+        self._settle_mission_attempt()
+        self._settle_lab_notification()
+        if self._notifications.retain_exhausted_claim(time.time()):
+            logger.warning("Unproven mission claim retained uncredited after verification "
+                           "exhaustion; mission claims resume.")
+        if (self.claim.active and not self._mission_attempt
+                and self.claim.snapshot().get("target") != "mail"):
+            mission_row = self._notifications.snapshot()["kinds"]["missions"]
+            if (mission_row["uncertain"] or mission_row["in_flight"]
+                    or mission_row["prior_uncertain"]
+                    or (self.progress is not None and self.account_state is not None
+                        and (self._notification_scope is None or type(
+                            self._notification_scope.get("fact_epoch")) is not int))):
+                self.claim.cancel("prior_claim_unresolved",
+                                  "A prior mission claim outcome needs reconciliation.")
+            else:
+                # Browser-armed walks enter through the same durable receipt
+                # gate as scheduled walks, before they can reach a tap.
+                self._notifications.begin("missions", time.time())
+                self._mission_attempt = True
         # Exactly one snapshot for the whole pass. Re-reading mid-scan would
         # let a setting change underneath a half-finished scan - the wallet
         # read with one strategy and the price gate applied with another.
@@ -902,6 +1509,7 @@ class TowerBot:
         self.refresh_screen()
 
         reading = screens.classify(self.screen, self.templates)
+        self._update_maintenance(settings, reading.state)
         # One OCR result and one digest for this frame, shared by the
         # preflight, the menu readers and the autopilot - see ocr.FrameReads.
         # Menu frames may reuse the last full read while nothing on screen
@@ -924,6 +1532,8 @@ class TowerBot:
                               and reading.cash_top_left is not None))
         self._last_scan_in_battle = battle_context
         info_dismiss = None
+        recovery_escape = None
+        unrenamed_screen = reading.state.value
         if self.supervisor is not None:
             recovery_status = getattr(self.supervisor, "status", None)
             watched = callable(recovery_status)
@@ -1000,6 +1610,16 @@ class TowerBot:
                     escape = stall_watchdog.escape_button(boxes)
                     if escape is not None:
                         observed_screen = stall_watchdog.SCREEN_ID
+                unrenamed_screen = observed_screen
+                if (escape is None and self._recovery_wanted(stall_verdict)
+                        and not settings.paused):
+                    # Host-verified dismissal candidate for model recovery at
+                    # deterministic exhaustion (or while an episode owns the lane).
+                    # The rename only lets the supervisor permit the guarded
+                    # tap; the watchdog still sees the unrenamed frame below.
+                    recovery_escape = stall_watchdog.escape_box(boxes)
+                    if recovery_escape is not None:
+                        observed_screen = stall_watchdog.SCREEN_ID
                 online_required, session_conflict = popup_flags(boxes)
                 readable = True
             except Exception:  # noqa: BLE001 - an unreadable modal may cover an anchor
@@ -1017,16 +1637,55 @@ class TowerBot:
             if watched:
                 if settings.paused:
                     self.stall_watchdog.reset()
+                    if self._recovery_active() and self.recovery.owns_lane:
+                        # Only lets pause invalidate the episode or a resume clear
+                        # it; a paused scan takes no input, so the ordinary
+                        # observation work below still runs, exactly as off mode.
+                        self._step_recovery(
+                            settings, observed_screen, recovery_escape, stalled=False,
+                            ready=False, readable=readable, boxes=preflight_boxes or (),
+                            unrenamed=unrenamed_screen)
                 else:
-                    self.stall_watchdog.note(had_pending=had_pending,
-                                             reason=recovery_status().reason)
+                    reason = recovery_status().reason
+                    if (recovery_escape is not None and unrenamed_screen == "UNKNOWN"
+                            and reason != "action_no_effect"):
+                        # The supervisor saw STALL_ESCAPE only so a guarded
+                        # recovery tap can be permitted; for stall accounting
+                        # the frame is still unknown, so the blocked timer
+                        # keeps running instead of silently clearing.
+                        reason = "unknown_screen"
+                    self.stall_watchdog.note(had_pending=had_pending, reason=reason)
                     verdict = self.stall_watchdog.verdict()
-                    if verdict == stall_watchdog.PAUSE or (
-                            verdict == stall_watchdog.ESCAPE
-                            and stall_verdict == stall_watchdog.ESCAPE
-                            and escape is None):
+                    exhausted = verdict == stall_watchdog.PAUSE or (
+                        verdict == stall_watchdog.ESCAPE
+                        and stall_verdict == stall_watchdog.ESCAPE
+                        and escape is None)
+                    if self._recovery_active() and (exhausted or self.recovery.owns_lane):
+                        owned_before = self.recovery.owns_lane
+                        if self._step_recovery(
+                                settings, observed_screen, recovery_escape, stalled=exhausted,
+                                ready=recovery is RecoveryState.READY, readable=readable,
+                                boxes=preflight_boxes or (), unrenamed=unrenamed_screen):
+                            # Recovery owns the action lane: no ordinary input.
+                            return self._recovery_acted
+                        if owned_before and self._recovery_active():
+                            # The episode ended (recovered or released): start
+                            # the watchdog afresh instead of pausing on stale counts.
+                            self.stall_watchdog.reset()
+                            exhausted = False
+                    if exhausted:
                         self._pause_for_stall(preflight_boxes or ())
                         return False
+            if (recovery is not RecoveryState.READY and self.identity_reverification is not None
+                    and not settings.paused and self.supervisor.device is not None
+                    and self.supervisor.current_account is None
+                    and observed_screen in ("MAIN_MENU", "GAME_OVER")
+                    and self.identity_reverification.attempt("account_unverified")):
+                # A mid-run reconnect cleared the verified account: re-prove it
+                # with the bounded, fenced identity walk instead of blocking
+                # every later scan forever.
+                self.autopilot.suspend("Account re-verification holds actions")
+                return True
             if recovery is not RecoveryState.READY:
                 self.autopilot.suspend("Device recovery blocked actions")
                 # A blocked pass returns before any walk's advance() runs, so
@@ -1175,13 +1834,15 @@ class TowerBot:
         # again. Read after the policy, the first menu frame after a run
         # decided "wallet unknown" and navigation started the next battle.
         menu_header: tuple[tuple[int, int] | None, int | None, int | None] | None = None
-        if (self.reroll_progress is not None and not self.shopping.active
+        if (not self.shopping.active
                 and not self.shopping.reconciliation_pending
                 and state is screens.ScreenState.MAIN_MENU
                 and reading.state is screens.ScreenState.MAIN_MENU):
             menu_anchor = pages.classify_page(self.screen, self.templates).top_left
             menu_header = (menu_anchor, *header_numbers(self.screen, "MAIN_MENU", menu_anchor))
-            self.reroll_progress.note_menu_wallet(menu_header[1])
+            self._observe_menu_wallet(menu_header[1], menu_header[2], evidence_ref=reads.digest)
+            if self.reroll_progress is not None:
+                self.reroll_progress.note_menu_wallet(menu_header[1])
         if self.reroll_progress is not None:
             if self.shopping.active and self._reroll_shopping_policy is not None:
                 shopping_policy = self._reroll_shopping_policy
@@ -1195,16 +1856,51 @@ class TowerBot:
                 self._reroll_shopping_base = shopping_policy
                 shopping_policy = self.reroll_progress.shopping_policy(shopping_policy)
                 self._reroll_shopping_policy = shopping_policy
+                evaluation = getattr(self.reroll_progress, '_route_evaluation', None)
+                if (self.progress is not None and evaluation is not None
+                        and evaluation.status == 'unknown'):
+                    self.progress.observe_capability(
+                        'workshop', 'actionable_unknown',
+                        self.reroll_progress.route_error or 'prerequisite_unknown', 120)
 
         # A crashed spend owns the device, even if startup finds a different
         # screen. No speed, claim, navigation or battle action may precede proof.
-        if self.shopping.reconciliation_pending:
+        self._bind_lab_runtime()
+        pending_lab = self.lab_visit.pending_transaction if self.lab_visit is not None else None
+        if pending_lab is not None or self.lab_visit is not None and self.lab_visit.has_recovery_receipts:
+            self.controls.drain()
+            self.wallet = None
+            self.autopilot.suspend('Pending Lab transaction; read-only inspection')
+            if not settings.paused:
+                if not self.lab_visit.active and self.lab_visit.recovery_status != 'lab_reconciliation_route_unavailable':
+                    self.lab_visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))
+                try:
+                    lab_boxes = reads.full()
+                except Exception:
+                    lab_boxes = ()
+                self._observe_labs_capture(lab_boxes)
+                self.lab_visit.advance(self.screen, lab_boxes, self.device, time.monotonic(),
+                    observed_at=self._screen_captured_at, capture_scope=self._screen_fact_scope)
+            self._progress_wait = ('settling', self.lab_visit.recovery_status or 'pending Lab verification', time.time()+15)
+            self.bus.publish(events.ScanCompleted(screen=state.value,
+                duration_ms=(time.monotonic()-started)*1000, wallet=None))
+            return self.lab_visit.last_tap is not None
+        # An unresolved purchase owns the scan only while its bounded read-only
+        # inspection (or identity re-verification) can make progress. When it
+        # is held, battles and scans continue; the open intent keeps every new
+        # spend refused by TransactionJournal.prepare.
+        if self.shopping.reconciliation_pending and (
+                settings.paused or self.shopping.inspect(
+                    self.screen, self.device, paused=settings.paused,
+                    progress=self.progress, tuning=settings.strategy)):
+            if self.progress is not None:
+                transaction = self.shopping._unanswered_transaction()
+                transaction_key = transaction.key if transaction is not None else 'unknown'
+                self._progress_wait = (
+                    'settling', f'purchase {transaction_key} reconciled', time.time() + 15)
             self.controls.drain()
             self.wallet = None
             self.autopilot.suspend("Transaction restart reconciliation; actions held")
-            if not settings.paused:
-                self.shopping.advance(self.screen, self.device, shopping_policy,
-                                      tuning=settings.strategy)
             if self.frames is not None:
                 self.frames.set_boxes([])
             self.bus.publish(events.ScanCompleted(
@@ -1229,8 +1925,10 @@ class TowerBot:
                     lab_boxes = reads.full()
                 except Exception:
                     lab_boxes = ()
+                self._observe_labs_capture(lab_boxes)
                 result = self.lab_visit.advance(
-                    self.screen, lab_boxes, self.device, time.monotonic())
+                    self.screen, lab_boxes, self.device, time.monotonic(),
+                    observed_at=self._screen_captured_at, capture_scope=self._screen_fact_scope)
                 action = self.lab_visit.last_tap
                 acted = action is not None
                 if action is not None:
@@ -1283,6 +1981,22 @@ class TowerBot:
             except Exception:
                 shared_boxes = None
             missions_page = self.missions.scan(self.screen, boxes=shared_boxes)
+            intent = self._notifications.snapshot()["pending_claim"]
+            if intent is not None and not self.claim.active:
+                proof = None
+                source = intent.get("scope", {})
+                epoch = intent.get("fact_epoch")
+                if (self.account_state is not None and type(epoch) is int
+                        and all(isinstance(source.get(key), str) and source[key]
+                                for key in ("account_id", "lease_id", "generation"))):
+                    original = FactScope(account_id=source["account_id"],
+                                         lease_id=source["lease_id"],
+                                         generation=source["generation"], epoch=epoch)
+                    proof = self.account_state.continuity(original, now=time.time())
+                self._notifications.reconcile_claim(
+                    self.missions.claim_evidence(),
+                    frame_id=f"{PROCESS_BOOT_ID}:{self._capture_sequence}",
+                    now=time.time(), continuity=proof)
             # The same passive ownership for both MILESTONES screens. This
             # matters most for the reward modal: it is a full-screen overlay
             # carrying a tappable CLAIM, and config.NAV_DISMISS - walked by
@@ -1438,7 +2152,8 @@ class TowerBot:
                 walking = 'missions_claim'
                 action = self.claim.advance(
                     screen=self.screen, device=self.device, templates=self.templates,
-                    readings=screen_readings, missions=self.missions, bus=self.bus,
+                    readings=screen_readings, missions=self.missions,
+                    bus=MissionReceiptBus(self.bus, self._notifications),
                     state=state.value, tuning=settings.strategy,
                 )
             elif self.milestones_claim.active:
@@ -1542,7 +2257,7 @@ class TowerBot:
         # who pressed the button stopped watching for it.
         commands = self.controls.drain()
         speed_changed = self._manage_speed(settings, in_run_anchor, commands)
-        if speed_changed and self.reroll_progress is not None:
+        if speed_changed and (self.reroll_progress is not None or self._deadline_speed is not None):
             # The readout changes after the tap. Give it a fresh frame before
             # any gem claim, in-battle purchase, or navigation can act.
             if self.frames is not None:
@@ -1556,7 +2271,16 @@ class TowerBot:
         # A visit owns the frame while it runs. Three things below key off
         # this rather than off the screen state, because the pages a visit
         # walks are UNKNOWN to the tracker by design - see pages.py.
-        visiting = self.shopping.active
+        if (not settings.paused and self.shopping.inspection_requested(self.progress)
+                and self.shopping.inspect(self.screen, self.device, paused=settings.paused,
+                                          progress=self.progress, tuning=settings.strategy)):
+            self.bus.publish(events.ScanCompleted(screen=state.value,
+                duration_ms=(time.monotonic()-started)*1000, wallet=None))
+            return False
+        # Reaching here with an open intent means its reconciliation is held
+        # (an owned inspection returned above): only a live visit step
+        # suppresses navigation; spending stays refused by the open intent.
+        visiting = self.shopping.visit_in_progress
 
         # Which menu page this is, when the tracker cannot say. ScreenState
         # models the run lifecycle only, so WORKSHOP and CARDS both read
@@ -1668,7 +2392,24 @@ class TowerBot:
                     # the previous scan's wave, already expired at the battle
                     # scan pace, and a route without a wave turns buying off.
                     observation = observe_frame(self.screen, "battle", reads=reads)
+                    if self.progress is not None and self.runs.current_id is not None:
+                        self.progress.observe_run(
+                            self.runs.current_id,
+                            wave=observation.combat.get("wave"),
+                            game_speed=observation.combat.get("game_speed"),
+                            observed_at=observation.observed_at,
+                        )
                     combat = frame_combat(self.autopilot.context.combat(time.time()), observation)
+                    wave_value = combat.get('wave')
+                    wave_number = (int(wave_value) if isinstance(wave_value, (int, str))
+                                   and str(wave_value).isdigit() else None)
+                    if (self.progress is not None and wave_number is not None
+                            and (self._last_wave_progress is None
+                                 or self._last_wave_progress[0] != self.runs.current_id
+                                 or wave_number > self._last_wave_progress[1])):
+                        self.progress.meaningful_progress('wave',
+                            f'{self.runs.current_id}:{wave_number}')
+                        self._last_wave_progress = (self.runs.current_id, wave_number)
                     battle_policy = (self.reroll_progress.battle_policy(
                         settings.strategy.autopilot,
                         self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)),
@@ -1715,6 +2456,10 @@ class TowerBot:
         if self.frames is not None:
             self.frames.set_boxes(boxes)
 
+        if (state is screens.ScreenState.MAIN_MENU
+                and reading.state is screens.ScreenState.MAIN_MENU):
+            self._observe_menu_notifications(time.time())
+
         # Reserve this frame for a due Workshop visit before navigation can
         # start the next battle. Newly begun visits advance on the next frame.
         if (
@@ -1730,14 +2475,10 @@ class TowerBot:
             badge = milestones_badge.badge_visible(self.screen, self.templates)
             if badge is not None:
                 self._milestones_badge = badge
-            self._missions_badge = menu_badges.read_badge(
-                self.screen, self.templates, 'missions') is not None
-            self._mail_badge = menu_badges.read_badge(
-                self.screen, self.templates, 'mail') is not None
-            self._last_menu_badge_check_at = time.time()
             if menu_header is None:
                 menu_anchor = pages.classify_page(self.screen, self.templates).top_left
                 menu_header = (menu_anchor, *header_numbers(self.screen, "MAIN_MENU", menu_anchor))
+                self._observe_menu_wallet(menu_header[1], menu_header[2], evidence_ref=reads.digest)
             menu_anchor, menu_coins, menu_gems = menu_header
             if self.reroll_progress is not None:
                 self.reroll_progress.note_menu_wallet(menu_coins)
@@ -1747,14 +2488,27 @@ class TowerBot:
             initial_workshop = (self.reroll_progress is not None
                                 and self.reroll_progress.initial_workshop_due()
                                 and self._menu_tab_unlocked("workshop"))
-            if initial_workshop and self.shopping.begin(
+            if (self._notifications.verification_due(time.time())
+                    and not self.collection.active and not self.claim.active
+                    and not self.milestones_claim.active and self.visit.request()):
+                self._notifications.note_verification_visit(time.time())
+                logger.info("Armed a bounded read-only Missions reconciliation visit.")
+            elif (self.lab_visit is not None
+                    and self.maintenance.inspection_navigable(time.time())
+                    and self.lab_visit.tab_status(self.screen) == 'unlocked'
+                    and self.lab_visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))):
+                # Paced: an inspection a visit cannot acknowledge (partial
+                # strip, clock step) never re-arms on every menu pass.
+                self.maintenance.note_inspection_visit(time.time())
+                self._maintenance_reason('inspecting_labs')
+            elif initial_workshop and self.shopping.begin(
                     shopping_policy, self.runs.completed):
                 logger.info("Starting the first Workshop visit for the tutorial coin grant.")
             # The first Cards visit is owed once and pays gems. After Workshop,
             # reroll claims rewards and checks Labs only when the tab is unlocked.
             elif self._offer_cards_intro():
                 logger.info("Armed the first Cards visit from the main menu.")
-            elif self.lab_visit is not None:
+            elif self.lab_visit is not None and self.reroll_progress is not None:
                 armed = self._offer_claim(settings)
                 if armed is not None:
                     logger.info("Armed a %s claim from the main menu.", armed)
@@ -1767,11 +2521,15 @@ class TowerBot:
                         self.reroll_progress.note_lab_unlocked("labs_tab")
                     elif labs_tab_status == "locked":
                         self.reroll_progress.note_lab_locked("labs_tab")
+                    lab_notice_due = self._notifications.eligible("labs", time.time())
                     if (labs_tab_status == "unlocked"
-                            and self.reroll_progress.lab_due(
+                            and self._request_planned_lab_visit(time.time(), lab_notice_due or self.reroll_progress.lab_due(
                                 wallet_coins=menu_coins, wallet_gems=menu_gems,
-                            ) and self.lab_visit.request(
-                                self.reroll_progress.lab_visit_options())):
+                            ))):
+                        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+                        self._lab_visit_revision = route_runtime.current().revision if route_runtime is not None else None
+                        if lab_notice_due:
+                            self._notifications.begin("labs", time.time())
                         logger.info("Armed Labs check from the confirmed unlocked tab.")
                     else:
                         if self._menu_tab_unlocked("workshop"):
@@ -1785,7 +2543,7 @@ class TowerBot:
             settings.strategy.auto_navigate
             and not settings.paused
             and not self.run_cap_reached(max_runs, settings.strategy)
-            and not visiting and not self.shopping.active
+            and not visiting and not self.shopping.visit_in_progress
             and not self.claim.active and not self.milestones_claim.active
             and not self.cards_intro.active
             and not (self.lab_visit is not None and self.lab_visit.active)
@@ -1823,6 +2581,10 @@ class TowerBot:
                                or self.reroll_progress.workshop_worthwhile(
                                    publish_estimate=state is screens.ScreenState.GAME_OVER)))
                          or self._claim_owed(settings)
+                         # A held purchase re-inspects only on MAIN_MENU; detour
+                         # home when its paced retry is due (never spends).
+                         or (state is screens.ScreenState.GAME_OVER
+                             and self.shopping.reconciliation_retry_due(time.time()))
                          or (state is screens.ScreenState.GAME_OVER
                              and self._menu_badge_check_due(settings))
                          or (state is screens.ScreenState.GAME_OVER
@@ -1896,8 +2658,8 @@ class TowerBot:
           is re-read after every scan, so a change made from the
           browser takes effect on the very next sleep rather than requiring a
           restart.
-        - An explicit number is a caller override. It is used exactly as
-          given, every iteration, and deliberately never written into
+        - An explicit number is a caller override for the normal scan interval.
+          A future maintenance deadline can shorten it; it is never written into
           Controls - this is the seam the tests use to run the loop without
           sleeping (`run_forever(interval=0.0)`). Controls.apply() enforces
           MIN_INTERVAL/MAX_INTERVAL because a browser-supplied value has to
@@ -1975,6 +2737,7 @@ class TowerBot:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.
                 current_interval = min(current_interval, config.BATTLE_FOLLOWUP_SECONDS)
+            current_interval = self.maintenance.wait_seconds(time.time(), current_interval)
             self._stopping.wait(current_interval)
         logger.info("Bot stopped.")
 
@@ -2527,14 +3290,14 @@ def serve_web(
         # The only waiter on `shutdown`. The route can set the flag but has
         # no other way to reach the runner or the Server.
         shutdown.wait()
-        runner.stop()
+        runner.stop(operator=False)
         server.should_exit = True
 
     threading.Thread(target=_watch_shutdown, name="shutdown-watch", daemon=True).start()
 
     if start_immediately:
         try:
-            runner.start()
+            runner.start(operator=False)
         except RunnerError as exc:
             # Without --idle the user asked for a bot, so a device that is
             # not there is worth saying loudly - but not worth refusing to
@@ -2545,7 +3308,7 @@ def serve_web(
         server.run()
     finally:
         shutdown.set()
-        runner.stop()
+        runner.stop(operator=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2588,9 +3351,31 @@ def main(argv: list[str] | None = None) -> int:
 def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     from bluestacks import BlueStacksAdapter, ManualPool
 
-    if args.reroll_pool is not None and not args.store:
-        logger.error("reroll progression requires a stored, account-bound worker database")
+    runtime_records = RuntimeRecords(runtime.root / "runtime-records.json") if runtime is not None else None
+    if runtime_records is not None:
+        try:
+            runtime_records.begin(
+                worker_id=args.worker_id, endpoint=f"{args.host}:{args.port}",
+                lease_id=args.lease_id, attempt_id=args.attempt_id,
+                identity=PROCESS_IDENTITY, boot_id=PROCESS_BOOT_ID, pid=os.getpid(),
+            )
+        except (OSError, ValueError) as exc:
+            logger.error("runtime startup record unavailable: %s", exc)
+            return 1
+
+    def fail_worker_start(reason: str) -> int:
+        logger.error("identity incident: %s", reason)
+        if runtime_records is not None:
+            try:
+                runtime_records.fail_startup(
+                    boot_id=PROCESS_BOOT_ID, pid=os.getpid(), reason=reason,
+                )
+            except (OSError, ValueError):
+                logger.exception("Could not persist worker startup failure")
         return 1
+
+    if args.reroll_pool is not None and not args.store:
+        return fail_worker_start("reroll progression requires a stored, account-bound worker database")
     attempt = None
     if runtime is not None:
         if args.reroll_pool is not None:
@@ -2598,26 +3383,32 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
 
             registration = registered_worker(runtime.root)
             if registration is None:
-                logger.error("identity incident: reroll worker registration unavailable")
-                return 1
+                return fail_worker_start("reroll worker registration unavailable")
             try:
                 registered = json.loads((runtime.root / "fleet-registration.json").read_text())
                 binding = json.loads(Path(registered["binding"]).read_text())
                 attempt = Attempt(**{key: binding[key] for key in (
                     "worker_id", "endpoint", "lease_id", "attempt_id", "generation", "created_at")})
             except (OSError, ValueError, TypeError, KeyError):
-                logger.error("identity incident: reroll attempt binding unavailable")
-                return 1
+                return fail_worker_start("reroll attempt binding unavailable")
             if (attempt.worker_id != args.worker_id
                     or attempt.endpoint != f"{args.host}:{args.port}"
                     or attempt.lease_id != args.lease_id
                     or attempt.attempt_id != args.attempt_id
                     or registered.get("web_port") != runtime.web_port):
-                logger.error("identity incident: reroll attempt changed")
-                return 1
+                return fail_worker_start("reroll attempt changed")
         else:
             attempt = Attempt.new(args.worker_id, f"{args.host}:{args.port}",
                                   args.lease_id, args.attempt_id)
+        # Attach the validated attempt to the child's already-durable source
+        # record, still before OCR/check construction or ADB connection.
+        try:
+            runtime_records.start(
+                attempt, PROCESS_IDENTITY, boot_id=PROCESS_BOOT_ID, pid=os.getpid(),
+            )
+        except (OSError, ValueError) as exc:
+            logger.error("runtime startup record unavailable: %s", exc)
+            return 1
     host_adapter = None
     if args.bluestacks_pool is not None and runtime is not None:
         host_adapter = BlueStacksAdapter(ManualPool(args.bluestacks_pool),
@@ -2928,6 +3719,8 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 best_wave=seed_best_wave,
                 account_state=account_state,
                 reroll_progress=reroll_progress,
+                runtime_records_path=(runtime.root / "runtime-records.json")
+                if runtime is not None else None,
                 unknown_dir=runtime.evidence_root if runtime is not None else None,
                 attempt=attempt,
                 binding_path=(runtime.checkpoint_root / f"{attempt.generation}.json")

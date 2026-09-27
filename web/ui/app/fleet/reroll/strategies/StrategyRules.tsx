@@ -13,8 +13,8 @@ function Tag({ live }: { live: boolean }): React.JSX.Element {
   return <span className={`ml-2 rounded-full border px-1.5 py-0.5 text-[10px] ${live ? "border-emerald-500/50 text-emerald-600" : "border-border text-muted-foreground"}`}>{live ? "Live" : "Planned"}</span>;
 }
 
-const field = "flex flex-col gap-1 text-xs";
-const input = "rounded border border-border bg-background px-2 py-1";
+const field = "flex min-w-0 flex-col gap-1 text-xs";
+const input = "min-h-11 min-w-0 w-full max-w-full rounded border border-border bg-background px-2 py-1";
 
 export function StrategyRules({ rules, locked, rows, onChange }: {
   rules: RouteRules; locked: boolean; rows: LabsRow[]; onChange: (rules: RouteRules) => void;
@@ -28,10 +28,10 @@ export function StrategyRules({ rules, locked, rows, onChange }: {
   const split = row ? splitPreview(rules, row.wallet.coins, row.plan?.jar ?? 0, price) : null;
   const nullable = (value: string): number | null => value === "" ? null : Number(value);
 
-  return <section aria-label="Strategy rules" className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-    <div className="grid gap-4 md:grid-cols-2">
-      <fieldset aria-label="Coins: Workshop vs Labs" disabled={locked} className="space-y-2 rounded-xl border border-border p-3">
-        <legend className="px-1 text-sm font-semibold">Coins: Workshop vs Labs</legend>
+  return <section aria-label="Strategy rules" className="grid min-w-0 grid-cols-1 gap-4 py-4 sm:px-4 lg:grid-cols-[minmax(0,1fr)_280px] [overflow-wrap:anywhere]">
+    <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
+      <fieldset aria-label="Coins: Workshop vs Labs" disabled={locked} className="min-w-0 space-y-2 rounded-xl border border-border p-3">
+        <legend className="max-w-full whitespace-normal px-1 text-sm font-semibold">Coins: Workshop vs Labs</legend>
         <label className={field}><span>Share coins with Labs<Tag live /></span>
           <select aria-label="Lab share mode" value={coins.lab_share.mode} className={input}
             onChange={event => set({ ...rules, coins: { ...coins, lab_share: { ...coins.lab_share, mode: event.target.value as LabShareMode } } })}>
@@ -45,9 +45,9 @@ export function StrategyRules({ rules, locked, rows, onChange }: {
           <input aria-label="Workshop spend limit (%)" type="number" min={10} max={100} value={coins.workshop_spend_limit_pct} className={input}
             onChange={event => set({ ...rules, coins: { ...coins, workshop_spend_limit_pct: Number(event.target.value) } })} /></label>
       </fieldset>
-      <fieldset aria-label="Labs" disabled={locked} className="space-y-2 rounded-xl border border-border p-3">
+      <fieldset aria-label="Labs" disabled={locked} className="min-w-0 space-y-2 rounded-xl border border-border p-3">
         <legend className="px-1 text-sm font-semibold">Labs</legend>
-        <label className="flex items-center gap-2 text-xs"><input type="checkbox" aria-label="Start labs automatically" checked={labs.auto_start}
+        <label className="flex min-h-11 items-center gap-2 text-xs"><input type="checkbox" aria-label="Start labs automatically" checked={labs.auto_start}
           onChange={event => set({ ...rules, labs: { ...labs, auto_start: event.target.checked } })} />Start labs automatically<Tag live /></label>
         <label className={field}><span>Pool selection<Tag live={false} /></span><select aria-label="Pool selection" value={labs.pool.selection} className={input}
           onChange={event => set({ ...rules, labs: { ...labs, pool: { ...labs.pool, selection: event.target.value as RouteRules["labs"]["pool"]["selection"] } } })}>
@@ -62,9 +62,9 @@ export function StrategyRules({ rules, locked, rows, onChange }: {
           onChange={event => set({ ...rules, labs: { ...labs, idle_fill: event.target.value as RouteRules["labs"]["idle_fill"] } })}>
           <option value="leave_idle">Leave it idle</option><option value="shortest_under_30m">Shortest lab under 30 minutes</option></select></label>
       </fieldset>
-      <fieldset aria-label="Gems" disabled={locked} className="space-y-2 rounded-xl border border-border p-3">
+      <fieldset aria-label="Gems" disabled={locked} className="min-w-0 space-y-2 rounded-xl border border-border p-3">
         <legend className="px-1 text-sm font-semibold">Gems</legend>
-        <label className="flex items-center gap-2 text-xs"><input type="checkbox" aria-label="Unlock lab slots automatically" checked={gems.auto_unlock_lab_slots}
+        <label className="flex min-h-11 items-center gap-2 text-xs"><input type="checkbox" aria-label="Unlock lab slots automatically" checked={gems.auto_unlock_lab_slots}
           onChange={event => set({ ...rules, gems: { ...gems, auto_unlock_lab_slots: event.target.checked } })} />Unlock lab slots automatically<Tag live /></label>
         <label className={field}><span>Keep gems (never spend below)<Tag live /></span><input aria-label="Keep gems" type="number" min={0} value={gems.keep} className={input}
           onChange={event => set({ ...rules, gems: { ...gems, keep: Number(event.target.value) } })} /></label>
@@ -72,12 +72,12 @@ export function StrategyRules({ rules, locked, rows, onChange }: {
           value={gems.spend_limit_pct} className={input}
           onChange={event => set({ ...rules, gems: { ...gems, spend_limit_pct: Number(event.target.value) } })} /></label>
       </fieldset>
-      <fieldset aria-label="Fixed safety rules" disabled className="space-y-1 rounded-xl border border-border p-3 text-xs">
+      <fieldset aria-label="Fixed safety rules" disabled className="min-w-0 space-y-1 rounded-xl border border-border p-3 text-xs">
         <legend className="px-1 text-sm font-semibold">Fixed safety rules</legend>
         {SAFETY.map(rule => <p key={rule} className="flex items-center gap-2"><LockKeyhole size={12} />{rule}</p>)}
       </fieldset>
     </div>
-    <aside aria-label="Wallet split preview" className="space-y-2 rounded-xl border border-border p-3 text-xs">
+    <aside aria-label="Wallet split preview" className="min-w-0 space-y-2 rounded-xl border border-border p-3 text-xs">
       <h4 className="text-sm font-semibold">Wallet split</h4>
       {rows.length ? <label className={field}>Emulator<select aria-label="Preview emulator" value={row?.worker ?? ""} onChange={event => setWorker(event.target.value)} className={input}>
         {rows.map(item => <option key={item.worker} value={item.worker}>{item.worker}</option>)}</select></label>

@@ -514,3 +514,12 @@ def test_never_satisfiable_objectives_are_exactly_the_two_known_families() -> No
                 if o.id.startswith(("cards.unlock.", "claim."))}
     assert flagged == expected
     assert flagged  # sanity: the families actually exist in the graph
+
+
+def test_available_picker_level_counts_one_level_below_for_lab_milestones() -> None:
+    """Task5 ruling: an available picker Lv.N means only N-1 is completed."""
+    available = dataclasses.replace(fact("labs.game-speed", 3), status="available")
+    assert objectives._lab_at_least(revision(lab_levels=(available,)), "labs.game-speed", 3) is False
+    assert objectives._lab_at_least(revision(lab_levels=(available,)), "labs.game-speed", 2) is True
+    assert objectives._lab_at_least(revision(lab_levels=(fact("labs.game-speed", 3),)),
+                                    "labs.game-speed", 3) is True

@@ -89,6 +89,7 @@ def test_first_workshop_visit_is_due_until_a_purchase_is_confirmed(tmp_path: Pat
 
 def test_reroll_holds_card_gems_until_second_lab_is_owned(tmp_path: Path) -> None:
     progress = worker(tmp_path)
+    complete_starter(progress)
     base = Strategy.from_config().shopping
     enabled = replace(base, cards=replace(base.cards, enabled=True, gem_floor=0))
     assert not progress.shopping_policy(enabled).cards.enabled
@@ -164,6 +165,7 @@ def test_cheap_defense_filler_can_spend_its_known_price(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     progress = worker(tmp_path)
+    complete_starter(progress)
     plan = choose_next(RerollFacts(
         account_id="ACCOUNT-A", best_tier_1_wave=25,
         purchases={"unlock_defense_upgrades": 1, "unlock_thorns": 1,

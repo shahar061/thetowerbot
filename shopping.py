@@ -16,6 +16,7 @@ no device actions and identify their hypothetical purchases with dry_run.
 from __future__ import annotations
 
 from account_state import AccountState
+from evidence_scope import BalanceInterval
 from currencies import CommitmentError, CurrencyRepository
 
 import logging
@@ -38,7 +39,7 @@ import upgrades
 import vision
 from device import Image, tap
 from digits import NumberReader
-from perception import Observation, ObservedUpgrade, observe_frame, price_number
+from perception import Observation, ObservedUpgrade, WorkshopReader, observe_frame, price_number
 from strategy import Shopping, Strategy
 from supervisor import RecoveryPreflightBlocked
 
@@ -61,6 +62,14 @@ MAX_REFUSED_STEPS = 5
 # never arrive; after this the attempt closes UNPROVEN and the bot moves on.
 RECOVERY_TIMEOUT_SECONDS = 60.0
 
+
+
+class AccountScopeUnavailable(CommitmentError):
+    """No verified account identity is bound, so armed spending stays off."""
+
+
+class PurchasePending(CommitmentError):
+    """An earlier purchase is unresolved; every new spend waits for it."""
 
 class Step(Enum):
     IDLE = auto()
@@ -189,12 +198,9 @@ class PendingPurchase:
 
 @dataclass
 class PendingCard:
-    """A card tap waiting for the gem balance to answer for it.
+    """A historical card tap retained until independent card semantics exist.
 
-    Separate from PendingPurchase, which is typed to a workshop row and is
-    confirmed by that row changing. A card batch leaves no row behind - the
-    button looks identical before and after - so the only evidence a card
-    was actually opened is that the gems fell by what it cost.
+    An exact gem debit alone cannot prove a card inventory/reward change.
     """
 
     item: str
@@ -232,9 +238,8 @@ class ShoppingSession:
         journal: transactions.TransactionJournal | None = None,
     ) -> None:
         # The durable half of every spend. Optional because the visit logic
-        # is fully testable without a database, and a session built without
-        # one simply keeps no crash-proof record - it does not behave
-        # differently while the process lives.
+        # can inspect/navigate without a database. Armed spending requires
+        # both this durable journal and verified current account evidence.
         self.journal = journal
         self.currencies = CurrencyRepository(journal.path) if journal is not None else None
         self.account_state: AccountState | None = None
@@ -315,6 +320,13 @@ class ShoppingSession:
         # When this process first failed to prove the open attempt; survives reset().
         self._recovery_since: tuple[str, float] | None = None
         self._recovered_keys: set[str] = set()
+        from shopping_inspection import WorkshopInspection
+        self._inspection = WorkshopInspection()
+        # Bounded in-process identity re-verification (TowerBot-provided).
+        self.identity_reverifier: Any | None = None
+        self.inspection_resolved: Any | None = None
+        self.price_quotes: Any | None = None
+        self.price_reads = WorkshopReader()
 
     @property
     def active(self) -> bool:
@@ -322,9 +334,34 @@ class ShoppingSession:
                 or bool(self.journal and self.journal.recovered_visit()))
 
     @property
+    def visit_in_progress(self) -> bool:
+        """A Workshop/Cards step (or a restored visit) is actually live.
+
+        Unlike ``active``, an open intent alone is not a visit: a held
+        reconciliation must not suppress BATTLE/RETRY navigation.
+        """
+        return self._step is not Step.IDLE or bool(self.journal and self.journal.recovered_visit())
+
+    def reconciliation_retry_due(self, now: float) -> bool:
+        """A held purchase needs a paced MAIN_MENU pass; never starts a visit."""
+        return self._inspection.retry_due(self, now)
+
+    @property
     def reconciliation_pending(self) -> bool:
         """A dead process's unanswered action owns the device before every other actor."""
         return self._unanswered_transaction() is not None
+
+    def inspection_requested(self, progress: Any | None = None) -> bool:
+        return self._inspection.requested(self, progress)
+
+    def inspect(self, screen: Image, device: Any, *, paused: bool = False,
+                progress: Any | None = None, tuning: Strategy | None = None) -> bool:
+        """Own a scan for guarded observation only; never arm shopping."""
+        try:
+            return self._inspection.advance(self, screen, device, paused=paused, progress=progress)
+        except Exception as exc:  # A failed inspection cannot authorize escape or spending.
+            logger.warning("read-only Workshop inspection blocked: %s", exc)
+            return True
 
     def remaining_categories(self) -> list[str]:
         return list(self._categories)
@@ -350,6 +387,10 @@ class ShoppingSession:
         if self.disabled_reason or not shopping.enabled:
             return False
         if not shopping.categories_in_priority_order() and not shopping.cards.enabled:
+            return False
+        if self._unanswered_transaction() is not None:
+            # A held reconciliation releases battles (RETRY, not a HOME
+            # detour), never a new spending visit.
             return False
         return not (
             self._last_run_count is not None
@@ -425,8 +466,11 @@ class ShoppingSession:
             self.account_state.reset_confirmation()
         self._step = Step.IDLE
         self._categories = []
+        self.price_reads.invalidate("reset")
         self._answer_pending()
         self._recovery_sample = None
+        if self.journal is not None:
+            self.journal.finish_recovered_visit(self._recovered_keys)
         self._recovered_keys.clear()
         self._search = None
 
@@ -787,12 +831,25 @@ class ShoppingSession:
             self._step = self._next_after_categories(shopping)
             return
         category = self._categories[0]
-        observation = observe_frame(screen, "workshop")
+        rules = [r for r in shopping.rows_for(category) if r.name not in self._exhausted]
+        target = upgrades.resolve(rules[0].name, category) if rules else None
+        quotes = self.price_quotes() if self.price_quotes is not None else {}
+        scope = self.account_state.verified_scope if self.account_state is not None else None
+        if self._pending is None and scope is not None and target is not None and quotes:
+            observation = self.price_reads.read(screen, target=target.id,
+                quote=quotes.get(target.id), scope=(scope, self._last_run_count))
+        else:
+            observation = observe_frame(screen, "workshop")
         if self.account_state is not None:
             self.account_state.observe_account(observation)
         if self.observations is not None:
             self.observations.observe(observation)
         coins, _gems = header_numbers(screen, reading.page, reading.top_left)
+        if self.account_state is not None and self.account_state.verified_scope is not None and observation.frame_digest:
+            for currency, value in (('coins', coins), ('gems', _gems)):
+                self.account_state.observe_balance(BalanceInterval.from_reading(
+                    currency, value, self.account_state.verified_scope,
+                    observation.observed_at, observation.frame_digest))
         if self._pending is not None:
             self._confirm_purchase(observation, coins, device, shopping, screen)
             return
@@ -886,18 +943,20 @@ class ShoppingSession:
         try:
             intent = self._open_intent(
                 item=seen.name, category=seen.category, currency="coins",
-                price=seen.price, wallet_before=coins, armed=shopping.armed,
+                price=seen.price, wallet_before=coins, armed=shopping.armed, reserve=shopping.coin_reserve,
                 before={"upgrade_id": seen.upgrade_id, "value": seen.value,
                         "price": seen.price, "status": seen.status,
                         "confidence": seen.confidence, "observed_at": observation.observed_at,
                         "frame_digest": observation.frame_digest,
                         "frame_width": observation.frame_width, "frame_height": observation.frame_height},
             )
-        except CommitmentError:
-            self._bus.publish(events.PurchaseSkipped(item=rule.name, reason="reserve",
-                                                    detail="funds committed to another plan", coins_before=coins))
+        except CommitmentError as exc:
+            self._bus.publish(events.PurchaseSkipped(item=rule.name,
+                                                    reason=self._commitment_reason(exc),
+                                                    detail=str(exc), coins_before=coins))
             self._exhausted.add(rule.name)
             return
+        self._mark_acted(intent)
         try:
             sent = self._try_tap(*seen.tap, device, shopping, screen)
         except RecoveryPreflightBlocked:
@@ -906,7 +965,6 @@ class ShoppingSession:
         if not sent:
             self._abandon_intent(intent, "the tap was never sent")
             return
-        self._mark_acted(intent)
         if not _unlimited(shopping):
             # An unlimited visit re-buys: leaving the row un-exhausted sends
             # the next frame back through this same decision, now reading the
@@ -1015,6 +1073,7 @@ class ShoppingSession:
             coins_before=coins, dry_run=dry_run,
             verdict=None if outcome is None else outcome.verdict.value,
             spent=None if outcome is None else outcome.spent,
+            transaction_key=None if outcome is None else outcome.key or None,
             reason=(self.reroll_purchase_reason(row.upgrade_id)
                     if not dry_run and self.reroll_purchase_reason is not None else None),
         ))
@@ -1059,7 +1118,8 @@ class ShoppingSession:
             if unlocked:
                 self._completed_unlocks.add(before.upgrade_id)
             outcome = self._close(pending.key, price=before.price, wallet_before=pending.coins,
-                                  wallet_after=coins, effect_changed=True)
+                                  wallet_after=coins, effect_changed=True,
+                                  evidence_ref=observation.frame_digest, observed_at=observation.observed_at)
             self._record_purchase(before, pending.coins, dry_run=False, verified=confirmed,
                                   outcome=outcome)
             self._pending = None
@@ -1205,6 +1265,12 @@ class ShoppingSession:
             self._step = Step.RETURN
             return
 
+        if shopping.armed:
+            self._bus.publish(events.ShoppingUnavailable(
+                reason="Cards unavailable: independent reward/inventory evidence is not calibrated"))
+            self._step = Step.RETURN
+            return
+
         x, y = match.center
         # Written BEFORE the tap, which is the only ordering that helps: a
         # journal entry made afterwards is lost by exactly the crash it
@@ -1212,14 +1278,16 @@ class ShoppingSession:
         try:
             intent = self._open_intent(
                 item=item, category="CARDS", currency="gems", price=price,
-                wallet_before=gems, armed=shopping.armed,
+                wallet_before=gems, armed=shopping.armed, reserve=shopping.cards.gem_floor,
+                before={'observed_at': time.time(), 'frame_digest': hashlib.sha256(screen.tobytes()).hexdigest()},
             )
-        except CommitmentError:
+        except CommitmentError as exc:
             self._bus.publish(events.PurchaseSkipped(
-                item=item, reason="reserve", detail="funds committed to another plan",
+                item=item, reason=self._commitment_reason(exc), detail=str(exc),
                 gems_before=gems))
             self._step = Step.RETURN
             return
+        self._mark_acted(intent)
         try:
             sent = self._try_tap(x, y, device, shopping, screen)
         except RecoveryPreflightBlocked:
@@ -1228,7 +1296,6 @@ class ShoppingSession:
         if not sent:
             self._abandon_intent(intent, "the tap was never sent")
             return
-        self._mark_acted(intent)
 
         if shopping.armed:
             # The tap is now a question, not a result. _confirm_card answers
@@ -1258,7 +1325,8 @@ class ShoppingSession:
         pending_keys = {pending.key for pending in (self._pending, self._pending_card) if pending is not None}
         return next((txn for txn in still_open if txn.key not in pending_keys), None)
 
-    def _recover_transaction(self, reading: Any, screen: Image) -> bool:
+    def _recover_transaction(self, reading: Any, screen: Image,
+                             observation: Observation | None = None) -> bool:
         """A recovery scan consumes the step and can never send a device action."""
         if self._restore_recovered_visit():
             return True
@@ -1269,14 +1337,14 @@ class ShoppingSession:
         digest = hashlib.sha256(screen.tobytes()).hexdigest()
         category, currency, wallet, changed, value = None, None, None, None, None
         observed_at = now
+        action_boundary = txn.acted_at if txn.stage == transactions.Stage.ACTED else txn.ts
         page = reading.page.upper()
         if txn.category == "CARDS" and page == "CARDS":
             category, currency = "CARDS", "gems"
             _, wallet = header_numbers(screen, reading.page, reading.top_left)
-            changed = (txn.price is not None and txn.price > 0 and wallet is not None
-                       and txn.wallet_before is not None and txn.wallet_before - wallet == txn.price)
+            changed = None  # A wallet debit is not a card inventory/reward observation.
         elif txn.currency == "coins" and page == "WORKSHOP":
-            observation = observe_frame(screen, "workshop")
+            observation = observation or observe_frame(screen, "workshop")
             now = time.time()
             before = txn.before
             row = _row_named(txn.item, observation.rows, txn.category)
@@ -1285,11 +1353,11 @@ class ShoppingSession:
                 and observation.frame_digest == digest
                 and observation.frame_width == screen.shape[1] == before.get("frame_width")
                 and observation.frame_height == screen.shape[0] == before.get("frame_height")
-                and txn.acted_at is not None and txn.acted_at < observation.observed_at <= now
+                and action_boundary is not None and action_boundary < observation.observed_at <= now
                 and now - observation.observed_at <= 30
                 and bool(before.get("frame_digest")) and before.get("confidence", 0) >= .9
                 and before.get("observed_at") is not None
-                and 0 <= txn.acted_at - before["observed_at"] <= 30
+                and 0 <= action_boundary - before["observed_at"] <= 30
                 and row is not None and row.upgrade_id == before.get("upgrade_id")
                 and math.isfinite(row.confidence) and .9 <= row.confidence <= 1
                 and row.observed_at == observation.observed_at
@@ -1316,6 +1384,9 @@ class ShoppingSession:
             category=category, currency=currency, wallet_after=wallet,
             effect_changed=changed, observed_at=observed_at, frame_digest=digest,
             effect_value=value,
+            scope=self.account_state.verified_scope if self.account_state is not None else None,
+            continuity=(self.account_state.continuity(txn.scope, now=now)
+                        if txn.scope is not None and self.account_state is not None else None),
         )
         previous = self._recovery_sample
         consistent = (
@@ -1343,6 +1414,8 @@ class ShoppingSession:
             reason = f"no proof within {RECOVERY_TIMEOUT_SECONDS:.0f}s; closed unproven"
             logger.warning("%s: %s", txn.item, reason)
             self.journal.close_unproven(txn.key, reason=reason, now=now)
+            if txn.scope is not None:
+                return True
             self._bus.publish(events.PurchaseSkipped(item=txn.item, reason="unproven", detail=reason))
         elif self.currencies is not None:
             self.currencies.release(f"purchase:{txn.key}", txn.currency)
@@ -1359,12 +1432,13 @@ class ShoppingSession:
         self._spent, self._coin_spent, self._bought, self._cards_bought = 0, 0, 0, 0
         for txn, outcome in receipts:
             self._spend(outcome.spent, coins=txn.currency == "coins")
-            self._bought += 1
+            if outcome.verdict != transactions.Verdict.REFUTED:
+                self._bought += 1
             if txn.currency == "coins":
                 if self._visit_coins is None:
                     self._visit_coins = txn.wallet_before
                 self._exhausted.add(txn.item)
-            else:
+            elif outcome.verdict != transactions.Verdict.REFUTED:
                 self._cards_bought += 1
             if txn.key not in self._recovered_keys:
                 self._bus.publish(self.journal.recovery_event(txn, outcome))
@@ -1375,7 +1449,7 @@ class ShoppingSession:
 
     def _open_intent(
         self, *, item: str, category: str, currency: str, price: int,
-        wallet_before: int, armed: bool, before: dict[str, Any] | None = None,
+        wallet_before: int, armed: bool, before: dict[str, Any] | None = None, reserve: int = 0,
     ) -> transactions.Transaction | None:
         """Record what is about to be attempted. None when nothing will be.
 
@@ -1383,29 +1457,43 @@ class ShoppingSession:
         for a crash to fall into and nothing for a later process to
         reconcile.
         """
-        if self.journal is None or not armed:
+        if not armed:
             return None
-        observed_at = (before or {}).get("observed_at")
-        if observed_at is None:
-            observed_at = time.time()
-        if self.currencies is not None:
-            for key in self.journal.resolved_unproven_keys(currency, before=observed_at):
-                self.currencies.release(f"purchase:{key}", currency)
+        if self.journal is None:
+            raise CommitmentError('transaction journal unavailable')
+        if self._unanswered_transaction() is not None:
+            raise PurchasePending('an earlier purchase is still being reconciled')
+        scope = self.account_state.verified_scope if self.account_state is not None else None
+        if scope is None:
+            raise AccountScopeUnavailable(
+                'fresh verified account scope required; this worker has no verified '
+                'account identity, so armed spending stays off')
+        observed_at = (before or {}).get('observed_at')
+        evidence_ref = (before or {}).get('frame_digest')
+        if observed_at is None or not evidence_ref:
+            raise CommitmentError('current frame evidence required')
         request = transactions.Intent(
             item=item, category=category, currency=currency, price=price,
-            wallet_before=wallet_before, ts=time.time(),
-            before=before or {},
-        )
-        owner = f"purchase:{request.key}"
-        if self.currencies is not None and not self.currencies.reserve(
-                owner, currency, price, wallet=wallet_before):
-            raise CommitmentError("wallet cannot cover this purchase and its commitments")
+            wallet_before=wallet_before, ts=time.time(), before=before or {})
+        balance = BalanceInterval.from_reading(currency, wallet_before, scope, observed_at, evidence_ref)
+        if not self.account_state.observe_balance(balance):
+            raise CommitmentError('wallet predates verified account scope')
         try:
-            return self.journal.open(request)
-        except Exception:
-            if self.currencies is not None:
-                self.currencies.release(owner, currency)
-            raise
+            prepared = self.journal.prepare(request, scope=scope, balance=balance, reserve=reserve)
+        except transactions.TransactionInFlight as exc:
+            raise PurchasePending(str(exc)) from exc
+        if prepared is None:
+            raise CommitmentError('wallet evidence cannot cover purchase and commitments')
+        return prepared
+
+    def _commitment_reason(self, exc: CommitmentError) -> str:
+        if self.journal is None:
+            return "journal"
+        if isinstance(exc, AccountScopeUnavailable):
+            return "account_scope_unavailable"
+        if isinstance(exc, PurchasePending):
+            return "reconciliation_pending"
+        return "reserve"
 
     def _mark_acted(self, intent: transactions.Transaction | None) -> None:
         if self.journal is not None and intent is not None:
@@ -1420,10 +1508,9 @@ class ShoppingSession:
         a restart to puzzle over.
         """
         if self.journal is not None and intent is not None:
-            self.journal.resolve(
-                intent.key, wallet_after=intent.wallet_before,
-                effect_changed=False, ts=time.time(),
-            )
+            self.journal.cancel_before_input(intent.key,
+                scope=self.account_state.verified_scope if self.account_state is not None else None,
+                reason=reason, now=time.time())
             if self.currencies is not None:
                 self.currencies.release(f"purchase:{intent.key}", intent.currency)
             logger.debug("intent for %s abandoned: %s", intent.item, reason)
@@ -1431,6 +1518,7 @@ class ShoppingSession:
     def _close(
         self, key: str | None, *, price: int | None, wallet_before: int | None,
         wallet_after: int | None, effect_changed: bool | None,
+        evidence_ref: str = '', observed_at: float | None = None,
     ) -> transactions.Outcome:
         """Answer one attempt with the evidence that followed.
 
@@ -1442,8 +1530,15 @@ class ShoppingSession:
             currency = self.journal._require(key).currency
             outcome = self.journal.resolve(
                 key, wallet_after=wallet_after, effect_changed=effect_changed,
-                ts=time.time(),
+                ts=observed_at if observed_at is not None else time.time(),
+                scope=self.account_state.verified_scope if self.account_state is not None else None,
+                evidence_ref=evidence_ref,
             )
+            if outcome.verdict != transactions.Verdict.UNPROVEN:
+                # The live caller tallies/publishes this outcome. Keep its durable
+                # receipt recoverable after a crash, but do not restore it twice
+                # in the current visit.
+                self._recovered_keys.add(key)
             if (self.currencies is not None and currency is not None
                     and outcome.verdict != transactions.Verdict.UNPROVEN):
                 self.currencies.release(f"purchase:{key}", currency)
@@ -1493,27 +1588,13 @@ class ShoppingSession:
             dry_run=dry_run,
             verdict=None if outcome is None else outcome.verdict.value,
             spent=None if outcome is None else outcome.spent,
+            transaction_key=None if outcome is None else outcome.key or None,
         ))
 
     def _confirm_card(self, gems: int, device: Any, shopping: Shopping,
                       screen: Image) -> None:
-        """Answer an outstanding card tap from the gem balance.
-
-        The evidence is a fall of exactly the price. A smaller fall, no
-        fall, or a rise all leave it unproven: gems arrive from missions
-        and rewards at any moment, so "the balance is lower" on its own
-        does not name this purchase as the cause.
-        """
+        """Retain uncertainty: card inventory/reward proof is not calibrated."""
         pending = self._pending_card
-        if gems == pending.gems_before - pending.price:
-            self._pending_card = None
-            outcome = self._close(pending.key, price=pending.price,
-                                  wallet_before=pending.gems_before,
-                                  wallet_after=gems, effect_changed=True)
-            self._record_card(pending.item, pending.price, pending.gems_before,
-                              dry_run=False, outcome=outcome)
-            return
-
         pending.frames += 1
         if pending.frames >= 3:
             self._pending_card = None
@@ -1525,7 +1606,7 @@ class ShoppingSession:
                 wallet_after=gems, effect_changed=None).spent, coins=False)
             self._bus.publish(events.PurchaseSkipped(
                 item=pending.item, reason="unconfirmed",
-                detail="card purchase did not move the gem balance",
+                detail="independent card reward/inventory evidence unavailable",
                 gems_before=gems,
             ))
             # Aborting rather than moving on, exactly as an unconfirmed

@@ -129,6 +129,7 @@ class FleetSetupService:
         self._build_error: str | None = None
         self._reroll_pool: Any | None = None
         self._reroll_supervisor: Any | None = None
+        self._worker_monitor: Any | None = None
         self._reroll_start_thread: Any | None = None
         self._reroll_runs: Any | None = None
         self._reroll_operation: dict[str, Any] | None = None
@@ -258,6 +259,8 @@ class FleetSetupService:
         from fleet.reroll_metrics import observed_metrics
         from fleet.reroll_variants import compare, opening_variants, read_variant, variant_name
         variants = opening_variants()
+        monitor_statuses = (self._worker_monitor.snapshot()
+                            if self._worker_monitor is not None else {})
         for member in snapshot["members"]:
             status = statuses.get(member["name"], {"state": "paused"})
             registration = registered_worker(self.root / "workers" / member["name"])
@@ -273,7 +276,10 @@ class FleetSetupService:
                     member.update(observed_metrics(self.root / "workers" / member["name"],
                         account_key=registration.key, account_id=registration.account_id or "",
                         web_port=registration.web_port or 0,
-                        running=status["state"] == "running"))
+                        running=status["state"] == "running",
+                        process_status=status, lease_id=member.get("lease_id"),
+                        attempt_id=status.get("attempt_id"),
+                        monitor_status=monitor_statuses.get(member["name"])))
                 except Exception:  # noqa: BLE001 - one worker's evidence must not hide its peers
                     member["error"] = "metrics unavailable"
                     logger.exception("reroll metrics unavailable for member %s", member["name"])
@@ -284,6 +290,7 @@ class FleetSetupService:
             if status.get("error"):
                 member["error"] = status["error"]
         snapshot["workers"] = statuses
+        snapshot["monitor"] = monitor_statuses
         snapshot["pressure"] = supervisor.pressure(statuses)
         snapshot["concurrency_limit"] = supervisor.max_concurrent_workers
         runs = self._runs()
@@ -571,6 +578,17 @@ class FleetSetupService:
                     lambda: connect(member["endpoint"])),
                 max_concurrent_workers=limit, start_stagger_seconds=1.0)
         return self._reroll_supervisor
+
+    def start_monitor(self) -> None:
+        """Own an independent monitor for the lifetime of the fleet API."""
+        if self._worker_monitor is None:
+            from fleet.worker_monitor import WorkerMonitor
+            self._worker_monitor = WorkerMonitor(self.root, self._manual_supervisor())
+        self._worker_monitor.start()
+
+    def stop_monitor(self) -> None:
+        if self._worker_monitor is not None:
+            self._worker_monitor.stop()
 
     def reroll_set_concurrency(self, limit: int) -> dict[str, Any]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 4:

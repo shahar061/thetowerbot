@@ -17,8 +17,10 @@ The watchdog notices either, then escalates:
    WorkerStalled and pauses the worker, which then waits for an operator
    instead of tapping blindly.
 
-Progress means an action whose frame changed. A frame that changes with no
-action pending proves nothing: a battle animates on its own.
+This local escape detector only interprets a changed frame as an input
+acknowledgement. `runtime_progress.ProgressRecorder` separately tracks
+completed scans and semantic capability progress; battle animation cannot
+clear a starved Workshop objective there.
 """
 
 from __future__ import annotations
@@ -59,8 +61,8 @@ def _trusted(box: TextBox) -> bool:
             and box.rect.w > 0 and box.rect.h > 0)
 
 
-def escape_button(boxes: tuple[TextBox, ...]) -> tuple[str, tuple[int, int]] | None:
-    """The one safe button to press on an unrecognized frame, or None."""
+def escape_box(boxes: tuple[TextBox, ...]) -> tuple[str, TextBox] | None:
+    """The one safe button's label and verified OCR box, or None."""
     trusted = [box for box in boxes if _trusted(box)]
     if any(_DANGER.search(box.text) for box in trusted):
         return None
@@ -69,13 +71,44 @@ def escape_button(boxes: tuple[TextBox, ...]) -> tuple[str, tuple[int, int]] | N
         if len(found) > 1:
             return None
         if found:
-            rect = found[0].rect
-            return label, (rect.x + rect.w // 2, rect.y + rect.h // 2)
+            return label, found[0]
     return None
 
 
+def overlay_absent(boxes: tuple[TextBox, ...], label: str) -> bool:
+    """Positive evidence that a dismissed overlay is gone.
+
+    True only for a non-empty trusted read with no spending/ad text in which
+    neither ``label`` nor any higher-priority safe label appears anywhere.
+    An empty, untrusted or dangerous read is not evidence of absence.
+    """
+    names = [name for name, _ in _SAFE_LABELS]
+    if label not in names:
+        return False
+    trusted = [box for box in boxes if _trusted(box)]
+    if not trusted or any(_DANGER.search(box.text) for box in trusted):
+        return False
+    forbidden = frozenset().union(*(spellings for _, spellings in
+                                    _SAFE_LABELS[:names.index(label) + 1]))
+    return not any(_normalized(box.text) in forbidden for box in trusted)
+
+
+def escape_button(boxes: tuple[TextBox, ...]) -> tuple[str, tuple[int, int]] | None:
+    """The one safe button to press on an unrecognized frame, or None."""
+    found = escape_box(boxes)
+    if found is None:
+        return None
+    label, box = found
+    rect = box.rect
+    return label, (rect.x + rect.w // 2, rect.y + rect.h // 2)
+
+
 class StallWatchdog:
-    """Counts evidence of no progress from the supervisor's verdicts."""
+    """Counts no-effect inputs and unknown screens within the scan owner.
+
+    It cannot detect a scan blocked in OCR; the independent heartbeat phase
+    deadline covers that case without another thread touching the device.
+    """
 
     def __init__(self, clock: Callable[[], float], *, no_effect_limit: int,
                  blocked_limit: float) -> None:

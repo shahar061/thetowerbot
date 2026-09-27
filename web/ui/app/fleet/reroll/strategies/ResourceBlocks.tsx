@@ -221,7 +221,38 @@ function BlockInspector({ block, locked, catalog, pinned, poolRule, onChange }: 
       className="rounded border border-border bg-background px-2 py-1" /></label>
     {block.type === "slot_track" && <fieldset className="flex gap-2"><legend>Slots</legend>{[1, 2, 3, 4, 5].map(slot =>
       <label key={slot} className="flex items-center gap-1"><input type="checkbox" disabled={locked || (pinned && slot === 1)} checked={block.slots.includes(slot)}
-        onChange={event => set({ slots: event.target.checked ? [...block.slots, slot].sort() : block.slots.filter(value => value !== slot) })} />{slot}</label>)}</fieldset>}
+        onChange={event => {
+          const slots = event.target.checked ? [...block.slots, slot].sort() : block.slots.filter(value => value !== slot);
+          const slot_policies = Object.fromEntries(Object.entries(block.slot_policies ?? {})
+            .filter(([key]) => slots.includes(Number(key))));
+          set({ slots, slot_policies });
+        }} />{slot}</label>)}</fieldset>}
+    {block.type === "slot_track" && <label className="flex items-center gap-2">Pause this slot track
+      <input type="checkbox" disabled={locked} checked={block.paused ?? false}
+        onChange={event => set({ paused: event.target.checked })} /></label>}
+    {block.type === "slot_track" && <label className="flex flex-col gap-1">When current research is blocked
+      <select disabled={locked} value={block.on_blocked ?? "wait"}
+        onChange={event => set({ on_blocked: event.target.value })}
+        className="rounded border border-border bg-background px-2 py-1">
+        <option value="wait">Wait for it</option><option value="skip">Try the next queued target for now</option>
+      </select></label>}
+    {block.type === "slot_track" && (block.slots.length > 1 || Object.keys(block.slot_policies ?? {}).length > 0)
+      && <fieldset className="flex flex-col gap-2 sm:col-span-2">
+      <legend>Per-slot overrides</legend>{block.slots.map(slot => {
+        const policy = block.slot_policies?.[String(slot)] ?? {};
+        const update = (patch: Record<string, unknown>): void => set({ slot_policies: {
+          ...block.slot_policies, [String(slot)]: { ...policy, ...patch } } });
+        return <div key={slot} className="flex flex-wrap items-center gap-3">
+          <span>Slot {slot}</span>
+          <label className="flex items-center gap-1">Pause slot {slot}<input type="checkbox" disabled={locked}
+            checked={policy.paused ?? block.paused ?? false} onChange={event => update({ paused: event.target.checked })} /></label>
+          <label>When slot {slot} is blocked <select disabled={locked} value={policy.on_blocked ?? block.on_blocked ?? "wait"}
+            onChange={event => update({ on_blocked: event.target.value })}
+            className="rounded border border-border bg-background px-2 py-1">
+            <option value="wait">Wait</option><option value="skip">Next queued target for now</option>
+          </select></label>
+        </div>;
+      })}</fieldset>}
     {(block.type === "research" || (block.type === "condition" && block.field === "lab_level")) &&
       <label className="flex flex-col gap-1">Lab<select disabled={locked || (block.type === "research" && pinned)} value={block.lab_id}
         onChange={event => set(block.type === "research" ? { lab_id: event.target.value, to_level: 1 } : { lab_id: event.target.value })}

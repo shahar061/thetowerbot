@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,16 +34,14 @@ def test_template_lanes_validate_and_keep_the_invariants() -> None:
     assert sorted(slot for track in lab_blocks for slot in track["slots"]) == [1, 2, 3, 4, 5]
 
 
-def test_automated_set_is_exactly_game_speed_in_slot_one_and_lab_two() -> None:
-    assert rb.AUTOMATED == frozenset({("labs", "research", "labs.game-speed", 1),
-                                      ("gems", "unlock_lab_slot", "", 2)})
+def test_automated_set_retains_only_legacy_game_speed_route() -> None:
+    assert rb.AUTOMATED == frozenset({("labs", "research", "labs.game-speed", 1)})
     assert rb.automated_list() == [
-        {"lane": "gems", "type": "unlock_lab_slot", "slot": 2},
         {"lane": "labs", "type": "research", "lab_id": "labs.game-speed", "slot": 1}]
     assert rb.research_automated("labs.game-speed", 1)
     assert not rb.research_automated("labs.game-speed", 2)
     assert not rb.research_automated("labs.attack-speed", 1)
-    assert rb.gem_automated({"type": "unlock_lab_slot", "slot": 2})
+    assert not rb.gem_automated({"type": "unlock_lab_slot", "slot": 2})
     assert not rb.gem_automated({"type": "unlock_lab_slot", "slot": 3})
 
 
@@ -138,6 +139,7 @@ def waiting(level: int = 3, observed_at: float = 900.) -> dict[str, Any]:
 def test_nothing_read_means_unknown_slots_never_a_guess() -> None:
     plan = evaluate_lab_plan(template_route(), LabFacts(now=1000.))
     assert [slot.now.state for slot in plan.slots] == ["unknown"] * 5
+    assert all(slot.now.owned is None and slot.now.research_id is None for slot in plan.slots)
     assert plan.gems.next is not None and plan.gems.next.type == "unlock_lab_slot"
     assert (plan.gems.price, plan.gems.need, plan.gems.have) == (100, 100, None)
 
@@ -169,7 +171,20 @@ def test_researching_slot_never_shows_a_negative_timer() -> None:
 def test_slot_two_and_the_inferred_later_slots() -> None:
     locked = evaluate_lab_plan(template_route(), LabFacts(
         now=1000., slot2={"status": "locked", "wallet_gems": 60, "observed_at": 900.}))
-    assert [slot.now.state for slot in locked.slots[1:]] == ["locked"] * 4
+    assert [slot.now.state for slot in locked.slots[1:]] == ["locked", "unknown", "unknown", "unknown"]
+
+
+def test_observed_slot_has_current_research_and_ownership_without_execution_claim() -> None:
+    observed = {3: {"state": "researching", "research_id": "labs.coins-wave",
+                    "target_level": 4, "expected_finish": 2000.,
+                    "observed_at": 990., "confirmed": False, "preview_only": True}}
+    plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., slots=observed))
+    slot = plan.slots[2]
+    assert slot.now.research_id == "labs.coins-wave"
+    assert slot.now.research_name == "Coins / Wave"
+    assert slot.now.owned is True
+    assert slot.now.evidence_status == "historical"
+    assert slot.capabilities == {"observe": True, "plan": True, "execute": False}
     owned = evaluate_lab_plan(template_route(), LabFacts(
         now=1000., slot2={"status": "owned", "wallet_gems": 5, "observed_at": 900.}))
     assert [slot.now.state for slot in owned.slots[1:]] == ["owned_unread", "unknown", "unknown", "unknown"]
@@ -208,7 +223,7 @@ def test_pool_selection_and_limits() -> None:
     facts = LabFacts(now=1000., wallet_coins=20000, slot1=waiting())
     route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
     picked = evaluate_lab_plan(route, facts).slots[1]
-    assert picked.next is not None and picked.next.lab_id == "labs.game-speed"  # known price wins
+    assert picked.next is not None and picked.next.lab_id == "labs.coins-wave"  # slot 1 reserves Game Speed
     assert picked.automated is False  # a pool pick in slot 2 is not the automated set
     raw["baseline"]["labs"]["blocks"][1]["children"][0]["max_seconds"] = 600
     route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
@@ -219,7 +234,7 @@ def test_gem_path_have_need_and_keep() -> None:
     locked = {"status": "locked", "wallet_gems": 60, "observed_at": 900.}
     plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., wallet_gems=60, slot2=locked))
     assert (plan.gems.next.block_id, plan.gems.have, plan.gems.need, plan.gems.automated) == (
-        "gems.lab2", 60, 100, True)
+        "gems.lab2", 60, 100, False)
     assert [step.state for step in plan.gems.steps][:2] == ["current", "next"]
     kept = evaluate_lab_plan(template_route(gems={"keep": 50}), LabFacts(now=1000., wallet_gems=60, slot2=locked))
     assert kept.gems.need == 150
@@ -237,3 +252,214 @@ def test_a_legacy_steps_route_is_evaluated_through_its_translation() -> None:
     plan = evaluate_lab_plan(route, LabFacts(now=1000., wallet_coins=20000, slot1=waiting()))
     assert plan.slots[0].next.lab_id == "labs.game-speed" and plan.slots[0].automated
     assert plan.gems.next.block_id == "legacy.gems.unlock_lab_slot_2"
+
+
+def test_slot_policy_defaults_and_validation() -> None:
+    blocks = rb.validate_labs(labs())
+    assert all(track.get("paused", False) is False and track.get("on_blocked", "wait") == "wait"
+               for track in blocks)
+    paused = labs()
+    paused[1]["paused"] = True
+    paused[1]["on_blocked"] = "skip"
+    paused[1]["slot_policies"] = {"2": {"paused": False, "on_blocked": "wait"}}
+    assert rb.validate_labs(paused)[1]["paused"] is True
+    assert rb.validate_labs(paused)[1]["slot_policies"]["2"]["paused"] is False
+    for field, value in (("paused", 1), ("on_blocked", "drop"), ("on_blocked", [])):
+        invalid = labs()
+        invalid[1][field] = value
+        with pytest.raises(ValueError):
+            rb.validate_labs(invalid)
+    invalid = labs()
+    invalid[2]["slot_policies"] = {"5": {"paused": True}}
+    with pytest.raises(ValueError, match="slot policies"):
+        rb.validate_labs(invalid)
+
+
+def test_shared_track_reserves_distinct_research_and_skip_uses_next_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[
+        {"id": "first", "type": "slot_track", "slots": [1], "children": [
+            {"id": "speed", "type": "research", "lab_id": "labs.game-speed", "to_level": 7}]},
+        {"id": "shared", "type": "slot_track", "slots": [3, 4], "on_blocked": "skip", "children": [
+            {"id": "coins", "type": "research", "lab_id": "labs.coins-wave", "to_level": 10},
+            {"id": "cash", "type": "research", "lab_id": "labs.cash-bonus", "to_level": 10}]}])
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    original = rb._option
+    monkeypatch.setattr(rb, "_option", lambda lab_id, level: (
+        rb.SlotNext(lab_id, lab_id, level, 100, 60)
+        if lab_id in {"labs.coins-wave", "labs.cash-bonus"} else original(lab_id, level)))
+    observed = {3: {"state": "idle", "confirmed": True}, 4: {"state": "idle", "confirmed": True}}
+    plan = evaluate_lab_plan(route, LabFacts(now=1000., wallet_coins=1000, slots=observed, completed_levels={
+        "labs.coins-wave": 1, "labs.cash-bonus": 1}))
+    assert [plan.slots[i - 1].next.lab_id for i in (3, 4)] == ["labs.coins-wave", "labs.cash-bonus"]
+    assert plan.slots[2].next.level == 2
+    assert plan.slots[3].next.level == 2
+
+
+def test_running_research_and_unknown_slot_do_not_erase_or_duplicate() -> None:
+    facts = LabFacts(now=1000., slots={3: {"state": "researching", "research_id": "labs.coins-wave",
+                                          "target_level": 4, "observed_at": 900.},
+                                        4: {"state": "unknown"}},
+                     completed_levels={"labs.coins-wave": 3})
+    plan = evaluate_lab_plan(template_route(), facts)
+    assert plan.slots[2].now.state == "researching"
+    assert plan.slots[3].next is None
+
+
+def test_paused_slot_does_not_allocate_and_unknown_cost_is_uncovered() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    tracks = labs()
+    tracks[2]["slot_policies"] = {"3": {"paused": True, "on_blocked": "skip"}}
+    raw["baseline"]["labs"].update(mode="blocks", blocks=tracks)
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    plan = evaluate_lab_plan(route, LabFacts(now=1000., wallet_coins=100000,
+        completed_levels={"labs.coins-wave": 1}, slots={3: {"state": "idle", "confirmed": True}}))
+    assert plan.slots[2].next is None
+    assert plan.slots[3].next is not None and plan.slots[3].covered is None
+    assert plan.slots[4].next is not None and plan.slots[4].covered is None
+    assert not plan.slots[4].automated
+
+
+def test_wait_policy_holds_duplicate_and_skip_policy_moves_past_unknown_condition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    base = {"id": "first", "type": "slot_track", "slots": [1], "children": [
+        {"id": "speed", "type": "research", "lab_id": "labs.game-speed", "to_level": 7}]}
+    second = {"id": "second", "type": "slot_track", "slots": [2], "children": [
+        {"id": "duplicate", "type": "research", "lab_id": "labs.game-speed", "to_level": 7},
+        {"id": "alternative", "type": "research", "lab_id": "labs.cash-bonus", "to_level": 10}]}
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[base, second])
+    original = rb._option
+    monkeypatch.setattr(rb, "_option", lambda lab_id, level: (
+        rb.SlotNext(lab_id, lab_id, level, 100, 60)
+        if lab_id == "labs.cash-bonus" else original(lab_id, level)))
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    facts = LabFacts(now=1000., wallet_coins=20000, slot1=waiting(), slots={2: {"state": "idle"}},
+                     completed_levels={"labs.cash-bonus": 2})
+    assert evaluate_lab_plan(route, facts).slots[1].next is None
+    second["on_blocked"] = "skip"
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    assert evaluate_lab_plan(route, facts).slots[1].next.lab_id == "labs.cash-bonus"
+
+
+def test_conservative_coin_budget_is_shared_across_idle_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[
+        {"id": "first", "type": "slot_track", "slots": [1], "children": [
+            {"id": "speed", "type": "research", "lab_id": "labs.game-speed", "to_level": 7}]},
+        {"id": "second", "type": "slot_track", "slots": [2], "children": [
+            {"id": "cash", "type": "research", "lab_id": "labs.cash-bonus", "to_level": 3}]}])
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    original = rb._option
+    monkeypatch.setattr(rb, "_option", lambda lab_id, level: (
+        rb.SlotNext(lab_id, "Cash Bonus", level, 8000, 60)
+        if lab_id == "labs.cash-bonus" else original(lab_id, level)))
+    facts = LabFacts(now=1000., wallet_coins=50000, available_coins=15000,
+                     slot1=waiting(), slots={2: {"state": "idle"}},
+                     completed_levels={"labs.cash-bonus": 1})
+    plan = evaluate_lab_plan(route, facts)
+    assert plan.slots[0].covered is True
+    assert plan.slots[1].covered is False
+
+
+def test_persisted_slot_preview_is_account_bound_and_plan_only(tmp_path: Path) -> None:
+    from fleet.build_route_preview_facts import read_lab_slots
+
+    account = "ACCOUNT-A"
+    key = hashlib.sha256(account.encode()).hexdigest()
+    path = tmp_path / f"lab-runtime-{key}.json"
+    payload = {"version": 1, "scope": {"account_id": account, "lease_id": "old",
+                                           "generation": "old", "epoch": 0},
+               "slots": [{"slot": 1, "scope": {"account_id": account, "lease_id": "old",
+                                                       "generation": "old", "epoch": 0},
+                          "state": "researching", "research_id": "labs.game-speed",
+                          "target_level": 3, "observed_at": 900.}]}
+    path.write_text(json.dumps(payload))
+    assert read_lab_slots(tmp_path, "ACCOUNT-B") == {}
+    slots = read_lab_slots(tmp_path, account)
+    assert slots[1]["research_id"] == "labs.game-speed"
+    plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., slots=slots))
+    assert plan.slots[0].now.state == "researching"
+    assert plan.slots[0].capabilities["execute"] is False
+
+
+def test_persisted_idle_slot_from_previous_lease_is_never_executable(tmp_path: Path) -> None:
+    from fleet.build_route_preview_facts import read_lab_slots
+
+    account = "ACCOUNT-A"
+    key = hashlib.sha256(account.encode()).hexdigest()
+    path = tmp_path / f"lab-runtime-{key}.json"
+    scope = {"account_id": account, "lease_id": "old", "generation": "old", "epoch": 0}
+    path.write_text(json.dumps({"version": 1, "scope": scope, "slots": [
+        {"slot": 1, "scope": scope, "state": "idle", "confirmed": True,
+         "evidence_status": "verified", "observed_at": 900.}]}))
+    slots = read_lab_slots(tmp_path, account)
+    assert slots[1]["observed_at"] == 900.
+    assert slots[1]["confirmed"] is False
+    plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., wallet_coins=20000,
+        slot1=waiting(), slots=slots, account_id=account))
+    assert plan.slots[0].now.state == "idle"
+    assert plan.slots[0].capabilities["execute"] is False
+
+
+def test_skip_moves_past_unknown_level_price_prerequisite_and_overbudget(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[
+        {"id": "speed", "type": "slot_track", "slots": [1], "children": [
+            {"id": "gs", "type": "research", "lab_id": "labs.game-speed", "to_level": 7}]},
+        {"id": "choice", "type": "slot_track", "slots": [2], "on_blocked": "skip", "children": [
+            {"id": "unknown-level", "type": "research", "lab_id": "labs.coins-wave", "to_level": 10},
+            {"id": "unknown-price", "type": "research", "lab_id": "labs.cash-bonus", "to_level": 10},
+            {"id": "unread-prereq", "type": "research", "lab_id": "labs.labs-speed", "to_level": 10},
+            {"id": "expensive", "type": "research", "lab_id": "labs.attack-speed", "to_level": 10},
+            {"id": "eligible", "type": "research", "lab_id": "labs.coins-kill-bonus", "to_level": 10}]}])
+    original = rb._option
+    monkeypatch.setattr(rb, "_option", lambda lab_id, level: (
+        rb.SlotNext(lab_id, lab_id, level, 1000 if lab_id == "labs.attack-speed" else 100, 60)
+        if lab_id in {"labs.labs-speed", "labs.attack-speed", "labs.coins-kill-bonus"}
+        else original(lab_id, level)))
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    facts = LabFacts(now=1000., available_coins=200, slots={2: {"state": "idle"}},
+        completed_levels={"labs.cash-bonus": 1, "labs.labs-speed": 1,
+                          "labs.attack-speed": 1, "labs.coins-kill-bonus": 1})
+    selected = evaluate_lab_plan(route, facts).slots[1]
+    assert selected.next is not None and selected.next.lab_id == "labs.coins-kill-bonus"
+    assert selected.covered is True
+    assert any("unknown" in reason or "unread" in reason for reason in selected.why)
+    raw["baseline"]["labs"]["blocks"][1]["on_blocked"] = "wait"
+    waiting_plan = evaluate_lab_plan(resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1"), facts)
+    assert waiting_plan.slots[1].next.lab_id == "labs.coins-wave"
+
+
+def test_slot_one_skip_cannot_bypass_unfinished_game_speed() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[
+        {"id": "one", "type": "slot_track", "slots": [1], "on_blocked": "skip", "children": [
+            {"id": "gs", "type": "research", "lab_id": "labs.game-speed", "to_level": 7},
+            {"id": "later", "type": "research", "lab_id": "labs.attack-speed", "to_level": 10}]}])
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    plan = evaluate_lab_plan(route, LabFacts(now=1000., wallet_coins=0, slot1=waiting()))
+    assert plan.slots[0].next is not None and plan.slots[0].next.lab_id == "labs.game-speed"
+
+
+def test_missing_or_future_slot_time_is_stale() -> None:
+    facts = LabFacts(now=1000., slots={1: {"state": "idle", "confirmed": True},
+                                       2: {"state": "idle", "confirmed": True,
+                                           "observed_at": 1001.}})
+    plan = evaluate_lab_plan(template_route(), facts)
+    assert plan.slots[0].now.stale is True
+    assert plan.slots[1].now.stale is True
+    assert plan.slots[0].capabilities["execute"] is False
+
+
+def test_uncalibrated_routes_stay_planning_only_with_a_visible_reason() -> None:
+    plan = evaluate_lab_plan(template_route(), LabFacts(
+        now=1000., wallet_coins=20000, wallet_gems=160,
+        slot2={"status": "locked", "wallet_gems": 160, "observed_at": 990.}))
+    assert plan.slots[0].automated is True  # legacy slot-one Game Speed regression
+    for slot in plan.slots[2:]:
+        assert slot.next is not None and slot.automated is False
+        assert any(line.startswith("Planning only:") for line in slot.why)
+    assert plan.gems.automated is False
+    assert any(line.startswith("gems.lab2: Planning only:") for line in plan.gems.why)

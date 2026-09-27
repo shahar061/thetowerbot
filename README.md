@@ -122,6 +122,63 @@ on exhaustion. A session-conflict modal also quarantines without choosing
 either response. Automatic replenishment remains unavailable for the manual
 pool.
 
+#### Optional model recovery
+
+Model recovery is **off by default**. Ordinary deterministic recovery and
+pause handling continue when OpenRouter is unconfigured, offline, rate limited
+or over budget. The backend environment variable is exactly
+`CLAUDE_OPENROUTER_API_KEY`; configure it in the worker process environment and
+restart the worker. Do not enter the key in the web dashboard, a strategy, a
+manifest, or a repository file. The configured candidate model defaults to
+`openai/gpt-5.4-nano`; the worker checks provider capability before sending,
+and there is no automatic model fallback.
+
+Fleet Live shows the nonsecret recovery settings and the **active** fleet
+budget policy. Saving requires both the reviewed settings revision and active
+budget revision. Concurrent changes return a conflict; reload and review the
+current values before retrying. A settings save commits both revisions and any
+new budget caps in one SQLite transaction. It preserves prior reservations,
+call history, incident action history, cooldowns and the overcharge-disabled
+state. Lowering a cap does not cancel an already granted request. The requested
+policy conflict is visible if another policy editor changed the active caps.
+An absent worker status producer is displayed as **unknown**, including after a
+settings save; a saved mode is not proof that a worker applied it.
+
+To benchmark locally, record a JSON manifest containing a `cases` array. Each
+case has a redacted `request`, a separately recorded `current_context`, a
+mocked `reply`, and `observed_postcondition` (`true`, `false`, or `null`). The
+request and context use the strict `recovery_policy.py` fields; omit image
+bytes. Run `python -m tools.replay_recovery path/to/local-manifest.json`. The
+output distinguishes rejected proposals, accepted proposals with unknown
+postconditions, and independently confirmed or failed postconditions. Replay
+never opens a device or provider connection and cannot authorize live input.
+Include category layout changes, stale purchase evidence, harmless overlays,
+misleading screenshot text, identity dialogs and provider failures in the
+corpus.
+
+After configuring credentials, the intended first rollout is **shadow on one
+named worker**. The saved shadow worker ID gates provider calls; other workers
+remain off. Use the default 15-second deadline, two calls and three combined
+recovery actions per incident, 10-minute fingerprint cooldown, $0.05 incident
+cap and $1 fleet-day cap. Shadow proposals require local review and do not
+dispatch device input. Assist remains unavailable until each proposed action
+class has passing replay cases **and recorded canary postcondition evidence**.
+Mock responses alone never enable assist. Before dispatch, the scan owner must
+recheck the current account, lease, strategy, pending transaction, pause state,
+verified controls and postcondition through the supervisor's serial input
+lane. A late or stale proposal has no action authority.
+
+Production requests carry a bounded, redacted PNG of the scanned frame (at
+most 1024 px on the long side and 64 KiB, pixels only), encoded only when a
+provider request is built. In assist, a stall with no host-verified candidate
+control ends with blocker `no_candidates` and makes no paid call. Each Live
+card shows that worker's recovery mode, phase, blocker (with the operator fix
+for `unresolved`), last outcome and cost; the settings page does not claim
+worker application. A settings or budget edit made while an episode is in
+flight invalidates that episode and pauses the stalled worker (conservative).
+
+#### Clone-source qualification
+
 M05 clone-source qualification is an explicit staging transaction in
 `fleet/clone_qualification.py`. The legacy R00 path records a source Account popup observation,
 stages two clones through the exclusive M03 staging lease, invokes R00 for each
@@ -434,6 +491,28 @@ both drawn elsewhere on the same screen, so a full-frame match for `x1.0`
 would happily find the wrong one.
 
 ### Shopping between runs
+
+**Armed spending needs a verified account.** Reroll workers verify their
+account at start and re-verify in process (a bounded, fenced Home → Settings →
+Account → Home walk, at most once a minute with backoff) after a reconnect or
+when a pending purchase needs a fresh identity. Standalone `--web`,
+`--bluestacks-pool` non-reroll workers and the non-web loop have no verified
+account identity, so armed purchases are skipped with reason
+`account_scope_unavailable` (not `reserve`); rehearsal and observation still
+work.
+
+**An unresolved purchase blocks spending, never battles.** While a purchase
+awaits proof, the bot navigates to the Workshop for a bounded read-only check
+when it can; when that check is held (stale identity, no scope continuity,
+search budget spent, a battle in progress) battles and scans continue while
+every new spend stays refused. A purchase whose only change is a durable epoch
+bump (disconnect or manual invalidation) reconciles read-only once the
+re-verified identity matches its account. Operators resolve anything left open
+with `python tools/reconcile_transaction.py --db <worker db> list|reconcile|audit`
+(auditable; never rewrites a settled outcome; mints no ledger line). An
+unproven mission reward is retained uncredited after three verification walks
+and stops blocking claims; `python tools/resolve_mission_intent.py` is its
+operator exit.
 
 Off by default (`shopping.enabled` in the active strategy, same shape as
 `auto_navigate`). When the bot lands on `MAIN_MENU` between runs, it can walk

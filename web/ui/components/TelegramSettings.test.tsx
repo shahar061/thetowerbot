@@ -51,3 +51,9 @@ test("missing credentials are explained without exposing a token", async () => {
   expect(await screen.findByText(/TELEGRAM_BOT_TOKEN/)).toBeInTheDocument();
   expect(screen.queryByText(/VERY-SECRET/)).not.toBeInTheDocument();
 });
+
+test("embedded fleet settings use a section heading", async () => {
+  render(<TelegramSettings mode="fleet" embedded />);
+  expect(await screen.findByRole("heading", { level: 2, name: "Telegram" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+});

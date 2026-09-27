@@ -20,12 +20,14 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import pytest
 
 import config
 import events
 import missions_claim
 import missions_screen
 import vision
+from notification_state import MissionReceiptBus, NotificationState
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 
@@ -196,6 +198,109 @@ def test_a_counter_that_never_moves_ends_the_walk_rather_than_retapping() -> Non
     # A CLAIM was tapped, so this is not a refusal: ClaimSkipped would assert
     # the walk moved nothing, and the reward may well have been taken.
     assert not bus.of(events.ClaimSkipped)
+
+
+def test_multiple_counter_steps_after_one_tap_remain_uncertain() -> None:
+    claim, bus, device = drive([home(), page(0, 1), page(2, 0)])
+    assert claim.snapshot()['result']['reason'] == 'claim_evidence_mismatch'
+    assert not bus.of(events.MissionClaimed)
+    assert bus.of(events.ClaimUncertain)
+    assert len(device.taps) == 2
+
+
+def test_receipt_flush_failure_keeps_live_claim_pending_until_retry(tmp_path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    state = NotificationState(tmp_path / 'mission-notification-state.json', scope={
+        'account_id': 'a', 'lease_id': 'l', 'attempt_id': 't', 'generation': 'g'})
+    state.begin('missions', 100)
+    claim = missions_claim.MissionsClaim()
+    claim.request(now=100)
+    downstream, device, templates = FakeBus(), FakeDevice(), FakeTemplates()
+    wrapped = MissionReceiptBus(downstream, state)
+    readings = FakeReadings([home(), page(0, 1), page(1, 0)])
+    def advance(now: float) -> None:
+        claim.advance(screen=screen(claim.snapshot()['step']), device=device,
+                      templates=templates, readings=FakePanel(), missions=readings,
+                      bus=wrapped, state='MAIN_MENU', now=now)
+    advance(100)
+    readings.step()
+    advance(101)
+    assert state.snapshot()['pending_claim']['completed_before'] == 0
+    assert len(device.taps) == 2  # open Missions, then one reward button
+    readings.step()
+    original_save = state._save
+    def fail_receipt() -> None:
+        if state.snapshot()['receipts']:
+            raise OSError('disk full')
+        original_save()
+    monkeypatch.setattr(state, '_save', fail_receipt)
+    with pytest.raises(OSError, match='disk full'):
+        advance(102)
+    assert state.snapshot()['pending_claim'] is not None
+    assert state.snapshot()['receipts'] == []
+    assert len(device.taps) == 2
+    monkeypatch.setattr(state, '_save', original_save)
+    advance(103)
+    assert len(state.snapshot()['receipts']) == 1
+    assert len(downstream.of(events.MissionClaimed)) == 1
+    assert len(device.taps) == 3  # final tap only returns Home
+
+
+def test_reward_tap_is_refused_when_durable_intent_cannot_flush(tmp_path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    state = NotificationState(tmp_path / 'mission-notification-state.json', scope={
+        'account_id': 'a', 'lease_id': 'l', 'attempt_id': 't', 'generation': 'g'})
+    state.begin('missions', 100)
+    claim = missions_claim.MissionsClaim()
+    claim.request(now=100)
+    device, templates = FakeDevice(), FakeTemplates()
+    wrapped = MissionReceiptBus(FakeBus(), state)
+    readings = FakeReadings([home(), page(0, 1)])
+    claim.advance(screen=screen('open_missions'), device=device, templates=templates,
+                  readings=FakePanel(), missions=readings, bus=wrapped,
+                  state='MAIN_MENU', now=100)
+    readings.step()
+    original_save = state._save
+    def fail_intent() -> None:
+        if state.snapshot()['pending_claim'] is not None:
+            raise OSError('disk full')
+        original_save()
+    monkeypatch.setattr(state, '_save', fail_intent)
+    with pytest.raises(OSError, match='disk full'):
+        claim.advance(screen=screen('claim'), device=device, templates=templates,
+                      readings=FakePanel(), missions=readings, bus=wrapped,
+                      state='MAIN_MENU', now=101)
+    assert len(device.taps) == 1  # opening Missions was the sole input
+    assert state.snapshot()['pending_claim'] is None
+
+
+@pytest.mark.parametrize('ending', ['pause', 'page_unreadable', 'counter_unreadable'])
+def test_post_tap_interruption_retains_durable_intent(tmp_path, ending: str) -> None:
+    state = NotificationState(tmp_path / 'mission-notification-state.json', scope={
+        'account_id': 'a', 'lease_id': 'l', 'attempt_id': 't', 'generation': 'g'})
+    state.begin('missions', 100)
+    claim = missions_claim.MissionsClaim()
+    claim.request(now=100)
+    downstream, device, templates = FakeBus(), FakeDevice(), FakeTemplates()
+    wrapped = MissionReceiptBus(downstream, state)
+    readings = FakeReadings([home(), page(0, 1),
+                             page(0, 1, error='ocr') if ending == 'page_unreadable'
+                             else page(None, 1) if ending == 'counter_unreadable'
+                             else page(0, 1)])
+    for now in (100, 101):
+        claim.advance(screen=screen(claim.snapshot()['step']), device=device,
+                      templates=templates, readings=FakePanel(), missions=readings,
+                      bus=wrapped, state='MAIN_MENU', now=now)
+        readings.step()
+    if ending == 'pause':
+        claim.cancel('paused', 'operator paused', now=102)
+    else:
+        claim.advance(screen=screen(claim.snapshot()['step']), device=device,
+                      templates=templates, readings=FakePanel(), missions=readings,
+                      bus=wrapped, state='MAIN_MENU', now=102)
+    assert state.snapshot()['pending_claim'] is not None
+    assert not downstream.of(events.MissionClaimed)
+    assert downstream.of(events.ClaimUncertain)
 
 
 def test_a_walk_with_nothing_claimable_returns_home_without_tapping() -> None:
