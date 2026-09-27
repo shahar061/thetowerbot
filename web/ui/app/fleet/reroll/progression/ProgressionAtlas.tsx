@@ -85,7 +85,7 @@ export function ProgressionAtlas({ workers, pending = false, initialWorker = nul
     <section aria-label="Reroll ladder" className={styles.ladder}>
       <div className={styles.chapter}><span className={styles.chapterIcon}><Swords size={20} /></span><div><small>01 / OPENING</small><strong>Tier 1 · Wave 20</strong><span>Establish the first foothold</span></div></div>
       <span className={styles.ladderLine} aria-hidden="true" />
-      <div className={styles.chapter}><span className={styles.chapterIcon}><Shield size={20} /></span><div><small>02 / TURTLE</small><strong>Tier 1 · Wave 60</strong><span>Survive toward the stone reward</span></div></div>
+      <div className={styles.chapter}><span className={styles.chapterIcon}><Shield size={20} /></span><div><small>02 / TURTLE</small><strong>Tier 1 · Wave 60</strong><span>Survive toward the Ultimate Weapons unlock</span></div></div>
       <span className={styles.ladderLine} aria-hidden="true" />
       <div className={styles.chapter}><span className={styles.chapterIcon}><Sparkles size={20} /></span><div><small>03 / THE CHOICE</small><strong>Ultimate Weapon</strong><span>Manual choice · operator required</span></div></div>
       <p>Reroll route · wave progress does not verify a feature unlock or a claimed reward.</p>

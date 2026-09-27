@@ -59,8 +59,8 @@ function Vital({ label, value, tone }: { label: string; value: string | number |
  * Where this account stands on the reroll ladder.
  *
  * The ladder is the entire reason the pool exists - every worker is climbing
- * the same three rungs to wave 60 and a human's Ultimate Weapon pick - and
- * before this the only trace of it on a device card was a goal sentence
+ * the same three rungs to wave 60 and, once 5 stones are in, a human's
+ * Ultimate Weapon pick - and before this the only trace of it on a device card was a goal sentence
  * buried in the plan text. A reader could not tell a worker two waves from
  * the finish line from one that has never completed a run.
  */

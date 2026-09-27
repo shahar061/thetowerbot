@@ -386,12 +386,6 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     excluded = _ban_closure(route.workshop.banned_upgrade_ids)
     counts = facts.confirmed_purchases if lane == 'workshop' else facts.run_purchases
     rejected: list[str] = []
-    if lane == 'workshop' and facts.best_tier_1_wave is not None and facts.best_tier_1_wave >= 60:
-        stopped = RerollDecision(facts.account_id, 'stones', 'Review Ultimate Weapon', 'needs_operator',
-            None, None, None, None, wallet, facts.lifetime_coins,
-            'Tier 1 Wave 60 was verified; Ultimate Weapon choice stays with the operator.')
-        return RouteEvaluation(facts.account_id, route.revision, 'blocked', stopped,
-            DecisionTrace('wave60', stopped.reason, age), facts.observed_at)
 
     def price_for(uid: str, *, reference: bool = False) -> int | None:
         if lane == 'workshop':

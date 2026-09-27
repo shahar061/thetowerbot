@@ -230,11 +230,14 @@ def test_purchase_above_strategy_spend_limit_stays_in_save_state() -> None:
     assert "80 more coins" in decision.reason
 
 
-def test_wave_60_stops_workshop_planning_for_stones() -> None:
-    decision = choose_next(facts(best_tier_1_wave=60, wallet_coins=1000))
-    assert decision.stage == "stones"
-    assert decision.upgrade_id is None
-    assert decision.state == "needs_operator"
+def test_wave_60_keeps_workshop_planning() -> None:
+    """Clearing wave 60 does not yet pay the 5 stones the first Ultimate
+    Weapon costs, so the plan is the one the account had at wave 59."""
+    before = choose_next(facts(best_tier_1_wave=59, wallet_coins=1000))
+    after = choose_next(facts(best_tier_1_wave=60, wallet_coins=1000))
+    assert after.stage != "stones"
+    assert after.state != "needs_operator"
+    assert (after.state, after.upgrade_id) == (before.state, before.upgrade_id)
 
 
 def test_decisions_remain_bound_to_the_input_account() -> None:
