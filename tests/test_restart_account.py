@@ -54,7 +54,7 @@ def observer(rows: list[AccountFrame]) -> Any:
 def test_verified_restart_walk_returns_to_home() -> None:
     device = Device()
     supervisor = Supervisor("ACCOUNT-A")
-    verify_restart_account(device=device, supervisor=supervisor,
+    evidence = verify_restart_account(device=device, supervisor=supervisor,
         expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
         observe=observer([
             frame("home", controls={"settings": (1, 2)}),
@@ -64,6 +64,9 @@ def test_verified_restart_walk_returns_to_home() -> None:
             frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
             frame("settings", controls={"close": (910, 490)}), frame("home"),
         ]))
+    assert evidence.account_id == "ACCOUNT-A"
+    assert evidence.observed_at == 100.
+    assert evidence.evidence_ref == "capture://account"
     assert supervisor.verified == "ACCOUNT-A"
     assert device.taps == [(1, 2), (3, 4), (940, 585), (910, 490)]
 

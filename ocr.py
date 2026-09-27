@@ -13,6 +13,8 @@ import logging
 import re
 import threading
 import time
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -24,6 +26,17 @@ from config import Rect
 from device import Image
 
 logger = logging.getLogger("tower_bot.ocr")
+_progress: ContextVar[Any | None] = ContextVar('ocr_progress', default=None)
+
+
+@contextmanager
+def progress_scope(recorder: Any) -> Any:
+    """Attach this scan's phase recorder to OCR on the same thread."""
+    token = _progress.set(recorder)
+    try:
+        yield
+    finally:
+        _progress.reset(token)
 
 # Sentinel for "construction was tried and failed", distinct from None's
 # "not tried yet". Without it a broken wheel is retried on every scan, and
@@ -166,7 +179,8 @@ def read(screen: Image | None, *, strict: bool = False,
     if screen is None:
         return ()
     started = time.perf_counter()
-    with _lock:
+    recorder = _progress.get()
+    with (recorder.phase('ocr_lock', 20) if recorder is not None else nullcontext()), _lock:
         waited = time.perf_counter() - started
         engine = _engine_or_none()
         if engine is None:
@@ -180,7 +194,9 @@ def read(screen: Image | None, *, strict: bool = False,
             if cached_engine is engine:
                 results.move_to_end(key)
             else:
-                result, _elapsed = engine(screen)
+                with (recorder.phase('ocr_inference', 30)
+                      if recorder is not None else nullcontext()):
+                    result, _elapsed = engine(screen)
                 _remember(results, key, (engine, result), limit)
         except Exception:
             logger.exception("OCR failed on a %s frame", getattr(screen, "shape", "?"))

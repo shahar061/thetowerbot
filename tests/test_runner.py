@@ -175,6 +175,27 @@ def test_runner_persists_attempt_only_after_observed_account_evidence(runner_par
         runner.stop()
 
 
+def test_runner_injects_progress_for_exact_attempt_and_binds_account(runner_parts, tmp_path) -> None:
+    from fleet.identity import Attempt, IdentityEvidence
+    from runtime_records import RuntimeRecords
+
+    runner, made, _, _, _ = runner_parts
+    runner._device_factory = lambda: type('Device', (), {'serial': '127.0.0.1:5555'})()
+    runner._attempt = Attempt.new('worker-a', '127.0.0.1:5555', 'lease-a', 'attempt-a')
+    runner._binding_path = tmp_path / f'{runner._attempt.generation}.json'
+    runner._runtime_records = RuntimeRecords(tmp_path / 'runtime-records.json')
+    runner.start()
+    try:
+        progress = made[-1].kwargs['progress']
+        assert progress.snapshot()['generation'] == runner._attempt.generation
+        assert progress.snapshot()['account_id'] is None
+        runner.record_identity_evidence(IdentityEvidence(
+            'account-a', runner._attempt.created_at + 1, 'frame://one'))
+        assert progress.snapshot()['account_id'] == 'account-a'
+    finally:
+        runner.stop()
+
+
 def test_restart_rotates_attempt_generation_and_binding_path(runner_parts, tmp_path) -> None:
     from fleet.identity import Attempt
 
@@ -1066,3 +1087,200 @@ def test_a_restart_cancels_a_half_walked_milestones_claim(
         assert ended["result"]["reason"] == "bot_restarted"
     finally:
         runner.stop()
+
+
+def test_operator_stop_intent_survives_live_http_worker_and_blocks_autostart(
+    runner_parts: tuple, tmp_path: Any,
+) -> None:
+    import shutil
+    from fleet.identity import Attempt
+    from fleet.worker_intent import read_intent
+    from fleet.worker_monitor import WorkerMonitor
+    from runtime_records import RuntimeRecords
+    from tests.test_reroll_supervisor import _harness
+    from tests.test_worker_monitor import NAME, _worker
+
+    make, spawned, live, killed = _harness(tmp_path)
+    coordinator = make()
+    assert coordinator.start(NAME)["state"] == "running"
+    _worker(tmp_path, coordinator)
+    process = coordinator._read(NAME)
+    runner, _, _, _, _ = runner_parts
+    runner._attempt = Attempt(NAME, process["endpoint"], process["lease_id"],
+                              process["attempt_id"], process["input_generation"], 100.0)
+    runner._device_factory = lambda: type("FakeEndpointDevice", (), {
+        "serial": process["endpoint"]})()
+    intent_root = tmp_path / "runner-intent"
+    runner._runtime_records = RuntimeRecords(intent_root / "runtime-records.json")
+    runner.start()
+    assert runner.stop()["running"] is False
+    assert read_intent(intent_root)["desired_state"] == "stopped"
+    shutil.copyfile(intent_root / "bot-intent.json",
+                    tmp_path / "workers" / NAME / "bot-intent.json")
+    row = WorkerMonitor(tmp_path, coordinator, clock=lambda: 1000.0).check_once()[NAME]
+    assert (row["state"], row["reason"]) == ("paused", "operator_stop")
+    (tmp_path / "workers" / NAME / "worker-heartbeat.json").unlink()
+    row = WorkerMonitor(tmp_path, coordinator, clock=lambda: 1000.0).check_once()[NAME]
+    assert (row["state"], row["reason"]) == ("paused", "operator_stop")
+    assert 4000 in live and spawned and killed == []
+    with pytest.raises(RunnerError, match="stopped by operator"):
+        runner.start(operator=False)
+
+
+def test_real_pause_wait_reason_is_exempt_from_stale_scan_recovery(tmp_path: Any) -> None:
+    import json
+    from fleet.worker_monitor import WorkerMonitor
+    from tests.test_reroll_supervisor import _harness
+    from tests.test_worker_monitor import NAME, _worker
+
+    make, spawned, live, killed = _harness(tmp_path)
+    coordinator = make()
+    coordinator.start(NAME)
+    _worker(tmp_path, coordinator)
+    path = tmp_path / "workers" / NAME / "worker-heartbeat.json"
+    heartbeat = json.loads(path.read_text())
+    heartbeat["wait_reason"] = "pause"  # TowerBot.run_once's actual progress.wait reason.
+    heartbeat["next_wake_utc"] = 4600.0
+    # Between paused scans complete_scan leaves the phase idle with no deadline;
+    # an exceeded phase deadline while paused is a hang (monitor I2).
+    heartbeat["phase"], heartbeat["phase_deadline_utc"] = "idle", None
+    path.write_text(json.dumps(heartbeat))
+    row = WorkerMonitor(tmp_path, coordinator, clock=lambda: 1000.0).check_once()[NAME]
+    assert (row["state"], row["reason"]) == ("paused", "pause")
+    assert 4000 in live and len(spawned) == 1 and killed == []
+
+
+def test_restarted_binding_keeps_original_first_launch_audit(runner_parts: tuple,
+                                                             tmp_path: Any) -> None:
+    import json
+    from fleet.identity import Attempt, IdentityEvidence
+
+    runner, _, _, _, _ = runner_parts
+    first = Attempt("Tiramisu64_20", "127.0.0.1:5755", "a", "job", "a" * 32, 100.0)
+    path = tmp_path / f"{first.generation}.json"
+    first.persist(path, IdentityEvidence("account", 101.0, "account-proof"))
+    second = Attempt(first.worker_id, first.endpoint, first.lease_id,
+                     first.attempt_id, "b" * 32, first.created_at)
+    (tmp_path / f"{second.generation}.json").write_text(json.dumps({
+        **json.loads(path.read_text()), "generation": second.generation,
+        "origin_generation": first.generation}))
+    (tmp_path / ".first-launch-account.json").write_text(json.dumps({
+        "state": "verified", "account_id": "account", "instance": first.worker_id,
+        "source_lineage": "manual:a", "worker_id": first.worker_id,
+        "endpoint": first.endpoint, "lease_id": first.lease_id,
+        "attempt_id": first.attempt_id, "generation": first.generation,
+        "created_at": first.created_at, "app_version": "1",
+        "evidence": [{"action": "i_agree"}, {"screen": "account",
+                     "account_id": "account", "app_version": "1",
+                     "observed_at": 101.0, "evidence_ref": "account-proof"}]}))
+    runner._attempt = second
+    runner._binding_path = tmp_path / f"{second.generation}.json"
+    runner._host_instance = first.worker_id
+    runner._host_adapter = type("FakeHost", (), {
+        "designated": lambda self, *_: type("D", (), {"source_lineage": "manual:a"})()})()
+    assert runner._verified_account() == "account"
+
+
+@pytest.mark.parametrize("desired", [None, "running", "stopped"])
+def test_nonoperator_cleanup_preserves_durable_intent(runner_parts: tuple,
+                                                       tmp_path: Any, desired: str | None) -> None:
+    from fleet.identity import Attempt
+    from fleet.worker_intent import read_intent, write_intent
+    from runtime_records import RuntimeRecords
+
+    runner, _, _, _, _ = runner_parts
+    runner._attempt = Attempt.new("worker-a", "127.0.0.1:5555", "lease", "job")
+    runner._runtime_records = RuntimeRecords(tmp_path / "runtime-records.json")
+    if desired is not None:
+        write_intent(tmp_path, runner._attempt, None, desired)
+    runner.stop(operator=False)
+    intent = read_intent(tmp_path)
+    assert (intent["desired_state"] if intent is not None else None) == desired
+
+
+def test_runner_restart_keeps_coordinator_generation_recoverable(runner_parts: tuple,
+                                                                tmp_path: Any) -> None:
+    import json
+    import os
+    from pathlib import Path
+    from fleet.identity import Attempt
+    from fleet.input_lease import InputLease, InputLeaseExpired
+    from fleet.worker_intent import read_intent
+    from fleet.worker_monitor import WorkerMonitor
+    from runtime_records import RuntimeRecords
+    from tests.test_reroll_supervisor import _harness
+    from tests.test_worker_monitor import NAME
+
+    make, spawned, live, killed = _harness(tmp_path)
+    coordinator = make()
+    spawn_fake = coordinator.spawn
+
+    def spawn(args: Any) -> Any:
+        child = spawn_fake(args)
+        if len(spawned) == 1:
+            live[os.getpid()] = live.pop(child.pid)
+            child.pid = os.getpid()
+        return child
+
+    coordinator.spawn = spawn
+    assert coordinator.start(NAME)["state"] == "running"
+    root = tmp_path / "workers" / NAME
+    registration = json.loads((root / "fleet-registration.json").read_text())
+    binding = json.loads(Path(registration["binding"]).read_text())
+    runner, _, _, _, _ = runner_parts
+    runner._attempt = Attempt(**{key: binding[key] for key in (
+        "worker_id", "endpoint", "lease_id", "attempt_id", "generation", "created_at")})
+    runner._binding_path = Path(registration["binding"])
+    runner._runtime_records = RuntimeRecords(root / "runtime-records.json")
+    runner._host_instance = NAME
+    runner._host_adapter = type("Host", (), {
+        "designated": lambda self, *_: type("D", (), {"source_lineage": None})()})()
+    runner._device_factory = lambda: type("Device", (), {"serial": binding["endpoint"]})()
+    lease = InputLease(root / "input-lease.json")
+    first_generation = runner._attempt.generation
+    runner.start(operator=False)
+    try:
+        runner.stop()
+        runner.start()
+        second_generation = runner._attempt.generation
+        assert second_generation != first_generation
+        assert coordinator._read(NAME)["input_generation"] == second_generation
+        registration = json.loads((root / "fleet-registration.json").read_text())
+        assert json.loads(Path(registration["binding"]).read_text())["generation"] == second_generation
+        lease.assert_current(second_generation)
+        heartbeat_path = root / "worker-heartbeat.json"
+        heartbeat = json.loads(heartbeat_path.read_text())
+        assert heartbeat["generation"] == second_generation
+        assert runner._runtime_records.read()["start"]["generation"] == second_generation
+        heartbeat.update(phase="ocr_inference", phase_deadline_utc=1.0)
+        heartbeat_path.write_text(json.dumps(heartbeat))
+
+        def graceful_exit(pid: int) -> None:
+            runner.stop(operator=False)
+            killed.append(pid)
+            live.pop(pid, None)
+
+        coordinator.terminate = graceful_exit
+        coordinator.force_kill = graceful_exit
+        row = WorkerMonitor(tmp_path, coordinator, endpoint_available=lambda _: True).check_once()[NAME]
+        assert row["state"] == "starting"
+        assert len(spawned) == 2
+        assert read_intent(root)["desired_state"] == "running"
+        third_generation = coordinator._read(NAME)["input_generation"]
+        assert third_generation not in {first_generation, second_generation}
+        lease.assert_current(third_generation)
+        for generation in (first_generation, second_generation):
+            with pytest.raises(InputLeaseExpired):
+                lease.assert_current(generation)
+    finally:
+        runner.stop(operator=False)
+
+
+def test_in_process_reverification_never_invents_an_identity(runner_parts: tuple) -> None:
+    """Non-reroll workers have no registered account to re-prove."""
+    from supervisor import RecoveryBlocked
+
+    runner, _, _, _, _ = runner_parts
+    with pytest.raises(RecoveryBlocked, match="unavailable"):
+        runner.reverify_identity()
+    assert runner.account_state.verified_scope is None

@@ -74,6 +74,12 @@ class Controls:
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
         self._commands: list[str] = []
+        self._recovery_revision = 0
+
+    @property
+    def recovery_revision(self) -> int:
+        with self._lock:
+            return self._recovery_revision
 
     def request(self, command: str) -> None:
         """Queue one command for the scan loop's next pass.
@@ -92,6 +98,7 @@ class Controls:
                 # to make room for later ones would reorder their intent.
                 return
             self._commands.append(command)
+            self._recovery_revision += 1
 
     def drain(self) -> tuple[str, ...]:
         """Take every queued command. Handing one out twice would turn a
@@ -132,6 +139,7 @@ class Controls:
             if strategy == self.strategy:
                 return {}
             self.strategy = strategy
+            self._recovery_revision += 1
         return {"strategy": strategy.to_dict()}
 
     def apply(self, patch: Mapping[str, Any]) -> dict[str, Any]:
@@ -186,4 +194,6 @@ class Controls:
                     changed["actions"] = [
                         rule.name for rule in candidate.actions if rule.enabled
                     ]
+            if changed:
+                self._recovery_revision += 1
         return changed

@@ -24,6 +24,7 @@ from typing import Any
 import screen_discovery
 from account_state import AccountState, Evidence, Fact
 from concepts import REGISTRY
+from evidence_scope import FactScope
 
 # The identities this module may name, read from the registry rather than
 # listed here, so a lab the catalog gains or loses is not a code change.
@@ -102,6 +103,10 @@ class LabJob:
     status: str
     confidence: float
     rect: tuple[int, int, int, int]
+    # The running row names its target level, never a stat-derived estimate.
+    source_level: int | None = None
+    target_level: int | None = None
+    native_repeat: str = 'unknown'
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,9 @@ class LabsReading:
         """
         return (self.slots_status == 'observed' and self.slots_owned is not None
                 and len(self.jobs) == self.slots_owned
+                # Older model producers used zero-based slots; uniqueness is
+                # common to those records and the reader's displayed Lab N.
+                and len({j.slot for j in self.jobs}) == self.slots_owned
                 and all(j.status in ('researching', 'idle') for j in self.jobs))
 
 
@@ -165,15 +173,20 @@ def unlock_milestone(concept_id: str) -> tuple[str, tuple[str, ...] | None]:
 
 def capabilities() -> dict[str, Any]:
     """A detached support matrix. A modelled state is not a readable screen."""
+    from lab_routes import route_gates
     return {
         'schema_version': 1,
         'complete': False,
         'concepts': len(LAB_CONCEPT_IDS),
         'reader': 'lab_screen',
         'recorded_capture': 'tests/fixtures/menu_labs_slot1_idle.png',
+        'slot_reader': 'lab_screen.read_slots',
+        'slot_capture': 'tests/fixtures/menu_labs_active.png',
+        'observable_slots': (1, 2, 3, 4, 5),
         # The narrow reroll Lab 1 Game Speed walk lives in lab_visit. Generic
         # research rows, queueing and acceleration still have no executor.
         'actions': ('reroll_game_speed_slot_1',),
+        'route_gates': route_gates(),
         'entry_statuses': ENTRY_STATUSES,
         'job_statuses': JOB_STATUSES,
         'acceleration_states': ACCELERATION_STATES,
@@ -232,18 +245,21 @@ class LabsState:
         self._lock = threading.RLock()
         self._reading: LabsReading | None = None
         self._pending: LabsReading | None = None
+        self._pending_provenance: tuple[FactScope | None, str | None] | None = None
 
     def reset_confirmation(self) -> None:
         """Discard the candidate frame when the screen or bot lifetime changes."""
         with self._lock:
             self._pending = None
+            self._pending_provenance = None
 
     def current(self) -> LabsReading | None:
         """The last frame folded in, which is evidence and not yet a fact."""
         with self._lock:
             return self._reading
 
-    def observe(self, reading: LabsReading) -> bool:
+    def observe(self, reading: LabsReading, *, scope: FactScope | None = None,
+                catalog_revision: str | None = None) -> bool:
         """Fold one frame in; return whether it advanced the persisted account.
 
         A single frame never advances it. Writing requires two readings that
@@ -251,15 +267,28 @@ class LabsState:
         apart - the bar account_state already holds Workshop stats to.
         """
         with self._lock:
+            if scope is not None:
+                from lab_runtime import _catalog_revision
+                if (self.account is None or not self.account.accepts_capture(scope, reading.observed_at)
+                        or catalog_revision != _catalog_revision() or not reading.frame_digest
+                        or reading.frame_width <= 0 or reading.frame_height <= 0):
+                    self.reset_confirmation()
+                    return False
+            if self._reading is not None and reading.observed_at <= self._reading.observed_at:
+                return False
+            provenance = (scope, catalog_revision if scope is not None else None)
+            same_provenance = self._pending_provenance == provenance
+            self._pending_provenance = provenance
             previous, self._pending, self._reading = self._pending, reading, reading
-            if self.account is None or previous is None:
+            if self.account is None or previous is None or not same_provenance:
                 return False
             if not 0 < reading.observed_at - previous.observed_at <= _CONFIRM_WINDOW:
                 return False
             before, now = _claimable_entries(previous), _claimable_entries(reading)
             levels = tuple(Fact(cid, entry.level, entry.status,
                                 _evidence(reading, entry.raw_name, str(entry.level),
-                                          entry.confidence, entry.rect))
+                                          entry.confidence, entry.rect), scope=scope,
+                                catalog_revision=provenance[1])
                            for cid, entry in sorted(now.items())
                            if cid in before and before[cid].level == entry.level
                            and before[cid].status == entry.status)
@@ -276,7 +305,8 @@ class LabsState:
                         and len(running) == sum(j.status == 'researching' for j in reading.jobs))
             jobs = tuple(Fact(cid, job.completes_at, job.status,
                               _evidence(reading, job.raw_name, str(job.remaining_s),
-                                        job.confidence, job.rect))
+                                        job.confidence, job.rect), scope=scope,
+                              catalog_revision=provenance[1])
                          for cid, job in sorted(running.items())) if complete else None
             slots = reading.slots_owned if complete else None
             if not levels and jobs is None and slots is None:
@@ -293,9 +323,13 @@ class LabsState:
         stored: dict[str, dict[str, Any]] = {}
         if self.account is not None:
             revision = self.account.snapshot()['revision'] or {}
+            from account_state import completed_lab_level
             for fact in revision.get('lab_levels') or ():
-                stored[fact['concept_id']] = {'level': fact['value'], 'status': fact['status'],
-                                              'observed_at': fact['evidence']['observed_at']}
+                # ``level`` is the completed level; an available picker Lv.N is N-1.
+                stored[fact['concept_id']] = {
+                    'level': completed_lab_level(fact['status'], fact['value']),
+                    'status': fact['status'],
+                    'observed_at': fact['evidence']['observed_at']}
         return {cid: stored.get(cid, {'level': None, 'status': UNKNOWN, 'observed_at': None})
                 for cid in sorted(LAB_CONCEPT_IDS)}
 

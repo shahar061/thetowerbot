@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS ledger (
 -- guards on the table being empty instead.
 CREATE UNIQUE INDEX IF NOT EXISTS ledger_event_line_idx
     ON ledger(seq, IFNULL(currency, '')) WHERE seq IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_receipt_currency_idx
+    ON ledger(json_extract(detail, '$.receipt_key'), currency)
+    WHERE json_extract(detail, '$.receipt_key') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ledger_ts_idx   ON ledger(ts);
 CREATE INDEX IF NOT EXISTS ledger_kind_idx ON ledger(kind);
 

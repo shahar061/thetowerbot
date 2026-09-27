@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, expect, test, vi } from "vitest";
 import type { BuildRouteDocument } from "@/lib/buildRoute";
 import type { StrategyLibrary } from "@/lib/strategyStudio";
+import type { LabsSnapshot } from "@/lib/labs";
 import { StrategyStudio } from "./StrategyStudio";
 import { StrategyCanvas } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
@@ -36,6 +37,7 @@ const members = [{ name: "Air_38", account_id: "account-a" }, { name: "Air_39", 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.save.mockReset();
   api.save.mockImplementation(async (input) => ({ ...library, revision: 1, strategies: [{ ...template,
     id: "custom-1", builtin: false, name: input.name, source_template: input.source_template, baseline: input.baseline }] }));
   api.assign.mockResolvedValue({ ...route, revision: 5 });
@@ -51,6 +53,161 @@ function copy(): void {
   fireEvent.change(screen.getByLabelText("Strategy name"), { target: { value: "Balanced turtle" } });
   fireEvent.click(screen.getByRole("button", { name: "Create editable copy" }));
 }
+
+const labSnapshot: LabsSnapshot = { automated: [], workers: [], reference: {
+  labs: [{ id: "labs.game-speed", name: "Game Speed", max_level: 7, priced: true },
+    { id: "labs.attack-speed", name: "Attack Speed", max_level: 99, priced: false }],
+  game_speed: [], lab_slots: [], card_slots: [], card_gems: 20, labs_unlock_wave: 30, sources: [],
+} };
+test("an older assigned snapshot requires a copy and preserves its exact lab baseline", async () => {
+  const onLibrarySaved = vi.fn();
+  const oldBaseline = { ...baseline, labs: { slot1_research: "game_speed", steps: ["assigned-old-research"] } };
+  const newest = { ...template, id: "custom-1", name: "Mine", builtin: false, version: 3, baseline: {
+    ...baseline, labs: { slot1_research: "game_speed", steps: ["newest-research"] } } };
+  const oldSnapshot = { ...newest, id: "assigned-snapshot:custom-1:1", version: 1, builtin: true, baseline: oldBaseline };
+  render(<StrategyStudio library={{ ...library, strategies: [newest] }} saved={route} catalog={catalog} members={members}
+    initialLane="labs" assignedSnapshot={oldSnapshot} initialWorker="Air_39" initialAccount="account-b" initialSlot={4}
+    labsSnapshot={labSnapshot} onPublished={vi.fn()} onLibrarySaved={onLibrarySaved} />);
+  expect(screen.getByRole("tab", { name: "Labs" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByLabelText("Lab observation account")).toHaveValue(JSON.stringify(["Air_39", "account-b"]));
+  expect(screen.getByText(/exact assigned v1 baseline/)).toBeInTheDocument();
+  expect(screen.getByText(/Planning Lab 4/)).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Lab 4" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Create copy" }));
+  fireEvent.click(screen.getByRole("button", { name: "Create editable copy" }));
+  expect(screen.getByRole("button", { name: "Save strategy" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+  expect(api.save).not.toHaveBeenCalled();
+  expect(api.assign).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  await waitFor(() => expect(api.save).toHaveBeenCalled());
+  expect(api.save.mock.calls[0][0].baseline.labs.steps).toEqual(["assigned-old-research"]);
+  expect(onLibrarySaved).toHaveBeenCalledOnce();
+});
+test("a second planning link selects its assignment and account while retaining an edited draft", () => {
+  const oldSnapshot = { ...template, id: "assigned-snapshot:mine:1", name: "Mine", version: 1,
+    baseline: { ...baseline, labs: { slot1_research: "game_speed", steps: ["assigned-one"] } } };
+  const nextSnapshot = { ...template, id: "assigned-snapshot:other:2", name: "Other", version: 2,
+    baseline: { ...baseline, labs: { slot1_research: "game_speed", steps: ["assigned-two"] } } };
+  const props = { library, saved: route, catalog, members, labsSnapshot: labSnapshot, onPublished: vi.fn() };
+  const view = render(<StrategyStudio {...props} assignedSnapshot={oldSnapshot} initialLane="labs"
+    initialWorker="Air_38" initialAccount="account-a" initialSlot={2} linkIdentity="Air_38/account-a/2/mine-v1" />);
+  fireEvent.click(screen.getByRole("button", { name: "Create copy" }));
+  fireEvent.click(screen.getByRole("button", { name: "Create editable copy" }));
+  const draftId = (screen.getByLabelText("Strategy") as HTMLSelectElement).value;
+  fireEvent.click(screen.getByRole("button", { name: "Add research to Lab 2" }));
+  fireEvent.change(screen.getByLabelText("Lab 2 target level 1"), { target: { value: "6" } });
+  expect(screen.getByLabelText("Lab 2 target level 1")).toHaveValue(6);
+  view.rerender(<StrategyStudio {...props} assignedSnapshot={nextSnapshot} initialLane="labs"
+    initialWorker="Air_39" initialAccount="account-b" initialSlot={5} linkIdentity="Air_39/account-b/5/other-v2" />);
+  expect(screen.getByLabelText("Strategy")).toHaveValue(nextSnapshot.id);
+  expect(screen.getByLabelText("Lab observation account")).toHaveValue(JSON.stringify(["Air_39", "account-b"]));
+  expect(screen.getByRole("region", { name: "Lab 5" })).toHaveFocus();
+  expect(screen.getByText(/exact assigned v2 baseline/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Strategy"), { target: { value: draftId } });
+  expect(screen.getByLabelText("Lab 2 target level 1")).toHaveValue(6);
+  expect(api.save).not.toHaveBeenCalled();
+  expect(api.assign).not.toHaveBeenCalled();
+});
+test("a new planning link closes assignment and copy dialogs before another strategy can be confirmed", () => {
+  const savedStrategy = { ...template, id: "custom-1", name: "Saved route", version: 2, builtin: false };
+  const nextSnapshot = { ...template, id: "assigned-snapshot:other:1", name: "Other", version: 1 };
+  const props = { library: { ...library, strategies: [savedStrategy] }, saved: route, catalog, members, onPublished: vi.fn() };
+  const view = render(<StrategyStudio {...props} initialStrategyId="custom-1" initialLane="labs"
+    initialWorker="Air_38" initialAccount="account-a" linkIdentity="Air_38/account-a/2/custom-v2" />);
+  fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+  const oldConfirm = within(screen.getByRole("dialog", { name: "Assign saved strategy" })).getByRole("button", { name: "Assign to 2 emulators" });
+  view.rerender(<StrategyStudio {...props} assignedSnapshot={nextSnapshot} initialLane="labs"
+    initialWorker="Air_39" initialAccount="account-b" linkIdentity="Air_39/account-b/5/other-v1" />);
+  expect(screen.queryByRole("dialog", { name: "Assign saved strategy" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Strategy")).toHaveValue(nextSnapshot.id);
+  expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+  fireEvent.click(oldConfirm);
+  expect(api.assign).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Create copy" }));
+  expect(screen.getByRole("dialog", { name: "Create your strategy" })).toBeInTheDocument();
+  view.rerender(<StrategyStudio {...props} assignedSnapshot={nextSnapshot} initialLane="labs"
+    initialWorker="Air_39" initialAccount="account-b" initialSlot={4} linkIdentity="Air_39/account-b/4/other-v1" />);
+  expect(screen.queryByRole("dialog", { name: "Create your strategy" })).not.toBeInTheDocument();
+});
+
+test("assignment confirmation stays bound to the strategy reviewed when its dialog opened", () => {
+  const savedStrategy = { ...template, id: "custom-1", name: "Saved route", version: 2, builtin: false };
+  render(<StrategyStudio library={{ ...library, strategies: [savedStrategy] }} saved={route} catalog={catalog} members={members}
+    initialStrategyId="custom-1" linkIdentity="Air_38/account-a/2/custom-v2" onPublished={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+  const dialog = screen.getByRole("dialog", { name: "Assign saved strategy" });
+  fireEvent.change(screen.getByLabelText("Strategy"), { target: { value: "turtle" } });
+  const confirm = within(dialog).getByRole("button", { name: "Assign to 2 emulators" });
+  expect(confirm).toBeDisabled();
+  fireEvent.click(confirm);
+  expect(api.assign).not.toHaveBeenCalled();
+});
+test("Labs drafts save explicitly and never assign while editing", async () => {
+  render(<StrategyStudio library={library} saved={route} catalog={catalog} members={members} labsSnapshot={labSnapshot} onPublished={vi.fn()} />);
+  copy(); fireEvent.click(screen.getByRole("tab", { name: "Labs" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add research to Lab 2" }));
+  fireEvent.change(screen.getByLabelText("Lab 2 research 1"), { target: { value: "labs.attack-speed" } });
+  fireEvent.change(screen.getByLabelText("Lab 2 target level 1"), { target: { value: "12" } });
+  expect(api.save).not.toHaveBeenCalled(); expect(api.assign).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  await waitFor(() => expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ baseline: expect.objectContaining({ labs: expect.objectContaining({
+    mode: "blocks", blocks: expect.arrayContaining([expect.objectContaining({ type: "slot_track", slots: [2],
+      children: [expect.objectContaining({ lab_id: "labs.attack-speed", to_level: 12 })] })]),
+  }) }) }), 0));
+  expect(api.assign).not.toHaveBeenCalled();
+});
+test("Labs save conflict retains target edits and keeps assignment disabled", async () => {
+  api.save.mockRejectedValueOnce(new Error("Revision conflict. Reload the library."));
+  render(<StrategyStudio library={library} saved={route} catalog={catalog} members={members} labsSnapshot={labSnapshot} onPublished={vi.fn()} />);
+  copy(); fireEvent.click(screen.getByRole("tab", { name: "Labs" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add research to Lab 2" }));
+  fireEvent.change(screen.getByLabelText("Lab 2 target level 1"), { target: { value: "12" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Revision conflict");
+  expect(screen.getByLabelText("Lab 2 target level 1")).toHaveValue(12);
+  expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+});
+test("account replacement withdraws old lab observations without deleting the draft", () => {
+  const snapshot: LabsSnapshot = { ...labSnapshot, workers: [{ worker: "Air_38", account_id: "account-a", read_at: 100,
+    strategy_name: null, state: "ok", reason: null, recent: [], wallet: { coins: null, gems: null }, freshness: "historical",
+    plan: { jar: 0, wallet_coins: null, gems: { wallet: null, next: null, price: null, have: null, need: null, automated: false, why: [], steps: [] },
+      slots: [{ slot: 2, now: { state: "researching", research_name: "Old account job", level: 2, completes_at: null, overdue_seconds: null, read_at: 100, stale: true },
+        next: null, covered: null, automated: false, why: [], note: null }] } }] };
+  const props = { library, saved: route, catalog, members, labsSnapshot: snapshot, onPublished: vi.fn() };
+  const view = render(<StrategyStudio {...props} />);
+  copy(); fireEvent.click(screen.getByRole("tab", { name: "Labs" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add research to Lab 2" }));
+  expect(screen.getByText(/Old account job/)).toBeInTheDocument();
+  view.rerender(<StrategyStudio {...props} members={[{ name: "Air_38", account_id: "replacement" }, members[1]]} />);
+  expect(screen.queryByText(/Old account job/)).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Lab 2 research 1")).toHaveValue("labs.attack-speed");
+  expect(screen.getByText(/Account changed.*Choose/)).toBeInTheDocument();
+});
+test("an open assignment cannot silently target a replacement account", () => {
+  const props = { library, saved: route, catalog, members, onPublished: vi.fn() };
+  const view = render(<StrategyStudio {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+  view.rerender(<StrategyStudio {...props} members={[{ name: "Air_38", account_id: "replacement" }, members[1]]} />);
+  expect(screen.getByRole("button", { name: "Assign to 2 emulators" })).toBeDisabled();
+  expect(screen.getByRole("alert")).toHaveTextContent("Accounts changed");
+  expect(api.assign).not.toHaveBeenCalled();
+});
+test("a late assignment response cannot publish into a replaced fleet account", async () => {
+  let resolve!: (value: BuildRouteDocument) => void;
+  api.assign.mockImplementationOnce(() => new Promise<BuildRouteDocument>(done => { resolve = done; }));
+  const onPublished = vi.fn();
+  const props = { library, saved: route, catalog, members, onPublished };
+  const view = render(<StrategyStudio {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+  fireEvent.click(screen.getByRole("button", { name: "Assign to 2 emulators" }));
+  view.rerender(<StrategyStudio {...props} members={[{ name: "Air_38", account_id: "replacement" }, members[1]]} />);
+  resolve({ ...route, revision: 5 });
+  await waitFor(() => expect(screen.getByText(/Accounts changed while assigning/)).toBeInTheDocument());
+  expect(onPublished).not.toHaveBeenCalled();
+});
 
 test("shows protected native blocks, requiring a copy before editing", () => {
   setup();

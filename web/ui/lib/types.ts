@@ -340,6 +340,8 @@ export interface Strategy {
   tap_delay: number;
   /** null means "leave the in-battle speed alone". */
   target_speed: number | null;
+  /** Opt-in, with an explicit target_speed taking precedence. */
+  auto_fastest?: boolean;
   shopping: Shopping;
   /** Optional for the same reason `autopilot` is: a profile served by a
    * backend older than the claim scheduler carries no such key. */

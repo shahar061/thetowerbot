@@ -1,13 +1,16 @@
-"""Read the first Labs slot and the Game Speed research row from one frame."""
+"""Read selected Labs slots and research rows without declaring route support."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import math
 import re
 import time
 
 from device import Image
-from labs import LabEntry, LabJob
+from geometry import supported_frame
+from labs import LabEntry, LabJob, LabsReading
 import ocr
 
 
@@ -37,6 +40,11 @@ class LabPickerReading:
     coin_balance: int | None
     buy_point: tuple[int, int] | None
 
+    @property
+    def entry(self) -> LabEntry | None:
+        """Selected research; game_speed remains a backwards-compatible field."""
+        return self.game_speed
+
 
 @dataclass(frozen=True)
 class LabConfirmationReading:
@@ -46,6 +54,28 @@ class LabConfirmationReading:
     price: int | None
     research_point: tuple[int, int] | None
     cancel_point: tuple[int, int] | None
+
+    @property
+    def research_id(self) -> str | None:
+        return _research_identity(self.name)
+
+    @property
+    def target_level(self) -> int | None:
+        match = _NAME_LEVEL.fullmatch(self.name.strip()) if self.name else None
+        return int(match['level']) if match else None
+
+
+def _research_identity(name: str | None) -> str | None:
+    from concepts import REGISTRY
+    match = _NAME_LEVEL.fullmatch(name.strip()) if name else None
+    if match is None:
+        return None
+    # OCR may drop or double inner spaces ("GameSpeed"), as the legacy
+    # Game\s*Speed filter tolerated; identity must still be unique.
+    wanted = re.sub(r'\s+', '', match['name']).casefold()
+    identities = [c.concept_id for c in REGISTRY.concepts if c.domain == 'labs'
+                  and re.sub(r'\s+', '', c.name).casefold() == wanted]
+    return identities[0] if len(identities) == 1 else None
 
 
 def _trusted(box: ocr.TextBox) -> bool:
@@ -89,6 +119,97 @@ def _enabled_card_border(screen: Image, name: ocr.TextBox) -> bool:
         return False
     blue, green, red = (int(channel) for channel in screen[y, x])
     return min(blue, green, red) >= 215
+
+
+def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
+               observed_at: float) -> LabsReading:
+    """Read owned cards independently; this observer never supplies tap targets.
+
+    A next-slot lock or all five understood cards proves the owned strip.
+    Cropped, duplicate or unrecognised cards retain unknown status instead of
+    disappearing from a purportedly complete observation.
+    """
+    from concepts import REGISTRY
+
+    height, width = screen.shape[:2]
+    digest = hashlib.sha256(screen.tobytes()).hexdigest()
+    empty = LabsReading(observed_at, width, height, digest, None, "unknown", (), ())
+    if not math.isfinite(observed_at) or observed_at < 0:
+        return empty
+    valid = tuple(box for box in boxes
+                  if math.isfinite(box.confidence) and .9 <= box.confidence <= 1
+                  and box.rect.w > 0 and box.rect.h > 0
+                  and 0 <= box.rect.x < box.rect.x + box.rect.w <= width
+                  and 0 <= box.rect.y < box.rect.y + box.rect.h <= height)
+    titles = [b for b in valid if b.text.strip().upper() == "LAB"
+              and b.rect.x < width * .2 and b.rect.y < height * .1]
+    if len(titles) != 1:
+        return empty
+    headers: dict[int, list[ocr.TextBox]] = {}
+    for box in valid:
+        match = re.fullmatch(r"Lab\s+([1-5])", box.text.strip(), re.I)
+        if match and box.rect.x < width * .25 and box.rect.y > titles[0].rect.y:
+            headers.setdefault(int(match[1]), []).append(box)
+    if not headers:
+        return empty
+
+    jobs: list[LabJob] = []
+    locked: list[int] = []
+    for slot, headings in sorted(headers.items()):
+        heading = headings[0]
+        bottom = min((h.rect.y for group in headers.values() for h in group
+                      if h.rect.y > heading.rect.y), default=height)
+        within = [b for b in valid if heading.rect.y + heading.rect.h <= b.rect.y
+                  and b.rect.y + b.rect.h < bottom]
+        rect = (0, heading.rect.y, width, bottom - heading.rect.y)
+        unknown = LabJob(slot, None, "", None, None, None, "unknown", "unknown",
+                         heading.confidence, rect)
+        if len(headings) != 1:
+            jobs.append(unknown)
+            continue
+        ordinal = {2: ("2ND", "ZND"), 3: ("3RD",), 4: ("4TH",), 5: ("5TH",)}
+        locks = [b for b in within if _normalized(b.text) in
+                 {f"UNLOCK{number}LAB" for number in ordinal.get(slot, ())}]
+        offline = [b for b in within if _normalized(b.text) == "LABOFFLINE"]
+        names = [b for b in within if _NAME_LEVEL.fullmatch(b.text.strip())]
+        if len(locks) == 1 and not offline and not names:
+            locked.append(slot)
+            continue
+        if locks:
+            jobs.append(unknown)
+        elif len(offline) == 1 and not names:
+            jobs.append(LabJob(slot, None, offline[0].text, None, None, None,
+                               "unknown", "idle", offline[0].confidence, rect))
+        elif len(names) == 1 and not offline:
+            name = names[0]
+            match = _NAME_LEVEL.fullmatch(name.text.strip())
+            assert match is not None
+            identities = [c.concept_id for c in REGISTRY.concepts if c.domain == "labs"
+                          and c.name.casefold() == match["name"].casefold()]
+            timers = [(b, _duration_seconds(b.text)) for b in within]
+            timers = [(b, seconds) for b, seconds in timers if seconds is not None]
+            target = int(match["level"])
+            if len(identities) != 1 or len(timers) != 1 or target < 1:
+                jobs.append(unknown)
+                continue
+            timer, seconds = timers[0]
+            jobs.append(LabJob(slot, identities[0], name.text, observed_at + seconds,
+                               seconds, None, "unknown", "researching",
+                               min(name.confidence, timer.confidence), rect,
+                               source_level=target - 1, target_level=target))
+        else:
+            jobs.append(unknown)
+
+    boundary = min(locked) - 1 if locked else (5 if 5 in headers else None)
+    complete = (boundary is not None and supported_frame(width, height)
+                and {j.slot for j in jobs} == set(range(1, boundary + 1))
+                and all(j.status in {"idle", "researching"} for j in jobs)
+                and all(len(group) == 1 for group in headers.values())
+                and [headers[n][0].rect.y for n in sorted(headers)]
+                == sorted(headers[n][0].rect.y for n in headers))
+    return LabsReading(observed_at, width, height, digest,
+                       boundary if complete else None,
+                       "observed" if complete else "unreadable", (), tuple(jobs))
 
 
 def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
@@ -174,8 +295,33 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
                           gem_balance, slot2_status, slot2_price, slot2_point)
 
 
+def read_selected_home(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
+                       slot: int, observed_at: float) -> LabHomeReading:
+    """Selected idle-card geometry is observation, never route authorization."""
+    from dataclasses import replace
+    home = read_home(screen, boxes)
+    reading = read_slots(screen, boxes, observed_at=observed_at)
+    job = next((job for job in reading.jobs if job.slot == slot), None)
+    if job is None:
+        return replace(home, slot_status='unknown', job=None, slot_point=None,
+                       slots_owned=reading.slots_owned)
+    point = None
+    if job.status == 'idle' and reading.strip_read() and job.rect is not None:
+        x, y, width, height = job.rect
+        point = (x + width // 2, y + height // 2)
+    return replace(home, slot_status=job.status,
+                   job=job if job.status == 'researching' else None,
+                   slot_point=point, slots_owned=reading.slots_owned)
+
+
 def read_picker(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabPickerReading:
-    """Only the Game Speed card can produce a coin-funded purchase target."""
+    """Legacy Game Speed selection; general callers name a research explicitly."""
+    return read_selected_picker(screen, boxes, research_id='labs.game-speed')
+
+
+def read_selected_picker(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
+                         research_id: str) -> LabPickerReading:
+    """Read one named research row. Its geometry does not enable its route."""
     height, width = screen.shape[:2]
     titles = [box for box in boxes if _trusted(box)
               and _normalized(box.text) == "SELECTRESEARCH"
@@ -184,7 +330,7 @@ def read_picker(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabPickerReadi
         return LabPickerReading(False, None, None, None)
     balance = _coin_balance(boxes, width, height)
     names = [box for box in boxes if _trusted(box)
-             and re.fullmatch(r"Game\s*Speed\s*Lv\.?\s*\d+", box.text.strip(), re.I)]
+             and _research_identity(box.text) == research_id]
     if len(names) != 1:
         return LabPickerReading(True, None, balance, None)
     name = names[0]
@@ -206,7 +352,7 @@ def read_picker(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabPickerReadi
     if len(max_labels) == 1 and not amounts:
         level = int(level_match.group("level"))
         return LabPickerReading(True, LabEntry(
-            "labs.game-speed", name.text, level, level, None, None,
+            research_id, name.text, level, level, None, None,
             "maxed", name.confidence, tuple(name.rect)), balance, None)
     if len(amounts) != 1:
         return LabPickerReading(True, None, balance, None)
@@ -217,7 +363,7 @@ def read_picker(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabPickerReadi
                  < name.rect.y + height * .085]
     seconds = [value for value in durations if value is not None]
     affordable = balance is not None and balance >= price and _enabled_card_border(screen, name)
-    entry = LabEntry("labs.game-speed", name.text, int(level_match.group("level")),
+    entry = LabEntry(research_id, name.text, int(level_match.group("level")),
                      None, float(price), seconds[0] if len(seconds) == 1 else None,
                      "available" if affordable else "unavailable", name.confidence,
                      tuple(name.rect))
@@ -229,7 +375,7 @@ def read_confirmation(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabConfi
     """Read the modal's final coin-funded Research control, never the page behind it."""
     height, width = screen.shape[:2]
     names = [box for box in boxes if _trusted(box)
-             and re.fullmatch(r"Game\s*Speed\s*Lv\.?\s*\d+", box.text.strip(), re.I)
+             and _research_identity(box.text) is not None
              and width * .2 < box.rect.x < width * .4
              and height * .32 < box.rect.y < height * .4]
     cancels = [box for box in boxes if _trusted(box)

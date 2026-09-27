@@ -82,6 +82,8 @@ class ClaimState:
     missions_badge: bool = False
     mail_badge: bool = False
     last_mail: float | None = None
+    missions_notification_due: bool = False
+    missions_blocked: bool = False
 
 
 def due(
@@ -117,17 +119,27 @@ def due(
             if elapsed >= MIN_MILESTONES_HOURS * SECONDS_PER_HOUR:
                 return "milestones"
 
+    # A newly confirmed mission generation is an edge, independent of the
+    # previous walk's cadence. The durable notification state owns retry
+    # backoff and holds uncertain outcomes until they can be reconciled.
+    if state.missions_notification_due and not state.missions_blocked:
+        return "missions"
+
     badges: tuple[tuple[ClaimKind, bool, float | None], ...] = (
         ('missions', state.missions_badge, state.last_missions),
         ('mail', state.mail_badge, state.last_mail),
     )
     for kind, visible, last in badges:
+        if kind == 'missions' and state.missions_blocked:
+            continue
         if visible and (last is None or (math.isfinite(last)
                          and now - last >= MIN_BADGE_HOURS * SECONDS_PER_HOUR)):
             return kind
 
     if not math.isfinite(missions_every_hours) or missions_every_hours <= 0:
         # A zero or non-finite window would arm a walk on every frame.
+        return None
+    if state.missions_blocked:
         return None
     if state.last_missions is None:
         return "missions"

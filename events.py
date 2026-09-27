@@ -74,6 +74,10 @@ class LabResearchStarted(Event):
     coins_before: int
     coins_after: int
     completes_at: float | None
+    slot: int = 1
+    source_level: int | None = None
+    target_level: int | None = None
+    transaction_key: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -82,6 +86,7 @@ class LabSlotUnlocked(Event):
     price: int
     gems_before: int
     gems_after: int
+    transaction_key: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -286,6 +291,16 @@ class WorkerStalled(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class RecoveryStatusChanged(Event):
+    """Redacted recovery coordinator status (recovery_status.redact shape).
+
+    Never carries keys, provider text, screenshots or control geometry.
+    """
+
+    status: dict[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True)
 class UnknownScreen(Event):
     snapshot_path: str
     best_anchor: str
@@ -418,6 +433,7 @@ class MissionClaimed(Event):
     completed_before: int | None = None
     completed_after: int | None = None
     gems_before: int | None = None
+    receipt_key: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

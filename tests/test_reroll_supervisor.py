@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import subprocess
 import time
 from threading import Barrier, Event, Lock, Thread
 
-from fleet.reroll_supervisor import RerollSupervisor
+import pytest
+
+from fleet.reroll_supervisor import RerollSupervisor, _process_identity
+from fleet.runtime import reserve_endpoint
+from fleet.identity import IdentityEvidence
 
 
-def _harness(root: Path, *, fail: str | None = None):
+class FakeChild:
+    def __init__(self, pid: int, live: dict[int, tuple]) -> None:
+        self.pid = pid
+        self.live = live
+        self.args = live[pid]
+
+    def poll(self) -> int | None:
+        return None if self.live.get(self.pid) == self.args else 0
+
+
+def _harness(root: Path, *, fail: str | None = None,
+             births: dict[int, str] | None = None):
     members = [{"name": "Tiramisu64_20", "endpoint": "127.0.0.1:5755", "lease_id": "a", "state": "ready"},
                {"name": "Tiramisu64_21", "endpoint": "127.0.0.1:5765", "lease_id": "b", "state": "ready"}]
     spawned = []
@@ -18,10 +35,16 @@ def _harness(root: Path, *, fail: str | None = None):
     lock = Lock()
 
     def enroll(member, runtime, attempt):
-        return {"state": "registered", "instance": member["name"],
+        runtime.checkpoint_root.mkdir(parents=True, exist_ok=True)
+        binding = runtime.checkpoint_root / f"{attempt.generation}.json"
+        attempt.persist(binding, IdentityEvidence(member["name"], attempt.created_at + 1,
+                                                   "fake-proof"))
+        registration = {"state": "registered", "instance": member["name"],
                 "endpoint": member["endpoint"], "lease_id": member["lease_id"],
-                "account_id": member["name"], "job_id": attempt.attempt_id, "binding": str(runtime.root / "binding.json"),
+                "account_id": member["name"], "job_id": attempt.attempt_id, "binding": str(binding),
                 "web_port": runtime.web_port}
+        (runtime.root / "fleet-registration.json").write_text(json.dumps(registration))
+        return registration
 
     def spawn(args):
         name = args[args.index("--worker-id") + 1]
@@ -31,7 +54,7 @@ def _harness(root: Path, *, fail: str | None = None):
             pid = 4000 + len(spawned)
             spawned.append(tuple(args))
             live[pid] = tuple(args)
-            return pid
+            return FakeChild(pid, live)
 
     def probe(pid):
         return live.get(pid)
@@ -43,6 +66,7 @@ def _harness(root: Path, *, fail: str | None = None):
     def make():
         return RerollSupervisor(root, pool_snapshot=lambda: {"members": members},
                                 enroll=enroll, spawn=spawn, process_identity=probe,
+                                process_birth=(births.get if births is not None else None),
                                 terminate=terminate, start_stagger_seconds=0)
 
     return make, spawned, live, killed
@@ -61,7 +85,7 @@ def test_start_all_isolates_workers_and_persists_distinct_identities(tmp_path: P
     assert len({Path(args[args.index("--runtime-root") + 1]) / args[args.index("--worker-id") + 1] for args in spawned}) == 2
     assert all("--web" in args and "--game-package" in args for args in spawned)
     assert {args[args.index("--port") + 1] for args in spawned} == {"5755", "5765"}
-    assert {row["state"] for row in make().reconcile().values()} == {"running"}
+    assert {row["state"] for row in make().reconcile().values()} == {"identity_changed"}
     assert len(spawned) == 2
 
 
@@ -69,6 +93,28 @@ def test_worker_launch_suppresses_telegram(tmp_path: Path) -> None:
     make, spawned, _, _ = _harness(tmp_path)
     make().start("Tiramisu64_20")
     assert "--no-telegram" in spawned[0]
+
+
+def test_start_requires_released_endpoint_lock(tmp_path: Path) -> None:
+    make, spawned, _, _ = _harness(tmp_path)
+    with reserve_endpoint("127.0.0.1:5755"):
+        status = make().start("Tiramisu64_20")
+    assert status["state"] == "failed"
+    assert status["error"] == "endpoint_lock_held"
+    assert spawned == []
+
+
+def test_process_identity_probe_has_explicit_timeout(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def timed_out(*args: object, **kwargs: object) -> None:
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired("ps", 2)
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    with pytest.raises(TimeoutError, match="process_identity_timeout"):
+        _process_identity(4000)
+    assert seen["timeout"] == 2
 
 
 def test_failure_isolated_and_pause_requires_matching_process_identity(tmp_path: Path) -> None:
@@ -82,7 +128,7 @@ def test_failure_isolated_and_pause_requires_matching_process_identity(tmp_path:
     assert make().pause("Tiramisu64_20")["state"] == "identity_changed"
     assert killed == []
     live[4000] = spawned[0]
-    assert make().pause_all()["Tiramisu64_20"]["state"] == "paused"
+    assert supervisor.pause_all()["Tiramisu64_20"]["state"] == "paused"
     assert killed == [4000]
 
 
@@ -92,10 +138,30 @@ def test_pause_waits_for_actual_exit_before_allowing_restart(tmp_path: Path) -> 
     assert supervisor.start("Tiramisu64_20")["state"] == "running"
     supervisor.terminate = lambda pid: killed.append(pid)
     assert supervisor.pause("Tiramisu64_20")["state"] == "stopping"
-    assert make().start("Tiramisu64_20")["state"] == "stopping"
+    assert make().start("Tiramisu64_20")["state"] == "identity_changed"
     assert len(spawned) == 1
     del live[4000]
-    assert make().reconcile()["Tiramisu64_20"]["state"] == "paused"
+    assert make().reconcile()["Tiramisu64_20"]["state"] == "stopped"
+
+
+def test_each_owned_process_restart_gets_a_fresh_input_generation(tmp_path: Path) -> None:
+    from fleet.input_lease import InputLease, InputLeaseExpired
+
+    make, spawned, _, _ = _harness(tmp_path)
+    supervisor = make()
+    name = "Tiramisu64_20"
+    assert supervisor.start(name)["state"] == "running"
+    lease = InputLease(tmp_path / "workers" / name / "input-lease.json")
+    generations = [supervisor._read(name)["input_generation"]]
+    for _ in range(2):
+        assert supervisor.pause(name)["state"] == "paused"
+        assert supervisor.start(name)["state"] == "running"
+        generations.append(supervisor._read(name)["input_generation"])
+    assert len(spawned) == 3 and len(set(generations)) == 3
+    lease.assert_current(generations[-1])
+    for generation in generations[:-1]:
+        with pytest.raises(InputLeaseExpired):
+            lease.assert_current(generation)
 
 
 def test_stale_record_never_duplicates_or_kills_unproven_pid(tmp_path: Path) -> None:
@@ -105,6 +171,18 @@ def test_stale_record_never_duplicates_or_kills_unproven_pid(tmp_path: Path) -> 
     assert make().start("Tiramisu64_20")["state"] == "identity_changed"
     assert len(spawned) == 1
     assert make().pause("Tiramisu64_20")["state"] == "identity_changed"
+    assert killed == []
+
+
+def test_reused_pid_with_same_argv_but_new_birth_is_never_killed(tmp_path: Path) -> None:
+    births = {4000: "first birth"}
+    make, spawned, live, killed = _harness(tmp_path, births=births)
+    supervisor = make()
+    assert supervisor.start("Tiramisu64_20")["state"] == "running"
+    births[4000] = "second birth"
+    assert live[4000] == spawned[0]
+    assert supervisor.pause("Tiramisu64_20")["state"] == "identity_changed"
+    assert supervisor.kill("Tiramisu64_20")["state"] == "identity_changed"
     assert killed == []
 
 
@@ -134,30 +212,16 @@ def test_unverified_spawn_retains_pid_for_review(tmp_path: Path) -> None:
 
 
 def test_existing_registration_restarts_opened_tower_without_enrollment(tmp_path: Path) -> None:
-    import json
-    from fleet.identity import Attempt, IdentityEvidence
-
     make, spawned, live, _ = _harness(tmp_path)
     supervisor = make()
     supervisor.start("Tiramisu64_20")
     member = supervisor.pool_snapshot()["members"][0]
     member["state"] = "tower_already_opened"
     live.clear()
-    from fleet.runtime import WorkerRuntime
-    runtime = WorkerRuntime.for_worker(tmp_path / "workers", member["name"], 10020)
-    runtime.checkpoint_root.mkdir(parents=True)
-    attempt = Attempt.new(member["name"], member["endpoint"], member["lease_id"],
-                          "saved-attempt")
-    binding = runtime.checkpoint_root / f"{attempt.generation}.json"
-    attempt.persist(binding, IdentityEvidence(member["name"], attempt.created_at + 1,
-                                              "saved-proof"))
-    (runtime.root / "fleet-registration.json").write_text(json.dumps({
-        "state": "registered", "instance": member["name"], "endpoint": member["endpoint"],
-        "lease_id": member["lease_id"], "account_id": member["name"],
-        "job_id": "saved-attempt", "web_port": 10020, "binding": str(binding)}))
     supervisor.enroll = lambda *_: (_ for _ in ()).throw(AssertionError("must not enroll twice"))
     assert supervisor.start(member["name"])["state"] == "running"
-    assert spawned[-1][spawned[-1].index("--attempt-id") + 1] == "saved-attempt"
+    assert spawned[-1][spawned[-1].index("--attempt-id") + 1] == spawned[0][
+        spawned[0].index("--attempt-id") + 1]
 
 
 def test_opened_tower_without_registration_asks_enroll_to_resume(tmp_path: Path) -> None:
@@ -183,7 +247,7 @@ def test_opened_tower_rejects_registration_with_changed_attempt(tmp_path: Path) 
     member["state"] = "tower_already_opened"
     live.clear()
     runtime = WorkerRuntime.for_worker(tmp_path / "workers", member["name"], 10020)
-    runtime.checkpoint_root.mkdir(parents=True)
+    runtime.checkpoint_root.mkdir(parents=True, exist_ok=True)
     attempt = Attempt.new(member["name"], member["endpoint"], member["lease_id"], "original")
     binding = runtime.checkpoint_root / f"{attempt.generation}.json"
     attempt.persist(binding, IdentityEvidence(member["name"], attempt.created_at + 1,
@@ -281,7 +345,7 @@ def _stubborn(root: Path):
 
     def spawn(args):
         live[5000] = tuple(args)
-        return 5000
+        return FakeChild(5000, live)
 
     def force_kill(pid):
         forced.append(pid)

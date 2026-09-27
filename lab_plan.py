@@ -32,9 +32,17 @@ class LabDecision:
     wallet_coins: int | None = None
     job_completes_at: float | None = None
     game_speed_level: int | None = None
+    slot: int = 1
+    research_id: str = 'labs.game-speed'
+    strategy_revision: int | None = None
+
+    @property
+    def target_level(self) -> int | None:
+        return self.game_speed_level
 
 
-def decide(slot: LabHomeReading, row: LabPickerReading | None) -> LabDecision:
+def decide(slot: LabHomeReading, row: LabPickerReading | None, *,
+           research_id: str = 'labs.game-speed') -> LabDecision:
     """Never produce a start without a fresh, affordable, enabled row."""
     if not slot.page:
         return LabDecision("unknown")
@@ -48,7 +56,7 @@ def decide(slot: LabHomeReading, row: LabPickerReading | None) -> LabDecision:
         return LabDecision("unknown")
     if row is None:
         return LabDecision("inspect")
-    if not row.page or row.game_speed is None or row.game_speed.concept_id != "labs.game-speed":
+    if not row.page or row.game_speed is None or row.game_speed.concept_id != research_id:
         return LabDecision("unknown")
     entry = row.game_speed
     if entry.status == "maxed" or (type(entry.level) is int

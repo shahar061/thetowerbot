@@ -16,7 +16,7 @@ function validMinutes(value: string): number | null {
   return Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440 ? minutes : null;
 }
 
-export function TelegramSettings({ mode }: { mode: TelegramMode }): React.JSX.Element {
+export function TelegramSettings({ mode, embedded = false }: { mode: TelegramMode; embedded?: boolean }): React.JSX.Element {
   const [saved, setSaved] = useState<TelegramSettingsResponse | null>(null);
   const [draft, setDraft] = useState<TelegramProfile | null>(null);
   const [minutesInput, setMinutesInput] = useState("");
@@ -106,7 +106,8 @@ export function TelegramSettings({ mode }: { mode: TelegramMode }): React.JSX.El
   const title = mode === "fleet" ? "Fleet Telegram settings" : "Telegram settings";
 
   return <div className="flex max-w-3xl flex-col gap-5">
-    <PageHeader title={title} meta={mode === "fleet" ? "one combined fleet update" : "single emulator updates"} />
+    {embedded ? <h2 className="font-heading text-base font-semibold">Telegram</h2>
+      : <PageHeader title={title} meta={mode === "fleet" ? "one combined fleet update" : "single emulator updates"} />}
     <p className="max-w-[68ch] text-sm text-muted-foreground">
       Choose how often Telegram receives an update and which details appear in it. The preview uses sample data and does not send a message.
     </p>

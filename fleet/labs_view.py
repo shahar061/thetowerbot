@@ -14,6 +14,7 @@ import db
 import lab_catalog
 from fleet.build_route import RouteDocument, resolve_route
 from fleet.build_route_store import BuildRouteStore, RouteUnavailable
+from fleet.build_route_preview_facts import read_lab_slots
 from fleet.coin_share import LabCoinJar
 from fleet.resource_blocks import LabFacts, automated_list, evaluate_lab_plan
 from lab_plan import LabCadence
@@ -25,7 +26,8 @@ RECENT_LIMIT = 8
 def _unknown(worker: str, account_id: str | None, reason: str) -> dict[str, Any]:
     return {"worker": worker, "account_id": account_id, "strategy_name": None, "read_at": None,
             "wallet": {"coins": None, "gems": None}, "plan": None, "state": "unknown",
-            "reason": reason, "recent": []}
+            "reason": reason, "recent": [], "unknown_slots": 5,
+            "freshness": "unknown", "blockers": [reason]}
 
 
 def _menu_wallet(worker_root: Path, worker: str,
@@ -87,12 +89,32 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
     coins, gems, read_at = _menu_wallet(worker_root, worker, account_id)
     best, recent = _history(registration.db_path)
     slot1, slot2 = LabCadence(worker_root, account_id).route_observation()
+    observed_slots = read_lab_slots(worker_root, account_id)
     jar = LabCoinJar(worker_root, account_id, read_only=True).amount(quiet=True)
     plan = evaluate_lab_plan(resolve_route(route, worker, account_id),
-                             LabFacts(now, coins, gems, best, slot1, slot2, jar))
+                             LabFacts(now, coins, gems, best, slot1, slot2, jar,
+                                      slots=observed_slots, available_coins=coins,
+                                      account_id=account_id))
+    unknown_slots = sum(slot.now.state == "unknown" for slot in plan.slots)
+    stale_slots = sum(slot.now.stale for slot in plan.slots)
+    blockers = ([route_error] if route_error else [])
+    if unknown_slots == 5:
+        blockers.append("Lab slots 1–5 have no observed ownership")
+    elif unknown_slots:
+        blockers.append(f"{unknown_slots} lab slot(s) have no observed ownership")
+    if stale_slots:
+        blockers.append(f"{stale_slots} lab slot observation(s) are stale")
+    if read_at is None:
+        blockers.append("Wallet has no account-bound observation")
+    historical_slots = sum(slot.now.evidence_status == "historical" for slot in plan.slots)
+    if historical_slots:
+        blockers.append("Persisted lab observations are planning-only")
+    freshness = ("stale" if stale_slots else "unknown" if unknown_slots == 5 else
+                 "historical" if historical_slots else "observed")
     return {"worker": worker, "account_id": account_id, "strategy_name": strategy,
             "read_at": read_at, "wallet": {"coins": coins, "gems": gems}, "plan": asdict(plan),
-            "state": "ok", "reason": route_error, "recent": recent}
+            "state": "ok", "reason": route_error, "recent": recent,
+            "unknown_slots": unknown_slots, "freshness": freshness, "blockers": blockers}
 
 
 def labs_snapshot(root: Path, workers: Iterable[str], now: float | None = None) -> dict[str, Any]:

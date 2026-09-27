@@ -53,6 +53,42 @@ test("badges come from the server's automated set only", () => {
   expect(within(screen.getByTestId("resource-block-as")).getByText("Planned · not automated")).toBeInTheDocument();
 });
 
+test("a slot track can pause and skip a blocked target without deleting it", () => {
+  const { onLabsChange } = renderLane("labs");
+  fireEvent.click(screen.getByRole("button", { name: "Select Slots 1" }));
+  fireEvent.click(screen.getByLabelText("Pause this slot track"));
+  const paused = onLabsChange.mock.calls.at(-1)![0] as Labs;
+  expect(paused.blocks![0]).toMatchObject({ paused: true });
+  fireEvent.change(screen.getByLabelText("When current research is blocked"), { target: { value: "skip" } });
+  const skipping = onLabsChange.mock.calls.at(-1)![0] as Labs;
+  expect(skipping.blocks![0]).toMatchObject({ on_blocked: "skip" });
+  expect((skipping.blocks![0] as Extract<LabBlock, { type: "slot_track" }>).children).toHaveLength(3);
+});
+
+test("removing a slot prunes its policy override", () => {
+  const shared: Labs = { ...blockLabs, blocks: [...blockLabs.blocks!,
+    { id: "shared", type: "slot_track", slots: [3, 4], slot_policies: { "3": { paused: true }, "4": { on_blocked: "skip" } }, children: [] }] };
+  const { onLabsChange } = renderLane("labs", { labs: shared });
+  fireEvent.click(screen.getByRole("button", { name: "Select Slots 3, 4" }));
+  const slots = screen.getByRole("group", { name: "Slots" });
+  fireEvent.click(within(slots).getByRole("checkbox", { name: "3" }));
+  const changed = onLabsChange.mock.calls.at(-1)![0] as Labs;
+  expect(changed.blocks![1]).toMatchObject({ slots: [4], slot_policies: { "4": { on_blocked: "skip" } } });
+});
+
+test("a retained singleton override remains visible and editable", () => {
+  const singleton: Labs = { ...blockLabs, blocks: [...blockLabs.blocks!,
+    { id: "single", type: "slot_track", slots: [4], paused: false,
+      slot_policies: { "4": { paused: true, on_blocked: "skip" } }, children: [] }] };
+  const { onLabsChange } = renderLane("labs", { labs: singleton });
+  fireEvent.click(screen.getByRole("button", { name: "Select Slots 4" }));
+  expect(screen.getByLabelText("Pause slot 4")).toBeChecked();
+  expect(screen.getByLabelText("When slot 4 is blocked")).toHaveValue("skip");
+  fireEvent.click(screen.getByLabelText("Pause slot 4"));
+  const changed = onLabsChange.mock.calls.at(-1)![0] as Labs;
+  expect(changed.blocks![1]).toMatchObject({ slot_policies: { "4": { paused: false, on_blocked: "skip" } } });
+});
+
 test("with no automated set nothing claims to be automated", () => {
   renderLane("labs", { automated: [] });
   expect(screen.queryByText("Automated")).not.toBeInTheDocument();

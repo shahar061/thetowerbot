@@ -31,6 +31,7 @@ import type { TelegramMode, TelegramProfile, TelegramSettingsResponse } from "./
 import type { BuildRouteDocument, BuildRoutePreview, BuildRouteRevisions, BuildRouteRebindPreview } from "./buildRoute";
 import type { SaveStrategyInput, StrategyLedger, StrategyLibrary } from "./strategyStudio";
 import type { LabsSnapshot } from "./labs";
+import type { RecoverySettings, RecoverySettingsResponse } from "./recovery";
 
 /** An HTTP failure that kept its status code.
  *
@@ -102,6 +103,13 @@ export const fetchAccountMetrics = () => getJson<AccountMetrics>("/api/account-m
 export const fetchFleet = () => getJson<FleetSnapshot>("/api/fleet", { cache: "no-store" });
 export const fetchReroll = () => getJson<RerollSnapshot>("/api/fleet/reroll", { cache: "no-store" }, false);
 export const fetchFleetLabs = () => getJson<LabsSnapshot>("/api/fleet/labs", { cache: "no-store" }, false);
+export const fetchRecoverySettings = () => getJson<RecoverySettingsResponse>(
+  "/api/fleet/recovery/settings", { cache: "no-store" }, false);
+export const saveRecoverySettings = (settings: RecoverySettings, shadowWorker: string | null,
+  expectedSettingsRevision: number, expectedPolicyRevision: number) => send<RecoverySettingsResponse>("/api/fleet/recovery/settings", "PUT", {
+    settings, shadow_worker: shadowWorker, expected_settings_revision: expectedSettingsRevision,
+    expected_policy_revision: expectedPolicyRevision,
+  }, "fleet");
 export const fetchBuildRoute = () => getJson<BuildRouteDocument>("/api/fleet/reroll/route", { cache: "no-store" }, false);
 export interface FleetTiming { menu_interval: number }
 export interface FleetTimingSaved extends FleetTiming { workers_updated: number; workers_not_running: number }

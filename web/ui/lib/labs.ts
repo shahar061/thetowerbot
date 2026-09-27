@@ -3,7 +3,8 @@ import type { BuildRouteDocument } from "./buildRoute";
 type Base = { id: string; label?: string };
 export type Comparison = "gte" | "lte" | "gt" | "lt" | "eq";
 export type LabBlock =
-  | (Base & { type: "slot_track"; slots: number[]; children: LabBlock[] })
+  | (Base & { type: "slot_track"; slots: number[]; children: LabBlock[]; paused?: boolean; on_blocked?: "wait" | "skip";
+      slot_policies?: Record<string, { paused?: boolean; on_blocked?: "wait" | "skip" }> })
   | (Base & { type: "research"; lab_id: string; to_level: number })
   | (Base & { type: "lab_pool"; lab_ids: string[]; selection?: "ordered" | "cheapest"; max_seconds?: number;
       max_price_pct_of_wallet?: number; caps?: Record<string, number> })
@@ -36,20 +37,25 @@ export const LEGACY_SLOT2_POOL = ["labs.coins-wave", "labs.cash-bonus", "labs.co
 
 export type AutomatedBlock = { lane: "labs" | "gems"; type: string; lab_id?: string; slot: number };
 export type SlotNow = { state: "researching" | "idle" | "locked" | "owned_unread" | "unknown"; level: number | null;
-  completes_at: number | null; overdue_seconds: number | null; read_at: number | null; stale: boolean };
+  completes_at: number | null; overdue_seconds: number | null; read_at: number | null; stale: boolean;
+  research_id?: string | null; research_name?: string | null; owned?: boolean | null;
+  evidence_status?: "unknown" | "historical" | "current" };
 export type SlotNext = { lab_id: string; name: string; level: number | null; price: number | null; seconds: number | null };
 export type SlotPlan = { slot: number; now: SlotNow; next: SlotNext | null; covered: boolean | null; automated: boolean;
-  why: string[]; note: string | null };
+  why: string[]; note: string | null; capabilities?: { observe: boolean; plan: boolean; execute: boolean } };
 export type GemStep = { block_id: string; type: GemBlock["type"]; label: string; state: "done" | "current" | "next";
   price: number | null; automated: boolean };
 export type GemPlan = { wallet: number | null; next: GemStep | null; price: number | null; have: number | null;
   need: number | null; automated: boolean; why: string[]; steps: GemStep[] };
-export type LabPlan = { wallet_coins: number | null; jar: number; slots: SlotPlan[]; gems: GemPlan };
+export type LabPlan = { wallet_coins: number | null; jar: number; slots: SlotPlan[]; gems: GemPlan;
+  strategy_revision?: number; account_id?: string | null; evaluated_at?: number | null;
+  scope?: { account_id: string; lease_id: string | null; generation: string | null; epoch: number } | null };
 export type LabsActivity = { at: number; kind: "LAB" | "CARD_BUY"; item: string | null; category: string | null;
   currency: string | null; amount: number | null; reason: string | null };
 export type LabsRow = { worker: string; account_id: string | null; strategy_name: string | null; read_at: number | null;
   wallet: { coins: number | null; gems: number | null }; plan: LabPlan | null; state: "ok" | "unknown";
-  reason: string | null; recent: LabsActivity[] };
+  reason: string | null; recent: LabsActivity[]; unknown_slots?: number;
+  freshness?: "unknown" | "stale" | "historical" | "observed"; blockers?: string[] };
 export type LabsReference = { labs: { id: string; name: string; max_level: number | null; priced: boolean }[];
   game_speed: { level: number; coins: number; seconds: number; max_speed: number }[];
   lab_slots: { slot: number; gems: number }[]; card_slots: { slot: number; gems: number }[];
@@ -233,6 +239,18 @@ export function laneProblems(lane: "labs" | "gems", blocks: ResourceBlock[], rul
   const walk = (items: ResourceBlock[], top: boolean): void => {
     for (const item of items) {
       if (item.type === "slot_track") {
+        if (item.paused !== undefined && typeof item.paused !== "boolean")
+          problems[item.id] = "Slot pause must be on or off.";
+        if (item.on_blocked !== undefined && !["wait", "skip"].includes(item.on_blocked))
+          problems[item.id] = "When blocked, choose Wait or Skip for now.";
+        for (const [slot, policy] of Object.entries(item.slot_policies ?? {})) {
+          if (!item.slots.includes(Number(slot)) || String(Number(slot)) !== slot)
+            problems[item.id] = "Slot policies must name slots in this track.";
+          else if (policy.paused !== undefined && typeof policy.paused !== "boolean")
+            problems[item.id] = "Slot pause must be on or off.";
+          else if (policy.on_blocked !== undefined && !["wait", "skip"].includes(policy.on_blocked))
+            problems[item.id] = "When blocked, choose Wait or Skip for now.";
+        }
         if (top) {
           if (!item.slots.length) problems[item.id] = "A slot track needs at least one slot.";
           for (const slot of item.slots) {

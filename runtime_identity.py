@@ -15,8 +15,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 SOURCE_FILES = (
     "pyproject.toml",
     "uv.lock",
-    "catalog/concepts.v1.json",
-    "contracts/effective-paths-v5.10.03.00-ids-v4.2.3.json",
 )
 
 
@@ -41,14 +39,14 @@ class FrontendIdentity:
 
 
 def _source_paths(root: Path) -> list[Path]:
-    paths = list(root.glob("*.py"))
-    sinks = root / "sinks"
-    if sinks.is_dir():
-        paths.extend(path for path in sinks.rglob("*.py") if path.is_file())
-    web = root / "web"
-    if web.is_dir():
-        paths.extend(path for path in web.glob("*.py") if path.is_file())
-    paths.extend(
+    paths = {
+        path for pattern in (
+            "*.py", "sinks/**/*.py", "web/*.py", "fleet/**/*.py",
+            "catalog/**/*.json", "contracts/**/*.json",
+        )
+        for path in root.glob(pattern) if path.is_file()
+    }
+    paths.update(
         candidate for name in SOURCE_FILES
         if (candidate := root / name).is_file()
     )

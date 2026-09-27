@@ -453,6 +453,10 @@ class BattleAutopilot:
             return moved
         row = visible[target]
         self.search = None
+        if row.price_quote is not None:
+            # No independently validated battle catalog model is enabled.
+            self.state.decision("blocked", "Price domain: catalog quote cannot authorize battle cash")
+            return False
         if row.status != "available" or row.price is None or row.tap is None:
             return False
         if policy.observe_only:

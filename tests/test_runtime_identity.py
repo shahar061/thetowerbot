@@ -16,6 +16,41 @@ from strategy import Strategy
 from web import app as web_app
 
 
+@pytest.mark.parametrize("relative", [
+    "fleet/recovery.py", "catalog/labs.v1.json", "catalog/workshop-prices.v1.json",
+])
+def test_execution_inputs_change_hash(tmp_path: Path, relative: str) -> None:
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("one")
+    previous = runtime_identity.source_hash(tmp_path)
+    path.write_text("two")
+    assert runtime_identity.source_hash(tmp_path) != previous
+
+
+def test_hash_ignores_mutable_runtime_files(tmp_path: Path) -> None:
+    (tmp_path / "worker.py").write_text("source")
+    previous = runtime_identity.source_hash(tmp_path)
+    for relative in ("worker.log", "screenshots/frame.json", "runtime/status.json",
+                     ".venv/lib/generated.py", "web/ui/node_modules/package.json"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("mutable")
+    assert runtime_identity.source_hash(tmp_path) == previous
+
+
+def test_hash_is_independent_of_file_creation_order(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for root, names in ((first, ("fleet/deep/b.py", "catalog/a.json", "a.py")),
+                        (second, ("a.py", "catalog/a.json", "fleet/deep/b.py"))):
+        for name in names:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(name)
+    assert runtime_identity.source_hash(first) == runtime_identity.source_hash(second)
+
+
 def test_backend_hash_includes_runtime_concept_metadata(tmp_path: Path) -> None:
     (tmp_path / "worker.py").write_text("VERSION = 1\n")
     catalog = tmp_path / "catalog"

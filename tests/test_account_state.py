@@ -97,7 +97,11 @@ def test_account_api_and_battle_ingestion(tmp_path: Path) -> None:
     state.observe_account(reading())
     state.observe_account(reading(now=2.))
     bot = BattleAutopilot(account_state=state)
-    bot.step(None, None, AutopilotPolicy(), observation=reading(900., 'battle'), run_id=9)
+    import numpy as np
+    import hashlib
+    screen = np.zeros((200, 100, 3), dtype=np.uint8)
+    observation = replace(reading(900., 'battle'), frame_digest=hashlib.sha256(screen.tobytes()).hexdigest())
+    bot.step(screen, None, AutopilotPolicy(), observation=observation, run_id=9)
     app = create_app(state=BotState(), sse=SseSink(), bus=EventBus(), db_path=None, account_state=state)
     result = TestClient(app).get('/api/account')
     assert result.status_code == 200
@@ -218,3 +222,95 @@ def test_durable_run_without_telemetry_reserves_id(tmp_path: Path) -> None:
     state = AccountState(AccountRepository(path))
     state.observe_run(reading(context='battle'), 1)
     assert prepare_store(path)[1] == 1
+
+
+def test_scope_binding_reobserves_historical_facts_and_persists_epoch(tmp_path):
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    path = tmp_path / 'state.db'
+    state = AccountState(AccountRepository(path))
+    state.observe_account(reading(now=1.))
+    state.observe_account(reading(now=2.))
+    scope = FactScope('acct', 'lease', 'generation', 0)
+    state.bind_scope(scope, identity=IdentityEvidence('acct', 3., 'account-frame'))
+    assert state.actionable_facts() == ()
+    state.observe_account(reading(now=4.))
+    state.observe_account(reading(now=5.))
+    assert state.actionable_facts()[0].scope == scope
+    assert state.snapshot()['revision']['account_id'] == 'acct'
+    state.invalidate_scope('manual_play')
+    assert state.scope.epoch == 1
+    assert state.actionable_facts() == ()
+    restored = AccountState(AccountRepository(path))
+    assert restored.scope is None
+    assert restored.persisted_epoch == 1
+
+
+def test_run_change_does_not_promote_cash_or_prior_run_facts(tmp_path):
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope, BalanceInterval
+    from fleet.identity import IdentityEvidence
+    from currencies import CurrencyRepository
+    path = tmp_path / 'state.db'
+    state = AccountState(AccountRepository(path))
+    scope = FactScope('acct', 'lease', 'generation', 0)
+    state.bind_scope(scope, identity=IdentityEvidence('acct', 1., 'frame'))
+    state.observe_run(reading(context='battle', now=2.), 7)
+    cash = BalanceInterval('cash', 10, 10, replace(scope, run_id=7), 2., 'frame')
+    assert state.observe_balance(cash)
+    state.observe_run(reading(context='battle', now=3.), 8)
+    assert CurrencyRepository(path).balance('cash', scope=cash.scope, now=3.) is None
+
+
+def test_lab_adapter_rejects_old_scopes_and_never_infers_completion_from_timer(tmp_path):
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope, BalanceInterval
+    from fleet.identity import IdentityEvidence
+    from lab_runtime import LabScope, LabRuntimeSnapshot, LabJobRecord
+    state = AccountState(AccountRepository(tmp_path / 'bot.db'))
+    scope = FactScope('acct','lease','generation',2)
+    state.bind_scope(scope, identity=IdentityEvidence('acct',10.,'id'))
+    state.observe_balance(BalanceInterval('coins',100,110,scope,10.,'wallet'))
+    state.currencies.reserve('another-plan','coins',30,wallet=100)
+    lab_scope = LabScope('acct','lease','generation',2)
+    runtime = LabRuntimeSnapshot(lab_scope, (LabJobRecord(lab_scope,1,state='researching',
+        research_id='labs.game-speed',target_level=3,expected_finish=5.,observed_at=10.,confirmed=True),))
+    facts = state.lab_facts(runtime,now=11.)
+    assert facts.available_coins == 70
+    assert facts.running_research == frozenset({'labs.game-speed'})
+    assert facts.completed_levels == {}
+    assert state.lab_facts(replace(runtime,scope=replace(lab_scope,epoch=1)),now=11.) is None
+    state.invalidate_scope('manual_play')
+    assert state.lab_facts(runtime,now=11.) is None
+
+
+def test_worker_lab_plan_uses_current_adapter_not_persisted_cadence(tmp_path, monkeypatch):
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope, BalanceInterval
+    from fleet.identity import IdentityEvidence
+    from lab_runtime import LabScope, LabRuntimeSnapshot
+    import fleet.reroll_progress as module
+    from types import SimpleNamespace
+    state = AccountState(AccountRepository(tmp_path / 'bot.db'))
+    scope = FactScope('acct','lease','generation',0)
+    state.bind_scope(scope,identity=IdentityEvidence('acct',10.,'id'))
+    state.observe_balance(BalanceInterval('coins',100,100,scope,10.,'wallet'))
+    state.observe_balance(BalanceInterval('gems',90,100,scope,10.,'wallet'))
+    state.currencies.reserve('other','gems',10,wallet=90)
+    progress = module.RerollProgress.__new__(module.RerollProgress)
+    progress.root,progress.account_id,progress.account_state = tmp_path,'acct',state
+    progress.route_runtime = SimpleNamespace(current=lambda: object())
+    progress.coin_jar = SimpleNamespace(amount=lambda **kwargs: 20)
+    progress.lab_cadence = SimpleNamespace(route_observation=lambda: pytest.fail('historical cadence is not execution evidence'))
+    monkeypatch.setattr(module,'resolve_route',lambda route,*args: route)
+    monkeypatch.setattr(module,'evaluate_lab_plan',lambda route,facts: facts)
+    runtime = LabRuntimeSnapshot(LabScope('acct','lease','generation',0),())
+    result = progress.lab_strategy_plan(runtime,available_coins=60,wallet_gems=999,now=11.)
+    assert result.available_coins == 60 and result.slot1 is None
+    assert result.wallet_gems == 80
+    assert progress.lab_strategy_plan(runtime,available_coins=60,wallet_gems=40,now=11.).wallet_gems == 40
+    assert progress.lab_strategy_plan(runtime,available_coins=60,now=11.).wallet_gems == 80
+    assert progress.lab_strategy_plan(runtime,available_coins=60,wallet_gems=40,now=100.).wallet_gems is None
+    state.invalidate_scope('manual_play')
+    assert progress.lab_strategy_plan(runtime,available_coins=60,now=11.) is None

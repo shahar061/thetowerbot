@@ -142,7 +142,8 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                 kind="LAB", item=f"Lab slot {event.slot}", category="SLOT",
                 currency=GEMS, delta=-event.price, price=event.price,
                 observed=event.gems_before,
-                detail={"slot": event.slot, "gems_after": event.gems_after}, **base,
+                detail={"slot": event.slot, "gems_after": event.gems_after,
+                        "transaction_key": event.transaction_key, "verdict": "bought"}, **base,
             ),)
         case events.LabResearchStarted():
             return (LedgerLine(
@@ -150,7 +151,9 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                                   else event.concept_id), category="RESEARCH",
                 currency=COINS, delta=-event.price, price=event.price,
                 observed=event.coins_before,
-                detail={"slot": 1, "concept_id": event.concept_id,
+                detail={"slot": event.slot, "concept_id": event.concept_id,
+                        "source_level": event.source_level, "target_level": event.target_level,
+                        "transaction_key": event.transaction_key, "verdict": "bought",
                         "coins_after": event.coins_after,
                         "completes_at": event.completes_at}, **base,
             ),)
@@ -242,11 +245,13 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                 LedgerLine(kind="MISSION_CLAIM", item=event.mission,
                            category="MISSIONS", currency=COINS, delta=event.coins,
                            detail={"mission_id": event.mission_id,
-                                   "completed_after": event.completed_after},
+                                   "completed_after": event.completed_after,
+                                   **({"receipt_key": event.receipt_key} if event.receipt_key else {})},
                            **base),
                 LedgerLine(kind="MISSION_CLAIM", item=event.mission,
                            category="MISSIONS", currency=GEMS, delta=event.gems,
-                           observed=event.gems_before, **base),
+                           observed=event.gems_before,
+                           detail={"receipt_key": event.receipt_key} if event.receipt_key else {}, **base),
             )
 
         case events.ClaimStarted():
@@ -432,14 +437,20 @@ class LedgerWriter:
                 self._stale[currency] = row is not None and row[0] is None
             self._rounded = _rounded_since_reading(self._conn)
             self._data_version = version
-        if isinstance(event, events.Purchased) and event.transaction_key:
+        if isinstance(event, (events.Purchased, events.LabResearchStarted, events.LabSlotUnlocked)) and event.transaction_key:
             if self._conn.execute(
-                "SELECT 1 FROM ledger WHERE json_extract(detail, '$.transaction_key') = ? LIMIT 1",
+                "SELECT 1 FROM ledger WHERE json_extract(detail, '$.transaction_key') = ? "
+                "AND json_extract(detail, '$.verdict') IN ('bought','free') LIMIT 1",
                 (event.transaction_key,),
             ).fetchone():
                 return []
         out: list[LedgerLine] = []
         for line in classify(event):
+            if isinstance(event, events.MissionClaimed) and event.receipt_key:
+                if self._conn.execute(
+                    "SELECT 1 FROM ledger WHERE json_extract(detail, '$.receipt_key')=? AND currency=?",
+                    (event.receipt_key, line.currency)).fetchone():
+                    continue
             out.extend(self._reconcile(line))
         return out
 

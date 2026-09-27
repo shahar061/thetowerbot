@@ -76,6 +76,54 @@ def state(tmp_path: Path) -> tuple[Any, Any]:
     return labs.LabsState(account), account
 
 
+def test_confirmed_lab_producer_supplies_scoped_catalog_levels_and_rejects_cross_scope(tmp_path):
+    from dataclasses import replace
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    from lab_runtime import LabScope, LabRuntimeSnapshot, _catalog_revision
+    lab_state, account = state(tmp_path)
+    scope = FactScope('acct','lease','generation',0)
+    account.bind_scope(scope,identity=IdentityEvidence('acct',900.,'identity'))
+    revision = _catalog_revision()
+    assert not lab_state.observe(reading((entry(DAMAGE,3),)),scope=scope,catalog_revision=revision)
+    account.bind_scope(replace(scope,epoch=1),identity=IdentityEvidence('acct',1005.,'new-id'))
+    current = account.verified_scope
+    assert not lab_state.observe(reading((entry(DAMAGE,3),),now=1010.),scope=current,catalog_revision=revision)
+    assert lab_state.observe(reading((entry(DAMAGE,3),),now=1020.),scope=current,catalog_revision=revision)
+    runtime = LabRuntimeSnapshot(LabScope('acct','lease','generation',1),())
+    assert account.lab_facts(runtime,now=1021.).completed_levels == {DAMAGE:2}
+    fact = account.snapshot()['revision']['lab_levels'][0]
+    assert fact['scope']['epoch'] == 1 and fact['catalog_revision'] == revision
+    assert fact['evidence']['observed_at'] == 1020.
+    assert not lab_state.observe(reading((entry(DAMAGE,4),),now=1022.),scope=scope,catalog_revision=revision)
+    assert account.lab_facts(runtime,now=1023.).completed_levels == {DAMAGE:2}
+
+
+def test_towerbot_capture_reader_tags_actual_lab_facts_without_recounting_frame(tmp_path, monkeypatch):
+    from tower_bot import TowerBot
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    from lab_runtime import LabScope, LabRuntimeSnapshot
+    import tower_bot
+    lab_state, account = state(tmp_path)
+    scope = FactScope('acct','lease','generation',0)
+    account.bind_scope(scope,identity=IdentityEvidence('acct',900.,'identity'))
+    bot = TowerBot.__new__(TowerBot)
+    bot.account_state,bot.lab_state = account,lab_state
+    bot._screen = cv2.imread(str(FIXTURES / 'menu_labs_game_speed_affordable.png'))
+    bot._screen_fact_scope,bot._screen_captured_at = scope,1000.
+    boxes = recorded('menu_labs_game_speed_affordable')
+    monkeypatch.setattr(tower_bot.time,'time',lambda: bot._screen_captured_at + 1)
+    runtime = LabRuntimeSnapshot(LabScope('acct','lease','generation',0),())
+    bot._observe_labs_capture(boxes)
+    bot._observe_labs_capture(boxes)
+    assert account.lab_facts(runtime,now=1001.).completed_levels == {}
+    bot._screen_captured_at = 1010.
+    bot._observe_labs_capture(boxes)
+    assert account.lab_facts(runtime,now=1011.).completed_levels == {'labs.game-speed':0}
+    assert account.snapshot()['revision']['lab_levels'][0]['evidence']['observed_at'] == 1010.
+
+
 def test_identity_comes_from_the_catalog_and_stops_at_its_edge() -> None:
     """Success: the module names the catalog's labs and refuses everything else."""
     import labs
@@ -102,6 +150,11 @@ def test_unseen_lab_is_unknown_and_never_a_level(tmp_path: Path) -> None:
 
     after = lab_state.levels()
     assert after[DAMAGE] == {'level': 0, 'status': 'available', 'observed_at': 1010.}
+    # An available picker Lv.N is the next target: N-1 is completed.
+    assert lab_state.observe(reading((entry(DAMAGE, 3),), now=1020.)) is False
+    assert lab_state.observe(reading((entry(DAMAGE, 3),), now=1030.)) is True
+    assert lab_state.levels()[DAMAGE]['level'] == 2
+    after = lab_state.levels()
     assert after[DEFENSE]['status'] == 'unknown' and after[DEFENSE]['level'] is None
     # The two are different answers, not two spellings of the same one.
     assert after[DAMAGE]['status'] != after[DEFENSE]['status']
@@ -123,7 +176,7 @@ def test_owned_slots_and_active_completions_survive_a_restart(tmp_path: Path) ->
     assert {f['concept_id']: f['value'] for f in revision['lab_jobs']} == {DAMAGE: 5000., DEFENSE: 9000.}
     assert all(f['status'] == 'researching' for f in revision['lab_jobs'])
     assert [f['concept_id'] for f in revision['lab_levels']] == [DAMAGE]
-    assert labs.LabsState(restarted).levels()[DAMAGE]['level'] == 3
+    assert labs.LabsState(restarted).levels()[DAMAGE]['level'] == 2  # available Lv.3: 2 completed
 
 
 @pytest.mark.parametrize('status', ['locked', 'unavailable', 'unreadable'])

@@ -61,6 +61,7 @@ PATCHABLE_FIELDS = (
     "timing_jitter",
     "tap_delay",
     "target_speed",
+    "auto_fastest",
     "build",
 )
 
@@ -140,6 +141,7 @@ _STRATEGY_TYPES: dict[str, tuple[type, ...]] = {
     "auto_navigate": (bool,),
     "max_runs": (int,),
     "target_speed": (int, float),
+    "auto_fastest": (bool,),
     "build": (str,),
 }
 
@@ -607,6 +609,8 @@ class Strategy:
     # been told to manage the speed must not quietly tap a hand-set speed
     # back down the first time it enters a run.
     target_speed: float | None = None
+    # Explicit opt-in; a non-null manual target always takes precedence.
+    auto_fastest: bool = False
     # Between-runs spending. Defaults to a policy that buys nothing, so a
     # strategy file written before this existed loads and behaves the same.
     shopping: Shopping = Shopping()
@@ -741,6 +745,7 @@ class Strategy:
             "timing_jitter": self.timing_jitter,
             "tap_delay": self.tap_delay,
             "target_speed": self.target_speed,
+            "auto_fastest": self.auto_fastest,
             "build": self.build,
             "shopping": self.shopping.to_dict(),
             "autopilot": self.autopilot.to_dict(),

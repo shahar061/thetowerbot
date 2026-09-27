@@ -584,6 +584,7 @@ class MissionsReadings:
             return {'screen_id': None if reading is None else reading.screen_id,
                     'error': self._error, 'scanned': self._scanned,
                     'completed': None if reading is None else reading.completed,
+                    'completed_target': None if reading is None else reading.completed_target,
                     'claims': self._claims,
                     'visible': (() if reading is None else tuple(
                         (entry.mission_id, entry.raw_text, entry.status)

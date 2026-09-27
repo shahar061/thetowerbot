@@ -13,6 +13,8 @@ from unittest.mock import Mock
 import cv2
 
 import config
+import pytest
+import shopping as shopping_mod
 import digits
 import events
 import tower_bot
@@ -72,6 +74,30 @@ def test_due_visit_starts_before_battle_navigation(bot_on_main_menu) -> None:
     assert navigated(bot.bus) == []
 
 
+def test_menu_wallet_rejects_wrong_scope_old_capture_and_preserves_unknown(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    state = AccountState(AccountRepository(tmp_path / 'bot.db'))
+    scope = FactScope('acct','lease','generation',0)
+    state.bind_scope(scope,identity=IdentityEvidence('acct',1.,'identity'))
+    bot = tower_bot.TowerBot.__new__(tower_bot.TowerBot)
+    bot.account_state = state
+    bot._screen_captured_at,bot._screen_fact_scope = 10.,replace(scope,epoch=1)
+    monkeypatch.setattr(tower_bot.time,'time',lambda: 11.)
+    bot._observe_menu_wallet(100,50,evidence_ref='capture')
+    assert state.currencies.balance('coins',scope=scope,now=11.) is None
+    bot._screen_fact_scope = scope
+    monkeypatch.setattr(tower_bot.time,'time',lambda: 100.)
+    bot._observe_menu_wallet(100,50,evidence_ref='capture')
+    assert state.currencies.balance('coins',scope=scope,now=11.) is None
+    monkeypatch.setattr(tower_bot.time,'time',lambda: 11.)
+    bot._observe_menu_wallet(None,None,evidence_ref='capture')
+    assert state.currencies.balance('coins',scope=scope,now=11.).lower is None
+    assert state.currencies.balance('gems',scope=scope,now=11.).lower is None
+
+
 def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
     from tests.conftest import _shopping_bot
 
@@ -92,6 +118,30 @@ def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
     progress.note_lab_unlocked.assert_called_once_with("labs_tab")
     assert not bot.shopping.active
     assert navigated(bot.bus) == []
+
+
+def test_confirmed_lab_dot_arms_visit_before_periodic_lab_due() -> None:
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("menu_main_labs_unlocked", state=tower_bot.screens.ScreenState.MAIN_MENU,
+                        policy=a_policy(enabled=False), auto_navigate=False)
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy(enabled=False)
+    progress.stats_due.return_value = False
+    progress.lab_due.return_value = False
+    progress.lab_visit_options.return_value = LabVisitOptions(start_research=False)
+    progress.initial_workshop_due.return_value = False
+    bot.reroll_progress = progress
+    bot.lab_visit = LabVisit(bot.templates)
+
+    bot._capture_sequence = 1
+    bot.run_once()
+    assert not bot.lab_visit.active
+    bot._capture_sequence = 2
+    bot.run_once()
+    assert bot.lab_visit.active
+    assert bot._notifications.snapshot()["kinds"]["labs"]["in_flight"]
+    progress.lab_due.assert_called_once()
 
 
 def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu) -> None:
@@ -116,7 +166,8 @@ def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu)
     bot.run_once()
 
     assert bot.lab_visit.active
-    bot.lab_visit.request.assert_called_once_with(options)
+    # The legacy due path requests no planned action, only the route options.
+    bot.lab_visit.request.assert_called_once_with(None, options=options)
 
 
 def test_reroll_does_not_open_labs_without_a_visible_unlocked_tab(bot_on_main_menu) -> None:
@@ -433,3 +484,145 @@ def test_reroll_policy_sees_this_frames_menu_balance(bot_on_main_menu) -> None:
     assert "note_menu_wallet" in names and "shopping_policy" in names
     assert names.index("note_menu_wallet") < names.index("shopping_policy")
     assert bot.shopping.active
+
+
+def test_menu_capture_populates_scoped_wallet_before_policy_and_lab_adapter(bot_on_main_menu, tmp_path, monkeypatch):
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    from currencies import currency_overview
+    from lab_runtime import LabScope, LabRuntimeSnapshot
+    state = AccountState(AccountRepository(tmp_path / 'bot.db'))
+    scope = FactScope('acct','lease','generation',0)
+    state.bind_scope(scope,identity=IdentityEvidence('acct',1.,'identity'))
+    bot = bot_on_main_menu(a_policy())
+    bot.account_state = state
+    bot._screen_captured_at, bot._screen_fact_scope = 10., scope
+    monkeypatch.setattr(tower_bot,'header_numbers',lambda *args: (100,50))
+    monkeypatch.setattr(tower_bot.time,'time',lambda: 11.)
+    progress = Mock()
+    def policy(*args, **kwargs):
+        view = currency_overview(state.safety_path,account_id='acct',lease_id='lease',generation='generation',now=11.)
+        assert view['coins_lower'] == 100 and view['gems'] == 50
+        facts = state.lab_facts(LabRuntimeSnapshot(LabScope('acct','lease','generation',0),()),now=11.)
+        assert facts.available_coins == 100
+        assert state.currencies.balance('coins',scope=scope,now=11.).observed_at == 10.
+        return a_policy()
+    progress.shopping_policy.side_effect = policy
+    progress.stats_due.return_value = False
+    progress.initial_workshop_due.return_value = False
+    bot.reroll_progress,bot.lab_visit = progress,None
+    bot.run_once()
+    progress.shopping_policy.assert_called_once()
+    assert navigated(bot.bus) == []
+
+
+# --- N1: a held reconciliation blocks spending, never run navigation -------
+
+def _held_scoped_intent(tmp_path, bot):
+    """A scoped Workshop intent the inspection can only hold (no verified identity)."""
+    import transactions
+    from evidence_scope import BalanceInterval, FactScope
+    scope = FactScope("acct", "lease", "a" * 32, 0)
+    journal = transactions.TransactionJournal(tmp_path / "bot.db")
+    journal.currencies.bind_scope(scope)
+    txn = journal.prepare(transactions.Intent(item="Damage", category="ATTACK", currency="coins",
+        price=30, wallet_before=100, ts=1., before={"observed_at": 1., "frame_digest": "d"}),
+        scope=scope, balance=BalanceInterval("coins", 100, 100, scope, 1., "before"))
+    journal.record_action(txn.key, at=2.)
+    bot.shopping.journal = journal
+    bot.shopping.reset()
+    return journal
+
+
+@pytest.mark.parametrize("where", ["main_menu", "game_over"])
+def test_held_reconciliation_still_starts_the_next_run(
+        tmp_path, bot_on_main_menu, bot_on_game_over, where: str) -> None:
+    bot = (bot_on_main_menu if where == "main_menu" else bot_on_game_over)(a_policy())
+    journal = _held_scoped_intent(tmp_path, bot)
+    for _ in range(3):
+        bot.run_once()
+    assert bot.shopping.reconciliation_pending
+    assert bot.shopping._inspection.hold_reason is not None
+    assert navigated(bot.bus)[:1] == (["BATTLE"] if where == "main_menu" else ["RETRY"])
+    assert "WORKSHOP" not in navigated(bot.bus)  # No Workshop tap while held.
+    assert journal.currencies.committed("coins") == 30  # Reservation stays held.
+    assert not bot.shopping.begin(a_policy(), bot.runs.completed + 1)  # Spending refused.
+
+
+def test_live_workshop_step_still_suppresses_navigation(tmp_path, bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    _held_scoped_intent(tmp_path, bot)
+    bot.shopping._step = shopping_mod.Step.RETURN  # A visit step is genuinely in progress.
+    bot.run_once()
+    assert "BATTLE" not in navigated(bot.bus)
+
+
+def test_held_reconciliation_detours_home_from_game_over_only_when_a_retry_is_due(
+        tmp_path, bot_on_game_over) -> None:
+    """N2: a held purchase re-inspects only on MAIN_MENU; GAME_OVER goes HOME
+    when its paced retry is due, and RETRY otherwise."""
+    from identity_reverify import IdentityReverifier
+    now = [0.]
+    bot = bot_on_game_over(a_policy())
+    journal = _held_scoped_intent(tmp_path, bot)
+    bot.shopping.identity_reverifier = IdentityReverifier(lambda: None, clock=lambda: now[0])
+    bot.run_once()
+    assert navigated(bot.bus) == ["HOME"]  # Re-verification due: take the menu pass.
+    assert bot.shopping.identity_reverifier.attempt("walk")  # The menu pass consumed it.
+
+    paced = bot_on_game_over(a_policy())
+    (tmp_path / "paced").mkdir()
+    _held_scoped_intent(tmp_path / "paced", paced)
+    paced.shopping.identity_reverifier = bot.shopping.identity_reverifier  # Not due for 60 s.
+    paced.run_once()
+    assert navigated(paced.bus) == ["RETRY"]  # Paced: no detour every run.
+    assert not paced.shopping.begin(a_policy(), paced.runs.completed + 1)
+    assert journal.currencies.committed("coins") == 30
+
+
+def test_unprovable_held_cards_purchase_detours_at_most_once_per_hold_interval(
+        tmp_path, monkeypatch) -> None:
+    """N3: an intent a menu pass cannot advance starts the held interval, so
+    the 60 s re-verification pacer alone never detours GAME_OVER every run."""
+    import time as time_mod
+    from unittest.mock import Mock
+    from fleet.identity import IdentityEvidence
+    from identity_reverify import IdentityReverifier
+    from shopping_inspection import HELD_RETRY_SECONDS
+    from tests.test_shopping_inspection import make_session, screen
+    clock = [time_mod.time()]
+    sut = make_session(tmp_path)
+    txn = sut._open_intent(item="Card", category="CARDS", currency="gems", price=20,
+                           wallet_before=400, armed=True,
+                           before={"observed_at": time_mod.time(), "frame_digest": "before"})
+    sut._mark_acted(txn)
+    monkeypatch.setattr(time_mod, "time", lambda: clock[0])
+    state = sut.account_state
+    walks: list[float] = []
+
+    def walk() -> None:
+        walks.append(clock[0])
+        state.bind_scope(state.verified_scope, identity=IdentityEvidence("acct", clock[0], "id"))
+
+    sut.identity_reverifier = IdentityReverifier(walk, clock=lambda: clock[0])
+    device = Mock()
+    detours: list[float] = []
+    start = clock[0]
+    for _ in range(9):
+        clock[0] += 300.  # One battle, then GAME_OVER.
+        if sut.reconciliation_retry_due(clock[0]):
+            detours.append(clock[0] - start)
+            for _ in range(3):  # MAIN_MENU scans after HOME.
+                sut.inspect(screen("menu_main"), device)
+                clock[0] += 1.
+    assert sut.reconciliation_pending and sut._inspection.hold_reason == "independent_proof_required"
+    # At most one detour per held interval (2700 s span -> <= 1 + 2700 / 900).
+    assert len(detours) <= 1 + (9 * 300) // HELD_RETRY_SECONDS, detours
+    assert all(b - a >= HELD_RETRY_SECONDS for a, b in zip(detours, detours[1:])), detours
+    assert len(walks) <= len(detours)
+    assert device.click.call_count == 0 and sut.currencies.committed("gems") == 20
+    # Operator reconciliation ends the hold immediately.
+    sut.journal.operator_reconcile(txn.key, verdict="unproven", operator="op", evidence="e",
+                                   now=clock[0], worker_stopped=True)
+    assert not sut.reconciliation_pending and not sut.reconciliation_retry_due(clock[0])

@@ -62,9 +62,48 @@ describe("LabsMatrix", () => {
     render(<LabsMatrix rows={[row("Air_1"), { ...row("Air_9"), plan: null, state: "unknown", reason: "Worker is not registered to an account" }]}
       reference={reference} focus={null} at={AT} />);
     fireEvent.click(table().getByRole("button", { name: "Details for Air_1" }));
-    const path = screen.getByRole("list", { name: "Gem path for Air_1" });
+    const path = within(table().getByRole("row", { name: "Air_1" }).nextElementSibling as HTMLElement).getByRole("list", { name: "Gem path for Air_1" });
     expect(within(path).getAllByRole("listitem").map(item => item.dataset.state)).toEqual(["current", "next"]);
-    expect(screen.getByRole("list", { name: "Recent lab and card activity for Air_1" })).toHaveTextContent("Game Speed · 2,500 coins");
+    expect(within(table().getByRole("row", { name: "Air_1" }).nextElementSibling as HTMLElement).getByRole("list", { name: "Recent lab and card activity for Air_1" })).toHaveTextContent("Game Speed · 2,500 coins");
     expect(table().getByText("Worker is not registered to an account")).toBeInTheDocument();
+  });
+
+  it("keeps all five named slots, wallet, strategy and activity reachable on a phone", () => {
+    render(<LabsMatrix rows={[row("Air_1")]} reference={reference} focus={null} at={AT} />);
+    const card = screen.getByRole("article", { name: "Labs for Air_1" });
+    expect(card).toHaveTextContent("Fleet baseline");
+    expect(card).toHaveTextContent("20.00K coins");
+    expect(within(card).getAllByRole("region", { name: /Lab [1-5]/ })).toHaveLength(5);
+    expect(within(card).getByRole("region", { name: "Lab 5" })).toHaveTextContent("Coins / Wave");
+    fireEvent.click(within(card).getByRole("button", { name: "Details for Air_1" }));
+    expect(within(card).getByRole("list", { name: "Recent lab and card activity for Air_1" })).toHaveTextContent("Game Speed");
+    expect(card.parentElement).toHaveClass("xl:hidden");
+    expect(screen.getByRole("table", { name: "Lab slots per emulator" }).parentElement).toHaveClass("xl:block");
+  });
+
+  it("links every slot to its account-bound planning context", () => {
+    render(<LabsMatrix rows={[row("Air_1")]} reference={reference} focus={null} at={AT} />);
+    const card = screen.getByRole("article", { name: "Labs for Air_1" });
+    const links = within(card).getAllByRole("link", { name: /Plan research for Lab/ });
+    expect(links).toHaveLength(5);
+    expect(links[3].getAttribute("href")).toContain("worker=Air_1");
+    expect(links[3].getAttribute("href")).toContain("account=acct-Air_1");
+    expect(links[3].getAttribute("href")).toContain("slot=4");
+  });
+
+  it("keeps five desktop cells and links before Gems for partial and missing plans", () => {
+    const partial = row("Air_1");
+    partial.plan = { ...partial.plan!, slots: partial.plan!.slots.slice(0, 1) };
+    const missing = { ...row("Air_2"), plan: null };
+    render(<LabsMatrix rows={[partial, missing]} reference={reference} focus={null} at={AT} />);
+    for (const worker of ["Air_1", "Air_2"]) {
+      const workerRow = table().getByRole("row", { name: worker });
+      const cells = within(workerRow).getAllByRole("cell");
+      expect(cells).toHaveLength(6);
+      expect(cells.slice(0, 5).map(cell => within(cell).getByRole("link", { name: /Plan research for Lab/ }).getAttribute("aria-label")))
+        .toEqual([1, 2, 3, 4, 5].map(slot => `Plan research for Lab ${slot} on ${worker}`));
+      expect(cells[5]).toHaveTextContent(worker === "Air_1" ? "Lab slot 2" : "Unknown");
+      expect(cells.slice(worker === "Air_1" ? 1 : 0, 5).every(cell => cell.textContent?.includes("Unknown"))).toBe(true);
+    }
   });
 });

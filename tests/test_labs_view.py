@@ -36,8 +36,9 @@ def test_an_unregistered_worker_is_an_unknown_row(tmp_path: Path) -> None:
     snapshot = labs_snapshot(tmp_path, ["Air_1"], now=1000.)
     (row,) = snapshot["workers"]
     assert (row["worker"], row["state"], row["plan"]) == ("Air_1", "unknown", None)
+    # Only Game Speed on slot 1 is executed; the Lab 2 gems unlock is
+    # gate-controlled (lab_routes.unlock_gate) and stays uncalibrated.
     assert snapshot["automated"] == [
-        {"lane": "gems", "type": "unlock_lab_slot", "slot": 2},
         {"lane": "labs", "type": "research", "lab_id": "labs.game-speed", "slot": 1}]
     assert len(snapshot["reference"]["game_speed"]) == 7
 
@@ -50,6 +51,8 @@ def test_a_fresh_worker_shows_five_unknown_slots_and_lab_two_next(tmp_path: Path
     assert row["plan"]["gems"]["next"]["type"] == "unlock_lab_slot"
     assert row["plan"]["gems"]["price"] == 100
     assert row["wallet"] == {"coins": None, "gems": None}
+    assert row["unknown_slots"] == 5
+    assert "Lab slots 1–5 have no observed ownership" in row["blockers"]
 
 
 def test_a_row_uses_the_menu_wallet_cadence_and_recent_lab_activity(tmp_path: Path) -> None:
@@ -72,9 +75,12 @@ def test_a_row_uses_the_menu_wallet_cadence_and_recent_lab_activity(tmp_path: Pa
     assert row["read_at"] == 900. and row["wallet"] == {"coins": 20000, "gems": 60}
     slot1 = row["plan"]["slots"][0]
     assert slot1["now"]["state"] == "idle"
+    assert slot1["now"]["evidence_status"] == "historical"
+    assert slot1["capabilities"]["execute"] is False
+    assert row["freshness"] == "historical"
     assert (slot1["next"]["level"], slot1["next"]["price"], slot1["next"]["seconds"]) == (3, 12000, 35280)
     assert slot1["covered"] is True and slot1["automated"] is True
-    assert [slot["now"]["state"] for slot in row["plan"]["slots"][1:]] == ["locked"] * 4
+    assert [slot["now"]["state"] for slot in row["plan"]["slots"][1:]] == ["locked", "unknown", "unknown", "unknown"]
     assert (row["plan"]["gems"]["have"], row["plan"]["gems"]["need"]) == (60, 100)
     assert [(item["kind"], item["amount"], item["reason"]) for item in row["recent"]] == [
         ("CARD_BUY", 20, "Card mission"), ("LAB", 2500, None)]

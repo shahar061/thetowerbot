@@ -331,7 +331,7 @@ export function StrategyEditor({
           <span>
             Target speed{" "}
             <span className="text-xs text-muted-foreground">
-              {value.target_speed == null ? "(leave alone)" : ""}
+              {value.target_speed == null ? (value.auto_fastest ? "(automatic)" : "(leave alone)") : ""}
             </span>
           </span>
           {/* A select, not a number input: every legal value needs a readout
@@ -356,6 +356,19 @@ export function StrategyEditor({
             ))}
           </select>
         </label>
+        <label className="flex items-center justify-between text-sm">
+          <span>Automatic fastest speed</span>
+          <Switch
+            label="Automatic fastest speed"
+            checked={value.auto_fastest ?? false}
+            disabled={disabled}
+            onCheckedChange={(checked) => set("auto_fastest", checked)}
+          />
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Checks for faster speed when research is due. A selected target speed takes priority;
+          select off above to use automatic fastest speed.
+        </p>
       </SectionCard>
 
       <SectionCard id="claims" title="Claims" contentClassName="flex flex-col gap-3">

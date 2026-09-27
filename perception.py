@@ -7,6 +7,10 @@ import re
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fleet.workshop_prices import PriceQuote
 
 import cv2
 
@@ -65,6 +69,7 @@ class ObservedUpgrade:
     confidence: float = 0.
     raw_name: str = ""
     raw_value: str | None = None
+    price_quote: PriceQuote | None = None
 
     @property
     def concept_id(self) -> str | None:
@@ -373,3 +378,72 @@ def read_cash(
     if len(boxes) != 1 or boxes[0].confidence < .9:
         return None
     return price_number(boxes[0].text)
+
+
+class WorkshopReader:
+    """Read the current target and heading between periodic full reconciliations.
+
+    Catalog evidence chooses what to inspect; it never supplies a missing OCR
+    price, semantic value, row identity, or cash authorization.
+    """
+    def __init__(self, reconcile_every: int = 8) -> None:
+        self.reconcile_every = max(1, reconcile_every)
+        self.counters: Counter[str] = Counter()
+        self._last: Observation | None = None
+        self._scope: object = None
+        self._layout: tuple[config.Rect, ...] = ()
+        self._reads = 0
+        self._row_digest: str | None = None
+
+    def invalidate(self, reason: str = 'manual') -> None:
+        self._last = None
+        self.counters[f'invalidate:{reason}'] += 1
+
+    def read(self, screen: Image, *, target: str | None, quote: object,
+             scope: object) -> Observation:
+        self._reads += 1
+        layout = tiles.find_tiles(screen)
+        valid_quote = (quote is not None and getattr(quote, 'for_execution', lambda **_: None)(
+            context='workshop', currency='coins') is not None)
+        reason = None
+        if not valid_quote:
+            reason = 'quote_untrusted'
+        elif self._last is None:
+            reason = 'initial'
+        elif scope != self._scope:
+            reason = 'scope_changed'
+        elif layout != self._layout or (screen.shape[1],screen.shape[0]) != (
+                self._last.frame_width,self._last.frame_height):
+            reason = 'layout_changed'
+        elif (self._reads - 1) % self.reconcile_every == 0:
+            reason = 'periodic'
+        row = next((r for r in self._last.rows if r.upgrade_id == target), None) if self._last else None
+        if reason is None and (row is None or self._last.heading_y is None):
+            reason = 'target_missing'
+        if reason is None:
+            heading_y = self._last.heading_y
+            heading = config.Rect(0, max(0,heading_y-30),screen.shape[1],90)
+            boxes: list[ocr.TextBox] = []
+            for region, label in ((heading,'heading'),(row.rect,'target')):
+                self.counters[f'roi:{label}'] += 1
+                boxes.extend(replace(b,rect=config.Rect(
+                    b.rect.x+region.x-ocr.CROP_PADDING,b.rect.y+region.y-ocr.CROP_PADDING,
+                    b.rect.w,b.rect.h)) for b in ocr.read_region(screen,region))
+            digest = hashlib.sha256(screen[row.rect.y:row.rect.y+row.rect.h,
+                row.rect.x:row.rect.x+row.rect.w].tobytes()).hexdigest()
+            self.counters['dirty:target' if digest != self._row_digest else 'clean:target'] += 1
+            self._row_digest = digest
+            observation = parse_frame(screen,tuple(boxes),'workshop')
+            current = next((r for r in observation.rows if r.upgrade_id == target),None)
+            if (observation.category == self._last.category and current is not None
+                    and current.status == 'available' and current.confidence >= .9
+                    and current.price == quote.price and current.rect == row.rect
+                    and (current.value is not None or upgrades.by_id(current.upgrade_id).unlock)):
+                self._last = observation
+                return observation
+            reason = 'target_mismatch'
+            self.counters['invalidate:derived_price'] += 1
+        self.counters[f'full:{reason}'] += 1
+        observation = observe_frame(screen,'workshop')
+        self._last, self._scope, self._layout = observation, scope, layout
+        return observation

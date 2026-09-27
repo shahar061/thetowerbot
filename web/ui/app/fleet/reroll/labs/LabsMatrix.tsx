@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useState } from "react";
+import Link from "next/link";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { deviceColor } from "@/lib/rerollState";
 import { duration, nowText, slotTone, type LabsReference, type LabsRow, type SlotPlan } from "@/lib/labs";
@@ -26,14 +27,26 @@ function NextTier({ slot, hidePlanned }: { slot: SlotPlan; hidePlanned: boolean 
   </div>;
 }
 
+function planHref(row: LabsRow, slot: number): string | null {
+  if (!row.account_id) return null;
+  return `/fleet/reroll/strategies/?${new URLSearchParams({ worker: row.worker, account: row.account_id, slot: String(slot) })}`;
+}
+
+function PlanLink({ row, slot }: { row: LabsRow; slot: number }): React.JSX.Element | null {
+  const href = planHref(row, slot);
+  return href ? <Link href={href} aria-label={`Plan research for Lab ${slot} on ${row.worker}`}
+    className="inline-flex min-h-11 items-center rounded-md border border-border px-3 text-xs font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Plan research</Link> : null;
+}
+
 function SlotCell({ slot, at, hidePlanned }: { slot: SlotPlan; at: number; hidePlanned: boolean }): React.JSX.Element {
   const tone = slotTone(slot);
   return <div data-testid={`slot-${slot.slot}`} data-tone={tone} title={slot.why.join(" → ")}
-    className={`min-w-36 space-y-1 rounded-md border p-2 text-xs ${tone === "ready" ? "border-amber-500 bg-amber-500/10" : "border-border"}`}>
+    className={`min-w-0 space-y-1 rounded-md border p-2 text-xs [overflow-wrap:anywhere] ${tone === "ready" ? "border-amber-500 bg-amber-500/10" : "border-border"}`}>
     <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Now</p>
     <p>{nowText(slot.now, at)}</p>
     <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Next</p>
     <NextTier slot={slot} hidePlanned={hidePlanned} />
+    {!!slot.why.length && <p className="text-muted-foreground">Plan path: {slot.why.join(" → ")}</p>}
   </div>;
 }
 
@@ -42,7 +55,7 @@ function GemCell({ row, hidePlanned }: { row: LabsRow; hidePlanned: boolean }): 
   if (!gems) return <p className="text-xs text-muted-foreground">Unknown</p>;
   if (!gems.next) return <p className="text-xs text-muted-foreground">Gem path complete</p>;
   if (hidePlanned && !gems.automated) return <p className="text-xs text-muted-foreground">—</p>;
-  return <div data-testid="gems" className="min-w-36 space-y-1 rounded-md border border-violet-400/60 bg-violet-400/10 p-2 text-xs">
+  return <div data-testid="gems" className="min-w-0 space-y-1 rounded-md border border-violet-400/60 bg-violet-400/10 p-2 text-xs">
     <p className="font-medium">{gems.next.label}</p>
     <p className="font-mono">{gems.have ?? "?"} / {gems.need ?? "?"} gems</p>
     <Badge automated={gems.automated} />
@@ -81,9 +94,9 @@ export function LabsMatrix({ rows, reference, focus, at = Date.now() / 1000 }: {
       <span className="rounded-full border border-border bg-card px-3 py-1">{shown.length} emulators</span>
       <span className="rounded-full border border-amber-500/50 bg-amber-500/10 px-3 py-1">{slots.filter(slot => slotTone(slot) === "ready").length} automated labs ready to start</span>
       <span className="rounded-full border border-border bg-card px-3 py-1">{slots.filter(slot => slot.now.state === "unknown").length} slots unread</span>
-      <label className="ml-auto flex items-center gap-1.5"><input type="checkbox" checked={hidePlanned} onChange={event => setHidePlanned(event.target.checked)} />Hide not-automated</label>
+      <label className="ml-auto flex min-h-11 items-center gap-1.5"><input type="checkbox" checked={hidePlanned} onChange={event => setHidePlanned(event.target.checked)} />Hide not-automated</label>
     </div>
-    <div className="hidden overflow-auto rounded-xl border border-border bg-card md:block">
+    <div className="hidden overflow-auto rounded-xl border border-border bg-card xl:block">
       <table aria-label="Lab slots per emulator" className="w-full border-separate border-spacing-0 text-sm">
         <thead><tr><th className="px-3 py-2 text-left text-xs">Emulator</th>
           {[1, 2, 3, 4, 5].map(slot => <th key={slot} className="px-3 py-2 text-left text-xs">Lab {slot}</th>)}
@@ -91,7 +104,7 @@ export function LabsMatrix({ rows, reference, focus, at = Date.now() / 1000 }: {
         <tbody>{shown.map(row => <Fragment key={row.worker}>
           <tr aria-label={row.worker} className="border-t border-border/60 align-top">
             <th scope="row" className="px-3 py-2 text-left text-xs font-normal">
-              <button type="button" aria-label={`Details for ${row.worker}`} aria-expanded={open.has(row.worker)} onClick={() => toggle(row.worker)} className="inline-flex items-center gap-1">
+              <button type="button" aria-label={`Details for ${row.worker}`} aria-expanded={open.has(row.worker)} onClick={() => toggle(row.worker)} className="inline-flex min-h-11 items-center gap-1">
                 {open.has(row.worker) ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                 <span className="font-medium" style={{ color: deviceColor(row.worker) }}>{row.worker}</span></button>
               <p className="text-muted-foreground">{row.strategy_name ?? "No strategy"}</p>
@@ -99,27 +112,47 @@ export function LabsMatrix({ rows, reference, focus, at = Date.now() / 1000 }: {
               {row.plan && row.plan.jar > 0 && <p className="text-muted-foreground">Lab jar {gameNumber(row.plan.jar)}</p>}
               {row.reason && <p className="text-danger">{row.reason}</p>}
             </th>
-            {row.plan ? row.plan.slots.map(slot => <td key={slot.slot} className="px-2 py-2"><SlotCell slot={slot} at={at} hidePlanned={hidePlanned} /></td>)
-              : <td colSpan={5} className="px-3 py-2 text-xs text-muted-foreground">Unknown</td>}
+            {[1, 2, 3, 4, 5].map(number => {
+              const slot = row.plan?.slots.find(item => item.slot === number);
+              return <td key={number} className="px-2 py-2">
+                {slot ? <SlotCell slot={slot} at={at} hidePlanned={hidePlanned} /> : <p className="rounded-md border border-border p-2 text-xs text-muted-foreground">Unknown</p>}
+                <PlanLink row={row} slot={number} />
+              </td>;
+            })}
             <td className="px-2 py-2"><GemCell row={row} hidePlanned={hidePlanned} /></td>
           </tr>
           {open.has(row.worker) && <tr><td colSpan={7}><Details row={row} /></td></tr>}
         </Fragment>)}</tbody>
       </table>
     </div>
-    <div className="space-y-3 md:hidden">{shown.map(row => <article key={row.worker} aria-label={`Labs for ${row.worker}`} className="space-y-2 rounded-xl border border-border bg-card p-3">
+    <div className="space-y-3 xl:hidden">{shown.map(row => <article key={row.worker} aria-label={`Labs for ${row.worker}`} className="min-w-0 space-y-2 rounded-xl border border-border bg-card p-3 [overflow-wrap:anywhere]">
       <h3 className="font-medium" style={{ color: deviceColor(row.worker) }}>{row.worker}</h3>
+      <p className="text-xs text-muted-foreground">{row.strategy_name ?? "No strategy"}</p>
+      <p className="font-mono text-xs text-muted-foreground">{row.wallet.coins !== null ? `${gameNumber(row.wallet.coins)} coins` : "coins ?"} · {row.wallet.gems ?? "?"} gems</p>
+      {row.plan && row.plan.jar > 0 && <p className="text-xs text-muted-foreground">Lab jar {gameNumber(row.plan.jar)}</p>}
       {row.reason && <p className="text-xs text-danger">{row.reason}</p>}
-      <div className="grid grid-cols-2 gap-2">{(row.plan?.slots ?? []).map(slot => <SlotCell key={slot.slot} slot={slot} at={at} hidePlanned={hidePlanned} />)}</div>
+      <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">{[1, 2, 3, 4, 5].map(number => {
+        const slot = row.plan?.slots.find(item => item.slot === number);
+        return <section role="region" aria-label={`Lab ${number}`} key={number} className="min-w-0 space-y-2">
+          <h4 className="text-xs font-semibold">Lab {number}</h4>
+          {slot ? <SlotCell slot={slot} at={at} hidePlanned={hidePlanned} /> : <p className="rounded-md border border-border p-2 text-xs text-muted-foreground">Unknown</p>}
+          <PlanLink row={row} slot={number} />
+        </section>;
+      })}</div>
       <GemCell row={row} hidePlanned={hidePlanned} />
+      <button type="button" aria-label={`Details for ${row.worker}`} aria-expanded={open.has(row.worker)} onClick={() => toggle(row.worker)}
+        className="inline-flex min-h-11 items-center gap-2 rounded-md border border-border px-3 text-xs">
+        {open.has(row.worker) ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}Gem path and recent activity
+      </button>
+      {open.has(row.worker) && <Details row={row} />}
     </article>)}</div>
     <div className="grid gap-4 md:grid-cols-2">
-      <section aria-label="Game Speed prices" className="rounded-xl border border-border bg-card p-3 text-xs">
+      <section aria-label="Game Speed prices" className="min-w-0 overflow-x-auto rounded-xl border border-border bg-card p-3 text-xs">
         <h3 className="mb-2 font-semibold">Game Speed</h3>
         <table className="w-full"><thead><tr><th className="text-left">Level</th><th className="text-left">Coins</th><th className="text-left">Time</th><th className="text-left">Max speed</th></tr></thead>
           <tbody>{reference.game_speed.map(level => <tr key={level.level}><td>{level.level}</td><td>{gameNumber(level.coins)}</td><td>{duration(level.seconds)}</td><td>×{level.max_speed.toFixed(1)}</td></tr>)}</tbody></table>
       </section>
-      <section aria-label="Slot prices" className="rounded-xl border border-border bg-card p-3 text-xs">
+      <section aria-label="Slot prices" className="min-w-0 rounded-xl border border-border bg-card p-3 text-xs [overflow-wrap:anywhere]">
         <h3 className="mb-2 font-semibold">Lab and card slots</h3>
         <p>Lab slots: {reference.lab_slots.map(price => `${price.slot}: ${price.gems.toLocaleString("en-US")}`).join(" · ")} gems</p>
         <p>Card slots: {reference.card_slots.map(price => `${price.slot}: ${price.gems.toLocaleString("en-US")}`).join(" · ")} gems</p>

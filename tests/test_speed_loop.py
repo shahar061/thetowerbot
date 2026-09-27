@@ -12,6 +12,7 @@ button" is checked against measured pixels.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -126,7 +127,7 @@ def test_reroll_raises_speed_before_any_other_battle_action(
 
     in_run.reroll_progress = Mock()
     in_run.reroll_progress.speed_target.return_value = 1.5
-    in_run.controls.apply({"target_speed": 1.0})
+    in_run.controls.apply({"target_speed": None, "auto_fastest": True})
 
     def unexpected(*args: object, **kwargs: object) -> None:
         raise AssertionError("battle action ran before speed was raised")
@@ -269,3 +270,271 @@ def test_the_readout_window_does_not_overlap_either_arrow() -> None:
     right = readout.dx + readout.w
     assert left > config.SPEED_MINUS_REGION.dx + config.SPEED_MINUS_REGION.w
     assert right < config.SPEED_PLUS_REGION.dx
+
+@pytest.fixture
+def deadline_bot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TowerBot, list[float], list[str]]:
+    from control import Controls
+    from strategy import Strategy, ActionRule
+    from tests.test_lab_transactions import authority, Device
+    from tests.test_maintenance_schedule import running
+    from tests.test_lab_screen import frame
+    from tests.conftest import _RecordingBus
+    from shopping import ShoppingSession
+    import digits
+    import vision
+    import screens
+    import ocr
+    account, journal, scope = authority(tmp_path)
+    runtime = running(tmp_path, finish=110.)
+    clock = [109.]
+    picture = ['in_run_lit']
+    monkeypatch.setattr('tower_bot.time.time', lambda: clock[0])
+    monkeypatch.setattr('tower_bot.capture_screen', lambda _device: frame(picture[0]))
+    monkeypatch.setattr('speed.tap', lambda device, x, y: device.taps.append((x, y)))
+    monkeypatch.setattr(ocr.FrameReads, 'full', lambda _reads: ())
+    templates = vision.TemplateCache(config.TEMPLATE_DIR)
+    bus = _RecordingBus()
+    bot = TowerBot(Device(), templates, bus, account_state=account,
+        shopping=ShoppingSession(templates, bus, digits.NumberReader(), journal=journal),
+        controls=Controls(strategy=Strategy(name='deadline',
+            actions=(ActionRule(name='Damage', template='upgrade_damage.png', enabled=False),),
+            auto_fastest=True, tap_delay=0., tap_jitter_px=0.)))
+    # Persisted jobs are historical after construction; fresh Lab observations
+    # are the only way to introduce a new deadline into this process.
+    bot.lab_runtime = runtime
+    bot.lab_visit.runtime = bot.lab_runtime
+    bot.tracker.state = screens.ScreenState.IN_RUN
+    bot.tracker._confirmed = True
+    return bot, clock, picture
+
+
+def test_deadline_real_bot_taps_once_then_persists_widget_capability(deadline_bot: tuple[TowerBot, list[float], list[str]], monkeypatch: pytest.MonkeyPatch) -> None:
+    bot, clock, picture = deadline_bot
+    bot.run_once()
+    assert not tapped_in(PLUS_BOX, bot.device.taps)
+    clock[0] = 110.
+    bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 1
+    picture[0] = 'in_run_fast'
+    clock[0] = 111.
+    bot.run_once()
+    clock[0] = 112.
+    bot.run_once()
+    assert bot.lab_runtime.snapshot().verified_speed == 1.5
+    assert bot.lab_runtime.snapshot().slots[0].state == 'researching'
+    from unittest.mock import Mock
+    bot.reroll_progress = Mock()
+    bot.reroll_progress.speed_target.return_value = 1.
+    targets = []
+    monkeypatch.setattr(bot.speed, 'settle', lambda *args, **kw: targets.append(kw['target']))
+    bot._manage_speed(bot.controls.snapshot(), (12, 1646), ())
+    assert targets[0] >= 1.5
+    assert not tapped_in(MINUS_BOX, bot.device.taps)
+
+
+def test_deadline_pending_purchase_and_pause_preserve_generation(deadline_bot: tuple[TowerBot, list[float], list[str]]) -> None:
+    from tests.test_lab_transactions import prepared
+    bot, clock, _ = deadline_bot
+    bot.run_once()
+    txn = prepared(bot.shopping.journal, bot.account_state.verified_scope)
+    clock[0] = 110.
+    bot.run_once()
+    assert not tapped_in(PLUS_BOX, bot.device.taps)
+    assert bot.shopping.journal.open_transactions()[0].key == txn.key
+    assert bot.maintenance_status == 'pending_purchase'
+    assert any(a.kind == 'speed_check' for a in bot.maintenance.due(110.))
+    bot.controls.apply({'paused': True})
+    clock[0] = 111.
+    bot.run_once()
+    assert bot.maintenance_status == 'paused'
+    assert not tapped_in(PLUS_BOX, bot.device.taps)
+
+
+def test_deadline_manual_target_never_raised_and_new_generation_rearms(deadline_bot: tuple[TowerBot, list[float], list[str]]) -> None:
+    bot, clock, _ = deadline_bot
+    bot.controls.apply({'target_speed': 1.})
+    clock[0] = 110.
+    bot.run_once()
+    assert not tapped_in(PLUS_BOX, bot.device.taps)
+    bot.controls.apply({'target_speed': 2.})
+    for stamp in range(111, 119):
+        clock[0] = float(stamp)
+        bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 4
+    from dataclasses import replace
+    snapshot = bot.lab_runtime.snapshot()
+    bot.lab_runtime._snapshot = replace(snapshot, slots=(replace(snapshot.slots[0],
+        generation='new-job', expected_finish=120.), *snapshot.slots[1:]))
+    clock[0] = 120.
+    bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 5
+
+
+def test_manual_target_overrides_reroll(in_run: TowerBot, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+    in_run.reroll_progress = Mock()
+    in_run.reroll_progress.speed_target.return_value = 2.
+    in_run.controls.apply({'target_speed': 1., 'auto_fastest': True})
+    targets = []
+    monkeypatch.setattr(in_run.speed, 'settle', lambda *args, **kw: targets.append(kw['target']))
+    in_run._manage_speed(in_run.controls.snapshot(), (12, 1646), ())
+    assert targets == [1.]
+
+
+def test_suspended_pending_battle_purchase_blocks_due_speed(deadline_bot: tuple[TowerBot, list[float], list[str]], monkeypatch: pytest.MonkeyPatch) -> None:
+    bot, clock, _ = deadline_bot
+    bot.autopilot.pending = (object(), 100.)
+    bot.autopilot.suspend('waiting on purchase evidence')
+    clock[0] = 110.
+    # The purchase owner keeps its pending outcome through this scan.
+    monkeypatch.setattr(bot.autopilot, 'step', lambda *args, **kwargs: None)
+    bot.run_once()
+    assert bot.autopilot.pending is not None
+    assert bot.maintenance_status == 'pending_purchase'
+    assert not tapped_in(PLUS_BOX, bot.device.taps)
+    assert any(a.kind == 'speed_check' for a in bot.maintenance.due(110.))
+    bot.autopilot.pending = None
+    clock[0] = 111.
+    bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 1
+
+
+def test_due_speed_stays_visible_on_unsafe_screen(deadline_bot: tuple[TowerBot, list[float], list[str]]) -> None:
+    bot, clock, picture = deadline_bot
+    picture[0] = 'main_menu'
+    clock[0] = 110.
+    bot.run_once()
+    assert bot.maintenance_status == 'unsafe_screen'
+    assert not tapped_in(PLUS_BOX, bot.device.taps)
+    assert any(a.kind == 'speed_check' for a in bot.maintenance.due(110.))
+
+
+def test_corrected_deadline_rearms_exhausted_real_loop_once(deadline_bot: tuple[TowerBot, list[float], list[str]]) -> None:
+    from dataclasses import replace
+    bot, clock, _ = deadline_bot
+    for stamp in range(110, 117):
+        clock[0] = float(stamp)
+        bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 4
+    assert bot.maintenance_status == 'speed_check_exhausted'
+    snapshot = bot.lab_runtime.snapshot()
+    job = replace(snapshot.slots[0], expected_finish=130., observed_at=120.)
+    bot.lab_runtime._snapshot = replace(snapshot, slots=(job, *snapshot.slots[1:]))
+    clock[0] = 129.
+    bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 4
+    for stamp in range(130, 138):
+        clock[0] = float(stamp)
+        bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 8
+    assert bot.lab_runtime.snapshot().slots[0].generation == job.generation
+    assert bot.lab_runtime.snapshot().slots[0].state == 'researching'
+
+
+def test_loop_wakes_at_deadline_before_normal_scan(deadline_bot: tuple[TowerBot, list[float], list[str]], monkeypatch: pytest.MonkeyPatch) -> None:
+    bot, clock, _ = deadline_bot
+    clock[0] = 109.
+    waits = []
+    def stop_after_wait(timeout: float | None = None) -> bool:
+        waits.append(timeout)
+        bot._running = False
+        return False
+    monkeypatch.setattr(bot._stopping, 'wait', stop_after_wait)
+    bot.run_forever(interval=30.)
+    assert waits == [1.]
+
+
+def test_restart_does_not_rearm_consumed_window(deadline_bot: tuple[TowerBot, list[float], list[str]]) -> None:
+    from maintenance_schedule import MaintenanceSchedule
+    import speed
+    bot, clock, _ = deadline_bot
+    for stamp in range(110, 117):
+        clock[0] = float(stamp)
+        bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 4
+    before = bot.lab_runtime.snapshot()
+    bot.speed = speed.SpeedController()
+    bot.maintenance = MaintenanceSchedule(bot.lab_runtime.root, before.scope.account_id)
+    bot._deadline_speed = None
+    clock[0] = 117.
+    bot.run_once()
+    assert len(tapped_in(PLUS_BOX, bot.device.taps)) == 4
+    assert before.slots[0] == bot.lab_runtime.snapshot().slots[0]
+
+
+def test_safe_home_arms_read_only_deadline_inspection_without_acknowledging(deadline_bot: tuple[TowerBot, list[float], list[str]], monkeypatch: pytest.MonkeyPatch) -> None:
+    import screens
+    bot, clock, picture = deadline_bot
+    picture[0] = 'menu_main_labs_unlocked'
+    clock[0] = 110.
+    bot.tracker.state = screens.ScreenState.MAIN_MENU
+    bot.tracker._confirmed = True
+    monkeypatch.setattr(bot._notifications, 'verification_due', lambda now: False)
+    monkeypatch.setattr(bot, '_offer_cards_intro', lambda: False)
+    monkeypatch.setattr(bot, '_offer_claim', lambda _settings: None)
+    bot.run_once()
+    assert bot.lab_visit.active
+    assert any(a.kind == 'inspect_labs' for a in bot.maintenance.due(110.))
+    assert bot.shopping.journal.open_transactions() == ()
+    assert not bot.device.taps
+
+
+def test_runtime_callback_requires_current_complete_two_capture_strip(deadline_bot: tuple[TowerBot, list[float], list[str]]) -> None:
+    from dataclasses import replace
+    from tests.test_lab_runtime import observation
+    bot, clock, _ = deadline_bot
+    reading = observation(100.)
+    reading = replace(reading, slots_owned=1, jobs=(reading.jobs[0],))
+    def capture(stamp: float, *, complete: bool) -> None:
+        clock[0] = stamp
+        bot._screen_captured_at = stamp
+        bot._screen_fact_scope = bot.account_state.verified_scope
+        current = replace(reading, observed_at=stamp)
+        if not complete:
+            current = replace(current, slots_owned=None, slots_status='unknown')
+            assert not current.strip_read()
+        bot._observe_lab_runtime(current)
+    capture(100., complete=True)
+    capture(101., complete=True)
+    before = bot.lab_runtime.snapshot().slots[0]
+    assert bot.lab_runtime.snapshot().slots_owned == 1
+    bot.maintenance.request('inspect_labs', 'partial-regression', 110., reason='test-inspection')
+    capture(120., complete=False)
+    capture(121., complete=False)
+    snapshot = bot.lab_runtime.snapshot()
+    assert snapshot.slots_owned == 1  # Historical ownership is preserved.
+    assert snapshot.slots[0].observed_at == 121.
+    assert snapshot.slots[0].generation == before.generation
+    assert snapshot.slots[0].state == 'researching'
+    assert any(a.generation == 'partial-regression' for a in bot.maintenance.due(121.))
+    capture(122., complete=True)  # One complete capture is not a pair.
+    capture(122., complete=True)  # Replayed timestamp is not a second capture.
+    assert any(a.generation == 'partial-regression' for a in bot.maintenance.due(122.))
+    capture(123., complete=True)
+    assert not any(a.generation == 'partial-regression' for a in bot.maintenance.due(123.))
+
+
+@pytest.mark.parametrize('reason', ['timer_correction_limit', 'restart'])
+def test_unacknowledged_inspection_never_rearms_every_menu_pass(
+        deadline_bot, monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    """A due inspection a visit cannot acknowledge is paced; BATTLE proceeds."""
+    import screens
+    bot, clock, picture = deadline_bot
+    bot.maintenance.request('inspect_labs', f'{reason}:x', 50., reason=reason, slot=1)
+    picture[0] = 'menu_main_labs_unlocked'
+    bot.tracker.state = screens.ScreenState.MAIN_MENU
+    bot.tracker._confirmed = True
+    monkeypatch.setattr(bot._notifications, 'verification_due', lambda now: False)
+    monkeypatch.setattr(bot, '_offer_cards_intro', lambda: False)
+    monkeypatch.setattr(bot, '_offer_claim', lambda _settings: None)
+    armed = []
+    for stamp in (110., 200., 300., 400., 500.):
+        clock[0] = stamp
+        bot.run_once()
+        if bot.lab_visit.active:
+            armed.append(stamp)
+            bot.lab_visit.cancel('visit_ended_without_acknowledgment')
+    # Exponential spacing (120 s, then 240 s): most menu passes reach BATTLE.
+    assert armed == [110., 300.], armed
+    if reason == 'restart':
+        assert any(a.reason == reason for a in bot.maintenance.due(500.))  # Still due, visible.

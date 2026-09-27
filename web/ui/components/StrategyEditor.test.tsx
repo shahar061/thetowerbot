@@ -242,6 +242,15 @@ describe("StrategyEditor", () => {
     expect(onChange.mock.calls[0][0].target_speed).toBeNull();
   });
 
+  it("enables automatic fastest without discarding a manual target", () => {
+    const onChange = vi.fn();
+    render(<StrategyEditor value={{ ...strategy, target_speed: 1 }} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic fastest speed" }));
+    expect(onChange.mock.calls[0][0].auto_fastest).toBe(true);
+    expect(onChange.mock.calls[0][0].target_speed).toBe(1);
+    expect(screen.getByText(/A selected target speed takes priority/)).toBeTruthy();
+  });
+
   // -- claims ---------------------------------------------------------------
 
   const claiming: Strategy = {

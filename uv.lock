@@ -898,6 +898,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "adbutils" },
     { name = "fastapi" },
+    { name = "httpx2" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "rapidocr-onnxruntime" },
@@ -907,7 +908,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx2" },
     { name = "pytest" },
 ]
 
@@ -915,6 +915,7 @@ dev = [
 requires-dist = [
     { name = "adbutils", specifier = ">=2.12" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx2", specifier = ">=2.12.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", specifier = ">=4.9" },
     { name = "rapidocr-onnxruntime", specifier = "==1.4.4" },
@@ -924,7 +925,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx2", specifier = ">=2.12.0" },
     { name = "pytest", specifier = ">=9.1.1" },
 ]
 

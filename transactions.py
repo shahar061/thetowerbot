@@ -19,6 +19,10 @@ was attempted. The gap between them is exactly what a crash creates.
 from __future__ import annotations
 
 import hashlib
+import functools
+import threading
+import time
+from contextlib import closing
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, field, replace
@@ -31,6 +35,32 @@ import events
 import ledger
 import upgrades
 from fleet import workshop_prices
+from evidence_scope import BalanceInterval, FactScope, ScopeContinuity
+from currencies import CurrencyRepository, _amount
+
+
+# Process-local mutation fence shared by journal instances for the same file.
+# Durable pending facts are populated only by the background recovery reader.
+_recovery_lock = threading.Lock()
+_recovery_fences: dict[str, dict[str, Any]] = {}
+
+
+def _recovery_mutation(method: Any) -> Any:
+    @functools.wraps(method)
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with _recovery_lock:
+            row = _recovery_fences[self._recovery_key]
+            row['epoch'] += 1
+            row['active'] += 1
+            row['observed'] = None
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            with _recovery_lock:
+                row['epoch'] += 1
+                row['active'] -= 1
+                row['observed'] = None
+    return wrapped
 
 
 def abbreviation_slack(value: int) -> int:
@@ -60,8 +90,8 @@ class Stage(str, Enum):
 
     `INTENDED` and `ACTED` are the two open stages, and the difference is
     the one a crash turns on: `INTENDED` means no device action was ever
-    sent, so nothing was spent; `ACTED` means one was, and the outcome is
-    unknown until the wallet is read again.
+    sent. `ACTED` means dispatch was durably claimed before input; it may
+    have been sent, so semantic proof is required before further spending.
     """
 
     INTENDED = "intended"
@@ -119,6 +149,7 @@ class Intent:
     evidence: frozenset[str] = field(default_factory=frozenset)
     ts: float = 0.0
     before: dict[str, Any] = field(default_factory=dict)
+    operation: str | None = None
 
     @property
     def key(self) -> str:
@@ -137,6 +168,8 @@ class Intent:
             repr(sorted(self.evidence)),
             repr(self.ts),
         )
+        if self.operation in ('lab_start', 'lab_unlock'):
+            parts += (self.operation, json.dumps(self.before, sort_keys=True))
         return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:32]
 
 
@@ -164,6 +197,13 @@ class RecoveryEvidence:
     observed_at: float
     frame_digest: str
     effect_value: float | None = None
+    scope: FactScope | None = None
+    continuity: ScopeContinuity | None = None
+    operation: str | None = None
+    slot: int | None = None
+    research_id: str | None = None
+    target_level: int | None = None
+    completes_at: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -181,6 +221,9 @@ class Transaction:
     ts: float = 0.0
     acted_at: float | None = None
     before: dict[str, Any] = field(default_factory=dict)
+    scope: FactScope | None = None
+    operation: str = 'workshop_buy'
+    reconciliation: dict[str, Any] = field(default_factory=dict)
 
 
 class TransactionJournal:
@@ -194,8 +237,30 @@ class TransactionJournal:
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
+        self._recovery_key = str(self.path.absolute())
+        with _recovery_lock:
+            _recovery_fences.setdefault(self._recovery_key,
+                dict(epoch=0, active=0, observed=None, pending=True))
         # Creates the file and the schema when this is the first use.
         db.connect(self.path).close()
+        self.currencies = CurrencyRepository(self.path)
+
+    def recovery_snapshot(self) -> tuple[int, bool]:
+        """Nonblocking cached facts; missing, stale or mutating means pending."""
+        with _recovery_lock:
+            row = _recovery_fences[self._recovery_key]
+            stale = row['observed'] is None or time.monotonic() - row['observed'] > 2
+            return row['epoch'], bool(stale or row['active'] or row['pending'])
+
+    def refresh_recovery_snapshot(self) -> None:
+        """Background only. Never clears or reconciles a durable purchase."""
+        with _recovery_lock:
+            epoch = _recovery_fences[self._recovery_key]['epoch']
+        pending = bool(self.open_transactions())
+        with _recovery_lock:
+            row = _recovery_fences[self._recovery_key]
+            if row['epoch'] == epoch and not row['active']:
+                row.update(pending=pending, observed=time.monotonic())
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=1.)
@@ -203,6 +268,67 @@ class TransactionJournal:
         conn.execute("PRAGMA busy_timeout=1000")
         return conn
 
+    @_recovery_mutation
+    def prepare(self, intent: Intent, *, scope: FactScope, balance: BalanceInterval,
+                reserve: int = 0) -> Transaction | None:
+        """Reserve and record under one write lock; all spenders share commitments."""
+        if intent.operation not in (None, 'workshop_buy', 'card_buy', 'lab_start', 'lab_unlock'):
+            return None
+        if intent.operation in ('lab_start', 'lab_unlock'):
+            before = intent.before
+            if (intent.category != 'LABS' or type(before.get('slot')) is not int
+                    or not 1 <= before['slot'] <= 5 or not before.get('evidence_digest')
+                    or intent.currency != ('coins' if intent.operation == 'lab_start' else 'gems')):
+                return None
+            if intent.operation == 'lab_start' and (
+                    not isinstance(before.get('research_id'), str)
+                    or not before['research_id'].startswith('labs.')
+                    or type(before.get('target_level')) is not int or before['target_level'] < 1
+                    or type(before.get('source_level')) is not int
+                    or before['source_level'] != before['target_level'] - 1):
+                return None
+        if (balance.scope != scope or balance.currency != intent.currency
+                or balance.lower is None or balance.source == 'estimated'
+                or balance.source == 'derived' and (not balance.catalog_revision or not balance.modifier_revision)
+                or not _amount(intent.price) or not _amount(reserve)
+                or not 0 <= intent.ts - balance.observed_at <= 30
+                or any(intent.before.get(key) is not None and intent.before[key] != getattr(balance, key)
+                       for key in ('catalog_revision', 'modifier_revision'))):
+            return None
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self.currencies.scope_matches(scope, balance.currency, conn):
+                return None
+            existing = conn.execute("SELECT * FROM transactions WHERE key=?", (intent.key,)).fetchone()
+            if existing is not None:
+                txn = _transaction(existing)
+                return txn if txn.scope == scope else None
+            pending = conn.execute("SELECT key FROM transactions WHERE stage != ? LIMIT 1",
+                                   (Stage.RESOLVED.value,)).fetchone()
+            if pending:
+                raise TransactionInFlight('reconcile pending intent before spending again')
+            changed_since = conn.execute(
+                "SELECT 1 FROM transactions WHERE currency=? AND acted_at>=? LIMIT 1",
+                (intent.currency, balance.observed_at)).fetchone()
+            if changed_since:
+                return None
+            committed = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM currency_commitments WHERE currency=?",
+                                     (intent.currency,)).fetchone()[0]
+            if balance.lower < intent.price + reserve + committed:
+                return None
+            conn.execute("INSERT INTO currency_commitments VALUES (?, ?, ?)",
+                         (f'purchase:{intent.key}', intent.currency, intent.price))
+            conn.execute("INSERT INTO transactions (key,ts,stage,item,category,currency,price,wallet_before,evidence,detail) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?)", (
+                             intent.key, intent.ts, Stage.INTENDED.value, intent.item, intent.category,
+                             intent.currency, intent.price, intent.wallet_before, json.dumps(sorted(intent.evidence)),
+                             json.dumps({'before': intent.before, 'scope': asdict(scope), 'balance': asdict(balance),
+                                         'operation': intent.operation or ('card_buy' if intent.category == 'CARDS' else 'workshop_buy')})))
+            conn.execute("INSERT INTO currency_observations VALUES (?,?) ON CONFLICT(currency) DO UPDATE SET detail=excluded.detail",
+                         (balance.currency, json.dumps(asdict(balance))))
+        return self._require(intent.key)
+
+    @_recovery_mutation
     def open(self, intent: Intent) -> Transaction:
         """Record the intent. Must be called before the device action.
 
@@ -211,6 +337,8 @@ class TransactionJournal:
         twice: the row a dead process left behind is still unanswered, so
         the next attempt never gets as far as tapping.
         """
+        if intent.operation in ('lab_start', 'lab_unlock'):
+            raise ValueError('Lab spending requires scoped atomic prepare')
         already = self.open_transactions()
         if already:
             raise TransactionInFlight(
@@ -236,18 +364,20 @@ class TransactionJournal:
                         "price": intent.price,
                         "wallet_before": intent.wallet_before,
                         "evidence": json.dumps(sorted(intent.evidence)),
-                        "detail": json.dumps({"before": intent.before}),
+                        "detail": json.dumps({"before": intent.before, 'operation': intent.operation or
+                                              ('card_buy' if intent.category == 'CARDS' else 'workshop_buy')}),
                     },
                 )
         finally:
             conn.close()
         return self._require(intent.key)
 
+    @_recovery_mutation
     def record_action(self, key: str, *, at: float | None = None) -> Transaction:
         """Mark that the one device action this transaction owns was sent.
 
-        Called immediately after the tap returns, so the window in which a
-        crash can lose the fact of the tap is one statement wide.
+        Called before dispatch: a crash may leave a possibly-sent action, but
+        can never leave a sent action looking safe to replay.
         """
         current = self._row(key)
         if current is None:
@@ -259,14 +389,17 @@ class TransactionJournal:
         conn = self._connect()
         try:
             with conn:
-                conn.execute(
-                    "UPDATE transactions SET stage = ?, acted_at = ? WHERE key = ?",
-                    (Stage.ACTED.value, at, key),
+                cursor = conn.execute(
+                    "UPDATE transactions SET stage = ?, acted_at = ? WHERE key = ? AND stage = ?",
+                    (Stage.ACTED.value, at, key, Stage.INTENDED.value),
                 )
+                if cursor.rowcount != 1:
+                    raise ActionAlreadyTaken(key)
         finally:
             conn.close()
         return self._require(key)
 
+    @_recovery_mutation
     def resolve(
         self,
         key: str,
@@ -274,6 +407,8 @@ class TransactionJournal:
         wallet_after: int | None,
         effect_changed: bool | None,
         ts: float | None = None,
+        scope: FactScope | None = None,
+        evidence_ref: str = '',
     ) -> Outcome:
         """Close a transaction against the evidence that followed it.
 
@@ -284,6 +419,13 @@ class TransactionJournal:
         row = self._row(key)
         if row is None:
             raise KeyError(f"no transaction {key}")
+
+        txn = _transaction(row)
+        if txn.scope is not None:
+            return self.reconcile(key, RecoveryEvidence(
+                category=txn.category, currency=txn.currency, wallet_after=wallet_after,
+                effect_changed=effect_changed, observed_at=ts or 0., frame_digest=evidence_ref,
+                scope=scope), now=ts or 0.)
 
         outcome = judge(
             key,
@@ -304,13 +446,35 @@ class TransactionJournal:
                         ts,
                         outcome.verdict.value,
                         outcome.spent,
-                        json.dumps({"reason": outcome.reason}),
+                        json.dumps({**json.loads(row['detail'] or '{}'), "reason": outcome.reason}),
                         key,
                     ),
                 )
         finally:
             conn.close()
         return outcome
+
+    @_recovery_mutation
+    def cancel_before_input(self, key: str, *, scope: FactScope | None,
+                            reason: str, now: float) -> Outcome:
+        """Only the dispatch owner may report an explicit preflight refusal."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT * FROM transactions WHERE key=?', (key,)).fetchone()
+            if row is None:
+                raise KeyError(key)
+            txn = _transaction(row)
+            if txn.scope != scope or (scope is not None and self.currencies.current_scope(conn) != scope):
+                return Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None, reason='scope changed')
+            if txn.stage == Stage.RESOLVED:
+                return Outcome(key=key, verdict=Verdict(row['outcome']), spent=row['spent'])
+            detail = json.loads(row['detail'] or '{}')
+            detail['reason'] = reason
+            conn.execute('UPDATE transactions SET stage=?, outcome=?, spent=0, resolved_at=?, detail=? WHERE key=?',
+                         (Stage.RESOLVED.value, Verdict.REFUTED.value, now, json.dumps(detail), key))
+            conn.execute('DELETE FROM currency_commitments WHERE owner=? AND currency=?',
+                         (f'purchase:{key}', txn.currency))
+            return Outcome(key=key, verdict=Verdict.REFUTED, spent=0, reason=reason)
 
     def open_transactions(self) -> tuple[Transaction, ...]:
         """Every attempt still waiting for an answer, oldest first."""
@@ -342,7 +506,19 @@ class TransactionJournal:
         return tuple(row["key"] for row in rows)
 
     @staticmethod
-    def recovery_event(txn: Transaction, outcome: Outcome) -> events.Purchased:
+    def recovery_event(txn: Transaction, outcome: Outcome) -> events.Event:
+        if txn.operation == 'lab_start':
+            return events.LabResearchStarted(
+                concept_id=txn.before['research_id'], slot=txn.before['slot'],
+                source_level=txn.before.get('source_level'), target_level=txn.before.get('target_level'),
+                price=outcome.spent, coins_before=txn.wallet_before,
+                coins_after=txn.reconciliation.get('wallet_after', txn.wallet_before - outcome.spent),
+                completes_at=txn.reconciliation.get('completes_at'), transaction_key=txn.key)
+        if txn.operation == 'lab_unlock':
+            return events.LabSlotUnlocked(slot=txn.before['slot'], price=outcome.spent,
+                gems_before=txn.wallet_before,
+                gems_after=txn.reconciliation.get('wallet_after', txn.wallet_before-outcome.spent),
+                transaction_key=txn.key)
         return events.Purchased(
             item=txn.item, category=txn.category, price=txn.price,
             coins_before=txn.wallet_before if txn.currency == "coins" else None,
@@ -351,6 +527,7 @@ class TransactionJournal:
             transaction_key=txn.key,
         )
 
+    @_recovery_mutation
     def reconcile(self, key: str, evidence: RecoveryEvidence, *, now: float) -> Outcome:
         """Persist proof and its ledger debit together; uncertainty keeps the gate shut."""
         conn = self._connect()
@@ -365,24 +542,49 @@ class TransactionJournal:
                     return Outcome(key=key, verdict=Verdict(row["outcome"]), spent=row["spent"],
                                    reason=detail.get("reason"))
                 txn = _transaction(row)
+                scope_matches = txn.scope is None and evidence.scope is None
+                if txn.scope is not None:
+                    scope_matches = evidence.scope is not None and self.currencies.scope_matches(
+                        evidence.scope, txn.currency, conn) and (
+                        evidence.scope == txn.scope or evidence.continuity is not None
+                        and evidence.continuity.original == txn.scope
+                        and evidence.continuity.current == evidence.scope
+                        and evidence.continuity.valid(now=now))
+                boundary = txn.acted_at if txn.stage == Stage.ACTED else txn.ts
                 relevant = (
-                    txn.stage == Stage.ACTED and txn.acted_at is not None
-                    and txn.acted_at < evidence.observed_at <= now
+                    scope_matches and boundary is not None
+                    and (txn.stage == Stage.ACTED or txn.scope is not None and txn.stage == Stage.INTENDED)
+                    and boundary < evidence.observed_at <= now
                     and now - evidence.observed_at <= 30 and bool(evidence.frame_digest)
                     and evidence.category == txn.category and evidence.currency == txn.currency
-                    and txn.currency in ("coins", "gems")
+                    and txn.currency in ("coins", "gems", "cash", "stones")
                     and txn.price is not None and txn.price >= 0
                     and txn.wallet_before is not None and txn.wallet_before >= 0
                     and evidence.wallet_after is not None and evidence.wallet_after >= 0
                 )
+                if txn.operation in ('lab_start', 'lab_unlock'):
+                    relevant = relevant and (
+                        evidence.operation == txn.operation and evidence.slot == txn.before.get('slot')
+                        and (txn.operation == 'lab_unlock' or
+                             evidence.research_id == txn.before.get('research_id')
+                             and evidence.target_level == txn.before.get('target_level')))
                 outcome = judge(key, price=txn.price, wallet_before=txn.wallet_before,
                                 wallet_after=evidence.wallet_after,
                                 effect_changed=evidence.effect_changed if relevant else None)
-                proven = outcome.verdict in (Verdict.BOUGHT, Verdict.FREE) and outcome.spent is not None
+                undispatched = (relevant and txn.scope is not None and txn.stage == Stage.INTENDED
+                                and evidence.effect_changed is False and evidence.wallet_after == txn.wallet_before)
+                if undispatched:
+                    outcome = Outcome(key=key, verdict=Verdict.REFUTED, spent=0,
+                                      reason='dispatch was never claimed; unchanged semantic evidence')
+                proven = (txn.stage == Stage.ACTED and outcome.verdict in (Verdict.BOUGHT, Verdict.FREE)
+                          and outcome.spent is not None) or undispatched
                 if not proven:
                     outcome = Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None,
                                       reason="restart evidence is insufficient; further actions blocked")
-                detail.update(reason=outcome.reason, reconciliation=asdict(evidence))
+                saved_evidence = asdict(evidence)
+                if evidence.continuity is not None:
+                    saved_evidence['continuity']['root'] = str(evidence.continuity.root)
+                detail.update(reason=outcome.reason, reconciliation=saved_evidence)
                 conn.execute(
                     "UPDATE transactions SET stage = ?, outcome = ?, spent = ?, resolved_at = ?, detail = ? "
                     "WHERE key = ?",
@@ -390,19 +592,101 @@ class TransactionJournal:
                      outcome.spent, now if proven else None, json.dumps(detail), key),
                 )
                 if proven:
-                    event = replace(self.recovery_event(txn, outcome), ts=now)
-                    for line in ledger.LedgerWriter(conn).lines_for(event):
-                        db.insert_ledger(conn, replace(line, seq=None).as_row(), commit=False)
+                    conn.execute("DELETE FROM currency_commitments WHERE owner=? AND currency=?",
+                                 (f'purchase:{key}', txn.currency))
+                    # Pre-action wallet cannot authorize another purchase after any effect.
+                    conn.execute("DELETE FROM currency_observations WHERE currency=?", (txn.currency,))
+                    if not undispatched:
+                        event = replace(self.recovery_event(replace(txn, reconciliation=saved_evidence), outcome), ts=now)
+                        for line in ledger.LedgerWriter(conn).lines_for(event):
+                            db.insert_ledger(conn, replace(line, seq=None).as_row(), commit=False)
                 return outcome
         finally:
             conn.close()
 
+    OPERATOR_VERDICTS = ('not_charged', 'unproven')
+    OPERATOR_RECENT_SECONDS = 600.
+
+    @_recovery_mutation
+    def operator_reconcile(self, key: str, *, verdict: str, operator: str, evidence: str,
+                           now: float, worker_stopped: bool = False) -> Outcome:
+        """Auditable operator resolution of one open intent; never a DB hand edit.
+
+        ``not_charged``: the operator verified the debit did not happen (spent 0).
+        ``unproven``: the outcome stays unknown and uncredited (spent NULL).
+        Either releases the reservation and discards pre-action wallet
+        observations, so only a newer wallet read can authorize a spend. No
+        ledger line is minted. A settled outcome is never rewritten, and a
+        recent intent requires the operator's confirmation that its worker is
+        stopped (it may still be reconciling in process).
+        """
+        if verdict not in self.OPERATOR_VERDICTS:
+            raise ValueError(f'verdict must be one of {self.OPERATOR_VERDICTS}')
+        if not operator.strip() or not evidence.strip():
+            raise ValueError('operator and evidence are required')
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS transaction_reconciliations ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, verdict TEXT NOT NULL, "
+                    "operator TEXT NOT NULL, evidence TEXT NOT NULL, reconciled_at REAL NOT NULL, "
+                    "previous_stage TEXT NOT NULL, previous_outcome TEXT, scoped INTEGER NOT NULL)")
+                row = conn.execute("SELECT * FROM transactions WHERE key = ?", (key,)).fetchone()
+                if row is None:
+                    raise KeyError(key)
+                if row["stage"] == Stage.RESOLVED.value:
+                    raise ValueError('transaction already settled; settled outcomes are never rewritten')
+                txn = _transaction(row)
+                last = txn.acted_at if txn.acted_at is not None else txn.ts
+                if not worker_stopped and now - last < self.OPERATOR_RECENT_SECONDS:
+                    raise ValueError('intent is recent; confirm its worker is stopped (--worker-stopped)')
+                detail = json.loads(row["detail"] or "{}")
+                reason = f'operator {operator}: {verdict}'
+                detail.update(reason=reason, operator_reconciliation={
+                    'verdict': verdict, 'operator': operator, 'evidence': evidence, 'at': now})
+                outcome = (Outcome(key=key, verdict=Verdict.REFUTED, spent=0, reason=reason)
+                           if verdict == 'not_charged'
+                           else Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None, reason=reason))
+                conn.execute(
+                    "INSERT INTO transaction_reconciliations (key, verdict, operator, evidence, "
+                    "reconciled_at, previous_stage, previous_outcome, scoped) VALUES (?,?,?,?,?,?,?,?)",
+                    (key, verdict, operator, evidence, now, row["stage"], row["outcome"],
+                     int(txn.scope is not None)))
+                conn.execute(
+                    "UPDATE transactions SET stage = ?, outcome = ?, spent = ?, resolved_at = ?, "
+                    "detail = ? WHERE key = ?",
+                    (Stage.RESOLVED.value, outcome.verdict.value, outcome.spent, now,
+                     json.dumps(detail), key))
+                conn.execute("DELETE FROM currency_commitments WHERE owner=? AND currency=?",
+                             (f'purchase:{key}', txn.currency))
+                conn.execute("DELETE FROM currency_observations WHERE currency=?", (txn.currency,))
+                return outcome
+        finally:
+            conn.close()
+
+    def operator_reconciliations(self, key: str | None = None) -> tuple[tuple[Any, ...], ...]:
+        conn = self._connect()
+        try:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='transaction_reconciliations'"
+                            ).fetchone() is None:
+                return ()
+            query = ("SELECT key, verdict, operator, evidence, reconciled_at, previous_stage, "
+                     "previous_outcome, scoped FROM transaction_reconciliations")
+            rows = (conn.execute(query + " WHERE key=? ORDER BY id", (key,)) if key is not None
+                    else conn.execute(query + " ORDER BY id")).fetchall()
+            return tuple(tuple(r) for r in rows)
+        finally:
+            conn.close()
+
+    @_recovery_mutation
     def close_unproven(self, key: str, *, reason: str, now: float) -> Outcome:
         """Give up on proof: resolve UNPROVEN with the spend left unknown.
 
-        The same verdict a living session writes for a tap it never saw
-        answered. The currency commitment is not released here; a wallet
-        read newer than `now` releases it (see resolved_unproven_keys).
+        Scoped attempts remain open and reserved. Legacy rows retain their
+        historical resolved-unknown representation; neither grants a new
+        spending permission or releases a commitment here.
         """
         conn = self._connect()
         try:
@@ -416,6 +700,10 @@ class TransactionJournal:
                     return Outcome(key=key, verdict=Verdict(row["outcome"]), spent=row["spent"],
                                    reason=detail.get("reason"))
                 detail["reason"] = reason
+                if _transaction(row).scope is not None:
+                    conn.execute("UPDATE transactions SET outcome=?, spent=NULL, detail=? WHERE key=?",
+                                 (Verdict.UNPROVEN.value, json.dumps(detail), key))
+                    return Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None, reason=reason)
                 conn.execute(
                     "UPDATE transactions SET stage = ?, outcome = ?, spent = NULL, resolved_at = ?, "
                     "detail = ? WHERE key = ?",
@@ -425,7 +713,7 @@ class TransactionJournal:
         finally:
             conn.close()
 
-    def recovered_visit(self) -> tuple[tuple[Transaction, Outcome], ...]:
+    def recovered_visit(self, *, operations: set[str] | None = None) -> tuple[tuple[Transaction, Outcome], ...]:
         """Receipts still owned by the interrupted visit, including after another crash."""
         conn = self._connect()
         try:
@@ -438,10 +726,12 @@ class TransactionJournal:
             return tuple((_transaction(row), Outcome(
                 key=row["key"], verdict=Verdict(row["outcome"]), spent=row["spent"],
                 reason=json.loads(row["detail"]).get("reason"),
-            )) for row in rows)
+            )) for row in rows if _transaction(row).operation in
+                (operations if operations is not None else {'workshop_buy', 'card_buy'}))
         finally:
             conn.close()
 
+    @_recovery_mutation
     def finish_recovered_visit(self, keys: set[str]) -> None:
         conn = self._connect()
         try:
@@ -586,4 +876,9 @@ def _transaction(row: Any) -> Transaction:
         ts=data["ts"],
         acted_at=data["acted_at"],
         before=json.loads(data.get("detail") or "{}").get("before", {}),
+        scope=(FactScope(**json.loads(data['detail'])['scope'])
+               if json.loads(data.get('detail') or '{}').get('scope') else None),
+        operation=json.loads(data.get('detail') or '{}').get('operation') or
+                  ('card_buy' if data['category'] == 'CARDS' else 'workshop_buy'),
+        reconciliation=json.loads(data.get('detail') or '{}').get('reconciliation', {}),
     )

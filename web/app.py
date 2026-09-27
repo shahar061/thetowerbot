@@ -20,6 +20,8 @@ from __future__ import annotations
 from account_state import AccountRevision, AccountState
 
 import asyncio
+from dataclasses import asdict
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -29,10 +31,10 @@ from urllib.request import urlopen
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Literal
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 import config
 import db
@@ -67,6 +69,8 @@ from sinks.state import BotState
 from strategy import Strategy, StrategyStore
 from telegram_report import ENV_CHAT_ID, ENV_TOKEN, TelegramReporter, render_sample
 from telegram_settings import TelegramProfile, TelegramSettingsError, TelegramSettingsStore, validate_fields
+from recovery_policy import RecoverySettings
+from recovery_settings import RecoverySettingsConflict, RecoverySettingsState, RecoverySettingsStore
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -78,6 +82,14 @@ MAX_LEDGER_PER_PAGE = 200
 # strategy.ControlError carries a `code` naming the KIND of failure, so the
 # routes below map a status without matching on message text.
 _STATUS_FOR_CODE = {"not_found": 404, "conflict": 409, "invalid": 422}
+
+
+class RecoverySettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    settings: RecoverySettings
+    shadow_worker: str | None = None
+    expected_settings_revision: int
+    expected_policy_revision: int
 
 
 def resume_point(request: Request) -> int:
@@ -375,7 +387,19 @@ def create_app(
     if shutdown is None:
         shutdown = threading.Event()
 
-    app = FastAPI(title="The Tower bot")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        start_monitor = getattr(fleet, "start_monitor", None)
+        stop_monitor = getattr(fleet, "stop_monitor", None)
+        if callable(start_monitor):
+            await asyncio.to_thread(start_monitor)
+        try:
+            yield
+        finally:
+            if callable(stop_monitor):
+                await asyncio.to_thread(stop_monitor)
+
+    app = FastAPI(title="The Tower bot", lifespan=lifespan)
     accounts = account_state or getattr(runner, "account_state", None) or AccountState()
 
     def _fleet_root() -> Path | None:
@@ -1937,6 +1961,57 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"message": render_sample(mode, profile)}
+
+    def _recovery_settings_store() -> RecoverySettingsStore:
+        root = _fleet_root()
+        if root is None:
+            raise HTTPException(status_code=503, detail="recovery_settings_unavailable")
+        return RecoverySettingsStore(root)
+
+    def _recovery_settings_payload(state: RecoverySettingsState) -> dict[str, Any]:
+        return {
+            "settings": state.settings.model_dump(mode="json"),
+            "shadow_worker": state.shadow_worker,
+            "settings_revision": state.settings_revision,
+            "policy": asdict(state.policy),
+            "daily_budget": asdict(state.daily_budget),
+            "budget_observed_at_utc": state.budget_observed_at_utc,
+            "assist_allowed_actions": list(state.assist_allowed_actions),
+            # A settings fetch is not evidence that any worker applied it. The
+            # verified per-worker producer (recovery_status.recovery_overview,
+            # scoped to the live attempt) is rendered on each Live card.
+            "status": {"producer": "unknown", "workers": []},
+        }
+
+    @app.get("/api/fleet/recovery/settings")
+    async def fleet_recovery_settings_get() -> dict[str, Any]:
+        try:
+            state = await asyncio.to_thread(_recovery_settings_store().read)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="recovery_settings_unavailable") from exc
+        return _recovery_settings_payload(state)
+
+    @app.put("/api/fleet/recovery/settings")
+    async def fleet_recovery_settings_put(body: Any = Body(...)) -> dict[str, Any]:
+        try:
+            update = RecoverySettingsUpdate.model_validate(body)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="invalid_recovery_settings") from exc
+        try:
+            state = await asyncio.to_thread(
+                _recovery_settings_store().save, update.settings,
+                shadow_worker=update.shadow_worker,
+                expected_settings_revision=update.expected_settings_revision,
+                expected_policy_revision=update.expected_policy_revision)
+        except RecoverySettingsConflict as exc:
+            raise HTTPException(status_code=409, detail={
+                "message": "recovery_settings_revision_changed",
+                "current": _recovery_settings_payload(exc.state)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="recovery_settings_unavailable") from exc
+        return _recovery_settings_payload(state)
 
     @app.api_route("/api/{_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
     def unmatched_api_route(_path: str) -> None:

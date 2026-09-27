@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 
 from supervisor import DeviceSupervisor, GuardedDevice, RecoveryState
+from supervisor import RecoveryPreflightBlocked
+from fleet.input_lease import InputLease
 
 
 class Clock:
@@ -75,6 +77,25 @@ def observed(sut: DeviceSupervisor, clock: Clock, digest: str,
         frame_digest=digest, observed_at=clock.time(), screen=screen,
         account_id=account, online_required=online_required,
     )
+
+
+def test_revoked_generation_sends_no_tap_or_recovery_input(tmp_path: Path) -> None:
+    clock = Clock()
+    device = Device()
+    lease = InputLease(tmp_path / "input-lease.json")
+    lease.grant("generation-a")
+    sut = DeviceSupervisor(
+        path=tmp_path / "supervisor.json", endpoint=device.serial,
+        connect=lambda: device, expected_account="account-a",
+        clock=clock.time, sleep=clock.sleep, input_lease=lease,
+        input_generation="generation-a",
+    )
+    sut.recover()
+    assert observed(sut, clock, "frame") is RecoveryState.READY
+    lease.revoke("generation-a", "blocked scan")
+    with pytest.raises(RecoveryPreflightBlocked):
+        GuardedDevice(sut).click(12, 34)
+    assert device.taps == []
 
 
 def test_correct_device_recovers_pending_action_after_process_restart(tmp_path: Path) -> None:
@@ -450,3 +471,90 @@ def test_cooldown_releases_a_persisted_exhaustion_quarantine(tmp_path: Path) -> 
     sut = cooling_supervisor(path, clock, [device])
     assert sut.recover() is RecoveryState.BLOCKED
     assert sut.device is device
+
+
+def test_explicit_disconnect_and_identity_invalidation_notify_fact_owner(tmp_path):
+    reasons = []
+    clock = Clock()
+    sut = DeviceSupervisor(path=tmp_path / 'supervisor.json', endpoint='endpoint',
+                           connect=lambda: Device(), expected_account=None,
+                           clock=clock.time, sleep=clock.sleep,
+                           identity_invalidated=reasons.append)
+    sut.disconnected()
+    sut.invalidate_identity('manual_play')
+    assert reasons == ['device_disconnected', 'manual_play']
+
+
+def test_mid_run_reconnect_reverifies_account_in_process_with_pacing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reconnect clears the verified account; the bot re-proves it at Home."""
+    import events
+    import ocr
+    import screens
+    import time
+    import tower_bot
+
+    clock = Clock()
+    raw = Device()
+    sut = supervisor(tmp_path / "supervisor.json", clock, [raw])
+    sut.clock = time.time
+    sut.recover()
+    assert sut.current_account is None
+    walks: list[float] = []
+
+    def reverify() -> None:
+        walks.append(time.time())
+        raise RecoveryPreflightBlocked("account navigation evidence unavailable")
+
+    bot = tower_bot.TowerBot(
+        device=GuardedDevice(sut), templates=object(), bus=events.EventBus(),
+        supervisor=sut, identity_reverifier=reverify,
+    )
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    monkeypatch.setattr(bot, "refresh_screen", lambda: setattr(bot, "_screen", frame) or frame)
+    monkeypatch.setattr(screens, "classify", lambda *_: screens.ScreenReading(
+        screens.ScreenState.MAIN_MENU, 1.0, {},
+    ))
+    monkeypatch.setattr(ocr, "read", lambda *_, **__: ())
+    assert bot.run_once() is True
+    assert len(walks) == 1
+    assert bot.run_once() is False  # Paced: no second walk inside the backoff.
+    assert len(walks) == 1
+    assert bot.identity_reverification.status == "failed"
+    assert raw.taps == []
+
+
+def test_identity_walk_taps_are_fenced_by_the_input_lease(tmp_path: Path) -> None:
+    from fleet.input_lease import InputLease
+    from supervisor import IdentityWalkDevice
+
+    device = Device()
+    lease = InputLease(tmp_path / "input-lease.json")
+    lease.grant("gen")
+    sut = DeviceSupervisor(
+        path=tmp_path / "supervisor.json", endpoint=device.serial, connect=lambda: device,
+        expected_account="account-a", input_lease=lease, input_generation="gen",
+    )
+    sut.recover()
+    walk = IdentityWalkDevice(sut)
+    assert walk.serial == device.serial
+    walk.click(1, 2)
+    assert device.taps == [(1, 2)]
+    lease.revoke("gen", "monitor")
+    with pytest.raises(RecoveryPreflightBlocked):
+        walk.click(3, 4)
+    assert device.taps == [(1, 2)]
+
+
+def test_scope_invalidation_failure_does_not_mask_disconnect(tmp_path: Path) -> None:
+    clock = Clock()
+    sut = supervisor(tmp_path / "supervisor.json", clock, [Device()])
+
+    def broken(_: str) -> None:
+        raise OSError("epoch write failed")
+
+    sut.identity_invalidated = broken
+    sut.recover()
+    sut.disconnected()
+    assert sut.status().reason == "device_disconnected"

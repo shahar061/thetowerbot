@@ -63,6 +63,22 @@ def test_currency_identity_and_amounts_are_validated(tmp_path) -> None:
     assert repository.committed("resource:event_token@2026.10") == 0
 
 
+def _bind_session(session):
+    import time
+    from account_state import AccountState, AccountRepository
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    session.account_state = AccountState(AccountRepository(session.journal.path))
+    session.account_state.bind_scope(FactScope('acct','lease','generation',0),
+                                    identity=IdentityEvidence('acct',time.time(),'identity'))
+    return session
+
+
+def _frame():
+    import time
+    return {'observed_at':time.time(), 'frame_digest':'frame'}
+
+
 def test_shopping_intent_respects_a_saved_plan_before_any_action(tmp_path) -> None:
     from shopping import ShoppingSession
     from transactions import TransactionJournal
@@ -70,10 +86,10 @@ def test_shopping_intent_respects_a_saved_plan_before_any_action(tmp_path) -> No
     path = tmp_path / "bot.db"
     plans = CurrencyRepository(path)
     assert plans.reserve("lab-slot", "gems", 90, wallet=100)
-    session = ShoppingSession(None, None, None, journal=TransactionJournal(path))
+    session = _bind_session(ShoppingSession(None, None, None, journal=TransactionJournal(path)))
     with pytest.raises(CommitmentError):
         session._open_intent(item="Card", category="CARDS", currency="gems",
-                             price=11, wallet_before=100, armed=True)
+                             price=11, wallet_before=100, armed=True, before=_frame())
     assert session.journal.open_transactions() == ()
 
 
@@ -82,9 +98,9 @@ def test_shopping_temporary_commitment_releases_when_tap_never_sent(tmp_path) ->
     from transactions import TransactionJournal
 
     path = tmp_path / "bot.db"
-    session = ShoppingSession(None, None, None, journal=TransactionJournal(path))
+    session = _bind_session(ShoppingSession(None, None, None, journal=TransactionJournal(path)))
     intent = session._open_intent(item="Card", category="CARDS", currency="gems",
-                                  price=10, wallet_before=100, armed=True)
+                                  price=10, wallet_before=100, armed=True, before=_frame())
     assert intent is not None
     assert CurrencyRepository(path).committed("gems") == 10
     session._abandon_intent(intent, "no tap")
@@ -96,20 +112,20 @@ def test_shopping_commitment_survives_restart_until_purchase_is_proven(tmp_path)
     from transactions import TransactionJournal, Verdict
 
     path = tmp_path / "bot.db"
-    session = ShoppingSession(None, None, None, journal=TransactionJournal(path))
+    session = _bind_session(ShoppingSession(None, None, None, journal=TransactionJournal(path)))
     intent = session._open_intent(item="Card", category="CARDS", currency="gems",
-                                  price=10, wallet_before=100, armed=True)
+                                  price=10, wallet_before=100, armed=True, before=_frame())
     assert intent is not None
     session._mark_acted(intent)
     assert CurrencyRepository(path).committed("gems") == 10
-    restarted = ShoppingSession(None, None, None, journal=TransactionJournal(path))
+    restarted = _bind_session(ShoppingSession(None, None, None, journal=TransactionJournal(path)))
     outcome = restarted._close(intent.key, price=10, wallet_before=100,
-                               wallet_after=90, effect_changed=True)
+                               wallet_after=90, effect_changed=True, evidence_ref="after-frame")
     assert outcome.verdict == Verdict.BOUGHT
     assert CurrencyRepository(path).committed("gems") == 0
 
 
-def test_fresh_wallet_releases_resolved_uncertain_shopping_commitments(tmp_path) -> None:
+def test_fresh_wallet_alone_does_not_release_unknown_legacy_commitments(tmp_path) -> None:
     from shopping import ShoppingSession
     from transactions import Intent, TransactionJournal, Verdict
 
@@ -125,15 +141,12 @@ def test_fresh_wallet_releases_resolved_uncertain_shopping_commitments(tmp_path)
                                ts=3.0).verdict is Verdict.UNPROVEN
     assert currencies.committed("coins") == 140
 
-    restarted = ShoppingSession(None, None, None, journal=TransactionJournal(path))
-    intent = restarted._open_intent(item="Unlock Defense Upgrades", category="DEFENSE",
-                                    currency="coins", price=75, wallet_before=192,
-                                    armed=True)
-
-    assert intent is not None
-    assert currencies.committed("coins") == 75
-    assert [t.key for t in journal.open_transactions()] == [intent.key]
-
+    restarted = _bind_session(ShoppingSession(None, None, None, journal=TransactionJournal(path)))
+    with pytest.raises(CommitmentError):
+        restarted._open_intent(item="Unlock Defense Upgrades", category="DEFENSE",
+                               currency="coins", price=75, wallet_before=192,
+                               armed=True, before=_frame())
+    assert currencies.committed("coins") == 140
 
 def test_old_wallet_evidence_keeps_uncertain_commitment(tmp_path) -> None:
     from shopping import ShoppingSession

@@ -77,6 +77,19 @@ class SpeedController:
         self._target: float | None = None
         self._last: float | None = None
         self._spent = 0
+        self._completion_generations: set[str] = set()
+
+    @property
+    def exhausted(self) -> bool:
+        return self._spent >= self._patience
+
+    def rearm_completion(self, generation: str) -> bool:
+        """A durable research generation earns at most one fresh patience budget."""
+        if not generation or generation in self._completion_generations:
+            return False
+        self._completion_generations.add(generation)
+        self._spent = 0
+        return True
 
     def _restart(self, target: float | None) -> None:
         self._target = target

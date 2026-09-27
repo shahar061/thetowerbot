@@ -13,6 +13,51 @@ from lab_screen import LabHomeReading, LabPickerReading
 from labs import LabEntry, LabJob
 
 
+def test_per_slot_action_requires_confirmed_idle_and_conservative_coins() -> None:
+    from dataclasses import replace
+    from fleet.resource_blocks import LabAction, LabPlan, SlotNext, SlotNow, SlotPlan, choose_lab_action
+    from lab_runtime import LabJobRecord, LabRuntimeSnapshot, LabScope
+
+    scope = LabScope("a", "lease", "worker")
+    empty = LabJobRecord(scope, 1, state="idle", confirmed=True, evidence_status="verified",
+                         observed_at=1000., generation="idle-1", frame_digest="frame")
+    plan = LabPlan(12000, 0, (SlotPlan(1, SlotNow("idle", read_at=1000.),
+        SlotNext("labs.game-speed", "Game Speed", 3, 12000, 35280), True, True, (), None,
+        {"observe": True, "plan": True, "execute": True}),),
+        gems=None, strategy_revision=9, account_id="a", scope=scope,
+        evaluated_at=1000.)  # type: ignore[arg-type]
+    runtime = LabRuntimeSnapshot(scope, (empty,))
+    assert choose_lab_action(plan, runtime, available_coins=11999) is None
+    action = choose_lab_action(plan, runtime, available_coins=12000)
+    assert action == LabAction(1, "labs.game-speed", 3, "start", 9, "Confirmed idle slot and affordable research")
+    assert choose_lab_action(plan, replace(runtime, slots=(replace(empty, state="researching"),)),
+                             available_coins=12000) is None
+    assert choose_lab_action(plan, LabRuntimeSnapshot(LabScope("a"), (empty,)),
+                             available_coins=12000) is None
+    assert choose_lab_action(replace(plan, account_id="other"), runtime,
+                             available_coins=12000) is None
+    stale = replace(plan, slots=(replace(plan.slots[0], now=SlotNow("idle", read_at=900.)),))
+    assert choose_lab_action(stale, runtime, available_coins=12000) is None
+    assert choose_lab_action(replace(plan, slots=(replace(plan.slots[0], covered=False),)),
+                             runtime, available_coins=12000) is None
+    other_scope = LabScope("a", "lease-new", "worker", epoch=1)
+    other_record = replace(empty, scope=other_scope)
+    assert choose_lab_action(plan, LabRuntimeSnapshot(other_scope, (other_record,)),
+                             available_coins=12000) is None
+    assert choose_lab_action(replace(plan, account_id=None), runtime, available_coins=12000) is None
+    assert choose_lab_action(replace(plan, scope=None), runtime, available_coins=12000) is None
+    no_cap = replace(plan, slots=(replace(plan.slots[0], capabilities=None),))
+    assert choose_lab_action(no_cap, runtime, available_coins=12000) is None
+    future = replace(empty, observed_at=1001.)
+    future_slot = replace(plan.slots[0], now=SlotNow("idle", read_at=1001.))
+    assert choose_lab_action(replace(plan, slots=(future_slot,)),
+                             replace(runtime, slots=(future,)), available_coins=12000) is None
+    unknown = replace(empty, observed_at=None)
+    unknown_slot = replace(plan.slots[0], now=SlotNow("idle", read_at=None))
+    assert choose_lab_action(replace(plan, slots=(unknown_slot,)),
+                             replace(runtime, slots=(unknown,)), available_coins=12000) is None
+
+
 def idle() -> LabHomeReading:
     return LabHomeReading(True, "idle", None, (540, 450))
 

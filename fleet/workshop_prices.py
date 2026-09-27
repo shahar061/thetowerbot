@@ -1,10 +1,12 @@
 """Account-bound Workshop observations and deliberately labelled price estimates.
 
 Bot purchase counts are offsets from a price observation, never starting levels.
-The small attributed catalog has coin prices only; the buyer still reads the game.
+The full ladder adapter supplies coin planning prices; settlement retains its
+original narrow whitelist and the buyer still reads the game.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -14,18 +16,39 @@ from typing import Mapping
 from uuid import uuid4
 
 import upgrades
+import workshop_levels
 
 CATALOG = json.loads((Path(__file__).resolve().parents[1] / "catalog" /
                      "workshop-prices.v1.json").read_text(encoding="utf-8"))
+# The full ladder serializes rounded source prices as integers. Only the
+# attributed exact-prefix table retains price precision; match it by rung.
+_PRECISION_DIGEST = hashlib.sha256(json.dumps(CATALOG["upgrades"],
+    sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+CATALOG_REVISION = f"{CATALOG['source_revision']}:precision-exact-prefix-v1:{_PRECISION_DIGEST}"
+
+
+
+def _prices(upgrade_id: str) -> tuple[int | None, ...]:
+    ladder = workshop_levels.ladders().get(upgrade_id)
+    return (ladder.next_coins if ladder is not None else
+            tuple(CATALOG["upgrades"].get(upgrade_id, {}).get("next_coins", [])))
 
 
 def catalog_price(upgrade_id: str, level: int) -> int | None:
-    prices = CATALOG["upgrades"].get(upgrade_id, {}).get("next_coins", [])
-    return prices[level] if type(level) is int and 0 <= level < len(prices) else None
+    prices = _prices(upgrade_id)
+    value = prices[level] if type(level) is int and 0 <= level < len(prices) else None
+    exact = CATALOG["upgrades"].get(upgrade_id, {}).get("next_coins", [])
+    # Never recover source precision from integer storage or numeric magnitude.
+    return (value if type(level) is int and 0 <= level < len(exact)
+            and type(value) is int and value == exact[level] else None)
 
 
 def lists_price(upgrade_id: str, price: int) -> bool:
-    """Is `price` what the catalog says some level of this upgrade costs?"""
+    """Historical settlement whitelist; the full planning ladder is not proof.
+
+    Existing journal/repair callers rely on this narrower attributed list.
+    Adding inferred planning rungs must never widen their spending authority.
+    """
     return price in CATALOG["upgrades"].get(upgrade_id, {}).get("next_coins", [])
 
 
@@ -34,6 +57,29 @@ class PriceQuote:
     price: int
     level: int | None
     source: str
+    catalog_revision: str = CATALOG_REVISION
+    level_confidence: str = "unknown"
+    modifier_signature: str = "unknown"
+    currency: str = "coins"
+    context: str = "workshop"
+
+    @property
+    def lower(self) -> int:
+        from transactions import abbreviation_slack
+        return max(0, self.price - (abbreviation_slack(self.price) if self.source == "observed" else 0))
+
+    @property
+    def upper(self) -> int:
+        from transactions import abbreviation_slack
+        return self.price + (abbreviation_slack(self.price) if self.source == "observed" else 0)
+
+    def for_execution(self, *, context: str, currency: str) -> int | None:
+        """A quote is planning evidence, never cross-currency authority."""
+        if (context != self.context or currency != self.currency
+                or self.lower != self.upper or type(self.level) is not int or self.level < 0
+                or self.level_confidence != "exact" or self.modifier_signature != "none"):
+            return None
+        return self.price
 
 
 class WorkshopPrices:
@@ -45,7 +91,7 @@ class WorkshopPrices:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             if (payload.get("version") == 1 and payload.get("account_id") == account_id
-                    and payload.get("catalog_revision") == CATALOG["source_revision"]):
+                    and payload.get("catalog_revision") == CATALOG_REVISION):
                 for uid, entry in payload.get("entries", {}).items():
                     if (upgrades.by_id(uid) is not None and isinstance(entry, dict)
                             and type(entry.get("price")) is int and entry["price"] >= 0
@@ -85,16 +131,17 @@ class WorkshopPrices:
             delta = purchases.get(uid, 0) - entry["purchases"]
             if delta < 0:
                 continue
-            prices = CATALOG["upgrades"].get(uid, {}).get("next_coins", [])
-            matches = [level for level, price in enumerate(prices) if price == entry["price"]]
+            prices = _prices(uid)
+            matches = [level for level, price in enumerate(prices) if price == entry["price"] and catalog_price(uid, level) == price]
             # A base-price match is an inferred level, not an account fact.
             # Discounted/nonmatching observations remain usable at this level
             # but cannot safely predict the next one.
-            level = matches[0] if len(matches) == 1 and discount_signature in {"unknown", "none"} else None
+            level = (matches[0] if len(matches) == 1 and entry["price"] < 1000
+                     and discount_signature in {"unknown", "none"} else None)
             if delta == 0:
-                quotes[uid] = PriceQuote(entry["price"], level, "observed")
+                quotes[uid] = PriceQuote(entry["price"], level, "observed", level_confidence=("exact" if discount_signature == "none" else "inferred") if level is not None else "unknown", modifier_signature=discount_signature)
             elif level is not None and (price := catalog_price(uid, level + delta)) is not None:
-                quotes[uid] = PriceQuote(price, level + delta, "catalog_estimate")
+                quotes[uid] = PriceQuote(price, level + delta, "catalog_estimate", level_confidence="exact" if discount_signature == "none" else "inferred", modifier_signature=discount_signature)
         return quotes
 
     def save(self) -> None:
@@ -103,7 +150,7 @@ class WorkshopPrices:
         try:
             with temporary.open("x", encoding="utf-8") as output:
                 json.dump({"version": 1, "account_id": self.account_id,
-                           "catalog_revision": CATALOG["source_revision"],
+                           "catalog_revision": CATALOG_REVISION,
                            "entries": self.entries, "wallet": self.wallet}, output)
                 output.write("\n")
             os.replace(temporary, self.path)

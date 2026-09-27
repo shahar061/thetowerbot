@@ -231,6 +231,16 @@ def test_numbered_missions_badge_shortens_cadence_but_keeps_cooldown() -> None:
                missions_every_hours=8, milestones_on_new_best=False) is None
 
 
+def test_confirmed_new_notification_overrides_old_claim_cooldown() -> None:
+    assert due(state(last_missions=3599, missions_notification_due=True), now=3600,
+               missions_every_hours=8, milestones_on_new_best=False) == 'missions'
+
+
+def test_uncertain_mission_blocks_cadence_until_reconciled() -> None:
+    assert due(state(missions_blocked=True, missions_notification_due=True), now=3600,
+               missions_every_hours=8, milestones_on_new_best=False) is None
+
+
 def test_mail_only_visits_for_a_numbered_badge_and_waits_after_attempts() -> None:
     assert due(state(last_missions=3500, mail_badge=True), now=3600,
                missions_every_hours=8, milestones_on_new_best=False) == 'mail'
