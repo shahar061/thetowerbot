@@ -234,16 +234,43 @@ def test_three_cells_give_each_category_its_own_centre(category: str, expected_x
     assert autopilot.battle_tab_point(frame, category) == (expected_x, h - 50)
 
 
-def test_a_fourth_tab_fails_closed_instead_of_tapping_the_wrong_one() -> None:
-    """The failure the acceptance gate names, at the tab bar.
+@pytest.mark.parametrize('category,expected_x', [
+    ('ATTACK', 135), ('DEFENSE', 405), ('UTILITY', 675),
+])
+def test_four_cells_keep_the_first_three_categories(category: str, expected_x: int) -> None:
+    """Ultimate Weapons adds a fourth cell after Tier 1 wave 60.
 
-    With four cells the thirds are no longer borders, so the index would point
-    into the middle of a cell that is not the one asked for. Returning None
-    holds the action; returning a coordinate would buy on the wrong tab.
+    The first three cells are still Attack, Defense and Utility, now a
+    quarter wide; the thirds would land on the wrong cell.
     """
     import autopilot
-    w, _ = config.EXPECTED_RESOLUTION
+    w, h = config.EXPECTED_RESOLUTION
     frame = _tab_bar((0, w // 4, w // 2, 3 * w // 4, w - 1))
+    assert autopilot.battle_tab_point(frame, category) == (expected_x, h - 50)
+
+
+def test_a_live_four_tab_bar_is_recognised() -> None:
+    """A real run after the Ultimate Weapons unlock, on the Attack tab."""
+    import autopilot
+    import cv2
+
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures' / 'in_run_four_tabs.png'))
+    assert autopilot.battle_tab_point(frame, 'DEFENSE') == (405, 2350)
+
+
+def test_a_bar_matching_both_layouts_fails_closed() -> None:
+    """Borders at every third and quarter are no layout the game draws."""
+    import autopilot
+    w, _ = config.EXPECTED_RESOLUTION
+    frame = _tab_bar((0, w // 4, w // 3, w // 2, 2 * w // 3, 3 * w // 4, w - 1))
+    assert autopilot.battle_tab_point(frame, 'DEFENSE') is None
+
+
+def test_a_partial_bar_fails_closed() -> None:
+    """Missing one border of each layout must not read as either."""
+    import autopilot
+    w, _ = config.EXPECTED_RESOLUTION
+    frame = _tab_bar((0, w // 3, w // 2, w - 1))
     for category in ('ATTACK', 'DEFENSE', 'UTILITY'):
         assert autopilot.battle_tab_point(frame, category) is None
 
