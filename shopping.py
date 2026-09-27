@@ -23,7 +23,9 @@ import logging
 import hashlib
 import math
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+import json
+from pathlib import Path
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
@@ -194,6 +196,49 @@ class PendingPurchase:
     info_dismissed: bool = False
     # The durable row this pending answers for, when a journal is attached.
     key: str | None = None
+    # The tap frame and every frame read while confirming, kept only so an
+    # inconclusive acknowledgement can be saved and looked at afterwards.
+    before_frame: Image | None = None
+    seen_frames: list[Image] = field(default_factory=list)
+
+
+UNCONFIRMED_KEEP = 20
+
+
+def save_unconfirmed_evidence(directory: Path, pending: PendingPurchase,
+                              observation: Observation, evidence: str) -> Path | None:
+    """Keep the frames of a purchase whose acknowledgement was inconclusive.
+
+    Diagnostic only: a failure here is logged and never touches the purchase.
+    Capped to the newest UNCONFIRMED_KEEP folders.
+    """
+    try:
+        import cv2
+        stem = f"unconfirmed-{time.strftime('%Y%m%d-%H%M%S')}-{pending.row.upgrade_id}"
+        folder = Path(directory) / stem
+        folder.mkdir(parents=True, exist_ok=True)
+        if pending.before_frame is not None:
+            cv2.imwrite(str(folder / "before.png"), pending.before_frame)
+        for index, frame in enumerate(pending.seen_frames, 1):
+            cv2.imwrite(str(folder / f"frame-{index}.png"), frame)
+        (folder / "detail.json").write_text(json.dumps({
+            "item": pending.row.name, "upgrade_id": pending.row.upgrade_id,
+            "category": pending.row.category, "price": pending.row.price,
+            "tap": pending.row.tap, "coins_before": pending.coins,
+            "info_dismissed": pending.info_dismissed, "evidence": evidence,
+            "last_observation": {"category": observation.category,
+                                 "context": observation.context,
+                                 "heading_y": observation.heading_y,
+                                 "rows": [r.upgrade_id for r in observation.rows]},
+        }, indent=2) + "\n", encoding="utf-8")
+        for stale in sorted(Path(directory).glob("unconfirmed-*"))[:-UNCONFIRMED_KEEP]:
+            for child in stale.iterdir():
+                child.unlink()
+            stale.rmdir()
+        return folder
+    except Exception:  # noqa: BLE001 - missing evidence must not affect the purchase
+        logger.exception("Could not save the unconfirmed purchase evidence")
+        return None
 
 
 @dataclass
@@ -252,6 +297,8 @@ class ShoppingSession:
         self.reroll_replan: Any | None = None
         # Asked, by upgrade id, why a verified purchase was chosen.
         self.reroll_purchase_reason: Any | None = None
+        # Where an inconclusive purchase acknowledgement keeps its frames.
+        self.evidence_dir: Path | None = None
         self._replan_due = False
         self._replanned: Shopping | None = None
         self._templates = templates
@@ -981,6 +1028,7 @@ class ShoppingSession:
             self._pending = PendingPurchase(
                 seen, coins, frozenset(r.upgrade_id for r in visible),
                 key=intent.key if intent is not None else None,
+                before_frame=screen if self.evidence_dir is not None else None,
             )
             if self.observations is not None:
                 self.observations.decision("verifying", f"Confirming Workshop purchase: {seen.name}", seen.upgrade_id)
@@ -1084,6 +1132,8 @@ class ShoppingSession:
     def _confirm_purchase(self, observation: Observation, coins: int | None, device: Any,
                           shopping: Shopping, screen: Image) -> None:
         pending = self._pending
+        if self.evidence_dir is not None:
+            pending.seen_frames.append(screen)
         # Buying an unlock can move the newly granted tiles under the same
         # touch. The game sometimes opens a child's info panel as the layout
         # changes. That overlay hides the receipt, so clear it once from the
@@ -1139,9 +1189,12 @@ class ShoppingSession:
             evidence = (f"tab={observation.category} tile={'gone' if after is None else after.status}"
                         f" coins={coins} before={pending.coins} price={before.price}"
                         f" new_rows={','.join(new_rows) or 'none'}")
+            saved = (save_unconfirmed_evidence(self.evidence_dir, pending, observation, evidence)
+                     if self.evidence_dir is not None else None)
             self._bus.publish(events.PurchaseSkipped(
                 item=before.name, reason="unconfirmed",
-                detail=f"purchase did not produce a readable change ({evidence})"))
+                detail=f"purchase did not produce a readable change ({evidence})"
+                       + (f"; frames: {saved}" if saved is not None else "")))
             if self.observations is not None:
                 self.observations.decision("blocked", f"Workshop purchase of {before.name} was not confirmed")
             self._abort(device, shopping, screen, "purchase acknowledgement was inconclusive")

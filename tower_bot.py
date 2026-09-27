@@ -261,6 +261,7 @@ class TowerBot:
         # "applies on next Start" boundary the dashboard labels.
         self.tracker = screens.ScreenTracker(confirmations=screen_confirmations)
         self.stall_dir = unknown_dir if unknown_dir is not None else config.UNKNOWN_DIR
+        self.shopping.evidence_dir = self.stall_dir
         self.stall_watchdog = stall_watchdog.StallWatchdog(
             time.time, no_effect_limit=config.STALL_NO_EFFECT_LIMIT,
             blocked_limit=config.STALL_BLOCKED_SECONDS)
