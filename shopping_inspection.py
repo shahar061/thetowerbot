@@ -199,7 +199,8 @@ class WorkshopInspection:
                 return True
             if reading.page != 'WORKSHOP':
                 return True
-            from shopping import _heading_names, _row_named, header_numbers, observe_frame
+            from shopping import (_heading_names, _row_named, _unlock_granted, header_numbers,
+                                  observe_frame)
             if not _heading_names(screen, category):
                 lane = tuple(config.WORKSHOP_TABS).index(category)
                 width = screen.shape[1] // 4
@@ -216,7 +217,8 @@ class WorkshopInspection:
                 return True
             if txn is not None:
                 row = _row_named(txn.item, observation.rows, category)
-                if row is None and observation.heading_y is not None:
+                if (row is None and not _unlock_granted(txn.item, observation.rows, category)
+                        and observation.heading_y is not None):
                     from autopilot import scroll_panel
                     scroll_panel(device, screen, observation.heading_y, down=self.steps >= 4)
                     self.steps += 1

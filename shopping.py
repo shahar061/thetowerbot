@@ -181,6 +181,21 @@ def _row_named(name: str, rows: tuple[ObservedUpgrade, ...],
     return matches[0] if len(matches) == 1 else None
 
 
+def _unlock_granted(name: str, rows: tuple[ObservedUpgrade, ...], category: str | None = None,
+                    observed_at: float | None = None) -> bool:
+    """A bought unlock leaves no tile of its own; the rows it grants prove it."""
+    entry = upgrades.resolve(name, category)
+    if entry is None or not entry.unlock or _row_named(name, rows, category) is not None:
+        return False
+    return any(row.upgrade_id in entry.unlocks and row.category == entry.category
+               and row.context == "workshop"
+               and upgrades.resolve(row.name, row.category) == upgrades.by_id(row.upgrade_id)
+               and math.isfinite(row.confidence) and .9 <= row.confidence <= 1
+               and row.status in ("available", "maxed")
+               and (observed_at is None or row.observed_at == observed_at)
+               for row in rows)
+
+
 def _target_reached(upgrade_id: str, value: float, target: float) -> bool:
     if upgrades.by_id(upgrade_id) is not None:
         return upgrades.target_reached(upgrade_id, value, target)
@@ -1401,7 +1416,7 @@ class ShoppingSession:
             now = time.time()
             before = txn.before
             row = _row_named(txn.item, observation.rows, txn.category)
-            valid = (
+            frame_valid = (
                 observation.context == "workshop" and observation.category == txn.category
                 and observation.frame_digest == digest
                 and observation.frame_width == screen.shape[1] == before.get("frame_width")
@@ -1411,17 +1426,26 @@ class ShoppingSession:
                 and bool(before.get("frame_digest")) and before.get("confidence", 0) >= .9
                 and before.get("observed_at") is not None
                 and 0 <= action_boundary - before["observed_at"] <= 30
-                and row is not None and row.upgrade_id == before.get("upgrade_id")
+            )
+            valid = (
+                frame_valid and row is not None and row.upgrade_id == before.get("upgrade_id")
                 and math.isfinite(row.confidence) and .9 <= row.confidence <= 1
                 and row.observed_at == observation.observed_at
                 and row.status in ("available", "maxed")
             )
-            if valid:
+            entry = upgrades.resolve(txn.item, txn.category)
+            unlocked = (
+                frame_valid and entry is not None and before.get("status") == "available"
+                and before.get("upgrade_id") == entry.id
+                and _unlock_granted(txn.item, observation.rows, txn.category,
+                                    observation.observed_at)
+            )
+            if valid or unlocked:
                 category, currency = observation.category, "coins"
                 observed_at = observation.observed_at
                 wallet, _ = header_numbers(screen, reading.page, reading.top_left)
-                value = row.value
-                changed = (
+                value = row.value if valid else None
+                changed = unlocked or (
                     row.status == "maxed" and before.get("status") != "maxed"
                     or row.value is not None and math.isfinite(row.value)
                     and before.get("value") is not None and row.value != before["value"]
