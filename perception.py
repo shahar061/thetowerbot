@@ -274,6 +274,40 @@ def _reread_values(screen: Image, observation: Observation) -> tuple[ocr.TextBox
     return tuple(found)
 
 
+def _reread_prices(screen: Image, observation: Observation) -> tuple[ocr.TextBox, ...]:
+    """Price boxes the whole-frame read dropped, re-read off padded crops.
+
+    A whole-frame read can score a plain price just under the confidence
+    floor - Workshop Defense Absolute "586" came back at 0.838 on every
+    visit while its own crop reads 1.0 - and a row without a price is never
+    bought, so one row stalled a whole strategy for hours. Only rows the
+    frame named but could not price are re-read (never maxed, locked or
+    unavailable ones), so a frame that read cleanly costs nothing extra.
+    Boxes come back in frame coordinates, inside the band parse_frame takes
+    a price from.
+
+    Not on battle frames: the scan reads those from two bands, which already
+    price what a whole-frame read drops (test_battle_parity pins it), and
+    battle is the hot path.
+    """
+    found: list[ocr.TextBox] = []
+    if observation.context == "battle":
+        return ()
+    for row in observation.rows:
+        if row.status != "unreadable" or row.price is not None or upgrades.by_id(row.upgrade_id) is None:
+            continue
+        rect = row.rect
+        top = rect.y + int(rect.h * config.TILE_PRICE_TOP_FRACTION) + 1
+        band = config.Rect(rect.x, top, rect.w, rect.y + rect.h - top)
+        boxes = [b for b in ocr.read_region(screen, band) if price_number(b.text) is not None]
+        if len(boxes) == 1:
+            box = boxes[0]
+            found.append(replace(box, rect=config.Rect(
+                band.x + box.rect.x - ocr.CROP_PADDING, band.y + box.rect.y - ocr.CROP_PADDING,
+                box.rect.w, box.rect.h)))
+    return tuple(found)
+
+
 def _shared_boxes(reads: ocr.FrameReads, context: str) -> tuple[ocr.TextBox, ...]:
     """The scan's shared read, with ocr.read()'s empty-on-error rule.
 
@@ -307,9 +341,13 @@ def observe_frame(screen: Image, context: str, *, locale: str = 'en',
     if not discovery.readable and not colour_only:
         return parse_frame(screen, (), context, digest=digest)
     observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
-    recovered = _reread_values(screen, observation)
-    return (parse_frame(screen, boxes + recovered, context, digest=digest, tab_colour=tab_colour)
-            if recovered else observation)
+    # Prices first: a value is only re-read for a priced row.
+    for reread in (_reread_prices, _reread_values):
+        recovered = reread(screen, observation)
+        if recovered:
+            boxes += recovered
+            observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
+    return observation
 
 
 def read_cash(

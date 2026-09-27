@@ -318,3 +318,20 @@ def test_the_panel_is_visible_by_colour_alone() -> None:
     covered = frame.copy()
     covered[1640:1720] = 0
     assert not panel_visible(covered, ())
+
+
+def test_a_price_the_frame_read_drops_is_re_read_off_a_crop() -> None:
+    """Workshop Defense Absolute "586" scores 0.838 on a whole-frame read,
+    under the confidence floor, so the row had no price and was skipped as
+    unreadable on every visit for hours. observe_frame re-reads it off a
+    padded crop, and the tap lands on the price it read."""
+    from perception import observe_frame, parse_frame
+    frame = cv2.imread(str(FIXTURES / "menu_workshop_defense_price_below_floor.png"))
+    whole_frame = {r.upgrade_id: r for r in parse_frame(frame, ocr.read(frame), "workshop").rows}
+    assert whole_frame["defense_absolute"].price is None
+    rows = {r.upgrade_id: r for r in observe_frame(frame, "workshop").rows}
+    row = rows["defense_absolute"]
+    assert (row.status, row.price, row.value) == ("available", 586, 9.76)
+    x, y = row.tap
+    assert 890 <= x <= 1000 and 680 <= y <= 740
+    assert rows["health"].price == 55
