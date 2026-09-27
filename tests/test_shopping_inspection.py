@@ -370,7 +370,7 @@ def test_pending_spend_keeps_authority_after_exhaustion_or_resolved_due_request(
     assert sut.currencies.committed('coins') == 30
 
 
-def _restart_fixture(tmp_path: Path, monkeypatch, *, invalidate: bool):
+def _restart_fixture(tmp_path: Path, monkeypatch, *, invalidate: bool, unlock: bool = False):
     """The real-restart Workshop reconciliation fixture (shared by C1/C2 regressions)."""
     import json
     import db
@@ -399,11 +399,14 @@ def _restart_fixture(tmp_path: Path, monkeypatch, *, invalidate: bool):
         state='registered', instance='worker', endpoint='endpoint', lease_id='lease',
         binding=str(root/'checkpoints'/f'{current.generation}.json'))))
     page = screen('menu_workshop_attack')
-    before = dict(upgrade_id='damage', value=9, price=30, status='available', confidence=.99,
+    item, category, upgrade_id, value, price = (
+        ('Unlock Defense Upgrades', 'DEFENSE', 'unlock_defense_upgrades', None, 75) if unlock
+        else ('Damage', 'ATTACK', 'damage', 9, 30))
+    before = dict(upgrade_id=upgrade_id, value=value, price=price, status='available', confidence=.99,
         observed_at=90., frame_digest='before', frame_width=page.shape[1], frame_height=page.shape[0])
     journal = TransactionJournal(path)
     journal.currencies.bind_scope(old_scope)
-    txn = journal.prepare(Intent(item='Damage', category='ATTACK', currency='coins', price=30,
+    txn = journal.prepare(Intent(item=item, category=category, currency='coins', price=price,
         wallet_before=100, ts=90., before=before), scope=old_scope,
         balance=BalanceInterval('coins', 100, 100, old_scope, 90., 'before'))
     journal.record_action(txn.key, at=91.)
@@ -451,13 +454,17 @@ def _restart_fixture(tmp_path: Path, monkeypatch, *, invalidate: bool):
     sut.account_state = AccountState(AccountRepository(path))
     sut.account_state.bind_scope(current, identity=walk(), runtime_root=root)
     monkeypatch.setattr(shopping, '_heading_names', lambda *args: True)
-    monkeypatch.setattr(shopping, 'header_numbers', lambda *args: (70, 0))
+    monkeypatch.setattr(shopping, 'header_numbers', lambda *args: (100 - price, 0))
 
     def observe(image, *args):
         clock[0] += .1
-        row = ObservedUpgrade('damage', 'Damage', 'ATTACK', 'workshop', 10., 55, 'available',
-            clock[0], config.Rect(0, 300, 400, 200), (100, 450), confidence=.99)
-        return Observation('ATTACK', (row,), {}, None, clock[0], 270, context='workshop',
+        # A bought unlock leaves no tile of its own; the rows it grants appear.
+        shown = (('health', 'Health', 6., 40), ('defense_absolute', 'Defense Absolute', 0., 20)
+                 ) if unlock else (('damage', 'Damage', 10., 55),)
+        rows = tuple(ObservedUpgrade(uid, name, category, 'workshop', level, cost, 'available',
+            clock[0], config.Rect(0, 300 + 220*i, 400, 200), (100, 450 + 220*i), confidence=.99)
+            for i, (uid, name, level, cost) in enumerate(shown))
+        return Observation(category, rows, {}, None, clock[0], 270, context='workshop',
             frame_digest=hashlib.sha256(image.tobytes()).hexdigest(),
             frame_width=image.shape[1], frame_height=image.shape[0])
 
@@ -469,11 +476,11 @@ def _restart_fixture(tmp_path: Path, monkeypatch, *, invalidate: bool):
     return sut, device, supervisor, page, clock, path, txn, rebind
 
 
-def _assert_settled_once(sut, path) -> None:
+def _assert_settled_once(sut, path, spent: int = 30) -> None:
     import db
     assert not sut.reconciliation_pending
     assert sut.currencies.committed('coins') == 0
-    assert sut._bought == 1 and sut._spent == 30
+    assert sut._bought == 1 and sut._spent == spent
     with db.reader(path) as conn:
         assert conn.execute("SELECT count(*) FROM ledger WHERE kind='WORKSHOP_BUY'").fetchone()[0] == 1
 
@@ -491,6 +498,36 @@ def test_epoch_bumped_pending_reconciles_read_only_after_reverified_identity(tmp
     _assert_settled_once(sut, path)
     assert len(supervisor.taps) == 5  # Reconciliation stays read-only.
     assert not sut.inspect(page, device)
+
+
+def test_bought_unlock_reconciles_from_the_rows_it_grants(tmp_path, monkeypatch) -> None:
+    """An unlock's own tile is gone once bought, so the search cannot wait for it."""
+    sut, device, supervisor, page, clock, path, txn, _ = _restart_fixture(
+        tmp_path, monkeypatch, invalidate=False, unlock=True)
+    assert sut.inspect(screen('menu_main'), device)
+    assert len(supervisor.taps) == 5
+    for _ in range(4):
+        if not sut.reconciliation_pending:
+            break
+        assert sut.inspect(page, device)
+    _assert_settled_once(sut, path, spent=75)
+    assert len(supervisor.taps) == 5  # No scroll hunting for the vanished tile.
+
+
+def test_missing_unlock_tile_alone_never_settles_the_purchase(tmp_path, monkeypatch) -> None:
+    """Without a granted row, a gone tile may be an OCR miss: keep searching."""
+    sut, device, supervisor, page, clock, path, txn, _ = _restart_fixture(
+        tmp_path, monkeypatch, invalidate=False, unlock=True)
+    observe = shopping.observe_frame
+    monkeypatch.setattr(shopping, 'observe_frame', lambda image, *args: replace(
+        observed := observe(image, *args),
+        rows=tuple(r for r in observed.rows if r.upgrade_id == 'health')))
+    assert sut.inspect(screen('menu_main'), device)
+    for _ in range(4):
+        sut.inspect(page, device)
+    assert sut.reconciliation_pending
+    assert sut.journal.open_transactions()[0].key == txn.key
+    assert sut.currencies.committed('coins') == 75
 
 
 def test_epoch_advance_continuity_requires_same_account_and_lease(tmp_path, monkeypatch) -> None:
