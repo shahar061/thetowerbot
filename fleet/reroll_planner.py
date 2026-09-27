@@ -12,15 +12,9 @@ worker's evidence and that pipeline's vocabulary.
 
 What stayed here, and why it is not a planning decision
 -------------------------------------------------------
-Two things, both reroll POLICY rather than planning:
+One thing, reroll POLICY rather than planning:
 
-1. The Tier 1 Wave 60 branch. Once the account has verifiably cleared wave
-   60 it has stones to spend on its first Ultimate Weapon, and that pick is
-   `objectives.py`'s only `one_way` risk class - irreversible, and not the
-   bot's to make. It returns `needs_operator` before any build is selected,
-   because selecting a build would imply the next move is a Workshop
-   purchase when it is a human conversation.
-2. The goal sentences ("Reach Tier 1 Wave 20"). They name what the reroll
+1. The goal sentences ("Reach Tier 1 Wave 20"). They name what the reroll
    operator is trying to do with this account, which is a fleet concern; a
    build is a recipe, not a milestone, and `builds.v1.json` deliberately
    records no wave numbers.
@@ -199,10 +193,11 @@ class PlannedPurchase:
     focus: str
 
 
-# The wave at which this account stops being a Workshop problem. Not a build
-# threshold (build_selection owns that one, at wave 20) and deliberately not
-# in the pack: it is the reroll operator's finish line, and the pack records
-# recipes rather than goals.
+# The reroll ladder's finish line, where the first Ultimate Weapon unlocks.
+# Not a build threshold (build_selection owns that one, at wave 20) and
+# deliberately not in the pack, which records recipes rather than goals.
+# Workshop planning carries on past it: clearing wave 60 does not yet pay
+# the 5 stones that first pick costs.
 STONES_WAVE = 60
 
 # What the operator is trying to reach while running each build. Keyed by
@@ -628,8 +623,7 @@ def choose_next(facts: RerollFacts, *,
                 include_filler: bool = True) -> RerollDecision:
     """The one next move for this reroll account, with its reasoning attached.
 
-    An adapter, not a planner: it keeps the reroll ladder (wave 60 stops
-    Workshop planning), translates the worker's evidence into the account
+    An adapter, not a planner: it translates the worker's evidence into the account
     snapshot the general modules read, and translates their answer back into
     the field names, `state` vocabulary and `goal`/`stage` strings
     `fleet/reroll_progress.py` and the fleet dashboard already consume.
@@ -642,16 +636,6 @@ def choose_next(facts: RerollFacts, *,
         raise ValueError("reroll account identity required")
     if facts.draw_sharpness is not None and facts.draw_sharpness <= 0:
         raise ValueError(f"draw sharpness must be > 0, got {facts.draw_sharpness}")
-    if facts.best_tier_1_wave is not None and facts.best_tier_1_wave >= STONES_WAVE:
-        # Reroll policy, not planning, and so it runs before a build is
-        # chosen: the account's next move is a one-way Ultimate Weapon pick,
-        # and recommending a Workshop purchase here would bury it.
-        return RerollDecision(
-            facts.account_id, "stones", "Earn stones for the first Ultimate Weapon",
-            "needs_operator", None, None, None, None, facts.wallet_coins,
-            facts.lifetime_coins,
-            "Tier 1 Wave 60 was verified; Ultimate Weapon choice stays with the operator.")
-
     excluded = _ban_closure(banned_upgrade_ids)
     spend_ceiling = (int(facts.wallet_coins * facts.spend_fraction)
                      if facts.spend_fraction is not None and facts.wallet_coins is not None

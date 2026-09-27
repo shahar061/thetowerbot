@@ -38,7 +38,7 @@ function EmulatorStats({ member, result, advanced }: { member: RerollMember; res
         <section aria-label={`Milestone progress for ${member.name}`} className="mb-5 rounded-lg bg-muted/40 p-3">
           <div className="mb-2 flex items-center justify-between gap-2 text-xs"><span className="font-medium">{LADDER[progress.rung].title}</span><span className="text-muted-foreground">{progress.remaining === null ? "Ultimate Weapon choice" : `Next: T1 W${LADDER[progress.rung].target}`}</span></div>
           <Meter label={`Reroll progress for ${member.name}`} value={progress.percent} max={100} unknown={best === null} tone="primary" />
-          <p className="mt-2 text-xs text-muted-foreground">{best === null ? "No verified Tier 1 run yet" : progress.remaining === null ? "Wave 60 reached · choose your Ultimate Weapon" : `${progress.remaining} waves to the next milestone`}</p>
+          <p className="mt-2 text-xs text-muted-foreground">{best === null ? "No verified Tier 1 run yet" : progress.remaining === null ? "Wave 60 reached · earning the 5 stones for the first Ultimate Weapon" : `${progress.remaining} waves to the next milestone`}</p>
         </section>
         {data.runs.length ? <>
           <p className="mb-3 text-xs text-muted-foreground">Recent-run stats · latest {data.runs.length} completed runs across all tiers</p>

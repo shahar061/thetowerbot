@@ -45,12 +45,14 @@ def test_stale_evidence_does_not_recommend_a_purchase() -> None:
     assert evaluation.trace.evidence_age_seconds == 400
 
 
-def test_wave_sixty_remains_operator_decision() -> None:
+def test_wave_sixty_does_not_stop_the_workshop() -> None:
+    """Wave 60 unlocks Ultimate Weapons but does not pay the 5 stones the
+    first one costs, so there is nothing for the operator to pick yet."""
     route = resolve_route(RouteDocument.compatibility(), "Air_38", "a1")
     evaluation = evaluate(route, replace(_facts(), best_tier_1_wave=60), None)
-    assert evaluation.status == "blocked"
     assert evaluation.decision is not None
-    assert evaluation.decision.state == "needs_operator"
+    assert evaluation.decision.state != "needs_operator"
+    assert evaluation.decision.stage != "stones"
 
 
 def test_preview_from_main_menu_is_projected_not_observed_workshop_price() -> None:

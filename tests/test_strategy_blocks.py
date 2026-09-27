@@ -75,13 +75,16 @@ def test_condition_unknown_does_not_take_else_and_bans_cover_children() -> None:
     assert blocks.evaluate_program(route(banned,bans=['unlock_defense_upgrades']),facts(),None,'workshop').status == 'blocked'
 
 
-def test_native_policy_uses_explicit_template_and_wave_sixty_guard() -> None:
+def test_native_policy_uses_explicit_template_and_plans_past_wave_sixty() -> None:
     program = blocks.native_template_program('turtle','workshop')
     sample = replace(facts(), best_tier_1_wave=1, purchases={'unlock_defense_upgrades':1,'unlock_thorns':1},
                      prices={'defense_absolute':10,'thorns':50},values={'thorns':11})
     result = blocks.evaluate_program(route(program),sample,None,'workshop')
     assert result.decision.stage == 'turtle'
-    assert blocks.evaluate_program(route(program),replace(sample,best_tier_1_wave=60),None,'workshop').decision.state == 'needs_operator'
+    # Wave 60 unlocks Ultimate Weapons but does not pay the 5 stones the
+    # first one costs, so the Workshop keeps its plan.
+    past = blocks.evaluate_program(route(program),replace(sample,best_tier_1_wave=60),None,'workshop')
+    assert past.decision.stage == 'turtle' and past.decision.state != 'needs_operator'
 
 
 def test_battle_counts_are_run_scoped_and_prices_must_be_fresh() -> None:

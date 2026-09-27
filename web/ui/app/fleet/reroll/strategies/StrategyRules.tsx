@@ -7,7 +7,7 @@ import { splitPreview, type LabShareMode, type LabsRow, type RouteRules } from "
 const SAFETY = ["Never rush a lab with gems", "Never cancel a running lab", "Pay only the price read on screen",
   "Keep 100 gems for Lab 2 until it is owned"];
 const ORDER = ["Fixed safety rules", "Reserves: gems keep, Lab 2 reserve, lab coin jar", "Coin sharing", "Spend limits",
-  "Lane blocks", "Tier 1 Wave 60 stop"];
+  "Lane blocks"];
 
 function Tag({ live }: { live: boolean }): React.JSX.Element {
   return <span className={`ml-2 rounded-full border px-1.5 py-0.5 text-[10px] ${live ? "border-emerald-500/50 text-emerald-600" : "border-border text-muted-foreground"}`}>{live ? "Live" : "Planned"}</span>;

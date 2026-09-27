@@ -63,7 +63,7 @@ const STANDINGS: Record<string, DeviceStanding> = {
   },
   needs_choice: {
     tone: "warn", label: "Needs your choice", needsYou: true, transient: false,
-    hint: "Tier 1 Wave 60 is cleared and the first Ultimate Weapon is yours to pick - the bot will not choose a one-way upgrade.",
+    hint: "The account has the stones for its first Ultimate Weapon, and that pick is yours - the bot will not choose a one-way upgrade.",
   },
   replace_manually: {
     tone: "error", label: "Replace manually", needsYou: true, transient: false,
@@ -167,22 +167,24 @@ export function attentionRank(state: string): number {
   return 4;
 }
 
-/** The finish line, from `fleet/reroll_planner.py:STONES_WAVE`. Past it the
- *  account has stones and the Ultimate Weapon pick belongs to a human. */
+/** The finish line, from `fleet/reroll_planner.py:STONES_WAVE`. Wave 60
+ *  unlocks Ultimate Weapons; the Workshop keeps buying past it while the
+ *  5 stones for the first pick are earned. */
 export const STONES_WAVE = 60;
 
 /** The reroll ladder, as the operator climbs it.
  *
  *  `id` is `RerollDecision.stage`, which is the build id the planner ran -
  *  `opening` below wave 20, `turtle` above it (see `reroll_planner._GOALS`).
- *  The third rung is not a build: it is the hand-off at wave 60. */
+ *  The third rung is not a build: it is earning the stones for the first
+ *  Ultimate Weapon, which a human then picks. */
 export const LADDER = [
   { id: "opening", title: "Opening", goal: "Reach Tier 1 Wave 20", target: 20,
     blurb: "Buy attack paced by Coins/Wave, then Coins/Wave, then unlock Thorns." },
   { id: "turtle", title: "Turtle", goal: "Reach Tier 1 Wave 60", target: STONES_WAVE,
     blurb: "Keep defense ahead of enemy damage and add cash and coin income." },
-  { id: "stones", title: "Ultimate Weapon", goal: "You pick the first Ultimate Weapon", target: null,
-    blurb: "Stones are earned. Choose Golden Tower or Black Hole yourself; if neither is offered, replace the emulator." },
+  { id: "stones", title: "Ultimate Weapon", goal: "Earn 5 stones, then pick the first Ultimate Weapon", target: null,
+    blurb: "The Workshop keeps buying while stones are earned. With 5 stones, choose Golden Tower or Black Hole yourself; if neither is offered, replace the emulator." },
 ] as const;
 
 export type LadderProgress = {
