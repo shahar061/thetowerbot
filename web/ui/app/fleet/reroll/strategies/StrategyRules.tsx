@@ -16,8 +16,9 @@ function Tag({ live }: { live: boolean }): React.JSX.Element {
 const field = "flex min-w-0 flex-col gap-1 text-xs";
 const input = "min-h-11 min-w-0 w-full max-w-full rounded border border-border bg-background px-2 py-1";
 
-export function StrategyRules({ rules, locked, rows, onChange }: {
-  rules: RouteRules; locked: boolean; rows: LabsRow[]; onChange: (rules: RouteRules) => void;
+/** `labList`: the labs lane is a ranked lab list - the only lane just-in-time saving plans for. */
+export function StrategyRules({ rules, locked, rows, labList, onChange }: {
+  rules: RouteRules; locked: boolean; rows: LabsRow[]; labList: boolean; onChange: (rules: RouteRules) => void;
 }): React.JSX.Element {
   const [worker, setWorker] = useState(rows[0]?.worker ?? "");
   const set = (next: RouteRules): void => { if (!locked) onChange(next); };
@@ -38,7 +39,8 @@ export function StrategyRules({ rules, locked, rows, onChange }: {
             <option value="when_affordable">Start labs when affordable (today)</option>
             <option value="save_pct">Save a share for the next lab</option>
             <option value="labs_first">Labs first: pause Workshop while a lab waits</option>
-            <option value="just_in_time">Just in time (save only what the next lab needs)</option></select></label>
+            <option value="just_in_time" disabled={!labList}>{labList ? "Just in time (save only what the next lab needs)"
+              : "Just in time (needs a ranked lab list)"}</option></select></label>
         {coins.lab_share.mode === "save_pct" && <label className={field}>Share of spare coins saved each visit (%)
           <input aria-label="Lab share percent" type="number" min={5} max={90} value={coins.lab_share.pct} className={input}
             onChange={event => set({ ...rules, coins: { ...coins, lab_share: { ...coins.lab_share, pct: Number(event.target.value) } } })} /></label>}

@@ -334,7 +334,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     <details className="min-w-0 border-b border-border px-3 py-4 sm:px-6" open inert={busy}>
       <summary className="cursor-pointer text-sm font-semibold">Strategy rules</summary>
       <StrategyRules rules={rulesOf(strategy.baseline)} locked={locked} rows={labsSnapshot?.workers ?? []}
-        onChange={rules => edit(withRules(strategy.baseline, rules))} />
+        labList={isLabList(strategy.baseline.labs)} onChange={rules => edit(withRules(strategy.baseline, rules))} />
     </details>
     {preview && previewScope === memberScope && <div className={styles.preview}><p className={styles.hint}>Hypothetical fleet-wide assignment · compare before choosing which emulators to assign.</p><RouteInspector preview={preview} members={members} /></div>}
     <div className={styles.assignmentsSummary}><h3>Fleet assignments</h3>{activeMembers.map(member => { const assignment = saved.assignments?.[member.name]; return <div key={member.name}><Monitor size={15} /><strong>{member.name}</strong><span>{assignment && assignment.account_id === member.account_id ? `${assignment.strategy_name} · v${assignment.strategy_version}` : assignment ? "Account changed · assignment inactive" : "Current fleet route"}</span></div>; })}</div>
