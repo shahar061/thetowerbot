@@ -241,6 +241,8 @@ class TowerBot:
         self._bind_lab_runtime()
         self._last_lab_confirmation: tuple[float | None, int, int] | None = None
         self._last_wave_progress: tuple[int | None, int] | None = None
+        # The last HUD wave the autopilot read. Reported on IN_RUN scans only.
+        self._scan_wave: int | None = None
         self._last_verified_purchases = self.autopilot.state.snapshot()['verified_purchases']
         self._research_until: float | None = None
         self._progress_wait: tuple[str, str, float] | None = None
@@ -2367,7 +2369,7 @@ class TowerBot:
                     self.frames.set_boxes([])
                 self.bus.publish(events.ScanCompleted(
                     screen=state.value, duration_ms=(time.monotonic() - started) * 1000,
-                    wallet=self.wallet,
+                    wallet=self.wallet, wave=self._reported_wave(state),
                 ))
                 return True
 
@@ -2404,6 +2406,8 @@ class TowerBot:
                     wave_value = combat.get('wave')
                     wave_number = (int(wave_value) if isinstance(wave_value, (int, str))
                                    and str(wave_value).isdigit() else None)
+                    if wave_number is not None:
+                        self._scan_wave = wave_number
                     if (self.progress is not None and wave_number is not None
                             and (self._last_wave_progress is None
                                  or self._last_wave_progress[0] != self.runs.current_id
@@ -2640,9 +2644,20 @@ class TowerBot:
                 screen=state.value,
                 duration_ms=(time.monotonic() - started) * 1000,
                 wallet=self.wallet,
+                wave=self._reported_wave(state),
             )
         )
         return clicked
+
+    def _reported_wave(self, state: screens.ScreenState) -> int | None:
+        """The wave a ScanCompleted may carry: the last one read, IN_RUN only.
+
+        Leaving the run forgets it, so the next run never starts on the
+        previous run's wave.
+        """
+        if state is not screens.ScreenState.IN_RUN:
+            self._scan_wave = None
+        return self._scan_wave
 
     def run_forever(
         self,

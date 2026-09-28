@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import events
 from sinks.state import BotState
 
@@ -130,3 +132,62 @@ def test_reset_is_safe_while_events_are_arriving() -> None:
     finally:
         stop.set()
         thread.join()
+
+
+def test_an_autopilot_decision_is_kept_until_the_run_ends() -> None:
+    state = BotState()
+    state.apply(stamped(events.RunStarted(run_id=3)))
+    state.apply(stamped(events.AutopilotDecided(phase="buying", reason="cheapest attack",
+                                                upgrade_id="damage")))
+
+    decision = state.snapshot()["decision"]
+    assert (decision["phase"], decision["reason"], decision["upgrade_id"]) == (
+        "buying", "cheapest attack", "damage")
+    assert decision["at"] > 0
+
+    state.apply(stamped(events.RunEnded(run_id=3, duration=10.0)))
+    assert state.snapshot()["decision"] is None
+
+
+@pytest.mark.parametrize(("event", "label"), [
+    (events.Navigated(target="RETRY"), "Navigating · RETRY"),
+    (events.ShoppingStarted(visit=2, dry_run=False), "Shopping"),
+    (events.ShoppingStarted(visit=3, dry_run=True), "Shopping · dry run"),
+    (events.ClaimStarted(target="mail"), "Claiming · mail"),
+])
+def test_navigation_shopping_and_claims_set_the_current_activity(
+        event: events.Event, label: str) -> None:
+    state = BotState()
+    published = stamped(event)
+
+    state.apply(published)
+
+    assert state.snapshot()["activity"] == {"label": label, "at": published.ts}
+    # These events always wrote a feed line; recording them must not stop that.
+    assert len(state.snapshot()["tail"]) == 1
+
+
+def test_the_wave_follows_in_run_scans_and_clears_off_the_run() -> None:
+    state = BotState()
+    assert state.snapshot()["wave"] is None
+
+    state.apply(stamped(events.ScanCompleted(screen="IN_RUN", duration_ms=9.0, wave=4812)))
+    assert state.snapshot()["wave"] == 4812
+    # An IN_RUN scan that read no wave keeps the last one.
+    state.apply(stamped(events.ScanCompleted(screen="IN_RUN", duration_ms=9.0)))
+    assert state.snapshot()["wave"] == 4812
+
+    state.apply(stamped(events.ScanCompleted(screen="GAME_OVER", duration_ms=9.0)))
+    assert state.snapshot()["wave"] is None
+
+
+def test_reset_forgets_the_decision_the_activity_and_the_wave() -> None:
+    state = BotState()
+    state.apply(stamped(events.ScanCompleted(screen="IN_RUN", duration_ms=9.0, wave=12)))
+    state.apply(stamped(events.AutopilotDecided(phase="saving", reason="x")))
+    state.apply(stamped(events.ClaimStarted(target="missions")))
+
+    state.reset()
+
+    snapshot = state.snapshot()
+    assert (snapshot["wave"], snapshot["decision"], snapshot["activity"]) == (None, None, None)

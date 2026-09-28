@@ -45,6 +45,9 @@ class ScanCompleted(Event):
     screen: str
     duration_ms: float
     wallet: int | None = None
+    # The HUD wave the autopilot last read in this run. None off a run, or
+    # when no wave has been read yet: an unread wave is not wave 0.
+    wave: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
