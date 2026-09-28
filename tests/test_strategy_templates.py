@@ -64,9 +64,23 @@ def test_opening_economy_after_starters() -> None:
     assert result.trace.matched_rule_id == 'opening.economy.pool' and result.decision.upgrade_id == 'unlock_cash_bonuses'
 
 
+ATTACK_DONE = {'damage': 3, 'attack_speed': 3}
+
+
+def test_turtle_minimum_attack_before_defense() -> None:
+    sample = workshop(utility_spent_coins=350, purchases={'unlock_defense_upgrades': 1},
+                      confirmed_purchases={'damage': 3, 'attack_speed': 1},
+                      prices={'defense_absolute': 50, 'damage': 60, 'attack_speed': 60})
+    result = run('turtle', 'workshop', sample)
+    assert result.trace.matched_rule_id == 'turtle.attack.pool' and result.decision.upgrade_id == 'attack_speed'
+    poor = replace(sample, prices={'defense_absolute': 50, 'damage': 60, 'attack_speed': 500})
+    result = run('turtle', 'workshop', poor)
+    assert result.decision.state == 'save_coins' and result.trace.matched_rule_id == 'turtle.attack'
+
+
 def test_turtle_objectives_after_budget() -> None:
     sample = workshop(utility_spent_coins=350, purchases={'unlock_defense_upgrades': 1},
-                      prices={'defense_absolute': 50})
+                      confirmed_purchases=ATTACK_DONE, prices={'defense_absolute': 50})
     result = run('turtle', 'workshop', sample)
     assert result.trace.matched_rule_id == 'turtle.objectives.pool' and result.decision.upgrade_id == 'defense_absolute'
 
@@ -74,13 +88,30 @@ def test_turtle_objectives_after_budget() -> None:
 def test_turtle_cheap_defense_only_while_saving_for_thorns() -> None:
     owned = {'unlock_defense_upgrades': 1, 'unlock_thorns': 1}
     saving = workshop(utility_spent_coins=350, wallet_coins=300, purchases=owned,
-                      confirmed_purchases={'defense_absolute': 5}, values={'thorns': 7.},
+                      confirmed_purchases={'defense_absolute': 5, **ATTACK_DONE}, values={'thorns': 7.},
                       prices={'defense_absolute': 254, 'thorns': 409})
     result = run('turtle', 'workshop', saving)
     assert result.trace.matched_rule_id == 'turtle.cheap_defense.pool' and result.decision.upgrade_id == 'defense_absolute'
     pricey = replace(saving, prices={'defense_absolute': 330, 'thorns': 409})  # 330 > 80% of 409
     result = run('turtle', 'workshop', pricey)
     assert result.decision.state == 'save_coins' and result.trace.matched_rule_id == 'turtle.objectives'
+
+
+UNLOCK_SAVING_PRICES = {'unlock_thorns': 500, 'attack_speed': 90, 'damage': 100, 'cash_per_wave': 100}
+
+
+def test_turtle_cheap_filler_while_saving_for_thorns_unlock() -> None:
+    saving = workshop(utility_spent_coins=350, wallet_coins=300, purchases={'unlock_defense_upgrades': 1},
+                      confirmed_purchases={'defense_absolute': 5, **ATTACK_DONE},
+                      prices={**UNLOCK_SAVING_PRICES, 'defense_absolute': 120})
+    result = run('turtle', 'workshop', saving)
+    assert result.trace.matched_rule_id == 'turtle.unlock_filler.pool' and result.decision.upgrade_id == 'defense_absolute'
+    over_quarter = replace(saving, prices={**UNLOCK_SAVING_PRICES, 'defense_absolute': 130})
+    result = run('turtle', 'workshop', over_quarter)  # 130 > 25% of 500
+    assert result.trace.matched_rule_id == 'turtle.unlock_filler.pool' and result.decision.upgrade_id == 'attack_speed'
+    over_half = replace(saving, wallet_coins=170)  # every row > 50% of 170
+    result = run('turtle', 'workshop', over_half)
+    assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'unlock_thorns'
 
 
 REALISTIC_PRICES = {'thorns': 409, 'defense_absolute': 254, 'cash_bonus': 50, 'coins_per_kill_bonus': 60,
@@ -90,7 +121,7 @@ REALISTIC_PRICES = {'thorns': 409, 'defense_absolute': 254, 'cash_bonus': 50, 'c
 def test_turtle_priority_goal_does_not_fall_through_to_cheaper_objective() -> None:
     owned = {'unlock_defense_upgrades': 1, 'unlock_thorns': 1}
     saving = workshop(utility_spent_coins=360, wallet_coins=300, purchases=owned,
-                      confirmed_purchases={'defense_absolute': 5}, values={'thorns': 7.},
+                      confirmed_purchases={'defense_absolute': 5, **ATTACK_DONE}, values={'thorns': 7.},
                       prices=REALISTIC_PRICES)
     result = run('turtle', 'workshop', saving)
     assert result.trace.matched_rule_id != 'turtle.objectives.pool'
@@ -136,6 +167,12 @@ def test_turtle_battle_skips_emergency_while_defense_absolute_locked() -> None:
     assert result.trace.matched_rule_id == 'turtle.battle.economy' and result.decision.upgrade_id == 'cash_per_wave'
 
 
+def test_turtle_battle_attack_floor_before_economy() -> None:
+    result = run('turtle', 'battle', battle(15, cash_per_wave=(5.,), damage=(10.,)))
+    assert result.trace.matched_rule_id == 'turtle.battle.attack' and result.decision.upgrade_id == 'damage'
+    assert result.decision.target == 25
+
+
 def test_turtle_battle_thorns_step_for_wave() -> None:
     result = run('turtle', 'battle', battle(50, thorns=(15.,)))
     assert result.trace.matched_rule_id == 'turtle.battle.thorns21' and result.decision.target == 21
@@ -148,5 +185,5 @@ def test_opening_battle_promotes_survival_starters() -> None:
 
 
 def test_template_blocks_carry_readable_labels() -> None:
-    assert blocks.template_program('turtle', 'workshop')[2]['label'] == 'Cheap defense'
+    assert blocks.template_program('turtle', 'workshop')[4]['label'] == 'Cheap defense'
     assert blocks.template_program('opening', 'workshop')[0]['label'] == 'Survival starter'

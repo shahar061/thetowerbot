@@ -739,7 +739,7 @@ def test_relative_wave_validation_errors(change: dict[str, Any], message: str) -
 def turtle_battle_facts(best: int | None, wave: int) -> RouteFacts:
     row = lambda value: {'status': 'available', 'value': value, 'price': 10, 'observed_at': 100}
     sample = battle_facts(defense_absolute=row(500.0), thorns=row(5.0), cash_per_wave=row(5.0),
-                          health_regen=row(0.0))
+                          health_regen=row(0.0), damage=row(100.0), attack_speed=row(2.0))
     return replace(sample, best_tier_1_wave=best, wave=wave)
 
 
@@ -750,8 +750,8 @@ def turtle_battle_facts(best: int | None, wave: int) -> RouteFacts:
 ])
 def test_turtle_battle_template_scales_with_best_wave(best: int | None, wave: int, upgrade: str) -> None:
     program = list(blocks.template_program('turtle', 'battle'))
-    assert [b['id'] for b in program] == ['turtle.battle.emergency', 'turtle.battle.ahead', 'turtle.battle.early',
-                                          'turtle.battle.wave40', 'turtle.battle.survival']
+    assert [b['id'] for b in program] == ['turtle.battle.emergency', 'turtle.battle.ahead', 'turtle.battle.attack',
+                                          'turtle.battle.early', 'turtle.battle.wave40', 'turtle.battle.survival']
     result = blocks.evaluate_program(route(program, lane='battle'), turtle_battle_facts(best, wave), None, 'battle')
     assert result.decision.upgrade_id == upgrade
 

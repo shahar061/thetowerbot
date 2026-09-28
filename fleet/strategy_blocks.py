@@ -246,10 +246,23 @@ def _workshop_template(policy: str) -> list[dict[str, Any]]:
         ]
     return [
         economy,
+        # Defense only keeps the tower alive; until Thorns is unlocked Damage
+        # is the only way to kill, so a minimum attack comes before defense.
+        {'id': 'turtle.attack', 'type': 'save_for', 'label': 'Minimum attack', 'goal': [
+            _pool('turtle.attack.pool', ['damage', 'attack_speed'],
+                  level_caps={'damage': _capped(3), 'attack_speed': _capped(3)})]},
         {'id': 'turtle.objectives', 'type': 'save_for', 'label': 'Objectives', 'goal': [_pool('turtle.objectives.pool',
             ['unlock_defense_upgrades', 'defense_absolute', 'unlock_thorns', 'thorns',
              'cash_bonus', 'coins_per_kill_bonus', 'health'],
             level_caps={'defense_absolute': _capped(5)}, targets={'thorns': 51})]},
+        # Half the wallet alone would re-check after every buy and never let
+        # the savings grow; a quarter of the unlock price ends the filler once
+        # levels outgrow it.
+        {'id': 'turtle.unlock_filler', 'type': 'while_saving', 'label': 'Cheap filler for Thorns unlock',
+         'upgrade_id': 'unlock_thorns', 'blocks': [
+             _pool('turtle.unlock_filler.pool', ['defense_absolute', 'attack_speed', 'damage',
+                   'cash_per_wave', 'coins_per_kill_bonus', 'cash_bonus'],
+                   wallet_share_pct=50, discount_pct=75, reference_upgrade_id='unlock_thorns')]},
         {'id': 'turtle.cheap_defense', 'type': 'while_saving', 'label': 'Cheap defense', 'upgrade_id': 'thorns', 'blocks': [
             _pool('turtle.cheap_defense.pool', ['defense_absolute'], discount_pct=20, reference_upgrade_id='thorns')]},
         filler,
@@ -266,6 +279,8 @@ def _battle_template(policy: str) -> list[dict[str, Any]]:
                   'coins_per_wave', 'damage', 'attack_speed'],
                   label='Battle priorities', targets={**economy, 'thorns': 51, 'coins_per_wave': 10}),
         ]
+    attack_floor = {'damage': 25, 'attack_speed': 1.4}
+
     def relative(pct: int, floor: int, cap: int) -> dict[str, int]:
         return {'pct': pct, 'floor': floor, 'cap': cap}
 
@@ -289,6 +304,9 @@ def _battle_template(policy: str) -> list[dict[str, Any]]:
         {'id': 'turtle.battle.ahead', 'type': 'condition', 'label': 'Keep Def Abs ahead',
          'field': 'def_abs_coverage', 'op': 'lt', 'value': 2,
          'then': [_pool('turtle.battle.ahead.buy', ['defense_absolute'], wallet_share_pct=30)], 'else': []},
+        # Without an attack floor Survival spends every spare cash on Health,
+        # and an account still saving for Thorns cannot kill anything.
+        _pool('turtle.battle.attack', list(attack_floor), label='Attack floor', targets=attack_floor),
         {'id': 'turtle.battle.early', 'type': 'condition', 'label': 'Early economy',
          'field': 'wave', 'op': 'lte', 'relative': relative(50, 5, 20),
          'then': [_pool('turtle.battle.economy', list(economy), targets=economy)], 'else': []},
