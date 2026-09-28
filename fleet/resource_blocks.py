@@ -824,8 +824,10 @@ class SlotContext:
 def _slot_context(facts: LabFacts) -> SlotContext:
     """Known and running levels, busy labs and per-slot Now - shared by every lane shape."""
     known, running = _known_levels(facts.slot1)
-    known.update({key: level for key, level in (facts.completed_levels or {}).items()
-                  if lab_catalog.lab(key) is not None and type(level) is int and level >= 0})
+    # The newest reading wins: a stale account revision never lowers the slot-1 record's level.
+    for key, level in (facts.completed_levels or {}).items():
+        if lab_catalog.lab(key) is not None and type(level) is int and level >= 0:
+            known[key] = max(known.get(key, level), level)
     unavailable = set(facts.running_research) | set(facts.reserved_research)
     for record in (facts.slots or {}).values():
         if record.get("state") != "researching":

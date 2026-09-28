@@ -338,3 +338,17 @@ def test_unknown_completion_leaves_researching_slot_uncovered() -> None:
 def test_unread_levels_do_not_freeze_workshop() -> None:
     result = plan_with_unread_levels()
     assert result.saving.reserve == 0 and result.saving.workshop_budget == 100_000
+
+
+def test_stale_revision_never_lowers_the_slot1_game_speed_reading() -> None:
+    # The slot-1 record says the next Game Speed is L5 (150,000); the persisted revision still
+    # says Game Speed 2. The newer reading wins, so Workshop reserves for L5, not L3 (12,000).
+    record = {"kind": "wait_coins", "price": 150_000, "game_speed_level": 5,
+              "observed_at": NOW - 5, "job_completes_at": None}
+    stale = {"labs.game-speed": 2, "labs.labs-speed": 10, "labs.coins-wave": 2, "labs.coins-kill-bonus": 5}
+    result = plan(slot1=record, completed_levels=stale)
+    assert (result.slots[0].next.lab_id, result.slots[0].next.level, result.slots[0].next.price) == (
+        "labs.game-speed", 5, 150_000)
+    # A stale revision can't resurrect the pin for a Game Speed the slot-1 record reads as maxed.
+    maxed = plan(slot1={**record, "kind": "done"}, completed_levels=stale)
+    assert maxed.slots[0].next is None or maxed.slots[0].next.lab_id != "labs.game-speed"
