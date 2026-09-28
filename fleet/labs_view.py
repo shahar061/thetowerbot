@@ -14,6 +14,7 @@ import db
 import lab_catalog
 from fleet.build_route import RouteDocument, resolve_route
 from fleet.build_route_store import BuildRouteStore, RouteUnavailable
+from fleet.coin_share import jit_hold
 from fleet.lab_facts import persisted_lab_facts
 from fleet.resource_blocks import automated_list, evaluate_lab_plan
 
@@ -94,7 +95,13 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
     recent = _history(registration.db_path)
     facts = persisted_lab_facts(worker_root, account_id, now=now, coins=coins, gems=gems,
                                 db_path=registration.db_path)
-    plan = evaluate_lab_plan(resolve_route(route, worker, account_id), facts)
+    effective = resolve_route(route, worker, account_id)
+    plan = evaluate_lab_plan(effective, facts)
+    plan_row = asdict(plan)
+    if effective.rules.coins.lab_share.mode == "just_in_time":
+        # The worker holds the saving plan's hold, not the on-disk jar a save_pct
+        # strategy may have left behind, so the row shows what is really held.
+        plan_row["jar"] = jit_hold(plan.saving, coins)[0]
     unknown_slots = sum(slot.now.state == "unknown" for slot in plan.slots)
     stale_slots = sum(slot.now.stale for slot in plan.slots)
     blockers = ([route_error] if route_error else [])
@@ -112,7 +119,7 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
     freshness = ("stale" if stale_slots else "unknown" if unknown_slots == 5 else
                  "historical" if historical_slots else "observed")
     return {"worker": worker, "account_id": account_id, "strategy_name": strategy,
-            "read_at": read_at, "wallet": {"coins": coins, "gems": gems}, "plan": asdict(plan),
+            "read_at": read_at, "wallet": {"coins": coins, "gems": gems}, "plan": plan_row,
             "saving": _saving(plan.saving),
             "state": "ok", "reason": route_error, "recent": recent,
             "unknown_slots": unknown_slots, "freshness": freshness, "blockers": blockers}
