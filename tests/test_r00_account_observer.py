@@ -18,7 +18,7 @@ from fleet.account_observer import (parse_account_popup, parse_google_play_profi
                                     parse_tower_consent,
                                     parse_new_account_warning,
                                     parse_game_stats_home,
-                                    parse_settings, parse_home, parse_inbox, parse_events,
+                                    parse_settings, parse_home, parse_return_page, parse_events,
                                     parse_link_account_prompt,
                                     StagingAccountObserver)
 import vision
@@ -345,16 +345,22 @@ def test_live_observer_identifies_battle_without_exposing_controls(
     assert reading.controls == {}
 
 
-def test_live_inbox_exposes_only_its_measured_return_caption(
+@pytest.mark.parametrize(("capture", "screen", "control"), [
+    ("menu_mail_empty_live_39.jpg", "inbox", (540, 2301)),
+    ("menu_missions_live_59.png", "missions", (540, 2301)),
+    ("menu_milestones_claimable.png", "milestones", (540, 2301)),
+])
+def test_live_return_page_exposes_only_its_measured_return_caption(
+        capture: str, screen: str, control: tuple[int, int],
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import ocr
-    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "menu_mail_empty_live_39.jpg"))
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / capture))
     observed = ocr.read(frame, strict=True, min_confidence=0.)
-    reading = parse_inbox(frame, observed, observed_at=101.,
-                          app_version="29.0.3", evidence_ref="capture://inbox")
+    reading = parse_return_page(frame, observed, observed_at=101.,
+                                app_version="29.0.3", evidence_ref=f"capture://{screen}")
     assert reading is not None
-    assert reading.screen == "inbox"
-    assert reading.controls == {"return_to_game": (540, 2301)}
+    assert reading.screen == screen
+    assert reading.controls == {"return_to_game": control}
 
     monkeypatch.setattr(ocr, "read", lambda *_, **__: observed)
     device = SimpleNamespace(
@@ -366,7 +372,7 @@ def test_live_inbox_exposes_only_its_measured_return_caption(
     observed_frame = StagingAccountObserver(
         tmp_path, endpoint=device.serial, allowed_versions=frozenset({"29.0.3"}),
     )(device)
-    assert observed_frame.screen == "inbox"
+    assert observed_frame.screen == screen
     assert observed_frame.controls == reading.controls
 
 
@@ -395,20 +401,20 @@ def test_inbox_requires_anchored_header_and_bottom_return_caption() -> None:
         TextBox("Tap To Return To Game", .98, Rect(231, 2270, 618, 62)),
     )
     for removed in (observed[0], observed[-1]):
-        assert parse_inbox(frame, tuple(box for box in observed if box is not removed),
+        assert parse_return_page(frame, tuple(box for box in observed if box is not removed),
                            observed_at=101., app_version="29.0.3",
                            evidence_ref="capture://incomplete") is None
-    assert parse_inbox(frame, (observed[0], observed[-1]),
+    assert parse_return_page(frame, (observed[0], observed[-1]),
                        observed_at=101., app_version="29.0.3",
                        evidence_ref="capture://news-detail") is not None
-    assert parse_inbox(frame, observed[:-1] + (
+    assert parse_return_page(frame, observed[:-1] + (
         TextBox("Tap To Return To Game", .98, Rect(231, 1000, 618, 62)),),
         observed_at=101., app_version="29.0.3",
         evidence_ref="capture://wrong-position") is None
-    assert parse_inbox(frame, observed + (observed[-1],),
+    assert parse_return_page(frame, observed + (observed[-1],),
                        observed_at=101., app_version="29.0.3",
                        evidence_ref="capture://ambiguous-footer") is None
-    assert parse_inbox(frame, observed[:-1] + (
+    assert parse_return_page(frame, observed[:-1] + (
         TextBox("Tap To Return To Game", .89, observed[-1].rect),),
         observed_at=101., app_version="29.0.3",
         evidence_ref="capture://weak-footer") is None
