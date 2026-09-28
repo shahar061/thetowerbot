@@ -88,6 +88,8 @@ def wait_until(predicate: Any, timeout: float = 2.0) -> None:
     ("https://evil.example", "mac.tail.ts.net:10059", False),
     ("null", "127.0.0.1:10059", False),
     ("https://mac.tail.ts.net", None, False),
+    ("http://[::1", "127.0.0.1:10059", False),
+    ("http://evil.com", "[::1", False),
 ])
 def test_origin_allowed(origin: str | None, host: str | None, allowed: bool) -> None:
     assert origin_allowed(origin, host) is allowed
@@ -148,7 +150,8 @@ def test_a_viewer_leaving_a_still_screen_releases_its_subscription() -> None:
     hub = FakeHub([CONFIG_MSG])  # then nothing: a still screen sends no frames
     with client_for(hub).websocket_connect("/api/stream") as ws:
         ws.receive_text()
-    wait_until(hub.subscriptions[0].closed.is_set)
+        ws.close(1000)
+        wait_until(hub.subscriptions[0].closed.is_set)
 
 
 def _worker(root: Path, name: str, account_id: str) -> Path:
