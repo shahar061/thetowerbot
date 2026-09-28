@@ -1,0 +1,462 @@
+[
+  {
+    "text": "3.16K",
+    "confidence": 0.9936477780342102,
+    "rect": [
+      86,
+      26,
+      144,
+      50
+    ]
+  },
+  {
+    "text": "140",
+    "confidence": 0.946338415145874,
+    "rect": [
+      382,
+      26,
+      155,
+      50
+    ]
+  },
+  {
+    "text": "EVENT-STEAMPUNK",
+    "confidence": 0.9827118714650472,
+    "rect": [
+      31,
+      108,
+      547,
+      46
+    ]
+  },
+  {
+    "text": "0",
+    "confidence": 0.9542115330696106,
+    "rect": [
+      49,
+      198,
+      28,
+      42
+    ]
+  },
+  {
+    "text": "Ends in 14h 9m",
+    "confidence": 0.9839023990290505,
+    "rect": [
+      777,
+      200,
+      266,
+      40
+    ]
+  },
+  {
+    "text": "Missions",
+    "confidence": 0.9956553429365158,
+    "rect": [
+      53,
+      285,
+      231,
+      48
+    ]
+  },
+  {
+    "text": "Event Shop",
+    "confidence": 0.9835773587226868,
+    "rect": [
+      392,
+      283,
+      292,
+      54
+    ]
+  },
+  {
+    "text": "Bots",
+    "confidence": 0.9960058778524399,
+    "rect": [
+      847,
+      284,
+      125,
+      49
+    ]
+  },
+  {
+    "text": "Automated Pen",
+    "confidence": 0.9880003012143649,
+    "rect": [
+      148,
+      382,
+      236,
+      31
+    ]
+  },
+  {
+    "text": "Gear Heart",
+    "confidence": 0.9734186649322509,
+    "rect": [
+      549,
+      381,
+      169,
+      36
+    ]
+  },
+  {
+    "text": "EVENT INFORMATION",
+    "confidence": 0.9641092629993663,
+    "rect": [
+      255,
+      470,
+      571,
+      44
+    ]
+  },
+  {
+    "text": "EVE",
+    "confidence": 0.8601464231808981,
+    "rect": [
+      34,
+      677,
+      66,
+      46
+    ]
+  },
+  {
+    "text": "BO",
+    "confidence": 0.9717239737510681,
+    "rect": [
+      37,
+      724,
+      60,
+      41
+    ]
+  },
+  {
+    "text": "REL",
+    "confidence": 0.9443641106287638,
+    "rect": [
+      37,
+      768,
+      60,
+      41
+    ]
+  },
+  {
+    "text": "Complete missions to earn medals. Each",
+    "confidence": 0.9891599118709564,
+    "rect": [
+      177,
+      783,
+      729,
+      40
+    ]
+  },
+  {
+    "text": "mission has 3 tiers:",
+    "confidence": 0.9995467275381088,
+    "rect": [
+      365,
+      831,
+      349,
+      38
+    ]
+  },
+  {
+    "text": "EV",
+    "confidence": 0.9918821454048157,
+    "rect": [
+      36,
+      901,
+      60,
+      49
+    ]
+  },
+  {
+    "text": "Tier 1 - 10",
+    "confidence": 0.9627546270688375,
+    "rect": [
+      450,
+      907,
+      226,
+      54
+    ]
+  },
+  {
+    "text": "Aco",
+    "confidence": 0.9221571882565817,
+    "rect": [
+      37,
+      1014,
+      58,
+      43
+    ]
+  },
+  {
+    "text": "Tier 2 - 152",
+    "confidence": 0.9227670431137085,
+    "rect": [
+      450,
+      1011,
+      190,
+      46
+    ]
+  },
+  {
+    "text": "Tier 3 - 20",
+    "confidence": 0.9179748459295793,
+    "rect": [
+      445,
+      1109,
+      195,
+      48
+    ]
+  },
+  {
+    "text": "IfE",
+    "confidence": 0.9169017473856608,
+    "rect": [
+      43,
+      1157,
+      57,
+      33
+    ]
+  },
+  {
+    "text": "The event begins with 5 missions. 2",
+    "confidence": 0.9938308715820312,
+    "rect": [
+      219,
+      1197,
+      642,
+      45
+    ]
+  },
+  {
+    "text": "missions are added daily for the1stweek.",
+    "confidence": 0.943280529230833,
+    "rect": [
+      165,
+      1252,
+      746,
+      35
+    ]
+  },
+  {
+    "text": "1/3",
+    "confidence": 0.9969098766644796,
+    "rect": [
+      984,
+      1279,
+      55,
+      37
+    ]
+  },
+  {
+    "text": "No new missions in the Znd week",
+    "confidence": 0.9969517511706198,
+    "rect": [
+      239,
+      1296,
+      602,
+      39
+    ]
+  },
+  {
+    "text": "Spend medals in the event shop to get",
+    "confidence": 0.9828748638565475,
+    "rect": [
+      196,
+      1370,
+      691,
+      41
+    ]
+  },
+  {
+    "text": "exclusive items. The shop remains open",
+    "confidence": 0.9943563295038123,
+    "rect": [
+      180,
+      1417,
+      720,
+      43
+    ]
+  },
+  {
+    "text": "after the event ends, but items marked",
+    "confidence": 0.9950549775048306,
+    "rect": [
+      189,
+      1466,
+      701,
+      37
+    ]
+  },
+  {
+    "text": "\"limited\" won't be available next event",
+    "confidence": 0.9757848947476118,
+    "rect": [
+      192,
+      1513,
+      697,
+      40
+    ]
+  },
+  {
+    "text": "1/3",
+    "confidence": 0.9980063438415527,
+    "rect": [
+      984,
+      1545,
+      55,
+      33
+    ]
+  },
+  {
+    "text": "Buy",
+    "confidence": 0.9548534353574117,
+    "rect": [
+      36,
+      1579,
+      61,
+      43
+    ]
+  },
+  {
+    "text": "The relics may only be available this event",
+    "confidence": 0.9681259310522745,
+    "rect": [
+      155,
+      1583,
+      771,
+      47
+    ]
+  },
+  {
+    "text": "and must be earned before the event ends",
+    "confidence": 0.9521900162100791,
+    "rect": [
+      159,
+      1637,
+      763,
+      35
+    ]
+  },
+  {
+    "text": "Rotating Relics appear in the Event Shop",
+    "confidence": 0.9844281196594238,
+    "rect": [
+      172,
+      1705,
+      735,
+      46
+    ]
+  },
+  {
+    "text": "every week. These relics appeared in",
+    "confidence": 0.9956143763330247,
+    "rect": [
+      208,
+      1756,
+      664,
+      41
+    ]
+  },
+  {
+    "text": "previous events, and can be purchased",
+    "confidence": 0.9911968305304244,
+    "rect": [
+      188,
+      1803,
+      703,
+      42
+    ]
+  },
+  {
+    "text": "1/3",
+    "confidence": 0.9956893722216288,
+    "rect": [
+      983,
+      1809,
+      57,
+      36
+    ]
+  },
+  {
+    "text": "Get",
+    "confidence": 0.9892899592717489,
+    "rect": [
+      37,
+      1847,
+      60,
+      41
+    ]
+  },
+  {
+    "text": "with Gems. These relics reset every",
+    "confidence": 0.9867214049611773,
+    "rect": [
+      219,
+      1847,
+      641,
+      49
+    ]
+  },
+  {
+    "text": "Tuesday at 00:00 UTC.",
+    "confidence": 0.9128331542015076,
+    "rect": [
+      336,
+      1899,
+      406,
+      42
+    ]
+  },
+  {
+    "text": "Have a total lab research time of 1zd (rushed",
+    "confidence": 0.9827237486839294,
+    "rect": [
+      38,
+      2086,
+      845,
+      41
+    ]
+  },
+  {
+    "text": "New!1/3",
+    "confidence": 0.9984332748821804,
+    "rect": [
+      897,
+      2074,
+      140,
+      39
+    ]
+  },
+  {
+    "text": "labs count)",
+    "confidence": 0.970227528702129,
+    "rect": [
+      37,
+      2137,
+      214,
+      40
+    ]
+  },
+  {
+    "text": "10",
+    "confidence": 0.9993162751197815,
+    "rect": [
+      916,
+      2127,
+      53,
+      39
+    ]
+  },
+  {
+    "text": "Tap To Return To Game",
+    "confidence": 0.9566059140931993,
+    "rect": [
+      236,
+      2275,
+      612,
+      52
+    ]
+  }
+]

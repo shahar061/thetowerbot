@@ -43,6 +43,7 @@ from account_collection import (
 from account_screens import ControlTarget
 from device import Image
 from missions_screen import ClaimTarget, MissionsReadings
+from events_claim import EventsClaim
 from mail_claim import MailClaim
 
 if TYPE_CHECKING:
@@ -117,7 +118,11 @@ class MissionsClaim(ControlTaps):
         # rather than by remembering not to read one off it.
         self._pending: tuple[_PendingClaim, int] | None = None
         self._mail = MailClaim(frame_budget=frame_budget)
-        self._mail_mode = False
+        self._events = EventsClaim(frame_budget=frame_budget)
+        # The side walk this transaction is standing in for, if any: mail and
+        # events share every pause/recovery/navigation guard held on
+        # `.active`, without each needing a guard of its own.
+        self._side: MailClaim | EventsClaim | None = None
         self._scrolls = 0
         self._scroll_pending: tuple[Any, ...] | None = None
         self._scroll_seen: set[tuple[Any, ...]] = set()
@@ -126,7 +131,8 @@ class MissionsClaim(ControlTaps):
     @property
     def active(self) -> bool:
         with self._lock:
-            return self._step is not Step.IDLE or self._mail.active
+            return (self._step is not Step.IDLE or self._mail.active
+                    or self._events.active)
 
     def snapshot(self) -> dict[str, Any]:
         """Detached. 'idle' is the absence of a walk, not a failed one.
@@ -135,8 +141,8 @@ class MissionsClaim(ControlTaps):
         from, so a remembered point here could only ever be used wrongly.
         """
         with self._lock:
-            if self._mail_mode:
-                return self._mail.snapshot()
+            if self._side is not None:
+                return self._side.snapshot()
             status = 'running' if self._step is not Step.IDLE else (
                 self._result.status if self._result is not None else 'idle')
             return {'status': status, 'step': self._step.name.lower(),
@@ -150,15 +156,23 @@ class MissionsClaim(ControlTaps):
         with self._lock:
             if self.active:
                 return False
-            self._mail_mode = True
+            self._side = self._mail
             return self._mail.request(now)
+
+    def request_events(self, now: float | None = None) -> bool:
+        """Events shares the same guards; see request_mail."""
+        with self._lock:
+            if self.active:
+                return False
+            self._side = self._events
+            return self._events.request(now)
 
     def request(self, now: float | None = None) -> bool:
         """Arm a walk. False when one is already running; never queues."""
         with self._lock:
             if self.active:
                 return False
-            self._mail_mode = False
+            self._side = None
             self._requested_at = time.time() if now is None else now
             self._result = None
             self._waited = 0
@@ -175,8 +189,8 @@ class MissionsClaim(ControlTaps):
     def cancel(self, reason: str, detail: str, now: float | None = None) -> None:
         """End a walk the loop can no longer honour. Idempotent."""
         with self._lock:
-            if self._mail_mode:
-                self._mail.cancel(reason, detail, now)
+            if self._side is not None:
+                self._side.cancel(reason, detail, now)
                 return
             if self._step is Step.IDLE:
                 return
@@ -193,8 +207,8 @@ class MissionsClaim(ControlTaps):
                 tuning: Strategy | None = None) -> ClaimAction | None:
         """One frame of the walk. Returns the tap it issued, if any."""
         with self._lock:
-            if self._mail_mode:
-                return self._mail.advance(screen=screen, device=device, templates=templates,
+            if self._side is not None:
+                return self._side.advance(screen=screen, device=device, templates=templates,
                                           readings=readings, state=state, bus=bus,
                                           now=now, tuning=tuning)
             self._tuning = tuning

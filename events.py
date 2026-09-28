@@ -405,6 +405,25 @@ class MailClaimed(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class EventMissionClaimed(Event):
+    """One Events-page mission tier claimed, proven by the page changing.
+
+    Medals are the event's own currency and are not in the ledger, so there
+    is no amount here: the card's label is what was tapped and
+    `confirmation` is what the next frame showed.
+    """
+
+    confirmation: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class TierAdvanced(Event):
+    """The main menu's lit right tier arrow was tapped, to play a higher tier."""
+
+    point: tuple[int, int]
+
+
+@dataclass(frozen=True, kw_only=True)
 class MissionClaimed(Event):
     """One mission reward taken, with the evidence that it landed.
 
