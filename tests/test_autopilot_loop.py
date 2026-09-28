@@ -16,6 +16,7 @@ loop stops stepping it there.
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from typing import Callable
 
 import pytest
@@ -56,7 +57,10 @@ def test_an_in_run_scan_reports_the_wave_the_autopilot_read(
     bot = bot_in_run_on("in_run_lit")
     bot.controls.apply({"autopilot": {"enabled": True}})
     monkeypatch.setattr(bot.autopilot, "step", lambda *args, **kwargs: False)
-    monkeypatch.setattr(tower_bot, "frame_combat", lambda context, observation: {"wave": 4812})
+    # Through the real frame_combat, which returns the wave as a float.
+    real = tower_bot.frame_combat
+    monkeypatch.setattr(tower_bot, "frame_combat", lambda context, observation: real(
+        {}, SimpleNamespace(combat={"wave": 4812})))
 
     bot.run_once()
 
