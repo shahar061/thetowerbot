@@ -121,6 +121,44 @@ def test_unknown_income_lets_only_top_tiers_wait() -> None:
     assert result.slots[0].next is None
 
 
+def test_unknown_income_still_picks_a_top_tier_it_cannot_afford_yet() -> None:
+    entries = [GS, {"id": "cw", "lab_id": "labs.coins-wave", "to_level": 10, "tier": "B"},
+               {"id": "ckb", "lab_id": "labs.coins-kill-bonus", "to_level": 30, "tier": "S"}]
+    result = plan(Route(entries), wallet_coins=0, available_coins=0, coins_per_hour=None,
+                  completed_levels={"labs.game-speed": 7, "labs.coins-wave": 2, "labs.coins-kill-bonus": 5})
+    assert "cw: beyond save window: tier B" in result.slots[0].why
+    assert (result.slots[0].next.lab_id, result.slots[0].next.level) == ("labs.coins-kill-bonus", 6)
+    assert result.slots[0].covered is False
+
+
+def test_unpriced_lab_is_skipped_as_price_unknown() -> None:
+    # Ban Perks is unlocked (Tier 5 wave 40, Unlock Perks 1) and could serve, but the shipped
+    # catalog has no price table for it: skipped, never treated as free.
+    assert lab_catalog.level("labs.ban-perks", 1) is None
+    entries = [GS, {"id": "bp", "lab_id": "labs.ban-perks", "to_level": 5, "tier": "S"},
+               {"id": "cw", "lab_id": "labs.coins-wave", "to_level": 10, "tier": "B"}]
+    result = plan(Route(entries), best_waves={1: 200, 5: 40},
+                  completed_levels={"labs.game-speed": 7, "labs.unlock-perks": 1, "labs.ban-perks": 0,
+                                    "labs.coins-wave": 2})
+    assert "bp: price unknown" in result.slots[0].why
+    assert result.slots[0].next.lab_id == "labs.coins-wave"
+
+
+def test_save_window_is_judged_when_a_researching_slot_frees() -> None:
+    # Tier C has a 0h window, so Coins/Kill L6 (1,350 coins, empty wallet) is beyond it for
+    # an idle slot; a slot freeing in 10 hours may pick it within window + 10 hours.
+    entries = [GS, {"id": "ckb", "lab_id": "labs.coins-kill-bonus", "to_level": 30, "tier": "C"}]
+    levels = {"labs.game-speed": 7, "labs.coins-kill-bonus": 5, "labs.coins-wave": 2}
+    locked = {2: slot("locked"), 3: slot("locked"), 4: slot("locked"), 5: slot("locked")}
+    idle = plan(Route(entries), wallet_coins=0, available_coins=0, completed_levels=levels,
+                slots={1: slot("idle"), **locked})
+    assert idle.slots[0].next is None and "ckb: beyond save window: tier C" in idle.slots[0].why
+    busy = plan(Route(entries), wallet_coins=0, available_coins=0, completed_levels=levels,
+                slots={1: slot("researching", "labs.coins-wave", 3, NOW + 10 * 3600), **locked})
+    assert (busy.slots[0].next.lab_id, busy.slots[0].next.level) == ("labs.coins-kill-bonus", 6)
+    assert "ckb: rank 2" in busy.slots[0].why
+
+
 def test_unread_levels_skip_with_a_reason() -> None:
     result = plan_with_unread_levels()
     # Game Speed's level comes from completed_levels or the slot-1 record; both are empty.

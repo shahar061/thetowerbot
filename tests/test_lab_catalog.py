@@ -37,14 +37,23 @@ def test_gem_prices_for_lab_slots_card_slots_and_cards() -> None:
     assert lab_catalog.card_slot_gems(11) is None
 
 
-def test_labs_without_a_price_table_are_unknown_not_free() -> None:
+def test_labs_without_a_price_table_are_unknown_not_free(monkeypatch: pytest.MonkeyPatch) -> None:
     raw = payload()
     raw["labs"].append({"id": "labs.cash-wave", "name": "Cash / Wave", "unlock": [], "max_level": None,
                         "levels": None, "source_url": "https://example.org/cash-wave", "checked": "2026-09-28"})
-    unpriced = next(entry for entry in lab_catalog.load(raw).labs if entry.id == "labs.cash-wave")
+    loaded = lab_catalog.load(raw)
+    unpriced = next(entry for entry in loaded.labs if entry.id == "labs.cash-wave")
     assert unpriced.levels is None and unpriced.max_level is None
+    # level() and lab() read the module's index, so point it at the synthetic catalog.
+    monkeypatch.setattr(lab_catalog, "_BY_ID", {entry.id: entry for entry in loaded.labs})
+    assert lab_catalog.lab("labs.cash-wave") is unpriced
     assert lab_catalog.level("labs.cash-wave", 1) is None
     assert lab_catalog.lab("labs.invented") is None
+    monkeypatch.undo()
+    # The shipped catalog has one too: Ban Perks' table can't be read, so it stays unpriced.
+    ban_perks = lab_catalog.lab("labs.ban-perks")
+    assert ban_perks is not None and ban_perks.levels is None
+    assert lab_catalog.level("labs.ban-perks", 1) is None
 
 
 def test_every_entry_records_its_source_and_checked_date() -> None:

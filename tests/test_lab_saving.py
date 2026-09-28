@@ -115,3 +115,12 @@ def test_spend_limit_applies_after_reserve() -> None:
     held = saving_plan([target(1, 4_000, 0, state="owned_unread")], wallet=10_000, rate=1_000.0,
                        spend_limit_pct=50, now=NOW)
     assert (held.reserve, held.workshop_budget) == (4_000, 3_000)
+
+
+def test_reserve_is_the_largest_prefix_shortfall_whatever_the_input_order() -> None:
+    # 10k due now + 10k due in 20h at 1k/h: the first needs 10k held, the second is fully
+    # earned by then, so the reserve is 10k. Summing in the given (reversed) order would
+    # wrongly hold 20k.
+    later, now_ = target(2, 10_000, 20, state="idle"), target(1, 10_000, 0, state="idle")
+    result = saving_plan([later, now_], wallet=50_000, rate=1_000.0, spend_limit_pct=100, now=NOW)
+    assert result.reserve == 10_000 and result.workshop_budget == 40_000
