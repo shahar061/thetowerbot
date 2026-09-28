@@ -279,17 +279,22 @@ def parse_settings(
     )
 
 
-def parse_inbox(
+# Full-screen menu pages left only by their `Tap To Return To Game` footer.
+# A fleet restart can land mid-visit on any of them.
+_RETURN_PAGES = {"INBOX": "inbox", "DAILYMISSIONS": "missions", "MILESTONES": "milestones"}
+
+
+def parse_return_page(
     frame: Image, boxes: tuple[TextBox, ...], *, observed_at: float,
     app_version: str, evidence_ref: str,
 ) -> AccountFrame | None:
-    """Expose the return caption only with anchored Inbox and footer OCR."""
+    """Expose the return caption only with an anchored page title and footer OCR."""
     height, width = frame.shape[:2]
     if (not supported_frame(width, height) or not app_version.strip()
             or not evidence_ref.strip() or not math.isfinite(observed_at)):
         return None
-    title = tuple(box for box in boxes if box.text.strip().upper() == "INBOX"
-                  and _trusted(box) and _inside(box, Rect(0, 60, 300, 150)))
+    title = tuple(box for box in boxes if _compact(box.text) in _RETURN_PAGES
+                  and _trusted(box) and _inside(box, Rect(0, 60, 500, 150)))
     footer = tuple(box for box in boxes
                    if re.sub(r"[^a-z]", "", box.text.lower()) == "taptoreturntogame"
                    and _trusted(box) and box.confidence >= .95
@@ -300,7 +305,8 @@ def parse_inbox(
         return None
     rect = footer[0].rect
     return AccountFrame(
-        screen="inbox", account_id=None, app_version=app_version,
+        screen=_RETURN_PAGES[_compact(title[0].text)], account_id=None,
+        app_version=app_version,
         digest=hashlib.sha256(frame.tobytes()).hexdigest(),
         observed_at=observed_at, evidence_ref=evidence_ref,
         controls={"return_to_game": (rect.x + rect.w // 2, rect.y + rect.h // 2)},
@@ -476,10 +482,10 @@ class StagingAccountObserver:
                 if target.point is not None:
                     return replace(reading, controls={**reading.controls, "close": target.point})
                 return reading
-        inbox = parse_inbox(frame, boxes, observed_at=observed_at,
-                            app_version=version, evidence_ref=evidence_ref)
-        if inbox is not None:
-            return inbox
+        page = parse_return_page(frame, boxes, observed_at=observed_at,
+                                 app_version=version, evidence_ref=evidence_ref)
+        if page is not None:
+            return page
         events_page = parse_events(frame, boxes, observed_at=observed_at,
                                    app_version=version, evidence_ref=evidence_ref)
         if events_page is not None:
