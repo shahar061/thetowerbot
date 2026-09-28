@@ -41,7 +41,7 @@ def test_labs_without_a_price_table_are_unknown_not_free() -> None:
     labs_speed = lab_catalog.lab("labs.labs-speed")
     assert labs_speed is not None
     assert labs_speed.levels is None and labs_speed.max_level is None
-    assert labs_speed.unlock == {"best_tier_1_wave": 150}
+    assert labs_speed.unlock == ({"tier": 1, "wave": 150},)
     assert lab_catalog.level("labs.labs-speed", 1) is None
     assert lab_catalog.lab("labs.invented") is None
 
@@ -66,7 +66,7 @@ def _append_unknown_lab(raw: dict[str, Any]) -> None:
     (lambda raw: raw["labs"][0]["levels"][2].update(coins=1), "must rise"),
     (lambda raw: raw["labs"][0].update(checked="yesterday"), "checked must be"),
     (lambda raw: raw["labs"][0].update(levels=None), "Game Speed needs its price table"),
-    (lambda raw: raw.update(version=2), "unsupported lab catalog version"),
+    (lambda raw: raw.update(version=3), "unsupported lab catalog version"),
 ])
 def test_invalid_catalog_fails_loudly(mutate: Callable[[dict[str, Any]], object],
                                       message: str) -> None:

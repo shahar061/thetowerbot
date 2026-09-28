@@ -568,7 +568,7 @@ def _pool_choice(block: Mapping[str, Any], facts: LabFacts, pool: Any,
             continue
         entry = lab_catalog.lab(lab_id)
         assert entry is not None
-        requirement = entry.unlock.get("best_tier_1_wave") if entry.unlock else None
+        requirement = lab_catalog.tier_one_wave(lab_id)
         if (requirement is not None and facts.best_tier_1_wave is not None
                 and facts.best_tier_1_wave < requirement):
             continue
@@ -639,7 +639,7 @@ def _choose(children: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any,
                 why.append(f"{block['id']}: {entry.name} reached {block['to_level']}")
                 continue
             option = _option(lab_id, level)
-            requirement = entry.unlock.get("best_tier_1_wave") if entry.unlock else None
+            requirement = lab_catalog.tier_one_wave(lab_id)
             budget = facts.available_coins if facts.available_coins is not None else facts.wallet_coins
             reason = ("already running or reserved" if lab_id in unavailable else
                       "prerequisite unread" if requirement is not None and facts.best_tier_1_wave is None else

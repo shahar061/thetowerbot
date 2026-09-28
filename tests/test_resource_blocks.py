@@ -230,6 +230,22 @@ def test_pool_selection_and_limits() -> None:
     assert evaluate_lab_plan(route, facts).slots[1].next.lab_id == "labs.coins-wave"
 
 
+def test_pool_containing_a_lab_with_a_list_unlock_does_not_raise() -> None:
+    # labs.labs-speed's unlock is a v2 condition tuple, not the old dict. A pool
+    # that considers it must not crash calling .get() on that tuple (F1/R-F1).
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[
+        {"id": "one", "type": "slot_track", "slots": [1], "children": [
+            {"id": "gs", "type": "research", "lab_id": "labs.game-speed", "to_level": 7}]},
+        {"id": "two", "type": "slot_track", "slots": [2], "children": [
+            {"id": "pool", "type": "lab_pool", "selection": "cheapest",
+             "lab_ids": ["labs.labs-speed", "labs.coins-wave"]}]}])
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    facts = LabFacts(now=1000., wallet_coins=20000, slot1=waiting())
+    plan = evaluate_lab_plan(route, facts)
+    assert plan.slots[1].next is not None
+
+
 def test_gem_path_have_need_and_keep() -> None:
     locked = {"status": "locked", "wallet_gems": 60, "observed_at": 900.}
     plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., wallet_gems=60, slot2=locked))
