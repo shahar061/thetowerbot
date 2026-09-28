@@ -616,6 +616,16 @@ SSE_HEARTBEAT_SECONDS: float = 15.0
 # frame number has moved, so a faster poll here would not deliver frames any
 # sooner anyway.
 FRAME_POLL_SECONDS: float = 0.25
+# The main dashboard asks each worker's dashboard whether it is running its
+# account. A busy worker answers in ~60-170ms, so the timeout is well above
+# that; a stopped worker refuses the connection at once, so a longer timeout
+# only costs time when a worker is alive but slow.
+ACCOUNT_PROBE_TIMEOUT_SECONDS: float = 1.0
+# How long a worker that verified its account stays "running" while its
+# probes time out. Silence is not a "no": dropping it on one slow answer
+# blanked the live view until the next poll. An explicit "no", a different
+# account, or a refused connection still drops it immediately.
+ACCOUNT_PROBE_GRACE_SECONDS: float = 45.0
 
 # --- Live video stream ------------------------------------------------------
 # An on-demand scrcpy H.264 stream per worker, for viewing only: the bot still
