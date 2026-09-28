@@ -263,6 +263,19 @@ def test_labs_on_a_new_account_point_at_game_speed_level_one() -> None:
     assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 300}
 
 
+def test_totals_come_from_the_saved_stats_reading_and_bot_claimed_gems() -> None:
+    lifetime = {"lifetime_coins": 1860, "coins_incomplete": True, "lifetime_stones": 45,
+                "observed_at": 10.0}
+    assert state_view.build_totals(lifetime, 320) == {
+        "coins": 1860, "coins_incomplete": True, "stones": 45, "gems_claimed": 320,
+        "observed_at": "1970-01-01T00:00:10+00:00"}
+    # A record saved before stones were kept reads as unobserved stones, not 0.
+    assert state_view.build_totals({"lifetime_coins": 5, "observed_at": 10.0}, 0)["stones"] is None
+    assert state_view.build_totals(None, 0) == {
+        "coins": None, "coins_incomplete": False, "stones": None, "gems_claimed": 0,
+        "observed_at": None}
+
+
 def _registered(root: Path, worker: str, account: str, port: int) -> Path:
     worker_root = root / "workers" / worker
     checkpoint = worker_root / "checkpoints" / ("a" * 32 + ".json")
@@ -320,6 +333,27 @@ def test_an_online_worker_becomes_a_full_account_column(tmp_path: Path) -> None:
     assert account["workshop"]["totals"] == {"attack": 0, "defense": 0, "utility": 0}
     assert account["best_wave"] == {"wave": 5020, "tier": 11}
     assert account["strategy"] is None and account["next_buy"] is None
+
+
+def test_an_account_column_carries_lifetime_totals(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    (root / "reroll-lifetime.json").write_text(json.dumps({
+        "account_id": "account-a", "lifetime_coins": 1000, "lifetime_stones": 12,
+        "observed_at": 10.0, "baseline_run_id": 0}))
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO runs(id, started_at, ended_at, wave, coins, tier) "
+                     "VALUES (1, 20, 60, 50, 250, 1)")
+        conn.executemany(
+            "INSERT INTO ledger(ts, kind, currency, delta, dry_run) VALUES (?, ?, ?, ?, ?)",
+            [(1, "MISSION_CLAIM", "gems", 20, 0), (2, "MAIL_CLAIM", "gems", 5, 0),
+             (3, "MAIL_CLAIM", "coins", 900, 0), (4, "GEM_CLAIM", "gems", 2, 1),
+             (5, "UNEXPLAINED", "gems", 140, 0), (6, "CARD_BUY", "gems", -30, 0)])
+    member = {"name": "Air_1", "endpoint": "127.0.0.1:5555", "lease_id": "lease"}
+
+    (account,) = state_view.fleet_state(tmp_path, [member], fetch=_fetch({}), now=7000.)["accounts"]
+
+    assert account["totals"] == {"coins": 1250, "coins_incomplete": False, "stones": 12,
+                                 "gems_claimed": 25, "observed_at": "1970-01-01T00:00:10+00:00"}
 
 
 def test_an_account_column_carries_its_strategy_and_next_buy(tmp_path: Path) -> None:

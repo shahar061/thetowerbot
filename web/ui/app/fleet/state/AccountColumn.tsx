@@ -4,8 +4,8 @@ import { memo, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   STATE_CATEGORIES, type FleetStateAccount, type FleetStateBestWave, type FleetStateCards,
-  type FleetStateDecision, type FleetStateLabs, type FleetStateNextBuy, type FleetStateWorkshop,
-  type StateCategory,
+  type FleetStateDecision, type FleetStateLabs, type FleetStateNextBuy, type FleetStateTotals,
+  type FleetStateWorkshop, type StateCategory,
 } from "@/lib/fleetState";
 import { decisionFor } from "@/lib/rerollState";
 import { CategoryLedger } from "./CategoryLedger";
@@ -185,6 +185,20 @@ function CardsBody({ cards, nowMs }: { cards: FleetStateCards; nowMs: number }):
   </>);
 }
 
+function TotalsBody({ totals, nowMs }: { totals: FleetStateTotals; nowMs: number }): React.JSX.Element {
+  return (<>
+    <div className="fs-bal">
+      <div className="fs-kv"><small>Coins</small><b className="fs-coin">{amount(totals.coins)}</b>
+        {totals.coins_incomplete && <small className="fs-hint">some runs unread</small>}</div>
+      <div className="fs-kv"><small>Gems</small><b className="fs-gem">{amount(totals.gems_claimed)}</b>
+        <small className="fs-hint">claimed by bot</small></div>
+      <div className="fs-kv"><small>Stones</small><b>{amount(totals.stones)}</b></div>
+    </div>
+    <p className="fs-note">{totals.observed_at === null ? "Stats screen not read yet"
+      : `Stats read ${agoText(totals.observed_at, nowMs)}`}</p>
+  </>);
+}
+
 function AccountColumnView({ account, accent, changedAt, shownCount, open, onToggleSection }: AccountColumnProps): React.JSX.Element {
   const live = account.online && account.bot.live;
   const screen = account.bot.screen ?? (account.online ? "UNKNOWN" : "OFFLINE");
@@ -193,6 +207,7 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
   const workshop = account.workshop, cards = account.cards, labs = account.labs;
   // `?? null`: a backend one release behind (next dev against an older bot) omits these.
   const strategy = account.strategy ?? null;
+  const totals = account.totals ?? null;
   const total = workshop ? workshop.totals.attack + workshop.totals.defense + workshop.totals.utility : null;
   const maxWave = Math.max(1, ...(account.runs ?? []).map(run => run.wave ?? 0));
   return (
@@ -226,6 +241,10 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
         <BuyQueue decision={account.decision} nextBuy={account.next_buy ?? null} labs={labs} cards={cards} />
       </div>
       <div className={cn("fs-flow", shownCount <= 2 && "wide")}>
+        <section className="fs-sec" style={{ "--sc": "var(--fs-coin)" } as React.CSSProperties}>
+          <div className="fs-sh">Lifetime totals</div>
+          <div className="fs-sb">{totals ? <TotalsBody totals={totals} nowMs={changedAt} /> : <Unavailable />}</div>
+        </section>
         <Section title="Workshop" value={total === null ? undefined : `${whole(total)} lv`} color="var(--cat-utility)"
           open={isOpen("workshop")} onToggle={toggle("workshop")}>
           {workshop ? <WorkshopBody workshop={workshop} decision={account.decision} nowMs={changedAt} /> : <Unavailable />}

@@ -44,6 +44,7 @@ class WorkerRecords:
     run_upgrades_scope: str | None
     last_seen: float | None
     balances: dict[str, int | None]
+    gems_claimed: int
 
 
 def _recent(conn: sqlite3.Connection, kind: str, where: str) -> list[dict[str, Any]]:
@@ -113,6 +114,12 @@ def read_records(db_path: Path, account_id: str, live_run_id: int | None) -> Wor
         elif runs:
             bought = db.run_upgrade_levels(conn, runs[0]["id"]) or []
             scope = "last"
+        # Only claims the bot made itself: an UNEXPLAINED gain is a net balance
+        # movement, not proof of where the gems came from.
+        gems_claimed = conn.execute(
+            "SELECT COALESCE(SUM(delta), 0) FROM ledger WHERE currency='gems' AND dry_run=0 "
+            "AND delta > 0 AND kind IN ('MISSION_CLAIM','MAIL_CLAIM','MILESTONE_CLAIM','GEM_CLAIM')"
+        ).fetchone()[0]
         last_seen = conn.execute("SELECT MAX(ts) FROM events").fetchone()[0]
         return WorkerRecords(
             revision=revision, workshop_spent=spent,
@@ -120,4 +127,4 @@ def read_records(db_path: Path, account_id: str, live_run_id: int | None) -> Wor
             card_gems=int(card_gems), card_recent=_recent(conn, "CARD_BUY", "dry_run=0"),
             lab_recent=_recent(conn, "LAB", "dry_run=0"), runs=runs, best_waves=best,
             run_upgrades=bought, run_upgrades_scope=scope, last_seen=last_seen,
-            balances=db.last_balances(conn))
+            balances=db.last_balances(conn), gems_claimed=int(gems_claimed))

@@ -307,6 +307,7 @@ def test_stats_summary_persists_game_start_and_recent_coin_rate(tmp_path: Path) 
                     {"key": "game_started", "status": "observed", "raw_value": "August 29 2026"},
                     {"key": "coins_earned", "status": "observed", "raw_value": "1.5K"},
                     {"key": "recent_coins_per_hour", "status": "observed", "raw_value": "720"},
+                    {"key": "stones_earned", "status": "observed", "raw_value": "1.2K"},
                 ],
             }]}}
     progress.account_state = Readings()
@@ -314,6 +315,7 @@ def test_stats_summary_persists_game_start_and_recent_coin_rate(tmp_path: Path) 
     saved = json.loads((progress.root / "reroll-lifetime.json").read_text())
     assert saved["game_started"] == "2026-08-29"
     assert saved["recent_coins_per_hour"] == 720
+    assert saved["lifetime_stones"] == 1200
 
 
 def test_read_only_route_facts_do_not_persist_lifetime_summary(tmp_path: Path) -> None:
@@ -347,6 +349,7 @@ def test_unreadable_game_start_or_rate_does_not_create_a_fake_stat(tmp_path: Pat
                     {"key": "game_started", "status": "unreadable", "raw_value": "August 29 2026"},
                     {"key": "coins_earned", "status": "observed", "raw_value": "1500"},
                     {"key": "recent_coins_per_hour", "status": "unreadable", "raw_value": "720"},
+                    {"key": "stones_earned", "status": "unreadable", "raw_value": "45"},
                 ],
             }]}}
     progress.account_state = Readings()
@@ -354,6 +357,7 @@ def test_unreadable_game_start_or_rate_does_not_create_a_fake_stat(tmp_path: Pat
     saved = json.loads((progress.root / "reroll-lifetime.json").read_text())
     assert "game_started" not in saved
     assert "recent_coins_per_hour" not in saved
+    assert "lifetime_stones" not in saved
 
 
 def test_lifetime_coins_from_another_account_are_rejected(tmp_path: Path) -> None:
