@@ -40,10 +40,16 @@ class FakeSession:
     """Plays its events, then idles like a still screen until closed."""
 
     def __init__(self, events: list[StreamEvent] = (), *, fail_start: Exception | None = None,
-                 fail_after: Exception | None = None) -> None:
+                 fail_after: Exception | None = None, gate: threading.Event | None = None,
+                 after_gate: list[StreamEvent] = ()) -> None:
         self._events = list(events)
         self._fail_start = fail_start
         self._fail_after = fail_after
+        # If set, `events()` waits on it after `events` is exhausted, then
+        # plays `after_gate` - lets a test subscribe a late joiner at an
+        # exact point mid-stream.
+        self._gate = gate
+        self._after_gate = list(after_gate)
         self.closed = threading.Event()
         # Set once the hub has handled every scripted event: it only asks for
         # the next event after handling the previous one.
@@ -56,6 +62,9 @@ class FakeSession:
     def events(self) -> Iterator[StreamEvent]:
         yield from self._events
         self.played.set()
+        if self._gate is not None:
+            self._gate.wait()
+            yield from self._after_gate
         if self._fail_after is not None:
             raise self._fail_after
         while not self.closed.is_set():
@@ -155,6 +164,24 @@ def test_a_gop_too_long_to_replay_is_dropped_until_the_next_keyframe() -> None:
     hub.subscribe()
     wait_until(lambda: bool(opened) and opened[0].played.is_set())
     assert drain(hub.subscribe(), 2, timeout=0.3) == [CONFIG_MSG]
+    shutdown.set()
+
+
+def test_a_late_joiner_after_a_gop_overflow_waits_for_the_next_keyframe() -> None:
+    # capacity=3: key(1), delta(2), delta(3) fill the GOP; delta(4) overflows
+    # it, so the hub drops the cached GOP but stays "keyed" (it keeps
+    # broadcasting deltas live). A joiner arriving in that gap has nothing
+    # decodable cached, so it must not be handed a bare delta - it has to
+    # wait for the next keyframe.
+    gate = threading.Event()
+    events = opening(key(1), delta(2), delta(3), delta(4))
+    session = FakeSession(events, gate=gate, after_gate=[delta(5), key(6)])
+    hub, shutdown, opened = hub_over([session], capacity=3)
+    hub.subscribe()
+    wait_until(lambda: bool(opened) and opened[0].played.is_set())
+    joiner = hub.subscribe()
+    gate.set()
+    assert drain(joiner, 2) == [CONFIG_MSG, key_msg(6)]
     shutdown.set()
 
 

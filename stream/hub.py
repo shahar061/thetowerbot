@@ -35,7 +35,11 @@ class Subscription:
         self._on_close = on_close
         self._items: deque[Message] = deque()
         self._frames = 0
-        self._skip_to_key = False
+        # A viewer never has a decodable delta until it has seen a keyframe.
+        # The replayed GOP (if any) always starts with one, so this only ever
+        # matters for a joiner whose cache had no keyframe to replay - e.g.
+        # right after a GOP overflow reset it to [] but kept `_keyed`.
+        self._skip_to_key = True
         self._cond = threading.Condition()
         self._closed = False
 
@@ -177,12 +181,18 @@ class StreamHub:
             finally:
                 if session is not None:
                     session.close()
+            # The cache belongs to the session that just ended, not to
+            # whichever one (if any) replaces it - drop it every time a
+            # session ends, not only when stopping or failing, so a
+            # subscribe() that lands right after this can never be replayed
+            # a torn-down session's config or GOP.
+            with self._lock:
+                self._reset_locked()
             if error is None:
                 delay = _BACKOFF_START_S
                 continue
             logger.warning("live stream %s unavailable: %s", self._label, error)
             with self._lock:
-                self._reset_locked()
                 for sub in self._subs:
                     sub.put(End.UNAVAILABLE)
             if delivered:
