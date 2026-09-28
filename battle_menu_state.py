@@ -74,15 +74,19 @@ class BattleMenuState:
             self._last_menu = data.get("last_menu")
             last = data.get("last_session")
             self._last_session = float("-inf") if last is None else float(last)
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, OSError):
             logger.warning("battle menu state unreadable; starting fresh: %s", self._path)
             self._icons, self._last_menu, self._last_session = {}, None, float("-inf")
 
     def _save(self) -> None:
         if self._path is None:
             return
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"icons": self._icons, "last_menu": self._last_menu,
-                                   "last_session": (None if self._last_session == float("-inf")
-                                                    else self._last_session)}))
-        tmp.replace(self._path)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"icons": self._icons, "last_menu": self._last_menu,
+                                       "last_session": (None if self._last_session == float("-inf")
+                                                        else self._last_session)}))
+            tmp.replace(self._path)
+        except OSError:
+            logger.warning("battle menu state not persisted; keeping in-memory state: %s", self._path)
