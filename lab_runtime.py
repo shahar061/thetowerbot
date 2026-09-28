@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import config
 import lab_catalog
+from lab_plan import LabCadence
 from labs import ACCELERATION_STATES, LAB_CONCEPT_IDS, LabJob, LabsReading
 
 
@@ -308,13 +309,10 @@ class LabRuntime:
     def _legacy(self) -> None:
         """Old cadence is historical, including when current scope is bound."""
         slots = list(self._snapshot.slots)
-        owned: int | None = None
-        for slot in (1,):
-            try:
-                record = json.loads((self.root / f"lab-slot{slot}-cadence.json").read_text())
-                if (record.get("account_id") != self.scope.account_id
-                        or not _finite(record.get("observed_at"))):
-                    continue
+        try:
+            record = json.loads((self.root / "lab-slot1-cadence.json").read_text())
+            if (record.get("account_id") == self.scope.account_id
+                    and _finite(record.get("observed_at"))):
                 observed = record["observed_at"]
                 kind = record.get("kind")
                 state = {"wait_running": "researching", "wait_coins": "idle",
@@ -328,10 +326,9 @@ class LabRuntime:
                     source_level=target - 1 if target is not None else None, target_level=target,
                     expected_finish=finish if state == "researching" else None,
                     observed_at=observed, evidence_status="historical")
-            except (OSError, ValueError, TypeError, AttributeError):
-                continue
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
 
-        from lab_plan import LabCadence
         records = LabCadence(self.root, self.scope.account_id).slot_records()
         locked: list[int] = []
         for slot, record in records.items():

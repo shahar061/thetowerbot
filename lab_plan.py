@@ -185,12 +185,17 @@ class LabCadence:
     def slot_records(self) -> dict[int, dict[str, object]]:
         """Slots 2-5 this account was seen owning or locked, from lab-slots.json.
 
-        Until that file exists, an older lab-slot2-cadence.json stands in for slot 2.
+        Until that file exists at all, an older lab-slot2-cadence.json stands in for
+        slot 2. Once lab-slots.json exists, the legacy file is never read again - even
+        when the new file turns out to be unreadable or another account's, which must
+        not resurrect stale legacy state.
         """
-        data = self._read(self.slots_path)
-        if data is None:
+        if not self.slots_path.exists():
             legacy = self._slot_entry(self._read(self.slot2_path))
             return {2: legacy} if legacy is not None else {}
+        data = self._read(self.slots_path)
+        if data is None:
+            return {}
         raw = data.get("slots")
         records: dict[int, dict[str, object]] = {}
         for key, value in (raw.items() if isinstance(raw, dict) else ()):

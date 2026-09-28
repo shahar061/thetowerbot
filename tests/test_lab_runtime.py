@@ -237,3 +237,14 @@ def test_lab_slots_file_is_historical_for_every_locked_or_owned_slot(tmp_path: P
     assert all(slot.evidence_status == "historical" and not slot.confirmed
                for slot in snapshot.slots[1:3])
     assert snapshot.slots_owned == 2
+
+
+def test_legacy_slot_two_file_alone_sets_slots_owned(tmp_path: Path) -> None:
+    """No lab-slots.json yet: the legacy slot-2 file still proves slot 1 owned."""
+    from lab_runtime import LabRuntime
+
+    (tmp_path / "lab-slot2-cadence.json").write_text(json.dumps({
+        "account_id": "ACCOUNT-A", "status": "locked", "observed_at": 1000.}))
+    snapshot = LabRuntime(tmp_path, "ACCOUNT-A").snapshot()
+    assert snapshot.slots[1].state == "locked"
+    assert snapshot.slots_owned == 1

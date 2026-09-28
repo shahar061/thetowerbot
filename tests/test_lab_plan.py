@@ -289,3 +289,29 @@ def test_note_slots_ignores_unknown_slots_and_statuses(tmp_path: Path) -> None:
 
     LabCadence(tmp_path, "ACCOUNT-A").note_slots({1: "owned", 6: "locked", 2: "unknown"}, 5, 1.)
     assert not (tmp_path / "lab-slots.json").exists()
+
+
+def test_slot_records_never_resurrects_legacy_once_lab_slots_json_exists_for_another_account(
+        tmp_path: Path) -> None:
+    import json
+    from lab_plan import LabCadence
+
+    (tmp_path / "lab-slot2-cadence.json").write_text(json.dumps({
+        "account_id": "ACCOUNT-A", "status": "locked", "observed_at": 900.}))
+    LabCadence(tmp_path, "ACCOUNT-A").note_slots({2: "owned"}, 19, 1000.)
+    # A different account's cadence overwrites the shared lab-slots.json file.
+    LabCadence(tmp_path, "ACCOUNT-B").note_slots({2: "owned"}, 5, 2000.)
+    # lab-slots.json now belongs to ACCOUNT-B: A must see it as empty, never the
+    # stale ACCOUNT-A legacy "locked" record.
+    assert LabCadence(tmp_path, "ACCOUNT-A").slot_records() == {}
+
+
+def test_slot_records_never_resurrects_legacy_once_lab_slots_json_is_corrupt(tmp_path: Path) -> None:
+    import json
+    from lab_plan import LabCadence
+
+    (tmp_path / "lab-slot2-cadence.json").write_text(json.dumps({
+        "account_id": "ACCOUNT-A", "status": "locked", "observed_at": 900.}))
+    LabCadence(tmp_path, "ACCOUNT-A").note_slots({2: "owned"}, 19, 1000.)
+    (tmp_path / "lab-slots.json").write_text("{not valid json")
+    assert LabCadence(tmp_path, "ACCOUNT-A").slot_records() == {}

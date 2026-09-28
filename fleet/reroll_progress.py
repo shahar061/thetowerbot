@@ -165,8 +165,14 @@ class RerollProgress:
         if self.route_runtime is None:
             return GemRoute()
         try:
-            return resolve_route(self.route_runtime.current(), self.root.name, self.account_id).gems
-        except (RouteUnavailable, ValueError, TypeError, KeyError):
+            route = self.route_runtime.current()
+        except RouteUnavailable:
+            return GemRoute()
+        try:
+            return resolve_route(route, self.root.name, self.account_id).gems
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("_effective_gems: resolve_route failed for %s (%s); using defaults",
+                           self.account_id, exc)
             return GemRoute()
 
     def next_unlock_slot(self) -> int | None:
