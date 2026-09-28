@@ -291,27 +291,40 @@ export function laneProblems(lane: "labs" | "gems", blocks: ResourceBlock[], rul
   return problems;
 }
 
+/** Mirrors fleet/coin_share.py jit_hold. The just-in-time hold is the labs starting
+ * now (the wallet above the plan's wallet') plus the reserve. An unread reserve or plan wallet
+ * holds the whole wallet - Workshop never spends blind. */
+export function jitHold(saving: SavingPlan, wallet: number): { hold: number; paused: boolean } {
+  if (saving.reserve === null || saving.wallet === null) return { hold: wallet, paused: true };
+  const hold = Math.max(0, wallet - Math.max(0, saving.wallet) + saving.reserve);
+  return { hold, paused: hold > 0 && hold >= wallet };
+}
+
 /** Mirrors fleet/coin_share.py for one visit: jar vs what Workshop may spend.
  *
- * Pauses exactly when the worker's own wait_coins path would: labs_first,
- * auto_start on, a known price, and the wallet short of it. With auto_start
- * off nothing is held back for labs - the jar stays at 0 and Workshop sees
- * the full ceiling, matching the worker (which never runs coin_share at all
- * once auto_start is off). */
+ * just_in_time holds its reserve whether or not auto_start is on (manual-start
+ * targets are still saved for), exactly like the worker's jit_hold; a row with
+ * no saving plan (the observed account isn't on just-in-time) gets the normal
+ * ceiling split. Otherwise it pauses exactly when the worker's own wait_coins
+ * path would: labs_first, auto_start on, a known price, and the wallet short of
+ * it. With auto_start off nothing is held back for labs - the jar stays at 0 and
+ * Workshop sees the full ceiling, matching the worker (which never runs
+ * coin_share at all once auto_start is off). */
 export function splitPreview(rules: RouteRules, wallet: number | null, jar: number, price: number | null,
   saving?: SavingPlan | null):
   { jar: number; workshop: number; price: number | null; progress: number | null; paused: boolean } | null {
   if (wallet === null) return null;
   const ceiling = (spendable: number) => Math.floor(Math.max(0, spendable) * rules.coins.workshop_spend_limit_pct / 100);
-  if (!rules.labs.auto_start) {
-    return { jar: 0, workshop: ceiling(wallet), price, progress: price ? 0 : null, paused: false };
-  }
   const mode = rules.coins.lab_share.mode;
   if (mode === "just_in_time") {
-    if (!saving || saving.reserve === null) return { jar: 0, workshop: ceiling(wallet), price, progress: null, paused: false };
+    if (!saving) return { jar: 0, workshop: ceiling(wallet), price, progress: null, paused: false };
+    const { hold, paused } = jitHold(saving, wallet);
     const first = saving.targets[0]?.price ?? null;
-    return { jar: saving.reserve, workshop: saving.workshop_budget, price: first,
-      progress: first ? Math.min(1, saving.reserve / first) : null, paused: saving.reserve > 0 && saving.reserve >= wallet };
+    return { jar: hold, workshop: ceiling(wallet - hold), price: first,
+      progress: first && saving.reserve !== null ? Math.min(1, saving.reserve / first) : null, paused };
+  }
+  if (!rules.labs.auto_start) {
+    return { jar: 0, workshop: ceiling(wallet), price, progress: price ? 0 : null, paused: false };
   }
   const held = mode === "save_pct" && price !== null ? Math.min(price, Math.max(0, jar)) : 0;
   const paused = mode === "labs_first" && price !== null && wallet < price;

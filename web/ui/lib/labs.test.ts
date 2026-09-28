@@ -52,6 +52,31 @@ describe("rules", () => {
     expect(splitPreview(jit, 1000, 0, null, saving)).toEqual({ jar: 200, workshop: 800, price: 2500, progress: 0.08, paused: false });
   });
 
+  it("just in time holds the labs starting now plus the reserve, like the worker's jit_hold", () => {
+    const jit = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "just_in_time" as const, pct: 25 } } };
+    const plan = (reserve: number | null, wallet: number | null) => ({ reserve, workshop_budget: 0, wallet, coins_per_hour: null,
+      targets: [{ slot: 1, lab_id: "labs.game-speed", name: "Game Speed", level: 4, price: 2500,
+        needed_at: 0, ready_at: null, covered: false }], why: [] });
+    // 2,500 of 3,000 go to a lab starting now, so the plan's wallet is 500.
+    expect(splitPreview(jit, 3000, 0, null, plan(0, 500))).toMatchObject({ jar: 2500, workshop: 500, paused: false });
+    // Starts now overspend the wallet: everything is held and Workshop pauses.
+    expect(splitPreview(jit, 3000, 0, null, plan(0, -400))).toMatchObject({ jar: 3000, workshop: 0, paused: true });
+    // Paused follows the hold, not the reserve alone: 2,500 starting now + 500 reserve take all 3,000.
+    expect(splitPreview(jit, 3000, 0, null, plan(500, 500))).toMatchObject({ jar: 3000, workshop: 0, paused: true });
+    // An unread reserve holds the whole wallet - Workshop never spends blind.
+    expect(splitPreview(jit, 7000, 0, null, plan(null, null))).toMatchObject({ jar: 7000, workshop: 0, paused: true, progress: null });
+  });
+
+  it("just in time still holds its reserve with auto_start off (manual-start targets are saved for)", () => {
+    const jit = { ...DEFAULT_RULES, labs: { ...DEFAULT_RULES.labs, auto_start: false },
+      coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "just_in_time" as const, pct: 25 } } };
+    const saving = { reserve: 200, workshop_budget: 800, wallet: 1000, coins_per_hour: 500,
+      targets: [{ slot: 2, lab_id: "labs.labs-speed", name: "Labs Speed", level: 11, price: 2500,
+        needed_at: 0, ready_at: 0, covered: true }], why: [] };
+    expect(splitPreview(jit, 1000, 0, null, saving)).toEqual({ jar: 200, workshop: 800, price: 2500, progress: 0.08, paused: false });
+    expect(splitPreview(jit, 1000, 0, null, { ...saving, reserve: 1000, workshop_budget: 0 })).toMatchObject({ workshop: 0, paused: true });
+  });
+
   it("just in time falls back to the normal split, not a false paused/0, when the observed account isn't on just-in-time", () => {
     const jit = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "just_in_time" as const, pct: 25 } } };
     expect(splitPreview(jit, 1000, 200, 2500)).toEqual({ jar: 0, workshop: 1000, price: 2500, progress: null, paused: false });
