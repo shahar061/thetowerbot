@@ -424,6 +424,7 @@ class RerollProgress:
         self._spend_fraction = None
         jar = 0
         paused = False
+        saving_reason: str | None = None
         route_wallet: int | None = None
         if route is not None and route.revision > 0:
             from web.account_catalog import registered_worker
@@ -442,10 +443,22 @@ class RerollProgress:
                 facts = self.route_facts()
                 effective = resolve_route(route, self.root.name, self.account_id)
                 lab_record, _ = self.lab_cadence.route_observation()
-                # Grows at most once per visit key: this runs on every menu scan.
-                jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,
-                                           facts.visit_id or "", time.time())
-                paused = coin_share.workshop_paused(effective, lab_record, facts.wallet_coins)
+                if effective.rules.coins.lab_share.mode == "just_in_time":
+                    # The saving plan's hold replaces the jar, which is neither grown
+                    # nor reset here: a leftover save_pct amount stays on disk, unread
+                    # by Workshop, until a save_pct visit settles it (keeping at most
+                    # the waiting lab's price).
+                    from fleet.lab_facts import persisted_lab_facts
+                    lab_plan = evaluate_lab_plan(effective, persisted_lab_facts(
+                        self.root, self.account_id, now=time.time(), coins=facts.wallet_coins,
+                        gems=None, db_path=registration.db_path))
+                    jar, paused, saving_reason = coin_share.jit_hold(lab_plan.saving, facts.wallet_coins)
+                else:
+                    # Grows at most once per visit key: this runs on every menu scan.
+                    jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,
+                                               facts.visit_id or "", time.time())
+                    paused = coin_share.workshop_paused(effective, lab_record, facts.wallet_coins)
+                    saving_reason = None
                 facts = replace(facts, lab_coin_jar=jar)
                 route_wallet = facts.wallet_coins
                 self.route_runtime.publish_facts(facts)
@@ -485,15 +498,18 @@ class RerollProgress:
                            cards=replace(base.cards, enabled=False))
         if paused:
             # labs_first: an automated lab waits for coins, so Workshop holds
-            # every coin until the lab check starts it. Claims, the tutorial
+            # every coin until the lab check starts it. just_in_time: the labs
+            # starting now plus the reserve take the whole wallet (or it is
+            # unread). Claims, the tutorial
             # grant and Cards are not Workshop visits, so they continue.
             # Publish that Workshop is paused instead of the buy `plan` above:
             # that plan cannot run while paused, and publishing it anyway
             # would show a "next buy" on the fleet UI that never happens.
-            price = coin_share.waiting_lab_price(effective, lab_record)
+            reason = (f"Workshop paused: saving coins for labs · {saving_reason}" if saving_reason
+                      else f"Workshop paused: saving coins for the next automated lab "
+                           f"({coin_share.waiting_lab_price(effective, lab_record)} coins).")
             self._publish(replace(plan, state="save_coins", upgrade_id=None, item=None, category=None,
-                                  price=None, reason=f"Workshop paused: saving coins for the next "
-                                  f"automated lab ({price} coins)."))
+                                  price=None, reason=reason))
             return replace(base, workshop=())
         self._publish(plan)
         if plan.stage == "strategy_observe":

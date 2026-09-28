@@ -59,6 +59,26 @@ def workshop_paused(route: Any, lab_record: Mapping[str, Any] | None,
             and price is not None and (wallet is None or wallet < price))
 
 
+def jit_hold(saving: Any, wallet: int | None) -> tuple[int, bool, str | None]:
+    """just_in_time: the coins Workshop leaves for labs, as `(jar, paused, reason)`.
+
+    The hold rides the lab_coin_jar seam every Workshop ceiling subtracts. It covers
+    the labs starting now (the wallet above the plan's wallet') and the reserve, so
+    `workshop_ceiling(route, wallet, jar)` is the plan's `workshop_budget`. Paused when
+    the hold takes the whole wallet, or when either wallet is unread (Workshop never
+    spends blind). No saving plan (not a lab list) holds nothing.
+    """
+    if saving is None:
+        return 0, False, None
+    reason = saving.why[0] if saving.why else None
+    if wallet is None:
+        return 0, True, reason
+    if saving.reserve is None or saving.wallet is None:
+        return wallet, True, reason
+    jar = max(0, wallet - max(0, saving.wallet) + saving.reserve)
+    return jar, jar > 0 and jar >= wallet, reason
+
+
 class LabCoinJar:
     """Coins Workshop may not spend, saved toward the next automated lab.
 
