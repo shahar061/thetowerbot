@@ -14,9 +14,6 @@ import config
 from lab_screen import LabHomeReading, LabPickerReading
 
 
-# The second lab slot costs 100 gems; the reserve for it is a fixed safety rule.
-LAB2_GEMS = 100
-
 # Per-slot ownership a Labs visit can prove: an owned card or the "Unlock Nth lab" tile.
 SLOT_STATES = frozenset({"locked", "owned"})
 
@@ -240,20 +237,9 @@ class LabCadence:
         self._write(self.slots_path, {"account_id": self.account_id,
                                       "slots": {str(slot): records[slot] for slot in sorted(records)}})
 
-    # Slot-2 names kept until the remaining callers move (Task 10).
-    def slot2_owned(self) -> bool:
-        return self.slot_owned(2)
-
     def route_observation(self) -> tuple[dict[str, object] | None, dict[str, object] | None]:
         """Account-bound saved Lab decisions for the fleet route display."""
         return self._record(), self.slot_records().get(2)
-
-    def slot2_due(self, now: float, wallet_gems: int | None = None,
-                  min_gems: int = LAB2_GEMS) -> bool:
-        return self.slot_due(2, now, wallet_gems, min_gems)
-
-    def note_slot2(self, status: str, wallet_gems: int | None, now: float) -> None:
-        self.note_slots({2: status}, wallet_gems, now)
 
     def speed_target(self) -> float:
         """The fastest readable speed the completed Game Speed research allows.

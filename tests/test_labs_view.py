@@ -62,7 +62,7 @@ def test_a_row_uses_the_menu_wallet_cadence_and_recent_lab_activity(tmp_path: Pa
         "wallet_coins": 20000, "wallet_gems": 60}))
     cadence = LabCadence(root, "account-a")
     cadence.note(LabDecision("wait_coins", price=12000, wallet_coins=5000, game_speed_level=3), now=900.)
-    cadence.note_slot2("locked", 60, 900.)
+    cadence.note_slots({2: "locked"}, 60, 900.)
     with db.connect(root / "tower_bot.db") as conn:
         conn.execute("INSERT INTO ledger(ts,kind,item,category,currency,delta,price,dry_run,detail) "
                      "VALUES(10,'LAB','Game Speed','RESEARCH','coins',-2500,2500,0,'{}')")
@@ -147,7 +147,7 @@ def test_other_account_records_are_not_shown(tmp_path: Path) -> None:
         "wallet_coins": 20000, "wallet_gems": 60}))
     LabCadence(root, "account-b").note(LabDecision("wait_coins", price=12000, wallet_coins=5000,
                                                    game_speed_level=3), now=900.)
-    LabCadence(root, "account-b").note_slot2("owned", 60, 900.)
+    LabCadence(root, "account-b").note_slots({2: "owned"}, 60, 900.)
     (root / "lab-coin-jar.json").write_text(json.dumps({"account_id": "account-b", "amount": 900}))
     (row,) = labs_snapshot(tmp_path, ["Air_38"], now=1000.)["workers"]
     assert [slot["now"]["state"] for slot in row["plan"]["slots"]] == ["unknown"] * 5

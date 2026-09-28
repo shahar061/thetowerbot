@@ -209,20 +209,20 @@ def test_known_research_price_waits_for_coins_without_reopening_labs(tmp_path: P
     assert cadence.due(5000.)  # Infrequent recovery check for unreadable wallets.
 
 
-def test_slot_two_reservation_is_account_bound(tmp_path: Path) -> None:
+def test_slot_two_record_is_account_bound(tmp_path: Path) -> None:
     from lab_plan import LabCadence
 
     cadence = LabCadence(tmp_path, "ACCOUNT-A")
-    assert cadence.slot2_due(1000.)
-    cadence.note_slot2("locked", 65, 1000.)
-    assert not LabCadence(tmp_path, "ACCOUNT-A").slot2_due(1100., wallet_gems=99)
-    assert LabCadence(tmp_path, "ACCOUNT-A").slot2_due(1100., wallet_gems=100)
-    cadence.note_slot2("locked", 100, 1150.)
-    assert not cadence.slot2_due(1200., wallet_gems=100)
-    assert LabCadence(tmp_path, "ACCOUNT-B").slot2_due(1100.)
-    cadence.note_slot2("owned", 19, 1200.)
-    assert cadence.slot2_owned()
-    assert not cadence.slot2_due(100_000.)
+    assert cadence.slot_due(2, 1000.)
+    cadence.note_slots({2: "locked"}, 65, 1000.)
+    assert not LabCadence(tmp_path, "ACCOUNT-A").slot_due(2, 1100., wallet_gems=99, min_gems=100)
+    assert LabCadence(tmp_path, "ACCOUNT-A").slot_due(2, 1100., wallet_gems=100, min_gems=100)
+    cadence.note_slots({2: "locked"}, 100, 1150.)
+    assert not cadence.slot_due(2, 1200., wallet_gems=100, min_gems=100)
+    assert LabCadence(tmp_path, "ACCOUNT-B").slot_due(2, 1100.)
+    cadence.note_slots({2: "owned"}, 19, 1200.)
+    assert cadence.slot_owned(2)
+    assert not cadence.slot_due(2, 100_000.)
 
 
 def test_running_research_records_when_it_completes(tmp_path: Path) -> None:
@@ -238,14 +238,13 @@ def test_running_research_records_when_it_completes(tmp_path: Path) -> None:
 
 
 def test_slot_two_check_honours_a_raised_gem_floor(tmp_path: Path) -> None:
-    from lab_plan import LAB2_GEMS, LabCadence, LabVisitOptions
+    from lab_plan import LabCadence, LabVisitOptions
 
     cadence = LabCadence(tmp_path, "ACCOUNT-A")
-    cadence.note_slot2("locked", 65, 1000.)
-    assert not cadence.slot2_due(1100., wallet_gems=120, min_gems=150)
-    assert cadence.slot2_due(1100., wallet_gems=150, min_gems=150)
-    assert cadence.slot2_due(1100., wallet_gems=100)  # the default floor is unchanged
-    assert LAB2_GEMS == 100
+    cadence.note_slots({2: "locked"}, 65, 1000.)
+    assert not cadence.slot_due(2, 1100., wallet_gems=120, min_gems=150)
+    assert cadence.slot_due(2, 1100., wallet_gems=150, min_gems=150)
+    assert cadence.slot_due(2, 1100., wallet_gems=100, min_gems=100)
     assert LabVisitOptions() == LabVisitOptions(start_research=True, unlock_slots=(), keep_gems=0)
 
 

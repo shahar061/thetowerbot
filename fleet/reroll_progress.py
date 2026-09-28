@@ -158,11 +158,6 @@ class RerollProgress:
             return False
         return not purchases
 
-    def note_lab_slot2(self, status: str, wallet_gems: int | None,
-                       now: float | None = None) -> None:
-        self.lab_cadence.note_slot2(status, wallet_gems,
-                                    time.time() if now is None else now)
-
     def note_lab_slots(self, statuses: Mapping[int, str], wallet_gems: int | None,
                        now: float | None = None) -> None:
         self.lab_cadence.note_slots(statuses, wallet_gems, time.time() if now is None else now)
@@ -472,7 +467,7 @@ class RerollProgress:
             self.route_error = None
         # Reserve the first 100 gems for the second lab even when a custom
         # reroll policy enables card spending.
-        if not self.lab_cadence.slot2_owned():
+        if not self.lab_cadence.slot_owned(2):
             base = replace(base, cards=replace(base.cards, enabled=False))
         rules = (resolve_route(route, self.root.name, self.account_id).rules
                  if route is not None else RouteRules())

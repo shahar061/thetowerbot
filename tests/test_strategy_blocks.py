@@ -330,7 +330,7 @@ def test_discount_observation_opens_workshop_with_zero_spend_budget(tmp_path: Pa
     sample=replace(facts(),now=moment,observed_at=moment,price_evidence={})
     progress.route_facts=lambda: sample
     base = Strategy.from_config().shopping
-    progress.lab_cadence.slot2_owned = lambda: True
+    progress.lab_cadence.slot_owned = lambda slot: True
     policy=progress.shopping_policy(replace(base,enabled=True,armed=True,coin_budget=None,
         cards=replace(base.cards,enabled=True)))
     assert policy.enabled and policy.coin_budget == 0 and not policy.allow_unlocks

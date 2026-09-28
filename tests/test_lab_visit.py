@@ -337,8 +337,9 @@ def test_lab_one_is_checked_but_synthetic_slot_two_evidence_does_not_enable_unlo
         ocr.TextBox("Lab 3", .99, config.Rect(25, 1046, 97, 39)),
         ocr.TextBox("Unlock 3rd lab", .99, config.Rect(351, 1174, 378, 51)),
     )
-    assert read_home(image, locked).slot2_price == 100
-    assert read_home(image, owned).slot2_status == "owned"
+    assert read_home(image, locked).next_locked.price == 100
+    owned_home = read_home(image, owned)
+    assert owned_home.next_locked.slot == 3 and owned_home.slots_owned == 2
     visit, device = secured_visit(), Device()
     visit.request()
     picker = frame("menu_labs_game_speed_picker")

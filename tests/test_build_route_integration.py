@@ -382,7 +382,7 @@ def test_labs_first_pauses_workshop_after_the_tutorial_grant(tmp_path: Path) -> 
     progress = _progress(tmp_path)
     _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
     _game_speed_waits(progress)
-    progress.note_lab_slot2("owned", 200)
+    progress.note_lab_slots({2: "owned"}, 200)
     progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
     base = Strategy.from_config().shopping
     base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
@@ -405,7 +405,7 @@ def test_paused_workshop_publishes_a_paused_plan_not_the_unrunnable_buy(tmp_path
     progress._publish = lambda decision: published.append(decision)  # type: ignore[method-assign]
     _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
     _game_speed_waits(progress)
-    progress.note_lab_slot2("owned", 200)
+    progress.note_lab_slots({2: "owned"}, 200)
     progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
     base = Strategy.from_config().shopping
     base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
@@ -440,7 +440,7 @@ def test_resource_rules_falls_back_to_defaults_when_resolve_route_breaks(
 def test_gems_keep_raises_the_card_gem_floor(tmp_path: Path) -> None:
     progress = _progress(tmp_path)
     _rules_route(tmp_path, {"gems": {"keep": 60}})
-    progress.note_lab_slot2("owned", 200, now=1000.)
+    progress.note_lab_slots({2: "owned"}, 200, now=1000.)
     progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
     base = Strategy.from_config().shopping
     base = replace(base, cards=replace(base.cards, enabled=True, gem_floor=0))
@@ -452,7 +452,7 @@ def test_auto_start_and_auto_unlock_switches_gate_the_lab_visit(tmp_path: Path) 
     progress.note_lab_unlocked("labs_tab", now=999.)
     progress.note_lab_observation(LabDecision("wait_coins", price=300, wallet_coins=100,
                                               game_speed_level=1), now=1000.)
-    progress.note_lab_slot2("locked", 65, now=1000.)
+    progress.note_lab_slots({2: "locked"}, 65, now=1000.)
     assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(2,))
     _rules_route(tmp_path, {"labs": {"auto_start": False}, "gems": {"auto_unlock_lab_slots": False}})
     assert not progress.lab_due(now=1100., wallet_coins=5000, wallet_gems=500)
