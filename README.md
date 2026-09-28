@@ -907,6 +907,19 @@ over SSE and reconnects on its own — a laptop that slept resumes from
 `Last-Event-ID` rather than starting blank, as long as it was gone for less
 than the 500-event ring.
 
+Where the browser supports WebCodecs (any current browser on `localhost` or
+over Tailscale's HTTPS), the same views instead show **live video**: `WS
+/api/stream` on each worker relays an on-demand scrcpy H.264 stream (1280 px,
+15 fps) that the browser decodes itself, so the Mac never decodes or
+re-encodes it. It starts when a view opens, stops 10 s after the last viewer
+leaves, and costs about +7% of the emulator's CPU and +15% of one Mac core per
+watched emulator. Any failure falls back to the MJPEG snapshots and retries
+after 30 s; the device page has a **Live | Bot's view** toggle, where Bot's
+view is the exact scan frame the bot decided on, with its match boxes. The
+bot itself never reads the stream. Set `STREAM_ENABLED = False` in `config.py`
+to turn it off. `uv run tools/stream_probe.py <worker port>` reports a
+worker's stream fps and bitrate.
+
 ### OCR autopilot
 
 **Strategy → Effective Paths advisor** accepts a local JSON or normalized CSV
@@ -980,8 +993,8 @@ page, which is where the policy itself — what to buy, thresholds, timing —
 is edited. Every tab converges on the current pause state live, over the
 same SSE feed.
 
-> **The dashboard has no authentication.** It serves a continuous MJPEG
-> video stream of the device (`/api/frame`), not just JSON history and
+> **The dashboard has no authentication.** It serves a continuous video stream of the device
+> (`/api/frame` MJPEG and `/api/stream` H.264), not just JSON history and
 > screenshots, plus this machine's entire event history, and its control
 > page lets anyone who can reach the port pause the bot, start or stop it,
 > shut down the whole dashboard process, rewrite what it buys, and create
