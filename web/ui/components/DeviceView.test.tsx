@@ -4,6 +4,11 @@ import { DeviceView } from "./DeviceView";
 import type { MatchBox } from "@/lib/types";
 import { MockSocket, installLiveStreamMocks, uninstallLiveStreamMocks } from "@/lib/liveStreamTesting";
 
+function setHidden(hidden: boolean): void {
+  Object.defineProperty(document, "visibilityState", { value: hidden ? "hidden" : "visible", configurable: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 // A non-square frame so a width/height transposition (using `width` to scale
 // a `y`/`h` offset, or vice versa) would produce a wrong percentage and fail
 // these assertions.
@@ -72,7 +77,7 @@ group("DeviceView", () => {
 });
 
 group("DeviceView screen source", () => {
-  afterEach(() => { uninstallLiveStreamMocks(); window.localStorage.clear(); });
+  afterEach(() => { uninstallLiveStreamMocks(); window.localStorage.clear(); setHidden(false); });
 
   it("defaults to live video when supported, without the match overlay", () => {
     installLiveStreamMocks();
@@ -105,5 +110,15 @@ group("DeviceView screen source", () => {
   it("has no toggle where live video is not supported", () => {
     render(<DeviceView boxes={[matched]} size={size} />);
     expect(screen.queryByRole("group", { name: "Screen source" })).toBeNull();
+  });
+
+  it("closes the live stream and falls back to the bot's view while the tab is hidden", () => {
+    installLiveStreamMocks();
+    const { container } = render(<DeviceView boxes={[matched]} size={size} />);
+    const socket = MockSocket.latest();
+    act(() => setHidden(true));
+    expect(socket.closed).toBe(true);
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(screen.getByTitle(/Damage 0/)).toBeInTheDocument();
   });
 });

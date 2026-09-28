@@ -5,7 +5,12 @@ import { MockSocket, installLiveStreamMocks, uninstallLiveStreamMocks } from "@/
 
 const props = { dashboardUrl: "http://127.0.0.1:10059/", scope: "worker:T_59", instance: "T_59", accountId: "ACC" };
 
-afterEach(() => { uninstallLiveStreamMocks(); vi.useRealTimers(); });
+function setHidden(hidden: boolean): void {
+  Object.defineProperty(document, "visibilityState", { value: hidden ? "hidden" : "visible", configurable: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+afterEach(() => { uninstallLiveStreamMocks(); vi.useRealTimers(); setHidden(false); });
 
 group("FleetCapture", () => {
   it("shows the MJPEG snapshots where live video is not supported", () => {
@@ -31,5 +36,14 @@ group("FleetCapture", () => {
     act(() => { vi.advanceTimersByTime(30_000); });
     expect(container.querySelector("canvas")).not.toBeNull();
     expect(MockSocket.instances).toHaveLength(2);
+  });
+
+  it("stops the stream while the tab is hidden", () => {
+    installLiveStreamMocks();
+    const { container } = render(<FleetCapture {...props} />);
+    const socket = MockSocket.latest();
+    act(() => setHidden(true));
+    expect(socket.closed).toBe(true);
+    expect(container.querySelector("canvas")).toBeNull();
   });
 });

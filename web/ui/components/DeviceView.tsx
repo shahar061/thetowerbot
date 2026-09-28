@@ -6,6 +6,7 @@ import { accountScope } from "@/lib/accountScope";
 import { FeedBadge } from "@/components/FeedBadge";
 import { LiveVideo } from "@/components/LiveVideo";
 import { useLiveFallback } from "@/lib/useLiveFallback";
+import { usePageVisible } from "@/lib/usePageVisible";
 
 type Source = "live" | "bot";
 const SOURCE_KEY = "towerbot.deviceView.mode";
@@ -40,6 +41,7 @@ export function DeviceView({
   const [overlay, setOverlay] = useState(true);
   const [source, setSource] = useState<Source>("live");
   const { supported, live, markUnavailable } = useLiveFallback();
+  const visible = usePageVisible();
   useEffect(() => setSource(rememberedSource()), []);
   const choose = (next: Source): void => {
     setSource(next);
@@ -50,8 +52,11 @@ export function DeviceView({
     }
   };
   // Live is the default, but the bot's view is what shows whenever live
-  // can't: unsupported browser, or a stream that just failed.
-  const shown: Source = source === "live" && live ? "live" : "bot";
+  // can't: unsupported browser, a stream that just failed, or a hidden tab -
+  // otherwise a forgotten background tab keeps an encoder running forever.
+  // The bot's view is cheap MJPEG of already-captured frames, so it is fine
+  // to keep rendering it while hidden.
+  const shown: Source = source === "live" && live && visible ? "live" : "bot";
   const best = boxes.length ? boxes.reduce((a, b) => (b.score > a.score ? b : a)) : null;
   const scope = accountScope();
 
