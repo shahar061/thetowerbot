@@ -25,14 +25,15 @@ from fleet.reroll_variants import read_variant
 from fleet.workshop_prices import CATALOG, WorkshopPrices, PriceQuote, catalog_price
 from fleet.reroll_survival import prioritize_survival
 from fleet.build_route_runtime import BuildRouteRuntime
-from fleet.build_route import RouteRules, resolve_route
+from fleet.build_route import GemRoute, RouteRules, resolve_route
 from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle,
                                     evaluate_resources, evaluate_workshop,
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
 from fleet import coin_share
 from fleet.lab_facts import best_waves, coins_per_hour, just_in_time_hold
-from fleet.resource_blocks import LabFacts, LabPlan, evaluate_lab_plan
+from fleet.resource_blocks import (LabFacts, LabPlan, evaluate_lab_plan,
+                                   gem_lane_blocks, next_unlock_slot)
 from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule, Strategy
@@ -155,6 +156,23 @@ class RerollProgress:
         self.lab_cadence.note_slot2(status, wallet_gems,
                                     time.time() if now is None else now)
 
+    def note_lab_slots(self, statuses: Mapping[int, str], wallet_gems: int | None,
+                       now: float | None = None) -> None:
+        self.lab_cadence.note_slots(statuses, wallet_gems, time.time() if now is None else now)
+
+    def _effective_gems(self) -> GemRoute:
+        """This account's gem lane; today's default when no route applies."""
+        if self.route_runtime is None:
+            return GemRoute()
+        try:
+            return resolve_route(self.route_runtime.current(), self.root.name, self.account_id).gems
+        except (RouteUnavailable, ValueError, TypeError, KeyError):
+            return GemRoute()
+
+    def next_unlock_slot(self) -> int | None:
+        """The slot the gem lane unlocks next, from this account's slot record."""
+        return next_unlock_slot(gem_lane_blocks(self._effective_gems()), self.lab_cadence.slot_records())
+
     def speed_target(self) -> float:
         return self.lab_cadence.speed_target()
 
@@ -182,7 +200,10 @@ class RerollProgress:
                         wallet_gems=gems,
                         jar=self.coin_jar.amount(quiet=True),
                         coins_per_hour=coins_per_hour(self.root, self.account_id),
-                        best_waves=best_waves(self.root / "tower_bot.db") or None)
+                        best_waves=best_waves(self.root / "tower_bot.db") or None,
+                        slot_ownership=self.lab_cadence.slot_records(),
+                        owned_floor=(getattr(runtime, "slots_owned", None)
+                                     if type(getattr(runtime, "slots_owned", None)) is int else None))
         route = self.route_runtime.current()
         return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
 

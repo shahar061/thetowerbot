@@ -543,3 +543,13 @@ def test_unaffordable_price_does_not_force_a_ten_run_detour(tmp_path: Path) -> N
     assert not progress.workshop_worthwhile()
     end_run(progress, 10, 1)
     assert not progress.workshop_worthwhile()
+
+
+def test_slot_notes_and_the_next_unlock_slot_are_account_bound(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert progress.next_unlock_slot() == 2
+    progress.note_lab_slots({2: "owned", 3: "locked"}, 120, now=1000.)
+    assert progress.next_unlock_slot() is None  # the default gem path unlocks only Lab 2
+    assert progress.lab_cadence.slot_records()[3] == {"status": "locked", "wallet_gems": 120,
+                                                      "observed_at": 1000.}
+    assert worker(tmp_path / "other", "ACCOUNT-B").lab_cadence.slot_records() == {}

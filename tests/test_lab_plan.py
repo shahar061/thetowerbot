@@ -247,3 +247,45 @@ def test_slot_two_check_honours_a_raised_gem_floor(tmp_path: Path) -> None:
     assert cadence.slot2_due(1100., wallet_gems=100)  # the default floor is unchanged
     assert LAB2_GEMS == 100
     assert LabVisitOptions() == LabVisitOptions(start_research=True, unlock_slot2=True, min_gems=100)
+
+
+def test_lab_slots_file_records_each_slot_and_reads_the_old_slot_two_file_once(tmp_path: Path) -> None:
+    import json
+    from lab_plan import LabCadence
+
+    (tmp_path / "lab-slot2-cadence.json").write_text(json.dumps({
+        "account_id": "ACCOUNT-A", "status": "owned", "wallet_gems": 19, "observed_at": 900.}))
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    assert cadence.slot_records() == {2: {"status": "owned", "wallet_gems": 19, "observed_at": 900.}}
+    assert cadence.slot_owned(2) and not cadence.slot_owned(3)
+    cadence.note_slots({3: "locked"}, 120, 1000.)
+    assert json.loads((tmp_path / "lab-slots.json").read_text()) == {
+        "account_id": "ACCOUNT-A", "slots": {
+            "2": {"status": "owned", "wallet_gems": 19, "observed_at": 900.},
+            "3": {"status": "locked", "wallet_gems": 120, "observed_at": 1000.}}}
+    (tmp_path / "lab-slot2-cadence.json").write_text(json.dumps({
+        "account_id": "ACCOUNT-A", "status": "locked", "observed_at": 2000.}))
+    assert LabCadence(tmp_path, "ACCOUNT-A").slot_owned(2)  # the old file is never read again
+    assert LabCadence(tmp_path, "ACCOUNT-B").slot_records() == {}
+
+
+def test_slot_due_waits_for_gems_then_rechecks_hourly(tmp_path: Path) -> None:
+    from lab_plan import LabCadence
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    assert cadence.slot_due(3, 1000., wallet_gems=10, min_gems=400)  # never read
+    cadence.note_slots({3: "locked"}, 120, 1000.)
+    assert not cadence.slot_due(3, 1100., wallet_gems=399, min_gems=400)
+    assert cadence.slot_due(3, 1100., wallet_gems=400, min_gems=400)
+    cadence.note_slots({3: "locked"}, 400, 1150.)
+    assert not cadence.slot_due(3, 1200., wallet_gems=400, min_gems=400)
+    assert cadence.slot_due(3, 1150. + 3600, wallet_gems=400, min_gems=400)
+    cadence.note_slots({3: "owned"}, 0, 5000.)
+    assert not cadence.slot_due(3, 100_000.)
+
+
+def test_note_slots_ignores_unknown_slots_and_statuses(tmp_path: Path) -> None:
+    from lab_plan import LabCadence
+
+    LabCadence(tmp_path, "ACCOUNT-A").note_slots({1: "owned", 6: "locked", 2: "unknown"}, 5, 1.)
+    assert not (tmp_path / "lab-slots.json").exists()

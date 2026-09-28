@@ -77,14 +77,16 @@ def _completed_levels(db_path: Path, account_id: str) -> dict[str, int] | None:
 
 def persisted_lab_facts(worker_root: Path, account_id: str, *, now: float, coins: int | None,
                         gems: int | None, db_path: Path) -> LabFacts:
-    slot1, slot2 = LabCadence(worker_root, account_id).route_observation()
+    cadence = LabCadence(worker_root, account_id)
+    slot1, slot2 = cadence.route_observation()
     waves = best_waves(db_path)
     return LabFacts(now, coins, gems, waves.get(1), slot1, slot2,
                     LabCoinJar(worker_root, account_id, read_only=True).amount(quiet=True),
                     slots=read_lab_slots(worker_root, account_id), available_coins=coins,
                     account_id=account_id, best_waves=waves or None,
                     coins_per_hour=coins_per_hour(worker_root, account_id),
-                    completed_levels=_completed_levels(db_path, account_id))
+                    completed_levels=_completed_levels(db_path, account_id),
+                    slot_ownership=cadence.slot_records())
 
 
 def just_in_time_hold(route: Any, worker_root: Path, account_id: str, *, wallet: int | None,
