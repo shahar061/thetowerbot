@@ -215,3 +215,32 @@ def test_the_support_matrix_names_the_cards_evidence_and_its_gaps() -> None:
                   'in_run_card_locks'):
         assert scope in unsupported
         assert owners[scope]
+
+
+def test_observed_cards_persist_their_level_and_copies_and_nothing_else() -> None:
+    import dataclasses
+    import cards
+    page = reading()
+    observed = dataclasses.replace(page, cards=(
+        cards.CardObservation('cards.damage', 'cards', 'unknown', 'observed', 12, 5, 'read'),
+        cards.CardObservation('cards.health', 'cards', 'unknown', 'observed', None, 2, 'copies unread'),
+        cards.CardObservation('cards.range', 'cards', 'unknown', 'locked', None, None, 'padlock'),
+    ))
+
+    values = {f.concept_id: f.value for f in cards.facts(observed)}
+
+    assert values == {cards.SLOT_EQUIPPED_KEY: 0, cards.SLOT_CAPACITY_KEY: 1,
+                      'cards.damage.level': 5, 'cards.damage.copies': 12,
+                      'cards.health.level': 2}
+    level = next(f for f in cards.facts(observed) if f.concept_id == 'cards.damage.level')
+    assert (level.status, level.evidence.raw_name, level.evidence.raw_value) == (
+        'observed', 'cards.damage', '5')
+
+
+def test_card_fact_keys_can_never_be_mistaken_for_a_catalog_identity() -> None:
+    import cards
+    from concepts import REGISTRY
+    ids = {c.concept_id for c in REGISTRY.concepts}
+    for key in (cards.card_level_key('cards.damage'), cards.card_copies_key('cards.damage')):
+        assert key not in ids
+        assert key.count('.') == 2

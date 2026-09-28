@@ -16,7 +16,7 @@ Nothing here taps. Buying a card, buying a slot and equipping belong to C02.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import math
 import time
@@ -47,6 +47,20 @@ MASTERY_IDS = tuple(c.concept_id for c in REGISTRY.concepts if c.kind == 'card-m
 # concept ID as exactly two, so no catalog entry can ever collide with these.
 SLOT_EQUIPPED_KEY = 'cards.slots.equipped'
 SLOT_CAPACITY_KEY = 'cards.slots.capacity'
+
+
+def card_level_key(concept_id: str) -> str:
+    """The fact key for one card's level: `cards.damage.level`.
+
+    Three segments, like the slot keys, so it can never collide with a
+    catalog identity (every one of those has exactly two).
+    """
+    return f'{concept_id}.level'
+
+
+def card_copies_key(concept_id: str) -> str:
+    """The fact key for how many copies of one card the account holds."""
+    return f'{concept_id}.copies'
 
 # Catalog kinds that would separate a passive bonus from an active ability.
 # Registry v1 has neither - all 31 cards share the single kind `card` - so
@@ -198,19 +212,32 @@ def effective_stat_inputs(reading: CardsReading | None) -> dict[str, Any]:
 
 
 def facts(reading: CardsReading | None) -> tuple[Fact, ...]:
-    """The permanent account facts this page supports: the two slot counts.
+    """The permanent account facts this page supports.
 
-    No card fact is ever produced. An identity with no observation behind it
-    must reach the account revision as an absence, and the way to record an
-    absence is to write nothing for it.
+    The two slot counts, plus a level and a copies fact for every card this
+    frame actually observed. An identity with no observation behind it must
+    reach the account revision as an absence, and the way to record an
+    absence is to write nothing for it - so a card that is unknown, locked,
+    unavailable, maxed or unreadable, or whose number is None, writes nothing.
     """
     if reading is None or reading.slots.status != 'observed' or reading.slots.rect is None:
         return ()
     evidence = Evidence(reading.observed_at, reading.slots.confidence, 'ACTIVE',
                         reading.slots.raw_value, reading.slots.rect, reading.frame_width,
                         reading.frame_height, reading.frame_digest)
+    card_facts: list[Fact] = []
+    for card in reading.cards:
+        if card.status != 'observed':
+            continue
+        for key, value in ((card_level_key(card.concept_id), card.level),
+                           (card_copies_key(card.concept_id), card.copies)):
+            if value is not None:
+                card_facts.append(Fact(key, value, 'observed',
+                                       replace(evidence, raw_name=card.concept_id,
+                                               raw_value=str(value))))
     return (Fact(SLOT_EQUIPPED_KEY, reading.slots.equipped, 'observed', evidence),
-            Fact(SLOT_CAPACITY_KEY, reading.slots.capacity, 'observed', evidence))
+            Fact(SLOT_CAPACITY_KEY, reading.slots.capacity, 'observed', evidence),
+            *card_facts)
 
 
 def actions(reading: CardsReading | None) -> tuple[Any, ...]:
