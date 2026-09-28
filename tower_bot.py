@@ -3869,6 +3869,25 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 host_popup_checker=host_popup_checker,
             )
 
+            stream_hub = None
+            if config.STREAM_ENABLED:
+                from adbutils import AdbClient
+                from stream.hub import StreamHub
+                from stream.scrcpy_session import ScrcpySession
+
+                def open_stream() -> ScrcpySession:
+                    # The runner's serial is the transport the bot actually
+                    # connected to (it may be the emulator-N alias). The CLI
+                    # endpoint covers the time before the first connect.
+                    serial = runner.identity().get("serial") or f"{args.host}:{args.port}"
+                    device = AdbClient(host=config.ADB_HOST, port=config.ADB_PORT).device(serial)
+                    return ScrcpySession(device, max_size=config.STREAM_MAX_SIZE,
+                                         max_fps=config.STREAM_MAX_FPS,
+                                         i_frame_interval=config.STREAM_I_FRAME_INTERVAL_S)
+
+                stream_hub = StreamHub(open_stream, shutdown=shutdown,
+                                       label=args.worker_id or f"{args.host}:{args.port}")
+
             app = create_app(
                 state=state, sse=sse, bus=bus,
                 db_path=db_path if args.store else None,
@@ -3886,6 +3905,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 telegram_interval_override=(telegram_settings.interval if args.telegram_interval is not None
                                             and telegram_settings is not None else None),
                 telegram_suppressed=args.no_telegram or args.reroll_pool is not None,
+                stream_hub=stream_hub,
             )
             # No signal handlers of ours here: uvicorn installs its own and
             # would overwrite them anyway.
