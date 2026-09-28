@@ -55,7 +55,9 @@ Findings that shape this design:
 | Workshop discounts and Labs Coin Discount are D early ("gaining more coins beats spending less"); "early fast levels are fine" | Discounts only to level 20, at tier C | Tier list; Reddit discount threads; Discord guide |
 | Light Speed Shots: "unlock as soon as you can afford it". Starting Cash: "a trap" | Light Speed Shots at tier S, high in the list; Starting Cash left out | Discord guide |
 | An S+ lab is "worth saving 2–3 days of coins"; "affordable within 2 runs"; Game Speed: "save up for each level if you have to" | A per-tier save window, S+ = 72h; Game Speed pinned, so it is never skipped | Tier list; Reddit; Discord guide |
-| Never leave a slot idle; switching a lab refunds its coins and keeps its progress | Idle slots pause Workshop until their lab is affordable; a filler-lab-then-switch strategy is noted as future work | Consensus; Fandom Lab_Upgrades |
+| Never leave a slot idle; switching a lab refunds its coins and keeps its progress | **Owner rule: every slot always runs a lab.** When the slot's lab isn't affordable, a fast, cheap *filler* lab runs until it is (section 3). Switching a filler out early is future work | Consensus; Fandom Lab_Upgrades; owner |
+| Owner rule: slot 1 is for Game Speed, slot 2 for Labs Speed, slots 3–5 for everything else | Template pins Game Speed to slot 1 and both Labs Speed entries to slot 2 | Owner; matches the Discord guide's slot plan |
+| Wiki unlocks: Unlock Perks 1.5M coins; Perk Option Quantity T4 W80 + Unlock Perks, 200M; Light Speed Shots T7 W10, 3M | Unlocks are a list of conditions that all must hold; for early accounts these entries stay locked or beyond the save window, and are skipped | Fandom `Lab/*` and `Perk Labs/*` pages |
 | The in-game Auto Research toggle starts the next level when affordable | Sub-project 2 uses it; the scheduler here already saves for a running lab's next level | Fandom Lab_Upgrades |
 | Black Hole Damage and bot-cooldown labs can't be undone | Excluded from the template | Earlier project research |
 
@@ -76,7 +78,7 @@ In scope:
 Out of scope:
 - starting any lab other than slot-1 Game Speed (sub-project 2);
 - the ranked-list editor and timeline UI (sub-project 3);
-- filler labs with switching;
+- switching a running filler out for its target (it needs a switch routine on the device);
 - gem-rushing;
 - elite-cell boosts;
 - mid- and late-game templates.
@@ -97,12 +99,19 @@ Out of scope:
 - Tables come from the Fandom wiki through the MediaWiki API. Each lab keeps its
   `source_url` and `checked` date. A lab whose table can't be read keeps
   `levels: null`, and planning treats its price as unknown. No values are invented.
-- `unlock` becomes one of:
-  - `null`;
+- `unlock` becomes a list of conditions that must **all** hold (empty or `null` means
+  none). Each condition is one of:
   - `{"tier": T, "wave": W}`;
   - `{"lab": id, "level": N}`.
 
-  v1's `{"best_tier_1_wave": W}` is read as `{"tier": 1, "wave": W}`.
+  For example, Perk Option Quantity has
+  `[{"tier": 4, "wave": 80}, {"lab": "labs.unlock-perks", "level": 1}]`. v1's
+  `{"best_tier_1_wave": W}` is read as `[{"tier": 1, "wave": W}]`.
+- The wiki tables list columns in different orders (Game Speed puts Cost before Time),
+  so the importer matches them by header name. Some level-1 times round to
+  `0d 0h 0m`, so `seconds` may be 0; seconds may never decrease.
+- A level's `max_speed` is required only for Game Speed; other labs store the wiki's
+  `Value` column as an optional `value` string.
 - Validation checks, for each lab:
   - the number of levels equals `max_level`;
   - coins and seconds never decrease;
@@ -134,9 +143,9 @@ Out of scope:
   - optional `label` (1–60 characters).
 - The same `lab_id` may appear more than once, but its `to_level` values must strictly
   increase down the list (Labs Speed 50, then Labs Speed 99).
-- At most one unfinished pin per slot. Only one pin is enforced as "never skipped":
-  Game Speed in slot 1, which keeps today's `validate_labs` rule that slot 1 starts
-  with Game Speed.
+- Several entries may pin the same slot; they are taken in list order (Labs Speed 50,
+  then Labs Speed 99, both on slot 2). The first entry of the list must be Game Speed
+  pinned to slot 1, which keeps today's `validate_labs` rule.
 - Limits are the same as the other lanes (`MAX_BLOCKS`).
 
 ### 3. Evaluation: `evaluate_lab_plan(route, facts) -> LabPlan`
@@ -150,9 +159,12 @@ slot that is idle or unread gets its target for "now". A slot that is researchin
 its target for when its current research completes (`needed_at = completes_at`).
 
 For each slot:
-1. **Pin.** If the first unfinished entry pinned to this slot exists, it is the only
-   candidate. A pinned entry is finished once its `to_level` is reached; the slot then
-   falls through to step 2.
+1. **Pin.** The first unfinished entry pinned to this slot is the slot's target, as
+   long as it is unlocked and its price is known. It is never window-checked.
+   - A pinned entry that is still **locked** (Labs Speed before T1 W150) or unread lets
+     the slot fall through to step 2 for now.
+   - Once every entry pinned to the slot is finished (Game Speed at 7), the slot falls
+     through to step 2 for good.
 2. **Ranked walk.** Go through the entries in order and skip an entry if:
    - `finished`: the known level has reached `to_level`;
    - `running elsewhere`: it is running in another slot;
@@ -165,9 +177,28 @@ For each slot:
      (section 4).
 
    Skipping never blocks the walk. The first entry not skipped is the slot's target.
-3. **Nothing left.** If no entry survives, the slot's `next` is `None`, and `why` ends
-   with the most common skip reason, for example "All remaining entries locked: need
-   Tier 2 wave 150".
+3. **Nothing left.** If no entry survives, the slot has no target, and `why` ends with
+   the most common skip reason, for example "All remaining entries locked: need Tier 2
+   wave 150". Step 4 still looks for a filler.
+4. **Filler: the slot is never left idle.** If the slot is idle and its target isn't
+   affordable now, or it has no target, the slot runs a *filler* instead. Candidates are
+   the list's entries at their next level (any rank), and must be:
+   - not finished, running, claimed, pinned to another slot or locked;
+   - priced, at most `rules.labs.filler.max_price_pct_of_wallet` of the wallet
+     (default 10%);
+   - short: its duration fits the **gap**, the hours until the target becomes
+     affordable after paying for the filler,
+     `(target price − (wallet − filler price)) / r`.
+     - The gap is never below `rules.labs.filler.min_hours` (default 1h).
+     - With income unknown, or with no target, the gap is exactly `min_hours`.
+
+   Among the candidates, the **shortest** filler wins; a tie goes to the higher-ranked
+   entry. The slot's `next` becomes the filler, with `role = "filler"` and
+   `saving_for = <target>`.
+
+   The target's `needed_at` becomes the filler's end time, so the saving plan (section
+   4) saves for it while the filler runs. If no filler fits, the slot stays idle, `why`
+   says so, and its target's `needed_at` stays "now".
 
 Other rules:
 - **The level to research next** is `known + 1`, including levels already running.
@@ -181,6 +212,10 @@ Other rules:
   considers all targets together. `covered` is taken from the `SavingPlan`: it is
   `True` when the target is funded by its `needed_at` (`ready_at ≤ needed_at`), `False`
   when it isn't, and `None` when the wallet or price is unknown.
+- **New `SlotPlan` fields**, both additive and defaulted, so existing readers keep
+  working:
+  - `role`: `"target"` or `"filler"`;
+  - `saving_for: SlotNext | None`.
 - **Unlock facts.** `LabFacts` gains:
   - `best_waves: Mapping[int, int] | None`, the best wave per tier, from the runs table.
     `best_tier_1_wave` stays and is mirrored into `best_waves[1]`.
@@ -198,9 +233,12 @@ def saving_plan(plan: LabPlan, entries: Sequence[Entry], facts: LabFacts,
 Rules:
 - **Income:** `r = facts.coins_per_hour × rules.labs.saving.income_margin_pct / 100`,
   with a default margin of 75. Income that is missing or not positive counts as unknown.
-- **Targets:** every slot target with a known price and a `needed_at`, sorted by
-  `needed_at`. A `needed_at` in the past is clamped to `now`.
-- **Hours to afford a target:** `max(0, price − wallet) / r`, or infinity when `r` is
+- **Starts now:** every target or filler that an idle slot will start now is paid for
+  first, so `wallet' = wallet − Σ those prices`. Everything below uses `wallet'`.
+- **Targets:** every slot target not starting now that has a known price and a
+  `needed_at`, sorted by `needed_at`. A `needed_at` in the past is clamped to `now`. A
+  slot running a filler contributes its `saving_for` target, due when the filler ends.
+- **Hours to afford a target:** `max(0, price − wallet') / r`, or infinity when `r` is
   unknown and the target isn't affordable now. This hours figure is also what step 2
   compares against the tier window: `rules.labs.saving.window_hours[tier]`.
   - With income unknown, tiers S+ and S pass the window check (they are worth waiting
@@ -214,11 +252,11 @@ Rules:
 
   `need_k = Σ price_1..k − r × hours(now → needed_at_k)`,
 
-  and `reserve = clamp(max_k need_k, 0, wallet)`.
+  and `reserve = clamp(max_k need_k, 0, wallet')`.
 - **Reserve, with income unknown:** reserve only the targets of **idle** slots that are
   affordable now, or that are tier S+/S (worth waiting for). Then clamp to the wallet.
   Nothing is saved ahead for running slots.
-- **Workshop budget:** `workshop_budget = (wallet − reserve) × workshop_spend_limit_pct / 100`.
+- **Workshop budget:** `workshop_budget = (wallet' − reserve) × workshop_spend_limit_pct / 100`.
   This is the same formula as `coin_share.workshop_ceiling`, with the reserve in place
   of the jar.
 - **Per-target output:**
@@ -246,6 +284,12 @@ five targets, and the reserve check prevents overspending.
 - A new `labs.saving`:
   - `income_margin_pct`: 50–100, default 75;
   - `window_hours`: `{"S+": 72, "S": 24, "A": 12, "B": 4, "C": 0}`, each value 0–168.
+- A new `labs.filler`:
+  - `enabled`: default `true`;
+  - `max_price_pct_of_wallet`: 1–100, default 10;
+  - `min_hours`: 0.25–24, default 1.
+
+  The existing `labs.idle_fill` and `labs.pool` rules keep serving `slot_track` only.
 - `just_in_time` works with a `lab_list` lane only. `validate` rejects `just_in_time`
   paired with a `slot_track` lane.
 
@@ -263,7 +307,7 @@ following list. The `opening` and `turtle` templates keep their current labs lan
 | 5 | Ban Perks | 1 | S | Unlock Perks 1 |
 | 6 | Light Speed Shots | 1 | S | |
 | 7 | Coins / Wave | 10 | B | |
-| 8 | Labs Speed | 50 | S | T1 W150 |
+| 8 | Labs Speed | 50 | S | pin slot 2 · T1 W150 |
 | 9 | Coins / Kill Bonus | 30 | A | |
 | 10 | Cash Bonus | 20 | A | |
 | 11 | Attack Speed | 50 | A | |
@@ -274,7 +318,7 @@ following list. The `opening` and `turtle` templates keep their current labs lan
 | 16 | Workshop Attack Discount | 20 | C | |
 | 17 | Workshop Defense Discount | 20 | C | |
 | 18 | Workshop Utility Discount | 20 | C | |
-| 19 | Labs Speed | 99 | A | |
+| 19 | Labs Speed | 99 | A | pin slot 2 |
 
 The unlock conditions live in the catalog; the table repeats them for the reader.
 
@@ -340,9 +384,16 @@ New test files:
   - a running slot targeting at `completes_at`;
   - the Labs Speed 99 entry starting at 51;
   - the unowned slots 3–5 being ignored;
-  - the "Start manually" note.
+  - the "Start manually" note;
+  - Labs Speed locked: slot 2 falls through to the list, then takes Labs Speed once it
+    unlocks;
+  - an unaffordable target gets the shortest cheap filler whose duration fits the gap;
+  - a filler over the price cap, or longer than the gap, is refused;
+  - no filler fits: the slot stays idle and says why;
+  - income unknown: the filler is at most `min_hours`.
 - `tests/test_lab_saving.py`, covering saving:
-  - an idle unaffordable target reserves its full price;
+  - an idle unaffordable target with no filler reserves its full price;
+  - a filler's price is paid first, and its target is reserved for the filler's end;
   - a slot freeing in 10h reserves only the uncovered part;
   - two targets add up;
   - the window skip happens at `needed_at`;
@@ -373,8 +424,12 @@ No full-suite runs.
 - A strategy made from the `labs_gems` template shows the 19-entry ranked list in the
   Studio. The Labs & Gems page shows each owned slot's target, with the "Start manually"
   note on anything other than Game Speed.
-- With slot 1 idle and Game Speed L4 unaffordable, Workshop spends nothing until the
-  wallet covers L4. Once it is affordable, the worker starts it as today.
+- With slot 1 idle and Game Speed L4 unaffordable, the plan shows a filler for slot 1
+  (for example Coins / Kill Bonus L3, 16m), saving for L4 by the filler's end. Starting
+  the filler waits for sub-project 2 and shows as "Start manually" until then; Workshop
+  holds back what L4 needs at that time.
+- Once Labs Speed unlocks, slot 2 targets it and never runs Game Speed. Slots 3–5 never
+  take either pinned lab.
 - With slot 1 running Game Speed and 10h left, Workshop keeps spending, holding back only
   `price − 0.75 × income × 10h`.
 - Existing `slot_track` strategies behave exactly as before.
