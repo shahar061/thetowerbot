@@ -123,7 +123,9 @@ for i in "${!args[@]}"; do
 done
 
 step 4 "freeing port $port"
-holders=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+# Loopback only: the bot binds 127.0.0.1, and `tailscale serve` listens on the
+# same port on the tailnet address without conflicting with it.
+holders=$(lsof -tiTCP@127.0.0.1:"$port" -sTCP:LISTEN 2>/dev/null || true)
 if [[ -z "$holders" ]]; then
     printf '      nothing listening\n'
 else
