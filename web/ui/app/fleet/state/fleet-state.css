@@ -49,8 +49,8 @@
 .fs-scr[data-screen="GAME_OVER"] { --c: var(--warn); }
 .fs-scr[data-screen="OFFLINE"] { --c: var(--danger); }
 
-.fs-top3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); border-top: 1px solid var(--border); }
-.fs-top3 > * { min-width: 0; padding: 12px 14px; border-bottom: 1px solid var(--fs-line-soft); }
+.fs-top3 { display: flex; flex-wrap: wrap; border-top: 1px solid var(--border); }
+.fs-top3 > * { flex: 1 1 260px; min-width: 0; padding: 12px 14px; border-bottom: 1px solid var(--fs-line-soft); }
 .fs-flow { column-gap: 0; }
 .fs-flow.wide { columns: 340px; column-rule: 1px solid var(--fs-line-soft); }
 .fs-sec { min-width: 0; break-inside: avoid; padding: 0 14px; border-bottom: 1px solid var(--fs-line-soft); }
