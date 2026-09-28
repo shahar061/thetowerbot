@@ -31,7 +31,7 @@ SLOTS = (2, 3, 4, 5)
 STAGES = ("dry_run", "canary", "fleet", "halted")
 PROMOTION_REHEARSALS = 2
 PROMOTION_SPACING_SECONDS = 600.
-MAX_DRY_RUNS = 20
+MAX_DRY_RUNS_PER_PAIR = 5
 MAX_EVIDENCE = 32
 OUTCOMES = ("bought", "not_charged")
 
@@ -54,6 +54,26 @@ def _qualifies(runs: list[DryRun]) -> bool:
     return any(first.price == second.price and first.account_id == second.account_id
                and abs(second.at - first.at) >= PROMOTION_SPACING_SECONDS
                for index, first in enumerate(runs) for second in runs[index + 1:])
+
+
+def _trim_dry_runs(runs: tuple[DryRun, ...]) -> tuple[DryRun, ...]:
+    """Keep only the newest MAX_DRY_RUNS_PER_PAIR runs for each (worker, account) pair.
+
+    A single shared cap would let a burst of rehearsals from many other workers push
+    a worker's own first rehearsal out of the list before its second one ever lands,
+    so a slot with a large, actively-rehearsing fleet could never promote. Capping
+    per pair instead means one worker's rehearsals never evict another's.
+    """
+    seen: dict[tuple[str, str | None], int] = {}
+    kept: list[DryRun] = []
+    for run in reversed(runs):
+        key = (run.worker, run.account_id)
+        if seen.get(key, 0) >= MAX_DRY_RUNS_PER_PAIR:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        kept.append(run)
+    kept.reverse()
+    return tuple(kept)
 
 
 def _finite(value: object) -> bool:
@@ -185,11 +205,24 @@ class LabUnlockRollout:
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
+    def _corrupt(self, quarantine: bool, exc: Exception) -> dict[int, SlotRollout]:
+        if quarantine:
+            aside = self.path.with_name(f"{self.path.name}.corrupt-{time.time_ns()}")
+            os.replace(self.path, aside)
+            logger.warning("Lab unlock rollout %s is corrupt (%s); moved to %s; every slot "
+                           "is back at dry run", self.path, exc, aside)
+        else:
+            logger.warning("Lab unlock rollout %s is corrupt (%s); reading every slot as dry run",
+                           self.path, exc)
+        return {}
+
     def _load(self, *, quarantine: bool) -> dict[int, SlotRollout]:
         try:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {}
+        except UnicodeDecodeError as exc:
+            return self._corrupt(quarantine, exc)
         except OSError as exc:
             logger.warning("Lab unlock rollout %s unreadable (%s); every slot is at dry run", self.path, exc)
             return {}
@@ -202,15 +235,7 @@ class LabUnlockRollout:
                 raise ValueError("slots must be keyed 2-5")
             return {int(key): SlotRollout.from_dict(value) for key, value in raw.items()}
         except (ValueError, TypeError, AttributeError) as exc:
-            if quarantine:
-                aside = self.path.with_name(f"{self.path.name}.corrupt-{time.time_ns()}")
-                os.replace(self.path, aside)
-                logger.warning("Lab unlock rollout %s is corrupt (%s); moved to %s; every slot "
-                               "is back at dry run", self.path, exc, aside)
-            else:
-                logger.warning("Lab unlock rollout %s is corrupt (%s); reading every slot as dry run",
-                               self.path, exc)
-            return {}
+            return self._corrupt(quarantine, exc)
 
     def slots(self, *, quarantine: bool = True) -> dict[int, SlotRollout]:
         """Every slot 2-5. A dashboard read passes quarantine=False and never moves a file."""
@@ -253,7 +278,7 @@ class LabUnlockRollout:
             if price != catalog:
                 return replace(current, stage="halted", halted_reason=(
                     f"Rehearsal read {price} gems for slot {slot}; the catalog says {catalog}"))
-            runs = (*current.dry_runs, DryRun(worker, float(at), price, gems, account_id))[-MAX_DRY_RUNS:]
+            runs = _trim_dry_runs((*current.dry_runs, DryRun(worker, float(at), price, gems, account_id)))
             mine = [run for run in runs
                     if run.worker == worker and run.account_id == account_id and run.price == price]
             if _qualifies(mine):

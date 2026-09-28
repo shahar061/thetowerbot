@@ -44,6 +44,15 @@ def test_two_rehearsals_ten_minutes_apart_promote_that_worker_to_canary(tmp_path
     assert not rollout.may_tap(3, "Air_1")
 
 
+def test_more_than_twenty_interleaved_workers_still_let_one_promote(tmp_path: Path) -> None:
+    rollout = LabUnlockRollout(tmp_path)
+    rollout.note_dry_run(2, "Air_1", 100, 150, 0., account_id="account-a")
+    for index in range(25):
+        rollout.note_dry_run(2, f"Noise_{index}", 100, 150, 10. + index, account_id=f"noise-{index}")
+    change = rollout.note_dry_run(2, "Air_1", 100, 150, 600., account_id="account-a")
+    assert change.promoted == "canary"
+
+
 def test_a_worker_moved_to_another_account_starts_its_rehearsals_again(tmp_path: Path) -> None:
     rollout = LabUnlockRollout(tmp_path)
     rollout.note_dry_run(2, "Air_1", 100, 150, 1000., account_id="account-a")
@@ -144,6 +153,18 @@ def test_a_corrupt_file_is_moved_aside_and_every_slot_is_dry_run(tmp_path: Path)
     assert "bogus" in aside.read_text()
     rollout.note_dry_run(2, "Air_1", 100, 150, 1., account_id="a")
     assert json.loads(path.read_text())["slots"]["2"]["dry_runs"][0]["worker"] == "Air_1"
+
+
+def test_a_file_that_is_not_valid_utf8_is_quarantined_too(tmp_path: Path) -> None:
+    path = tmp_path / "lab-unlock-rollout.json"
+    path.write_bytes(b'{"schema_version": 1, "slots": {"2": {\xff\xfe')
+    rollout = LabUnlockRollout(tmp_path)
+    assert rollout.slots(quarantine=False)[2] == SlotRollout()
+    assert path.exists()  # a dashboard read never moves it
+    assert rollout.slot(2) == SlotRollout()
+    assert not path.exists()
+    (aside,) = tmp_path.glob("lab-unlock-rollout.json.corrupt-*")
+    assert aside.read_bytes().startswith(b'{"schema_version"')
 
 
 def test_concurrent_writers_never_lose_a_rehearsal(tmp_path: Path) -> None:
