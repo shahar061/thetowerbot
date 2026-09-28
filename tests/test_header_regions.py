@@ -33,6 +33,8 @@ HEADER_CASES: dict[str, tuple[str, int, int]] = {
     "menu_workshop_attack": ("WORKSHOP", 1770, 40),
     "menu_workshop_defense": ("WORKSHOP", 1770, 40),
     "menu_workshop_utility": ("WORKSHOP", 1770, 40),
+    # Spending the whole wallet leaves a lone "0", which reads below .9.
+    "menu_workshop_zero_coins": ("WORKSHOP", 0, 54),
     "menu_cards": ("CARDS", 78, 40),
 }
 

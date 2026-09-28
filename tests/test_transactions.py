@@ -394,6 +394,31 @@ def test_scoped_uncertainty_retains_original_intent_and_reservation(tmp_path):
     assert CurrencyRepository(journal.path).committed('coins') == 0
 
 
+def test_scoped_intent_settles_unproven_once_an_in_scope_check_observed_it(tmp_path):
+    from currencies import CurrencyRepository
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal)
+    txn = journal.prepare(_intent(), scope=scope, balance=balance)
+    journal.record_action(txn.key, at=2.)
+    # An unconfirmed sample says nothing about the row: the timeout keeps it open.
+    journal.reconcile(txn.key, _recovery(scope=scope, effect_changed=None), now=3.)
+    journal.close_unproven(txn.key, reason='timeout', now=4.)
+    assert journal.open_transactions()[0].key == txn.key
+    # Battle income since the tap: the row changed, the wallet rose, no debit is provable.
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=400), now=3.)
+    assert outcome.verdict == transactions.Verdict.UNPROVEN
+    assert journal.open_transactions()[0].key == txn.key
+    outcome = journal.close_unproven(txn.key, reason='timeout', now=4.)
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
+    assert not journal.open_transactions()
+    assert CurrencyRepository(journal.path).committed('coins') == 0
+    with journal._connect() as conn:
+        assert conn.execute("SELECT spent FROM transactions WHERE key=?", (txn.key,)).fetchone()[0] is None
+        assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+        # Only a wallet read after the settlement may authorize the next spend.
+        assert conn.execute("SELECT COUNT(*) FROM currency_observations").fetchone()[0] == 0
+
+
 def test_prepare_rejects_stale_catalog_and_unknown_bound(tmp_path):
     journal = transactions.TransactionJournal(tmp_path / 'bot.db')
     scope, balance = _scoped(journal)

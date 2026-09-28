@@ -508,7 +508,11 @@ when it can; when that check is held (stale identity, no scope continuity,
 search budget spent, a battle in progress) battles and scans continue while
 every new spend stays refused. A purchase whose only change is a durable epoch
 bump (disconnect or manual invalidation) reconciles read-only once the
-re-verified identity matches its account. Operators resolve anything left open
+re-verified identity matches its account. A purchase whose row that check has
+read in scope, but whose debit cannot be proven (battle income moved the
+wallet), settles `unproven` after the proof timeout: never credited, its
+reservation released, and only a newer wallet read authorizes the next spend.
+Operators resolve anything left open
 with `python tools/reconcile_transaction.py --db <worker db> list|reconcile|audit`
 (auditable; never rewrites a settled outcome; mints no ledger line). An
 unproven mission reward is retained uncredited after three verification walks

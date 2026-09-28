@@ -585,6 +585,10 @@ class TransactionJournal:
                 if evidence.continuity is not None:
                     saved_evidence['continuity']['root'] = str(evidence.continuity.root)
                 detail.update(reason=outcome.reason, reconciliation=saved_evidence)
+                if not proven and relevant and evidence.effect_changed is not None:
+                    # A confirmed in-scope read of the item after the action;
+                    # close_unproven may now settle it (see there).
+                    detail.setdefault('inspected_at', evidence.observed_at)
                 conn.execute(
                     "UPDATE transactions SET stage = ?, outcome = ?, spent = ?, resolved_at = ?, detail = ? "
                     "WHERE key = ?",
@@ -684,9 +688,14 @@ class TransactionJournal:
     def close_unproven(self, key: str, *, reason: str, now: float) -> Outcome:
         """Give up on proof: resolve UNPROVEN with the spend left unknown.
 
-        Scoped attempts remain open and reserved. Legacy rows retain their
-        historical resolved-unknown representation; neither grants a new
-        spending permission or releases a commitment here.
+        Scoped attempts remain open and reserved until a read-only check has
+        confirmed the item's row in scope after the action (``inspected_at``):
+        the state is then observed, only the debit is unknowable (battle
+        income moved the wallet), so waiting longer cannot prove more. Such
+        a row settles like an operator ``unproven``: spend unknown and never
+        credited, reservation released, pre-action wallet discarded. Legacy
+        rows retain their historical resolved-unknown representation and
+        release nothing here.
         """
         conn = self._connect()
         try:
@@ -700,10 +709,15 @@ class TransactionJournal:
                     return Outcome(key=key, verdict=Verdict(row["outcome"]), spent=row["spent"],
                                    reason=detail.get("reason"))
                 detail["reason"] = reason
-                if _transaction(row).scope is not None:
+                txn = _transaction(row)
+                if txn.scope is not None and detail.get('inspected_at') is None:
                     conn.execute("UPDATE transactions SET outcome=?, spent=NULL, detail=? WHERE key=?",
                                  (Verdict.UNPROVEN.value, json.dumps(detail), key))
                     return Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None, reason=reason)
+                if txn.scope is not None:
+                    conn.execute("DELETE FROM currency_commitments WHERE owner=? AND currency=?",
+                                 (f'purchase:{key}', txn.currency))
+                    conn.execute("DELETE FROM currency_observations WHERE currency=?", (txn.currency,))
                 conn.execute(
                     "UPDATE transactions SET stage = ?, outcome = ?, spent = NULL, resolved_at = ?, "
                     "detail = ? WHERE key = ?",
