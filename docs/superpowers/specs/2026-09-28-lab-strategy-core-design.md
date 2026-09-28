@@ -40,17 +40,21 @@ Sources:
   https://docs.google.com/spreadsheets/d/1M5WPXN3RCquT3peDUNjCqTVRPk313n9HbMe-hihzLvg
 - r/TheTowerGame, through Wayback snapshots from 2025 to early 2026;
 - game-vault and tower-hub;
-- the Discord findings recorded in `2026-09-26-labs-gems-path-design.md`.
+- The Tower Discord: the pinned "Lab Progression Guide" in #beginner-guides (Shuckle,
+  top-50), and #patch-notes for v29.0–29.0.5. The patch notes have no early-game lab
+  changes.
 
 Findings that shape this design:
 
 | Finding | Consequence | Source |
 |---|---|---|
 | Game Speed first, to max | Pinned to slot 1 in the template | Consensus: tier list S+, Fandom Tier-Specific Guide, game-vault |
-| Labs Speed is S up to level 50, then A; "slot it in whenever a slot is free"; unlocks at T1 W150; +2%/level, ×2.98 at level 99 | Ranked entry to 50, second entry to 99 | Tier list; Fandom Labs_Speed |
-| Unlock Perks (T2 W150), then First Perk Choice and Option Quantity, are S+ | Ranked above Labs Speed; need `{tier, wave}` and `{lab, level}` unlocks | Tier list |
-| Coins/Wave and Cash/Wave are F; Workshop discounts and Labs Coin Discount are D early ("gaining more coins beats spending less"; about 10% is enough) | Coins/Wave dropped; discounts only to level 20, at tier C | Tier list; r/TheTowerGame discount threads |
-| An S+ lab is "worth saving 2–3 days of coins"; "affordable within 2 runs" | A per-tier save window | Tier list; Reddit |
+| Labs Speed is S up to level 50, then A; unlocks at T1 W150; +2%/level, ×2.98 at level 99. The Discord guide adds: "isn't as important early while all your labs are short" | Ranked below the early economy labs; one entry to 50, a second to 99 | Tier list; Fandom Labs_Speed; Discord guide |
+| Unlock Perks (T2 W150), then First Perk Choice and Option Quantity, are S+. First Perk Choice is "worth grinding a few days to a week"; save for the 1st ban right after | Ranked first after Game Speed, with Ban Perks next; need `{tier, wave}` and `{lab, level}` unlocks | Tier list; Discord guide |
+| The tier list rates Coins/Wave and Cash/Wave F overall. For accounts under 100 waves, the Discord guide says: coins and cash per wave, "10–20 levels at most", then Cash Bonus and Coins/Kill | Coins/Wave to 10 at tier B, then Coins/Kill and Cash Bonus; Cash/Wave left out | Tier list; Discord guide |
+| Workshop discounts and Labs Coin Discount are D early ("gaining more coins beats spending less"); "early fast levels are fine" | Discounts only to level 20, at tier C | Tier list; Reddit discount threads; Discord guide |
+| Light Speed Shots: "unlock as soon as you can afford it". Starting Cash: "a trap" | Light Speed Shots at tier S, high in the list; Starting Cash left out | Discord guide |
+| An S+ lab is "worth saving 2–3 days of coins"; "affordable within 2 runs"; Game Speed: "save up for each level if you have to" | A per-tier save window, S+ = 72h; Game Speed pinned, so it is never skipped | Tier list; Reddit; Discord guide |
 | Never leave a slot idle; switching a lab refunds its coins and keeps its progress | Idle slots pause Workshop until their lab is affordable; a filler-lab-then-switch strategy is noted as future work | Consensus; Fandom Lab_Upgrades |
 | The in-game Auto Research toggle starts the next level when affordable | Sub-project 2 uses it; the scheduler here already saves for a running lab's next level | Fandom Lab_Upgrades |
 | Black Hole Damage and bot-cooldown labs can't be undone | Excluded from the template | Earlier project research |
@@ -83,8 +87,8 @@ Out of scope:
 
 - Adds `levels` tables (coins and seconds per level) for these labs:
   - Labs Speed, Coins/Kill Bonus, Attack Speed;
-  - Unlock Perks, First Perk Choice, Perk Option Quantity, Standard Perks Bonus,
-    Improve Trade-Off Perks;
+  - Unlock Perks, First Perk Choice, Perk Option Quantity, Ban Perks, Standard Perks
+    Bonus, Improve Trade-Off Perks;
   - Light Speed Shots, Health, Damage, Critical Factor;
   - Workshop Attack / Defense / Utility Discount, Labs Coin Discount;
   - Cash Bonus, Coins/Wave, Buy Multiplier, Starting Cash.
@@ -241,7 +245,7 @@ five targets, and the reserve check prevents overspending.
   unchanged.
 - A new `labs.saving`:
   - `income_margin_pct`: 50–100, default 75;
-  - `window_hours`: `{"S+": 48, "S": 24, "A": 12, "B": 4, "C": 0}`, each value 0–168.
+  - `window_hours`: `{"S+": 72, "S": 24, "A": 12, "B": 4, "C": 0}`, each value 0–168.
 - `just_in_time` works with a `lab_list` lane only. `validate` rejects `just_in_time`
   paired with a `slot_track` lane.
 
@@ -256,21 +260,32 @@ following list. The `opening` and `turtle` templates keep their current labs lan
 | 2 | Unlock Perks | 1 | S+ | T2 W150 |
 | 3 | First Perk Choice | 1 | S+ | Unlock Perks 1 |
 | 4 | Perk Option Quantity | 2 | S+ | Unlock Perks 1 |
-| 5 | Labs Speed | 50 | S | T1 W150 |
-| 6 | Coins / Kill Bonus | 30 | A | |
-| 7 | Attack Speed | 50 | A | |
-| 8 | Standard Perks Bonus | 10 | S | Unlock Perks 1 |
-| 9 | Improve Trade-Off Perks | 5 | S | Unlock Perks 1 |
-| 10 | Workshop Attack Discount | 20 | C | |
-| 11 | Workshop Defense Discount | 20 | C | |
-| 12 | Workshop Utility Discount | 20 | C | |
-| 13 | Labs Speed | 99 | A | |
+| 5 | Ban Perks | 1 | S | Unlock Perks 1 |
+| 6 | Light Speed Shots | 1 | S | |
+| 7 | Coins / Wave | 10 | B | |
+| 8 | Labs Speed | 50 | S | T1 W150 |
+| 9 | Coins / Kill Bonus | 30 | A | |
+| 10 | Cash Bonus | 20 | A | |
+| 11 | Attack Speed | 50 | A | |
+| 12 | Health | 30 | B | |
+| 13 | Damage | 30 | B | |
+| 14 | Standard Perks Bonus | 10 | S | Unlock Perks 1 |
+| 15 | Improve Trade-Off Perks | 5 | S | Unlock Perks 1 |
+| 16 | Workshop Attack Discount | 20 | C | |
+| 17 | Workshop Defense Discount | 20 | C | |
+| 18 | Workshop Utility Discount | 20 | C | |
+| 19 | Labs Speed | 99 | A | |
 
 The unlock conditions live in the catalog; the table repeats them for the reader.
 
-Not in the template: Coins/Wave and Cash/Wave (F); Black Hole Damage and bot-cooldown
-labs (they can't be undone). Any lab without a price table in v2 is left out of the
-template.
+Not in the template:
+- Cash/Wave, and Coins/Wave past level 10;
+- Starting Cash ("a trap");
+- Black Hole Damage and bot-cooldown labs (they can't be undone);
+- Reroll Shards, which the Discord guide calls "very important" but which needs
+  modules (around Tier 4). It belongs in a mid-game template.
+
+Any lab without a price table in v2 is left out of the template.
 
 ### 7. Wiring
 
@@ -355,7 +370,7 @@ No full-suite runs.
 
 ## Acceptance
 
-- A strategy made from the `labs_gems` template shows the 13-entry ranked list in the
+- A strategy made from the `labs_gems` template shows the 19-entry ranked list in the
   Studio. The Labs & Gems page shows each owned slot's target, with the "Start manually"
   note on anything other than Game Speed.
 - With slot 1 idle and Game Speed L4 unaffordable, Workshop spends nothing until the
