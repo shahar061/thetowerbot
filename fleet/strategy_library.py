@@ -24,7 +24,8 @@ SOURCE_TEMPLATES = {*TEMPLATE_IDS, "scratch"}
 
 
 def templates() -> list[dict[str, Any]]:
-    from fleet.resource_blocks import template_gem_blocks, template_lab_blocks, template_rules
+    from fleet.resource_blocks import (template_gem_blocks, template_lab_list,
+                                        template_lab_list_rules)
     from fleet.strategy_blocks import template_program
 
     def purchase_lanes(policy: str) -> dict[str, Any]:
@@ -39,12 +40,12 @@ def templates() -> list[dict[str, Any]]:
                        "source_template": policy,
                        "baseline": RouteBaseline.from_dict(purchase_lanes(policy)).to_dict(),
                        "builtin": True})
-    # The community Labs & Gems path: Opening's purchase lanes, block lanes
-    # for gems and labs, and rules that save toward each Game Speed level.
+    # The community Labs & Gems path: Opening's purchase lanes, gem blocks, and
+    # a ranked lab list with just-in-time saving.
     labs_gems = purchase_lanes("opening")
     labs_gems["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))
-    labs_gems["labs"].update(mode="blocks", blocks=list(template_lab_blocks()))
-    labs_gems["rules"] = template_rules()
+    labs_gems["labs"].update(mode="blocks", blocks=list(template_lab_list()))
+    labs_gems["rules"] = template_lab_list_rules()
     result.append({"id": "labs_gems", "name": "Common Labs & Gems path", "version": 1,
                    "source_template": "labs_gems",
                    "baseline": RouteBaseline.from_dict(labs_gems).to_dict(), "builtin": True})

@@ -366,6 +366,59 @@ def template_rules() -> dict[str, Any]:
     }
 
 
+def template_lab_list() -> tuple[dict[str, Any], ...]:
+    """The early-game ranked list: Game Speed on slot 1, Labs Speed on slot 2, the rest ranked.
+
+    Order from the spec's template table (tier list v29 + the Discord Lab Progression Guide).
+    Any lab without a price table in the catalog is left out of the template.
+    """
+    rows = [
+        ("game_speed", "labs.game-speed", 7, "S+", 1, "Game Speed to max"),
+        ("unlock_perks", "labs.unlock-perks", 1, "S+", None, "Unlock Perks"),
+        ("first_perk", "labs.first-perk-choice", 1, "S+", None, "First Perk Choice"),
+        ("perk_options", "labs.perk-option-quantity", 2, "S+", None, "Perk Option Quantity"),
+        ("ban_perks", "labs.ban-perks", 1, "S", None, "First perk ban"),
+        ("light_speed", "labs.light-speed-shots", 1, "S", None, "Light Speed Shots when affordable"),
+        ("coins_wave", "labs.coins-wave", 10, "B", None, "Coins / Wave while under 100 waves"),
+        ("labs_speed_50", "labs.labs-speed", 50, "S", 2, "Labs Speed to 50"),
+        ("coins_kill", "labs.coins-kill-bonus", 30, "A", None, "Coins / Kill Bonus to 30"),
+        ("cash_bonus", "labs.cash-bonus", 20, "A", None, "Cash Bonus to 20"),
+        ("attack_speed", "labs.attack-speed", 50, "A", None, "Attack Speed to 50"),
+        ("health", "labs.health", 30, "B", None, "Health: fast early levels"),
+        ("damage", "labs.damage", 30, "B", None, "Damage: fast early levels"),
+        ("standard_perks", "labs.standard-perks-bonus", 10, "S", None, "Standard Perks Bonus"),
+        ("trade_off", "labs.improve-trade-off-perks", 5, "S", None, "Improve Trade-Off Perks"),
+        ("ws_attack", "labs.workshop-attack-discount", 20, "C", None, "Workshop Attack Discount: cheap levels"),
+        ("ws_defense", "labs.workshop-defense-discount", 20, "C", None, "Workshop Defense Discount: cheap levels"),
+        ("ws_utility", "labs.workshop-utility-discount", 20, "C", None, "Workshop Utility Discount: cheap levels"),
+        ("labs_speed_99", "labs.labs-speed", 99, "A", 2, "Labs Speed to max"),
+    ]
+    entries = []
+    for key, lab_id, level, tier, pin, label in rows:
+        entry = lab_catalog.lab(lab_id)
+        if entry is None or entry.levels is None:
+            continue  # Spec: a lab without a price table is left out of the template.
+        item = {"id": f"labs.list.{key}", "lab_id": lab_id, "to_level": min(level, entry.max_level),
+                "tier": tier, "label": label}
+        if pin is not None:
+            item["pin_slot"] = pin
+        entries.append(item)
+    return validate_labs([{"id": "labs.list", "type": "lab_list", "label": "Early game", "entries": entries}])
+
+
+def template_lab_list_rules() -> dict[str, Any]:
+    """Just-in-time saving toward the ranked list's targets, with a cheap idle filler."""
+    return {
+        "coins": {"lab_share": {"mode": "just_in_time", "pct": 25}, "workshop_spend_limit_pct": 100},
+        "labs": {"auto_start": True, "idle_fill": "leave_idle",
+                 "pool": {"selection": "ordered", "max_price_pct_of_wallet": None, "max_seconds": None},
+                 "saving": {"income_margin_pct": 75,
+                            "window_hours": {"S+": 72, "S": 24, "A": 12, "B": 4, "C": 0}},
+                 "filler": {"enabled": True, "max_price_pct_of_wallet": 10, "min_hours": 1}},
+        "gems": {"auto_unlock_lab_slots": True, "spend_limit_pct": 100, "keep": 0},
+    }
+
+
 # ---- Evaluation -----------------------------------------------------------
 
 STALE_SECONDS = 86400
