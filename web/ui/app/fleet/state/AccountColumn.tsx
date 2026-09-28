@@ -3,9 +3,11 @@
 import { memo, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
-  STATE_CATEGORIES, type FleetStateAccount, type FleetStateCards, type FleetStateDecision,
-  type FleetStateLabs, type FleetStateWorkshop, type StateCategory,
+  STATE_CATEGORIES, type FleetStateAccount, type FleetStateBestWave, type FleetStateCards,
+  type FleetStateDecision, type FleetStateLabs, type FleetStateNextBuy, type FleetStateWorkshop,
+  type StateCategory,
 } from "@/lib/fleetState";
+import { decisionFor } from "@/lib/rerollState";
 import { CategoryLedger } from "./CategoryLedger";
 import { RunUpgradesChart } from "./RunUpgradesChart";
 import { sectionOpen } from "./selection";
@@ -36,16 +38,27 @@ function Section({ title, value, color, open, onToggle, children }: {
 
 const Unavailable = (): React.JSX.Element => <p className="fs-none">Unavailable</p>;
 
+function BestWave({ best }: { best: FleetStateBestWave | null }): React.JSX.Element {
+  return (
+    <div className="fs-kv fs-rec"><small>Best wave</small>
+      <b>{best === null ? DASH : whole(best.wave)}{best !== null && <span className="fs-tier">T{best.tier}</span>}</b>
+    </div>);
+}
+
 function BattleHud({ account, nowMs }: { account: FleetStateAccount; nowMs: number }): React.JSX.Element {
   const battle = account.battle;
   if (battle !== null) {
     const pct = battle.wave !== null && battle.best_wave ? Math.min(100, (battle.wave / battle.best_wave) * 100) : null;
+    const best = account.best_wave ?? null;
+    const record = battle.wave !== null && best !== null && battle.wave > best.wave;
     return (
       <div className="fs-hud on">
-        <div className="fs-wave"><small>Wave</small><b>{whole(battle.wave)}</b>{battle.tier !== null && <span className="fs-tier">T{battle.tier}</span>}</div>
+        <div className="fs-wave"><small>Wave{record && <span className="fs-new">New best</span>}</small>
+          <b>{whole(battle.wave)}</b>{battle.tier !== null && <span className="fs-tier">T{battle.tier}</span>}</div>
         <div className="fs-kvs">
           <div className="fs-kv"><small>Cash</small><b className="fs-cash">{battle.cash === null ? DASH : `$${amount(battle.cash)}`}</b></div>
           <div className="fs-kv"><small>Elapsed</small><b>{span(battle.elapsed_s)}</b></div>
+          <BestWave best={account.best_wave ?? null} />
         </div>
         <div className="fs-best">
           {pct === null ? <small>No best wave on this tier yet</small> : <>
@@ -58,8 +71,11 @@ function BattleHud({ account, nowMs }: { account: FleetStateAccount; nowMs: numb
   return (
     <div className="fs-hud">
       <div className="fs-wave"><small>{account.bot.screen === "GAME_OVER" ? "Run ended" : "No battle"}</small><b className="fs-dim">{DASH}</b></div>
-      <div className="fs-kv"><small>Last run</small>
-        <b className="fs-small">{last ? `T${last.tier ?? "?"} · W${whole(last.wave)} · ${amount(last.coins)} · ${agoText(last.ended_at, nowMs)}` : "No runs yet"}</b></div>
+      <div className="fs-kvs">
+        <BestWave best={account.best_wave ?? null} />
+        <div className="fs-kv"><small>Last run</small>
+          <b className="fs-small">{last ? `T${last.tier ?? "?"} · W${whole(last.wave)} · ${amount(last.coins)} · ${agoText(last.ended_at, nowMs)}` : "No runs yet"}</b></div>
+      </div>
     </div>);
 }
 
@@ -74,12 +90,34 @@ function QueueRow({ kind, color, name, detail, cost }: {
     </div>);
 }
 
-function BuyQueue({ decision, labs, cards }: {
-  decision: FleetStateDecision | null; labs: FleetStateLabs | null; cards: FleetStateCards | null;
+function NextBuy({ buy }: { buy: FleetStateNextBuy | null }): React.JSX.Element {
+  if (buy === null) return <QueueRow kind="Workshop" color="var(--cat-utility)" name="No plan yet" />;
+  const verdict = decisionFor(buy.state);
+  const color = buy.category ? CAT_COLOR[buy.category] : "var(--cat-utility)";
+  const pct = buy.price !== null && buy.price > 0 && buy.wallet !== null
+    ? Math.min(100, (buy.wallet / buy.price) * 100) : null;
+  return (
+    <div className="fs-q fs-nb" style={{ "--c": color } as React.CSSProperties} title={buy.reason || verdict.hint}>
+      <span className="qk">Workshop</span>
+      <span className="qn">{buy.name ?? "Nothing to buy"}<small> · <span className="fs-verdict" data-tone={verdict.tone}>{verdict.label}</span></small></span>
+      <span className={cn("n", buy.price === null ? "fs-dim" : "fs-coin")}>{buy.name === null ? "" : priceText(buy.price)}</span>
+      {pct !== null && (
+        <div className="qp">
+          <div className="fs-pb" role="meter" aria-label={`${buy.name ?? "Next buy"} coins saved`}
+            aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}><i style={{ width: `${pct}%` }} /></div>
+          <small className="fs-mono">{amount(buy.wallet)} / {amount(buy.price)} · {pct.toFixed(0)}%</small>
+        </div>)}
+    </div>);
+}
+
+function BuyQueue({ decision, nextBuy, labs, cards }: {
+  decision: FleetStateDecision | null; nextBuy: FleetStateNextBuy | null;
+  labs: FleetStateLabs | null; cards: FleetStateCards | null;
 }): React.JSX.Element {
   return (
     <div className="fs-queue">
       <div className="fs-qh">Bot buy queue</div>
+      <NextBuy buy={nextBuy} />
       <QueueRow kind="Autopilot" color={decision?.category ? CAT_COLOR[decision.category] : "var(--primary)"}
         name={decision ? (decision.name ?? decision.phase) : "No decision yet"}
         detail={decision?.reason || undefined} cost={decision ? decision.cost : undefined} />
@@ -153,6 +191,8 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
   const toggle = (section: string) => (value: boolean) => onToggleSection(`${account.id}:${section}`, value);
   const isOpen = (section: string) => sectionOpen(open, account.id, section, shownCount);
   const workshop = account.workshop, cards = account.cards, labs = account.labs;
+  // `?? null`: a backend one release behind (next dev against an older bot) omits these.
+  const strategy = account.strategy ?? null;
   const total = workshop ? workshop.totals.attack + workshop.totals.defense + workshop.totals.utility : null;
   const maxWave = Math.max(1, ...(account.runs ?? []).map(run => run.wave ?? 0));
   return (
@@ -170,6 +210,9 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
         <dl className="fs-bot">
           <div><dt>Screen</dt><dd><span className="fs-scr" data-screen={screen}>{screen}</span></dd></div>
           <div><dt>Now</dt><dd>{account.bot.now ?? DASH}</dd></div>
+          <div><dt>Strategy</dt><dd>{!strategy ? <span className="fs-dim">Not assigned</span> : <>
+            <span className="fs-strat">{strategy.name}</span> <small className="fs-mono">v{strategy.version}</small></>}
+            {account.next_buy?.goal && <small> · {account.next_buy.goal}</small>}</dd></div>
           <div><dt>Scan</dt><dd className="fs-mono fs-dim">{account.scan === null ? DASH : `#${whole(account.scan)}`} · <Ago since={changedAt} /></dd></div>
         </dl>
       </header>
@@ -180,7 +223,7 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
           <div className="fs-kv"><small>Gems</small><b className="fs-gem">{amount(account.balances?.gems)}</b></div>
           <div className="fs-kv"><small>Stones</small><b>{DASH}</b><small className="fs-hint">not tracked yet</small></div>
         </div>
-        <BuyQueue decision={account.decision} labs={labs} cards={cards} />
+        <BuyQueue decision={account.decision} nextBuy={account.next_buy ?? null} labs={labs} cards={cards} />
       </div>
       <div className={cn("fs-flow", shownCount <= 2 && "wide")}>
         <Section title="Workshop" value={total === null ? undefined : `${whole(total)} lv`} color="var(--cat-utility)"

@@ -72,5 +72,33 @@ test("cards and labs start open with one column and closed with three", () => {
   first.unmount();
   show(account, 3);
   expect(titles().map(d => d.open)).toEqual([false, false]);
-  expect(screen.getByText("Workshop").closest("details")!.open).toBe(true);
+  expect(screen.getByText("Workshop", { selector: "summary" }).closest("details")!.open).toBe(true);
+});
+
+test("the header names the strategy and the queue leads with the next Workshop buy and its price", () => {
+  show(makeAccount({
+    online: true, strategy: { id: "s1", name: "Coin Rush", version: 3 },
+    best_wave: { wave: 5020, tier: 11 },
+    next_buy: { state: "save_coins", upgrade_id: "damage", name: "Damage", category: "attack",
+      price: 1.2e8, price_source: "observed", wallet: 6e7, reason: "", goal: "Reach T1 W20", observed_at: null },
+  }));
+  expect(screen.getByText("Coin Rush")).toBeInTheDocument();
+  expect(screen.getByText("v3")).toBeInTheDocument();
+  expect(screen.getByText(/Reach T1 W20/)).toBeInTheDocument();
+  expect(screen.getByText("5,020")).toBeInTheDocument();
+  expect(screen.getByText("T11")).toBeInTheDocument();
+  const next = screen.getByText("Workshop", { selector: ".qk" }).closest(".fs-q")!;
+  expect(next).toHaveTextContent("Damage");
+  expect(next).toHaveTextContent("Saving coins");
+  expect(next).toHaveTextContent("120.00M");
+  expect(within(next as HTMLElement).getByRole("meter")).toHaveAttribute("aria-valuenow", "50");
+});
+
+test("a live wave past the best wave is flagged as a new best", () => {
+  show(makeAccount({
+    online: true, bot: { screen: "IN_RUN", now: null, live: true }, best_wave: { wave: 400, tier: 3 },
+    battle: { tier: 3, wave: 412, cash: null, elapsed_s: null, best_wave: 400 },
+  }));
+  expect(screen.getByText("New best")).toBeInTheDocument();
+  expect(screen.getByText("400")).toBeInTheDocument();
 });

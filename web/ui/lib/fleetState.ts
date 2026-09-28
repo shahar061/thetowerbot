@@ -16,6 +16,17 @@ export interface FleetStateDecision {
   phase: string; reason: string; upgrade_id: string | null;
   category: StateCategory | null; name: string | null; cost: number | null;
 }
+/** The highest wave any finished run reached, and the tier it was on. */
+export interface FleetStateBestWave { wave: number; tier: number }
+/** The Strategy Studio strategy assigned to this worker. */
+export interface FleetStateStrategy { id: string; name: string; version: number }
+/** The Workshop planner's next purchase (reroll-plan.json). `state` is one of
+ *  `DECISIONS` in rerollState.ts; `price` is null until someone reads it. */
+export interface FleetStateNextBuy {
+  state: string; upgrade_id: string | null; name: string | null; category: StateCategory | null;
+  price: number | null; price_source: string | null; wallet: number | null;
+  reason: string; goal: string | null; observed_at: string | null;
+}
 export interface WorkshopSkill {
   id: string; name: string; level: number | null; invested: number | null; bot_spent: number;
   next_cost: number | null; status: string; locked: boolean;
@@ -56,6 +67,8 @@ export interface FleetStateRun {
 export interface FleetStateAccount {
   id: string; name: string; serial: string | null; online: boolean;
   stale_seconds: number | null; scan: number | null; error: string | null;
+  strategy: FleetStateStrategy | null; next_buy: FleetStateNextBuy | null;
+  best_wave: FleetStateBestWave | null;
   bot: FleetStateBot; battle: FleetStateBattle | null; balances: FleetStateBalances | null;
   decision: FleetStateDecision | null; workshop: FleetStateWorkshop | null;
   cards: FleetStateCards | null; labs: FleetStateLabs | null;

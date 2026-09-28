@@ -180,6 +180,10 @@ def _number(value: object) -> float | int | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 def build_bot(status: Mapping[str, Any] | None) -> dict[str, Any]:
     """Screen, current activity ("Now") and whether a battle is live."""
     if status is None:
@@ -212,6 +216,43 @@ def build_battle(status: Mapping[str, Any] | None, tier: int | None,
     return {"tier": tier, "wave": _whole(status.get("wave")),
             "cash": _number(status.get("wallet")), "elapsed_s": _number(run.get("elapsed")),
             "best_wave": best_waves.get(tier) if tier is not None else None}
+
+
+def build_best_wave(best_waves: Mapping[int, int]) -> dict[str, Any] | None:
+    """The highest wave any finished run reached, with its tier; a tie goes to the higher tier."""
+    if not best_waves:
+        return None
+    tier, wave = max(best_waves.items(), key=lambda pair: (pair[1], pair[0]))
+    return {"wave": wave, "tier": tier}
+
+
+def build_strategy(assignment: object, account_id: str) -> dict[str, Any] | None:
+    """The Strategy Studio strategy assigned to this worker, if it still names this account."""
+    if assignment is None or getattr(assignment, "account_id", None) != account_id:
+        return None
+    return {"id": assignment.strategy_id, "name": assignment.strategy_name,
+            "version": assignment.strategy_version}
+
+
+def build_next_buy(plan: Mapping[str, Any] | None, account_id: str) -> dict[str, Any] | None:
+    """The Workshop planner's next purchase from the worker's reroll-plan.json.
+
+    `price` is None until someone has read it; `state` is the planner's verdict
+    (buy, save_coins, observe_price, observe_balance, needs_operator).
+    """
+    if (not isinstance(plan, Mapping) or plan.get("account_id") != account_id
+            or not isinstance(plan.get("state"), str)):
+        return None
+    upgrade_id = plan.get("upgrade_id") if isinstance(plan.get("upgrade_id"), str) else None
+    upgrade = upgrades.by_id(upgrade_id) if upgrade_id else None
+    item = _text(plan.get("item"))
+    return {"state": plan["state"], "upgrade_id": upgrade_id,
+            "name": item or (upgrade.name if upgrade else None),
+            "category": _category(plan.get("category"))
+            or (_category(upgrade.category) if upgrade else None),
+            "price": _number(plan.get("price")), "price_source": _text(plan.get("price_source")),
+            "wallet": _number(plan.get("wallet_coins")), "reason": _text(plan.get("reason")) or "",
+            "goal": _text(plan.get("goal")), "observed_at": iso(_number(plan.get("observed_at")))}
 
 
 def build_balances(overview: Mapping[str, Any] | None,
@@ -387,10 +428,28 @@ def _currency(worker_root: Path, db_path: Path, account_id: str, lease_id: objec
                              generation=start["generation"], now=now)
 
 
+def _assignment(root: Path, worker: str) -> object:
+    from fleet.build_route_store import BuildRouteStore, RouteUnavailable
+
+    try:
+        return BuildRouteStore(root).read().assignments.get(worker)
+    except (RouteUnavailable, OSError, ValueError):
+        return None
+
+
+def _plan(worker_root: Path) -> Mapping[str, Any] | None:
+    try:
+        plan = json.loads((worker_root / "reroll-plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return plan if isinstance(plan, Mapping) else None
+
+
 def _blank(member: Mapping[str, Any]) -> dict[str, Any]:
     name = str(member["name"])
     return {"id": name, "name": name, "serial": member.get("endpoint") or None,
             "online": False, "stale_seconds": None, "scan": None, "error": None,
+            "strategy": None, "next_buy": None, "best_wave": None,
             "bot": build_bot(None), "battle": None, "balances": None, "decision": None,
             "workshop": None, "cards": None, "labs": None, "run_upgrades": None, "runs": None}
 
@@ -412,6 +471,11 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
                        scan=scans if type(scans) is int else None,
                        bot=_section("bot", build_bot, status) or build_bot(None),
                        decision=_section("decision", build_decision, status.get("decision")))
+    # Neither lives in the worker DB, so a DB error below still shows them.
+    account.update(
+        strategy=_section("strategy", build_strategy, _assignment(Path(root), account["id"]),
+                          registration.account_id),
+        next_buy=_section("next_buy", build_next_buy, _plan(worker_root), registration.account_id))
     try:
         records = read_records(registration.db_path, registration.account_id, _live_run_id(status))
     except ForeignDatabase:
@@ -430,6 +494,7 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
                         registration.account_id, member.get("lease_id"), now)
     account.update(
         battle=_section("battle", build_battle, status, tier, records.best_waves),
+        best_wave=_section("best_wave", build_best_wave, records.best_waves),
         balances=_section("balances", build_balances, overview, records.balances),
         workshop=_section("workshop", build_workshop, records.revision,
                           records.workshop_spent, records.workshop_recent),
