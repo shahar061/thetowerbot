@@ -102,6 +102,50 @@ def test_a_revision_stamped_with_another_account_is_ignored(tmp_path: Path) -> N
     assert read_records(path, "account-a", None).revision is None
 
 
+def test_a_corrupt_revision_detail_is_ignored_not_raised(tmp_path: Path) -> None:
+    """Review Focus: a bad JSON blob in account_revisions must not blank the account."""
+    path = _database(tmp_path)
+    with db.connect(path) as conn:
+        conn.execute("INSERT INTO account_revisions(detail) VALUES ('{bad')")
+    assert read_records(path, "account-a", None).revision is None
+
+
+def test_a_non_dict_revision_detail_is_ignored_not_raised(tmp_path: Path) -> None:
+    """Review Focus: valid JSON that is not an object (e.g. null) must not crash .get()."""
+    path = _database(tmp_path)
+    with db.connect(path) as conn:
+        conn.execute("INSERT INTO account_revisions(detail) VALUES ('null')")
+    assert read_records(path, "account-a", None).revision is None
+
+
+def test_a_list_revision_detail_is_ignored_not_raised(tmp_path: Path) -> None:
+    """Review Focus: a non-null non-dict JSON value (a list) must not crash .get()."""
+    path = _database(tmp_path)
+    with db.connect(path) as conn:
+        conn.execute("INSERT INTO account_revisions(detail) VALUES ('[1, 2]')")
+    assert read_records(path, "account-a", None).revision is None
+
+
+def test_a_corrupt_live_run_purchase_detail_leaves_run_upgrades_empty(tmp_path: Path) -> None:
+    """Review Focus: a bad BattlePurchased detail must empty run_upgrades, not raise."""
+    path = _database(tmp_path)
+    with db.connect(path) as conn:
+        conn.execute("INSERT INTO events(seq, run_id, ts, type, detail) VALUES (?,?,?,?,?)",
+                     (1, 5, 200., "BattlePurchased", "{bad"))
+    records = read_records(path, "account-a", 5)
+    assert (records.run_upgrades, records.run_upgrades_scope) == ([], "current")
+
+
+def test_a_null_live_run_purchase_detail_leaves_run_upgrades_empty(tmp_path: Path) -> None:
+    """Review Focus: a null (not object) BattlePurchased detail must not crash .get()."""
+    path = _database(tmp_path)
+    with db.connect(path) as conn:
+        conn.execute("INSERT INTO events(seq, run_id, ts, type, detail) VALUES (?,?,?,?,?)",
+                     (1, 5, 200., "BattlePurchased", "null"))
+    records = read_records(path, "account-a", 5)
+    assert (records.run_upgrades, records.run_upgrades_scope) == ([], "current")
+
+
 def test_a_huge_ledger_is_summed_and_bounded_by_sql(tmp_path: Path) -> None:
     """Review Focus: years of ledger rows must not be loaded into Python."""
     path = _database(tmp_path)

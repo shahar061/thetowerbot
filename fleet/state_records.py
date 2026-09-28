@@ -9,6 +9,7 @@ any length is read in a fixed number of rows.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections import Counter
 from contextlib import closing
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 import db
+
+logger = logging.getLogger(__name__)
 
 RECENT_LIMIT = 30
 RUNS_LIMIT = 5
@@ -67,7 +70,19 @@ def read_records(db_path: Path, account_id: str, live_run_id: int | None) -> Wor
         if db.connection_account(conn) != account_id:
             raise ForeignDatabase(str(path))
         row = conn.execute("SELECT detail FROM account_revisions ORDER BY id DESC LIMIT 1").fetchone()
-        revision = json.loads(row["detail"]) if row is not None else None
+        revision = None
+        if row is not None:
+            try:
+                parsed = json.loads(row["detail"])
+            except json.JSONDecodeError as exc:
+                logger.warning("Ignoring unparseable account_revisions detail for %s: %s",
+                               account_id, exc)
+            else:
+                if isinstance(parsed, dict):
+                    revision = parsed
+                else:
+                    logger.warning("Ignoring non-dict account_revisions detail for %s: %r",
+                                   account_id, parsed)
         # A revision stamped with another account predates a replacement.
         if revision is not None and revision.get("account_id") not in (None, account_id):
             revision = None
@@ -86,8 +101,13 @@ def read_records(db_path: Path, account_id: str, live_run_id: int | None) -> Wor
         scope: str | None = None
         bought: list[dict[str, Any]] = []
         if live_run_id is not None:
-            counts = Counter(p["upgrade_id"] for p in db.run_purchases(conn, live_run_id)
-                             if p["upgrade_id"])
+            try:
+                purchases = db.run_purchases(conn, live_run_id)
+            except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+                logger.warning("Ignoring unreadable purchase events for run %s: %s",
+                               live_run_id, exc)
+                purchases = []
+            counts = Counter(p["upgrade_id"] for p in purchases if p["upgrade_id"])
             bought = [{"upgrade_id": key, "levels": levels} for key, levels in counts.items()]
             scope = "current"
         elif runs:

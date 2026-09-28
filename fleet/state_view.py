@@ -8,6 +8,7 @@ value nobody observed is None, never 0 and never a guess.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import sqlite3
@@ -351,7 +352,7 @@ def read_status(web_port: int | None, fetch: Callable[..., Any]) -> dict[str, An
     try:
         with fetch(f"http://127.0.0.1:{web_port}/api/status", timeout=STATUS_TIMEOUT) as response:
             payload = json.load(response)
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -419,6 +420,9 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
         return {**account, "error": "Worker database is missing"}
     except (OSError, sqlite3.Error) as exc:
         return {**account, "error": f"Worker database unavailable ({exc})"}
+    except Exception:  # noqa: BLE001 - one worker's unreadable database must not blank the account
+        logger.exception("Worker database unreadable for %s", account["id"])
+        return {**account, "error": "Worker database unreadable"}
     if status is None and records.last_seen is not None:
         account["stale_seconds"] = max(0, round(now - records.last_seen))
     tier = records.runs[0]["tier"] if records.runs else None

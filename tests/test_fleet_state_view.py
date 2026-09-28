@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import sqlite3
@@ -312,6 +313,59 @@ def test_a_reachable_worker_whose_database_is_missing_keeps_its_live_status(
     assert all(account[key] is None for key in ("workshop", "cards", "labs", "runs", "battle"))
 
 
+def test_a_corrupt_revision_keeps_live_status_and_reads_workshop_as_unseen(tmp_path: Path) -> None:
+    """Review Focus: a bad JSON blob in account_revisions must not blank the account."""
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO account_revisions(detail) VALUES ('{bad')")
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}],
+                                        fetch=_fetch({8001: LIVE}), now=7000.)["accounts"]
+    assert account["online"] is True and account["scan"] == 18442
+    assert account["error"] is None
+    assert account["workshop"]["totals"] == {"attack": 0, "defense": 0, "utility": 0}
+
+
+def test_a_null_revision_keeps_live_status_and_reads_workshop_as_unseen(tmp_path: Path) -> None:
+    """Review Focus: a valid-but-non-dict revision (e.g. null) must not crash .get()."""
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO account_revisions(detail) VALUES ('null')")
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}],
+                                        fetch=_fetch({8001: LIVE}), now=7000.)["accounts"]
+    assert account["online"] is True and account["scan"] == 18442
+    assert account["error"] is None
+    assert account["workshop"]["totals"] == {"attack": 0, "defense": 0, "utility": 0}
+
+
+def test_an_unexpected_read_records_failure_keeps_live_status_and_sets_the_error(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review Focus: any other read_records failure must not blank the whole account."""
+    _registered(tmp_path, "Air_1", "account-a", 8001)
+
+    def broken(*args: Any) -> Any:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(state_view, "read_records", broken)
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}],
+                                        fetch=_fetch({8001: LIVE}), now=7000.)["accounts"]
+    assert account["online"] is True and account["scan"] == 18442
+    assert account["bot"]["screen"] == "IN_RUN"
+    assert account["error"] == "Worker database unreadable"
+
+
+def test_an_incomplete_read_is_treated_as_offline_not_blank(tmp_path: Path) -> None:
+    """Review Focus: http.client.HTTPException (IncompleteRead, BadStatusLine) must be
+    caught the same as OSError/ValueError, so the account still builds from its DB."""
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO events(seq, ts, type) VALUES (1, 6958.0, 'ScanCompleted')")
+    (account,) = state_view.fleet_state(
+        tmp_path, [{"name": "Air_1"}],
+        fetch=_fetch({8001: http.client.IncompleteRead(b"")}), now=7000.)["accounts"]
+    assert account["online"] is False
+    assert account["workshop"] is not None and account["error"] is None
+
+
 def test_a_locked_database_errors_one_account_and_leaves_the_others(tmp_path: Path) -> None:
     """Review Focus: one worker holds a write lock while the page polls."""
     locked = _registered(tmp_path, "Air_1", "account-a", 8001)
@@ -391,3 +445,13 @@ def test_the_state_endpoint_lists_visible_members_in_name_order(
 def test_the_state_endpoint_is_unavailable_without_the_fleet() -> None:
     client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(), db_path=None))
     assert client.get("/api/fleet/state").status_code == 503
+
+
+def test_state_snapshot_filters_out_hidden_members(tmp_path: Path) -> None:
+    """Review Focus: FleetSetupService.state_snapshot must not surface hidden members."""
+    fleet = FleetSetupService(tmp_path, qualification_root=tmp_path / "qualifications")
+    fleet._reroll_pool = SimpleNamespace(
+        members=lambda: [{"name": "Air_1"}, {"name": "Air_9"}])
+    fleet._reroll_runs = SimpleNamespace(hidden_names=lambda: {"Air_9"})
+    accounts = fleet.state_snapshot()["accounts"]
+    assert [account["id"] for account in accounts] == ["Air_1"]
