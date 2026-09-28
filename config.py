@@ -698,6 +698,11 @@ BATTLE_MENU_MAX_BACKOFF = 7200.0
 BATTLE_MENU_MIN_SESSION_GAP = 180.0
 BATTLE_MENU_STEP_FRAMES = 6
 BATTLE_MENU_WATCH_ADS = False
+# A hard cap on Claim taps per icon visit. Without one, a greyed button, a
+# lagging reward animation, or a tap that misses can leave OCR reporting the
+# same ready "Claim" box forever, and the claim branch resets the frame
+# budget on every tap - so nothing else would ever end the visit.
+BATTLE_MENU_MAX_CLAIMS = 5
 
 # The Store's free-gem ▶ button's own red dot, patch relative to the button
 # centre (which itself sits ~138px below the "FREE" caption's centre).

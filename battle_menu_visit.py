@@ -46,6 +46,7 @@ class BattleMenuVisit:
         self.current: Icon | None = None
         self._badge: battle_menu.Badge | None = None
         self._scrolls = 0
+        self._claims = 0
         self._outcome = "visited"
         # The "now" at which the current icon was tapped into, not the time
         # we happen to finish or give up on it - a cooldown measures from
@@ -102,7 +103,8 @@ class BattleMenuVisit:
             return Outcome.TAPPED
         if reading.page == "event":
             claims = battle_menu.event_claims(boxes())
-            if claims:
+            if claims and self._claims < config.BATTLE_MENU_MAX_CLAIMS:
+                self._claims += 1
                 self._outcome = "claimed"
                 self._tap(device, policy, claims[0])
                 self._waited = 0
@@ -148,7 +150,7 @@ class BattleMenuVisit:
             return Outcome.TAPPED
         self.current = self._queue.pop(0)
         reading = menu[self.current]
-        self._badge, self._scrolls, self._outcome = reading.badge, 0, "visited"
+        self._badge, self._scrolls, self._claims, self._outcome = reading.badge, 0, 0, "visited"
         self._entered = now
         self._tap(device, policy, reading.point)
         self._go(Step.IN_PAGE)
@@ -176,6 +178,8 @@ class BattleMenuVisit:
 
     def _go(self, step: Step) -> None:
         self._step, self._waited = step, 0
+        if step is Step.IDLE:
+            self._queue, self.current = [], None
 
     def _look(self, policy) -> None:
         jitter.pause(self._rng.uniform(0.4, 1.2), 0.0, rng=self._rng,
