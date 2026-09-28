@@ -190,12 +190,16 @@ model of the screen is wrong.
 
 Only `canary_worker` taps. The post-tap reads have three outcomes:
 
-1. **Slot N owned, `slots_owned` up by one, gems down by exactly the price.** The
+1. **Slot N owned, `slots_owned` up by one, gems down by the price.** "Down by the
+   price" is the journal's debit check: exact while the gem header shows whole numbers,
+   within the header's rounding once it abbreviates (1000 and above reads as "1.4K"). The
    transaction resolves as bought. The slot is promoted **canary → fleet** and the
    transaction key is recorded.
 2. **Still Labs home, slot N still locked, gems unchanged.** The tap did not land. The
-   transaction resolves as not charged, the same way shopping handles a missed tap. The
-   canary may try again on a later visit. A second miss halts the slot.
+   transaction resolves as not charged, but only from a read taken long enough after the
+   tap. This needs a new, narrow journal method: shopping's `reconcile` leaves a tapped,
+   unchanged purchase open (`test_unchanged_purchase_stays_pending_without_another_buy`).
+   The canary may try again on a later visit. A second miss halts the slot.
 3. **Anything else**, for example a gem confirmation dialog, an unreadable page, a partial
    change, or a debit that does not match. The slot is halted. The transaction stays
    open, so the canary stays in today's read-only inspection hold. The frames from the
