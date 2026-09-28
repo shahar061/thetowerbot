@@ -44,3 +44,14 @@ test("previews the wallet split for the selected emulator", () => {
   rerender(<StrategyRules rules={first} locked={false} rows={[row]} onChange={vi.fn()} />);
   expect(screen.getByRole("complementary", { name: "Wallet split preview" })).toHaveTextContent("Workshop paused until Game Speed starts");
 });
+
+test("just in time shows save windows and filler fields", () => {
+  const onChange = vi.fn();
+  const rules = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "just_in_time" as const, pct: 25 } } };
+  render(<StrategyRules rules={rules} locked={false} rows={[]} onChange={onChange} />);
+  fireEvent.change(screen.getByLabelText("Save window S+ (hours)"), { target: { value: "96" } });
+  expect(onChange).toHaveBeenLastCalledWith({ ...rules, labs: { ...rules.labs,
+    saving: { ...rules.labs.saving, window_hours: { ...rules.labs.saving.window_hours, "S+": 96 } } } });
+  expect(screen.getByLabelText("Filler max price (% of wallet)")).toHaveValue(10);
+  expect(screen.getByLabelText("Filler minimum length (hours)")).toHaveValue(1);
+});

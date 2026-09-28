@@ -21,7 +21,7 @@ const LABELS: Record<string, string> = {
 };
 const TYPE_LABELS: Record<ResourceBlock["type"], string> = { slot_track: "Slot track", research: "Research",
   lab_pool: "Lab pool", condition: "Condition", wait: "Wait", unlock_lab_slot: "Unlock lab slot",
-  card_slots: "Card slots", buy_cards: "Buy cards", save_for: "Save for modules" };
+  card_slots: "Card slots", buy_cards: "Buy cards", save_for: "Save for modules", lab_list: "Ranked list" };
 const LAB_TYPES = ["slot_track", "research", "lab_pool", "condition", "wait"] as const;
 const GEM_TYPES = ["unlock_lab_slot", "card_slots", "buy_cards", "save_for", "wait"] as const;
 

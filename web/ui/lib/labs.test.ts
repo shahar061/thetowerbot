@@ -43,6 +43,19 @@ describe("rules", () => {
       coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "labs_first" as const, pct: 25 } } };
     expect(splitPreview(first, 1000, 200, 2500)).toEqual({ jar: 0, workshop: 1000, price: 2500, progress: 0, paused: false });
   });
+
+  it("just in time reads the reserve and workshop budget straight from the saving plan", () => {
+    const jit = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "just_in_time" as const, pct: 25 } } };
+    const saving = { reserve: 200, workshop_budget: 800, wallet: 1000, coins_per_hour: 500,
+      targets: [{ slot: 1, lab_id: "labs.game-speed", name: "Game Speed", level: 4, price: 2500,
+        needed_at: 0, ready_at: 0, covered: true }], why: [] };
+    expect(splitPreview(jit, 1000, 0, null, saving)).toEqual({ jar: 200, workshop: 800, price: 2500, progress: 0.08, paused: false });
+  });
+
+  it("just in time falls back to the normal split, not a false paused/0, when the observed account isn't on just-in-time", () => {
+    const jit = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "just_in_time" as const, pct: 25 } } };
+    expect(splitPreview(jit, 1000, 200, 2500)).toEqual({ jar: 0, workshop: 1000, price: 2500, progress: null, paused: false });
+  });
 });
 
 describe("slots", () => {

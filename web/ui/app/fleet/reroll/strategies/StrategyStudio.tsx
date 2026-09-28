@@ -6,13 +6,14 @@ import { Dialog } from "@base-ui/react/dialog";
 import { BookOpen, Copy, FlaskConical, Gem, GitBranch, Hammer, LockKeyhole, Maximize2, Minimize2, Monitor, Plus, Save, Shield, Sparkles, Swords, X } from "lucide-react";
 import { assignFleetStrategy, fetchStrategyLedger, previewBuildRoute, saveFleetStrategy } from "@/lib/api";
 import type { BuildRouteDocument, BuildRoutePreview } from "@/lib/buildRoute";
-import { rulesOf, withRules, type LabsRow, type LabsSnapshot } from "@/lib/labs";
+import { isLabList, rulesOf, withRules, type LabsRow, type LabsSnapshot } from "@/lib/labs";
 import type { SpendingLane, StrategyBlock, StrategyDefinition, StrategyLedgerEntry, StrategyLibrary, StrategyWorker } from "@/lib/strategyStudio";
 import type { Upgrade } from "@/lib/types";
 import { ROOT_END, presetsForLane, findBlock, insertBlock, locateBlock, makeBlock, updateBlock, type BlockPreset, type BlockTarget } from "./strategyBlocks";
 import { StrategyCanvas, type BlockDrag } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
 import { ResourceBlocks } from "./ResourceBlocks";
+import { LabListView } from "./LabListView";
 import { LabSlotPlanner } from "./LabSlotPlanner";
 import { StrategyRules } from "./StrategyRules";
 import { RouteInspector } from "./RouteInspector";
@@ -295,6 +296,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
                   <option value="">Choose an account</option>{activeMembers.map(member => <option key={member.name} value={JSON.stringify([member.name, member.account_id])}>{member.name} · {member.account_id}</option>)}
                 </select></label>
               {!observationMember && observationAccount && <p role="status" className="text-sm">Account changed. Choose an account for observations; your strategy draft is preserved.</p>}
+              {isLabList(strategy.baseline.labs) ? <LabListView labs={strategy.baseline.labs} reference={labsSnapshot?.reference ?? null} observed={observedLabs} /> : <>
               <LabSlotPlanner labs={strategy.baseline.labs} reference={labsSnapshot?.reference ?? null} automated={labsSnapshot?.automated ?? []}
                 observed={observedLabs} locked={locked || busy} focusSlot={initialSlot} onChange={labs => edit({ ...strategy.baseline, labs })} />
               <details className="min-w-0 rounded-xl border border-border p-3 [&_button]:min-h-11 [&_select]:min-h-11 [&_input:not([type=checkbox])]:min-h-11">
@@ -304,6 +306,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
                   automated={labsSnapshot?.automated ?? []} catalog={labsSnapshot?.reference ?? null} rules={rulesOf(strategy.baseline)}
                   onGemsChange={() => {}} onLabsChange={labs => { if (locked) startCopy(); else edit({ ...strategy.baseline, labs }); }} />
               </details>
+              </>}
             </div> : <ResourceBlocks kind="gems" gems={strategy.baseline.gems} labs={strategy.baseline.labs} locked={locked}
                 automated={labsSnapshot?.automated ?? []} catalog={labsSnapshot?.reference ?? null} hideGemSpendLimit
                 rules={rulesOf(strategy.baseline)}

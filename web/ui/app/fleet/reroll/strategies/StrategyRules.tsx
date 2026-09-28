@@ -25,7 +25,7 @@ export function StrategyRules({ rules, locked, rows, onChange }: {
   const row = rows.find(item => item.worker === worker) ?? rows[0] ?? null;
   const slot1 = row?.plan?.slots[0] ?? null;
   const price = slot1?.automated && slot1.now.state !== "researching" ? slot1.next?.price ?? null : null;
-  const split = row ? splitPreview(rules, row.wallet.coins, row.plan?.jar ?? 0, price) : null;
+  const split = row ? splitPreview(rules, row.wallet.coins, row.plan?.jar ?? 0, price, row.plan?.saving ?? null) : null;
   const nullable = (value: string): number | null => value === "" ? null : Number(value);
 
   return <section aria-label="Strategy rules" className="grid min-w-0 grid-cols-1 gap-4 py-4 sm:px-4 lg:grid-cols-[minmax(0,1fr)_280px] [overflow-wrap:anywhere]">
@@ -37,10 +37,29 @@ export function StrategyRules({ rules, locked, rows, onChange }: {
             onChange={event => set({ ...rules, coins: { ...coins, lab_share: { ...coins.lab_share, mode: event.target.value as LabShareMode } } })}>
             <option value="when_affordable">Start labs when affordable (today)</option>
             <option value="save_pct">Save a share for the next lab</option>
-            <option value="labs_first">Labs first: pause Workshop while a lab waits</option></select></label>
+            <option value="labs_first">Labs first: pause Workshop while a lab waits</option>
+            <option value="just_in_time">Just in time (save only what the next lab needs)</option></select></label>
         {coins.lab_share.mode === "save_pct" && <label className={field}>Share of spare coins saved each visit (%)
           <input aria-label="Lab share percent" type="number" min={5} max={90} value={coins.lab_share.pct} className={input}
             onChange={event => set({ ...rules, coins: { ...coins, lab_share: { ...coins.lab_share, pct: Number(event.target.value) } } })} /></label>}
+        {coins.lab_share.mode === "just_in_time" && <>
+          {(["S+", "S", "A", "B", "C"] as const).map(tier => <label key={tier} className={field}>
+            <span>Save window {tier} (hours)<Tag live /></span>
+            <input aria-label={`Save window ${tier} (hours)`} type="number" min={0} max={168} value={labs.saving.window_hours[tier]} className={input}
+              onChange={event => set({ ...rules, labs: { ...labs, saving: { ...labs.saving,
+                window_hours: { ...labs.saving.window_hours, [tier]: Number(event.target.value) } } } })} /></label>)}
+          <label className={field}><span>Income safety margin (%)<Tag live /></span>
+            <input aria-label="Income safety margin (%)" type="number" min={50} max={100} value={labs.saving.income_margin_pct} className={input}
+              onChange={event => set({ ...rules, labs: { ...labs, saving: { ...labs.saving, income_margin_pct: Number(event.target.value) } } })} /></label>
+          <label className="flex min-h-11 items-center gap-2 text-xs"><input type="checkbox" aria-label="Run fillers while saving" checked={labs.filler.enabled}
+            onChange={event => set({ ...rules, labs: { ...labs, filler: { ...labs.filler, enabled: event.target.checked } } })} />Run fillers while saving<Tag live /></label>
+          <label className={field}><span>Filler max price (% of wallet)<Tag live /></span>
+            <input aria-label="Filler max price (% of wallet)" type="number" min={1} max={100} value={labs.filler.max_price_pct_of_wallet} className={input}
+              onChange={event => set({ ...rules, labs: { ...labs, filler: { ...labs.filler, max_price_pct_of_wallet: Number(event.target.value) } } })} /></label>
+          <label className={field}><span>Filler minimum length (hours)<Tag live /></span>
+            <input aria-label="Filler minimum length (hours)" type="number" min={0.25} max={24} step={0.25} value={labs.filler.min_hours} className={input}
+              onChange={event => set({ ...rules, labs: { ...labs, filler: { ...labs.filler, min_hours: Number(event.target.value) } } })} /></label>
+        </>}
         <label className={field}><span>Workshop spend limit (% of coins after the jar)<Tag live /></span>
           <input aria-label="Workshop spend limit (%)" type="number" min={10} max={100} value={coins.workshop_spend_limit_pct} className={input}
             onChange={event => set({ ...rules, coins: { ...coins, workshop_spend_limit_pct: Number(event.target.value) } })} /></label>
