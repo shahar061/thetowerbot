@@ -17,8 +17,10 @@ from autopilot import AutopilotState
 from events import EventBus
 from sinks.sse import SseSink
 from sinks.state import BotState
+from stream.hub import StreamHub
 from stream.messages import ConfigMessage, End, FrameMessage, Message
 from stream.origin import origin_allowed
+from stream.scrcpy_session import StreamError
 from web.app import create_app
 
 CONFIG_MSG = ConfigMessage("avc1.42C029", 576, 1280)
@@ -152,6 +154,39 @@ def test_a_viewer_leaving_a_still_screen_releases_its_subscription() -> None:
         ws.receive_text()
         ws.close(1000)
         wait_until(hub.subscriptions[0].closed.is_set)
+
+
+def test_a_real_hub_only_retries_a_failure_while_someone_is_subscribed() -> None:
+    # This is the integration check for the hub's own backoff behaviour
+    # (tests/test_stream_hub.py): with a real StreamHub wired into the
+    # endpoint, closing the socket on 4503 must not leave the hub retrying
+    # scrcpy with nobody watching.
+    shutdown = threading.Event()
+    starts: list[float] = []
+
+    class FailingSession:
+        def start(self) -> None:
+            starts.append(time.monotonic())
+            raise StreamError("boom")
+
+        def events(self) -> Any:
+            return iter(())
+
+        def close(self) -> None:
+            pass
+
+    def wait(seconds: float) -> bool:
+        time.sleep(0.001)
+        return shutdown.is_set()
+
+    hub = StreamHub(lambda: FailingSession(), shutdown=shutdown, wait=wait)
+    client = client_for(hub)
+    assert close_code(client) == 4503
+    wait_until(lambda: hub.subscriber_count == 0)
+    count = len(starts)
+    time.sleep(0.3)
+    assert len(starts) == count  # no further attempts with nobody subscribed
+    shutdown.set()
 
 
 def _worker(root: Path, name: str, account_id: str) -> Path:

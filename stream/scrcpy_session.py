@@ -41,6 +41,13 @@ _PTS_MASK = (1 << 61) - 1
 # Read timeouts in a row, with part of a packet already read, before the
 # stream counts as dead. With the default 1 s timeout that is about 10 s.
 _MAX_STALLS = 10
+# A desynced header could otherwise declare a packet of several GB and drive
+# _read_exact into allocating a buffer that large. No real scrcpy frame at
+# our max_size settings gets anywhere close to this.
+_MAX_PACKET = 16 << 20
+# Cap on a single recv() call, so one huge declared packet size does not turn
+# into one huge read request either.
+_MAX_RECV = 1 << 20
 
 
 class StreamError(Exception):
@@ -73,7 +80,7 @@ class StreamSession(Protocol):
 def server_command(scid: int, *, max_size: int, max_fps: int, i_frame_interval: int) -> str:
     return (
         f"CLASSPATH={REMOTE_JAR} app_process / com.genymobile.scrcpy.Server {SCRCPY_VERSION} "
-        f"scid={scid:08x} log_level=warn tunnel_forward=true audio=false control=false "
+        f"scid={scid:08x} log_level=error tunnel_forward=true audio=false control=false "
         f"video_codec=h264 max_size={max_size} max_fps={max_fps} "
         "send_device_meta=false send_dummy_byte=false "
         f"video_codec_options=i-frame-interval:int={i_frame_interval} cleanup=true"
@@ -130,6 +137,8 @@ class ScrcpySession:
                 yield SessionInfo(width, height)
                 continue
             flags, size = struct.unpack(">QI", head)
+            if size > _MAX_PACKET:
+                raise StreamError("packet too large")
             data = self._read_exact(size)
             assert data is not None  # idle_ok=False never returns None
             yield Packet(config=bool(flags & _CONFIG_BIT), key=bool(flags & _KEY_BIT),
@@ -148,8 +157,12 @@ class ScrcpySession:
         try:
             # cleanup=true already makes the server exit when its socket drops.
             # This is the backstop: a leaked server keeps a software encoder
-            # running on the guest CPU.
-            self._device.shell(f"pkill -f scid={self._scid:08x}", timeout=1)
+            # running on the guest CPU. `pkill -f` matches every process's
+            # full command line, including pkill's own - `[s]cid=` (a regex
+            # matching the literal "scid=") is in the scrcpy server's argv
+            # but not in this pkill invocation's, so pkill does not match
+            # (and race to kill) itself.
+            self._device.shell(f"pkill -f '[s]cid={self._scid:08x}'", timeout=1)
         except Exception as exc:  # noqa: BLE001
             logger.debug("stopping scrcpy server %08x: %s", self._scid, exc)
 
@@ -170,7 +183,7 @@ class ScrcpySession:
         stalls = 0
         while len(buffer) < size:
             try:
-                chunk = self._sock.recv(size - len(buffer))
+                chunk = self._sock.recv(min(size - len(buffer), _MAX_RECV))
             except TimeoutError:
                 if idle_ok and not buffer:
                     return None

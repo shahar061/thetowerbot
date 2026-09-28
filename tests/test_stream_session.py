@@ -178,6 +178,17 @@ def test_the_stream_ending_raises_stream_error(jar: Path) -> None:
         next(session.events())
 
 
+def test_a_packet_declaring_an_implausible_size_is_rejected_without_reading_it(jar: Path) -> None:
+    # A desynced header could otherwise claim gigabytes and drive _read_exact
+    # into allocating a buffer that large. flags=0 (a plain delta packet).
+    header = struct.pack(">QI", 0, (16 << 20) + 1)
+    sock = FakeSocket([b"h264", header])
+    session = make(FakeDevice([sock]), jar)
+    session.start()
+    with pytest.raises(StreamError, match="too large"):
+        next(session.events())
+
+
 def test_close_is_idempotent_and_stops_the_server_by_scid(jar: Path) -> None:
     sock = FakeSocket([b"h264"])
     device = FakeDevice([sock])
@@ -186,4 +197,4 @@ def test_close_is_idempotent_and_stops_the_server_by_scid(jar: Path) -> None:
     session.close()
     session.close()
     assert sock.closed and device.stream.closed
-    assert [cmd for cmd in device.commands if "pkill" in cmd] == ["pkill -f scid=0000abcd"]
+    assert [cmd for cmd in device.commands if "pkill" in cmd] == ["pkill -f '[s]cid=0000abcd'"]

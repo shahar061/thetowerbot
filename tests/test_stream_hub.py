@@ -135,6 +135,15 @@ def test_a_keyframe_that_already_carries_its_sps_is_not_doubled() -> None:
     shutdown.set()
 
 
+def test_a_config_packet_before_any_session_info_is_rejected() -> None:
+    # No SessionInfo ever arrived, so the hub has no real size to attach to a
+    # ConfigMessage - sending a 0x0 one would be worse than refusing it.
+    hub, shutdown, _ = hub_over([FakeSession([Packet(True, False, 0, CONFIG)])])
+    sub = hub.subscribe()
+    assert drain(sub, 1) == [End.UNAVAILABLE]
+    shutdown.set()
+
+
 def test_frames_before_the_first_keyframe_are_dropped() -> None:
     hub, shutdown, _ = hub_over([FakeSession(opening(delta(1), key(2)))])
     assert drain(hub.subscribe(), 3, timeout=0.3) == [CONFIG_MSG, key_msg(2)]
@@ -249,6 +258,68 @@ def test_a_session_that_delivered_resets_the_backoff() -> None:
     hub.subscribe()
     wait_until(lambda: len(delays) == 4)
     assert delays == [1, 2, 1, 2]
+
+
+def test_no_retry_once_the_last_viewer_closes_on_an_unavailable_stream() -> None:
+    # The endpoint closes the subscription right after it sees
+    # End.UNAVAILABLE. Simulate that from inside `wait()` itself so the close
+    # is ordered deterministically relative to the hub's own retry loop,
+    # rather than racing a second thread.
+    shutdown = threading.Event()
+    calls: list[int] = []
+    state: dict[str, object] = {"sub": None, "closed": False}
+
+    def factory() -> FakeSession:
+        calls.append(1)
+        return FakeSession(fail_start=StreamError("boom"))
+
+    def wait(seconds: float) -> bool:
+        if state["sub"] is not None and not state["closed"]:
+            state["sub"].close()
+            state["closed"] = True
+        return shutdown.is_set()
+
+    hub = StreamHub(factory, shutdown=shutdown, wait=wait)
+    state["sub"] = hub.subscribe()
+    assert drain(state["sub"], 1) == [End.UNAVAILABLE]
+    wait_until(lambda: hub.subscriber_count == 0)
+    calls_at_close = len(calls)
+    time.sleep(0.1)
+    assert len(calls) == calls_at_close  # no retry with nobody watching
+    shutdown.set()
+
+
+def test_a_resubscribe_after_an_unwatched_failure_waits_out_the_backoff() -> None:
+    shutdown = threading.Event()
+    clock = Clock()
+    calls: list[int] = []
+    pending_waits: list[float] = []
+    closed_first = threading.Event()
+    subs: list[Subscription] = []
+
+    def factory() -> FakeSession:
+        calls.append(1)
+        return FakeSession(fail_start=StreamError("boom"))
+
+    def wait(seconds: float) -> bool:
+        pending_waits.append(seconds)
+        if not closed_first.is_set():
+            subs[0].close()
+            closed_first.set()
+        return shutdown.is_set()
+
+    hub = StreamHub(factory, shutdown=shutdown, wait=wait, clock=clock)
+    subs.append(hub.subscribe())
+    assert drain(subs[0], 1) == [End.UNAVAILABLE]
+    wait_until(lambda: hub.subscriber_count == 0)
+    assert len(calls) == 1  # the solo failure did not retry unwatched
+
+    # The clock never moved, so a resubscribe right away must still wait out
+    # the 1 s backoff the unwatched failure left behind, not retry at once.
+    subs.append(hub.subscribe())
+    wait_until(lambda: len(calls) >= 2)
+    assert pending_waits[1] == 1.0  # the new thread's own first-attempt wait
+    shutdown.set()
 
 
 def test_shutdown_sends_going_away_and_closes_the_session() -> None:

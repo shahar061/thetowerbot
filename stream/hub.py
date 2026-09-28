@@ -100,6 +100,15 @@ class StreamHub:
         self._subs: list[Subscription] = []
         self._linger_until: float | None = None
         self._thread: threading.Thread | None = None
+        # Backoff state, kept at the hub rather than as a local in _run(), so
+        # it survives across the short-lived threads a failure-then-stop
+        # cycle produces: a thread that stops because nobody is watching
+        # still leaves behind how long the *next* thread should wait before
+        # its first attempt. Only ever touched by the (one, at a time)
+        # reader thread; a new thread only starts after the old one clears
+        # `_thread` under `_lock`, which publishes these writes to it.
+        self._delay = _BACKOFF_START_S
+        self._retry_not_before = 0.0
         # Only the reader thread touches these two.
         self._size = (0, 0)
         self._config_bytes = b""
@@ -151,19 +160,33 @@ class StreamHub:
         self._keyed = False
 
     def _run(self) -> None:
-        delay = _BACKOFF_START_S
+        # True only for this thread's very first pass: a thread started by a
+        # failure-and-retry cycle waits out whatever backoff the previous,
+        # now-stopped thread left in `_retry_not_before` before its first
+        # attempt, instead of restarting the sequence from `_BACKOFF_START_S`.
+        wait_first = True
+        # True once this thread has seen a failure, until the next attempt
+        # starts. While true, "no subscribers" is reason enough to stop -
+        # unlike the general idle-linger case, there is no still-running
+        # session left to keep warm for a quick reconnect.
+        failed_last = False
         while True:
             with self._lock:
                 # Decided under the lock that subscribe() takes, so a viewer
                 # arriving now either sees _thread still set (and this loop
                 # keeps serving it) or sees None (and starts a new thread).
-                if self._stop_locked():
+                if self._stop_locked() or (failed_last and not self._subs):
                     self._thread = None
                     self._reset_locked()
                     if self._shutdown.is_set():
                         for sub in self._subs:
                             sub.put(End.GOING_AWAY)
                     return
+                pending = max(0.0, self._retry_not_before - self._clock()) if wait_first else 0.0
+            wait_first = False
+            if pending > 0:
+                self._wait(pending)
+                continue  # re-check stop conditions before ever attempting a session
             session: StreamSession | None = None
             delivered = False
             error: Exception | None = None
@@ -189,22 +212,34 @@ class StreamHub:
             with self._lock:
                 self._reset_locked()
             if error is None:
-                delay = _BACKOFF_START_S
+                self._delay = _BACKOFF_START_S
+                self._retry_not_before = 0.0
+                failed_last = False
                 continue
+            failed_last = True
             logger.warning("live stream %s unavailable: %s", self._label, error)
             with self._lock:
                 for sub in self._subs:
                     sub.put(End.UNAVAILABLE)
-            if delivered:
-                delay = _BACKOFF_START_S
-            if not self._wait(delay):
-                delay = min(delay * 2, _BACKOFF_MAX_S)
+                if delivered:
+                    self._delay = _BACKOFF_START_S
+                self._retry_not_before = self._clock() + self._delay
+                if not self._subs:
+                    # Nobody is watching: stop now rather than retrying
+                    # blind. `_retry_not_before` survives for whichever
+                    # thread a later subscribe() starts.
+                    self._thread = None
+                    return
+            if not self._wait(self._delay):
+                self._delay = min(self._delay * 2, _BACKOFF_MAX_S)
 
     def _handle(self, event: SessionInfo | Packet) -> None:
         if isinstance(event, SessionInfo):
             self._size = (event.width, event.height)
             return
         if event.config:
+            if self._size == (0, 0):
+                raise StreamError("config before session size")
             sps = find_sps(event.data)
             if sps is None:
                 raise StreamError("config packet carried no SPS")
