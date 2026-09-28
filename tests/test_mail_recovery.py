@@ -73,3 +73,19 @@ def test_live_inbox_is_named_for_device_preflight() -> None:
     bot.run_once()
     assert guard.observed_screen == 'INBOX'
     assert len(bot.device.taps) == 1  # Safe return footer; the walk is inactive.
+
+
+def test_orphan_inbox_exits_while_a_purchase_reconciliation_is_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    from account_screens import ControlTarget
+    bot = _shopping_bot('main_menu_resume', state=screens.ScreenState.UNKNOWN,
+                        policy=Shopping(), auto_navigate=True)
+    # An unanswered purchase keeps shopping "active" without any visit
+    # walking; its inspection waits for the menu the footer restores.
+    monkeypatch.setattr(type(bot.shopping), 'active', property(lambda self: True))
+    assert not bot.shopping.visit_in_progress
+    footer = ControlTarget('mail_return', (540, 2250), 'located', 1., (320, 2220, 440, 60))
+    monkeypatch.setattr(mail_screen, 'parse', lambda *args: mail_screen.MailReading(visible=True, back=footer))
+    bot.run_once()
+    assert len(bot.device.taps) == 1
+    assert any(isinstance(event, events.Tapped) and event.action == 'mail_recovery:return'
+               for event in bot.bus.published)
