@@ -17,7 +17,7 @@ from web import app as web_app
 
 
 @pytest.mark.parametrize("relative", [
-    "fleet/recovery.py", "catalog/labs.v1.json", "catalog/workshop-prices.v1.json",
+    "fleet/recovery.py", "catalog/labs.v2.json", "catalog/workshop-prices.v1.json",
 ])
 def test_execution_inputs_change_hash(tmp_path: Path, relative: str) -> None:
     path = tmp_path / relative

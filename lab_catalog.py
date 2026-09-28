@@ -1,8 +1,8 @@
 """Lab and gem price facts from catalog/labs.v2.json, validated at import.
 
-Only Game Speed has a price table. Every other lab without a table has
-`levels: null`, which means its price is unknown - never zero. A bad file
-stops the import, the same way the Workshop price catalog does.
+Tables come from the wiki (tools/import_wiki_lab_tables.py). A lab without a
+readable table has `levels: null`, which means its price is unknown - never
+zero. A bad file stops the import, the same way the Workshop price catalog does.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 import concepts
 
-CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "labs.v1.json"
+CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "labs.v2.json"
 GAME_SPEED = "labs.game-speed"
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 

@@ -38,11 +38,12 @@ def test_gem_prices_for_lab_slots_card_slots_and_cards() -> None:
 
 
 def test_labs_without_a_price_table_are_unknown_not_free() -> None:
-    labs_speed = lab_catalog.lab("labs.labs-speed")
-    assert labs_speed is not None
-    assert labs_speed.levels is None and labs_speed.max_level is None
-    assert labs_speed.unlock == ({"tier": 1, "wave": 150},)
-    assert lab_catalog.level("labs.labs-speed", 1) is None
+    raw = payload()
+    raw["labs"].append({"id": "labs.cash-wave", "name": "Cash / Wave", "unlock": [], "max_level": None,
+                        "levels": None, "source_url": "https://example.org/cash-wave", "checked": "2026-09-28"})
+    unpriced = next(entry for entry in lab_catalog.load(raw).labs if entry.id == "labs.cash-wave")
+    assert unpriced.levels is None and unpriced.max_level is None
+    assert lab_catalog.level("labs.cash-wave", 1) is None
     assert lab_catalog.lab("labs.invented") is None
 
 

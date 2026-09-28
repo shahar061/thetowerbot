@@ -322,7 +322,10 @@ def test_running_research_and_unknown_slot_do_not_erase_or_duplicate() -> None:
     assert plan.slots[3].next is None
 
 
-def test_paused_slot_does_not_allocate_and_unknown_cost_is_uncovered() -> None:
+def test_paused_slot_does_not_allocate_and_unknown_cost_is_uncovered(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = rb._option
+    monkeypatch.setattr(rb, "_option", lambda lab_id, level: (  # every lab but Game Speed unpriced
+        original(lab_id, level) if lab_id == "labs.game-speed" else rb.SlotNext(lab_id, lab_id, level, None, None)))
     raw = RouteDocument.compatibility().to_dict()
     tracks = labs()
     tracks[2]["slot_policies"] = {"3": {"paused": True, "on_blocked": "skip"}}
@@ -434,6 +437,7 @@ def test_skip_moves_past_unknown_level_price_prerequisite_and_overbudget(monkeyp
     monkeypatch.setattr(rb, "_option", lambda lab_id, level: (
         rb.SlotNext(lab_id, lab_id, level, 1000 if lab_id == "labs.attack-speed" else 100, 60)
         if lab_id in {"labs.labs-speed", "labs.attack-speed", "labs.coins-kill-bonus"}
+        else rb.SlotNext(lab_id, lab_id, level, None, None) if lab_id == "labs.cash-bonus"
         else original(lab_id, level)))
     route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
     facts = LabFacts(now=1000., available_coins=200, slots={2: {"state": "idle"}},
