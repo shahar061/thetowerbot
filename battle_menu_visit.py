@@ -58,6 +58,27 @@ class BattleMenuVisit:
     def active(self) -> bool:
         return self._step is not Step.IDLE
 
+    def cancel(self, reason: str = "cancelled", detail: str = "") -> None:
+        """End an active visit outright: no tap, no state record.
+
+        Every other walk in the loop is cancelled the same way when the bot
+        is paused mid-walk (see tower_bot.py's `settings.paused` block) -
+        this is that same rule applied here. Unlike `_bail`, which is a
+        mid-visit failure that still records the icon as failed (so its
+        cooldown backs off) and taps a return/close point to leave the page
+        cleanly, `cancel` must not touch the device at all: a paused bot's
+        screen is stale the moment the operator steps away, and tapping
+        whatever return point that stale frame happens to show would act on
+        a page that may no longer even be there by the time the tap lands.
+        Recording no state means a resumed visit is free to pick the same
+        icon back up on its own terms next time it is due, rather than
+        carrying a phantom "failed" backoff from a visit the operator ended.
+        """
+        if reason or detail:
+            logger.info("battle menu visit cancelled: %s%s", reason,
+                       f" ({detail})" if detail else "")
+        self._go(Step.IDLE)
+
     def observe(self, *, screen: Image, boxes: Callable[[], tuple], device: Any,
                 policy: Any, now: float, in_run: bool) -> Outcome:
         if self._step is Step.IDLE:

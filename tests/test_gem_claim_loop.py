@@ -66,15 +66,9 @@ def test_gem_tap_owns_the_scan_before_autopilot_can_buy():
 
 
 def test_a_scan_pass_taps_nothing_on_an_ordinary_battle_frame():
-    # The same pass over an untouched fixture. Without this, the test above
-    # would pass just as well for a loop that tapped every frame.
-    #
-    # Not the battle_bot() default ("in_run_early"): that hamburger carries
-    # its own badge, and since the in-battle menu visit was wired into this
-    # same IN_RUN scan (see tests/test_battle_menu_loop.py), a loop that
-    # correctly leaves an untouched gem alone still taps that badge. "in_run_lit"
-    # is IN_RUN with neither a gem nor a badged hamburger.
-    bot = battle_bot("in_run_lit")
+    # The same pass over the untouched fixture. Without this, the test
+    # above would pass just as well for a loop that tapped every frame.
+    bot = battle_bot()
 
     bot.run_once()
 

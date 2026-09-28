@@ -1248,7 +1248,7 @@ class TowerBot:
     def _cancel_walks(self, reason: str, detail: str) -> None:
         """End whichever walk is armed. Each cancel is idempotent."""
         for walk in (self.collection, self.visit, self.claim,
-                     self.milestones_claim, self.cards_intro):
+                     self.milestones_claim, self.cards_intro, self.battle_menu):
             walk.cancel(reason, detail)
         if self.lab_visit is not None:
             self.lab_visit.cancel(reason)
@@ -2109,6 +2109,9 @@ class TowerBot:
                 'paused', 'The bot was paused mid-claim; it was not resumed.')
         if self.cards_intro.active and settings.paused:
             self.cards_intro.cancel(
+                'paused', 'The bot was paused mid-visit; it was not resumed.')
+        if self.battle_menu.active and settings.paused:
+            self.battle_menu.cancel(
                 'paused', 'The bot was paused mid-visit; it was not resumed.')
         # An armed transaction owns the frame the same way a panel does, on
         # the menu as well as on the page itself: these are the only
