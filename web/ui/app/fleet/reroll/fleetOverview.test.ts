@@ -73,3 +73,13 @@ test("fleet request identity changes when only the validated attempt changes", (
   expect(fleetScope([{ ...member, overview: { ...overview, health: { ...overview.health, state: "stopped" } } }])).not.toBe(
     fleetScope([{ ...member, overview: { ...overview, attempt_id: "second", health: { ...overview.health, state: "stopped" } } }]));
 });
+
+test("a labs snapshot carries a well-formed unlock rollout or is rejected", () => {
+  const base = { workers: [], automated: [], reference: { labs: [], game_speed: [], lab_slots: [],
+    card_slots: [], card_gems: 0, labs_unlock_wave: 40, sources: [] } };
+  const rollout = [{ slot: 2, stage: "halted", canary_worker: null, dry_runs: 1, price: 100,
+    halted_reason: "x", evidence: ["a.png"] }];
+  expect(validatedLabsSnapshot({ ...base, unlock_rollout: rollout })?.unlock_rollout).toEqual(rollout);
+  expect(validatedLabsSnapshot(base)).not.toBeNull();
+  expect(validatedLabsSnapshot({ ...base, unlock_rollout: [{ ...rollout[0], stage: "armed" }] })).toBeNull();
+});

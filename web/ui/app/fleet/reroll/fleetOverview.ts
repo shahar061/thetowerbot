@@ -60,6 +60,15 @@ function validRow(value: unknown): value is LabsRow {
       nullableNumber(plan.gems.next.price) && bool(plan.gems.next.automated)));
 }
 
+const UNLOCK_STAGES = ["dry_run", "canary", "fleet", "halted"];
+
+function validRolloutRow(item: unknown): boolean {
+  return record(item) && Number.isInteger(item.slot) && UNLOCK_STAGES.includes(item.stage as string) &&
+    (item.canary_worker === null || typeof item.canary_worker === "string") && Number.isInteger(item.dry_runs) &&
+    nullableNumber(item.price) && (item.halted_reason === null || typeof item.halted_reason === "string") &&
+    Array.isArray(item.evidence) && item.evidence.every(path => typeof path === "string");
+}
+
 /** API data is untrusted even when fetchFleetLabs has a TypeScript return type. */
 export function validatedLabsSnapshot(value: unknown): LabsSnapshot | null {
   if (!record(value) || !Array.isArray(value.workers) || !value.workers.every(validRow) ||
@@ -78,6 +87,8 @@ export function validatedLabsSnapshot(value: unknown): LabsSnapshot | null {
       !finite(value.reference.card_gems) || !finite(value.reference.labs_unlock_wave) ||
       !Array.isArray(value.reference.sources) || !value.reference.sources.every(item => record(item) &&
         typeof item.url === "string" && typeof item.checked === "string")) return null;
+  if (value.unlock_rollout !== undefined &&
+      (!Array.isArray(value.unlock_rollout) || !value.unlock_rollout.every(validRolloutRow))) return null;
   if (new Set(value.workers.map(row => row.worker)).size !== value.workers.length) return null;
   return value as LabsSnapshot;
 }

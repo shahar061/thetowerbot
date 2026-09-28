@@ -339,7 +339,18 @@ class LabUnlockRollout:
 
     def snapshot(self) -> list[dict[str, Any]]:
         """Dashboard rows for slots 2-5. This read never moves a corrupt file."""
-        return [{"slot": slot, "stage": state.stage, "canary_worker": state.canary_worker,
-                 "dry_runs": len(state.dry_runs), "price": lab_catalog.lab_slot_gems(slot),
-                 "halted_reason": state.halted_reason, "evidence": list(state.evidence)}
-                for slot, state in self.slots(quarantine=False).items()]
+        return rollout_rows(self.slots(quarantine=False))
+
+
+def rollout_rows(slots: Mapping[int, SlotRollout]) -> list[dict[str, Any]]:
+    """Dashboard rows for an already-loaded slots mapping (e.g. from `.slots()`).
+
+    Callers that already hold a fresh `slots()` read - such as `labs_snapshot`,
+    which needs the same read for its per-worker rows - build rows from it
+    directly instead of asking `LabUnlockRollout.snapshot()` to read the file
+    again.
+    """
+    return [{"slot": slot, "stage": state.stage, "canary_worker": state.canary_worker,
+             "dry_runs": len(state.dry_runs), "price": lab_catalog.lab_slot_gems(slot),
+             "halted_reason": state.halted_reason, "evidence": list(state.evidence)}
+            for slot, state in slots.items()]

@@ -72,7 +72,11 @@ export type LabsReference = { labs: { id: string; name: string; max_level: numbe
   game_speed: { level: number; coins: number; seconds: number; max_speed: number }[];
   lab_slots: { slot: number; gems: number }[]; card_slots: { slot: number; gems: number }[];
   card_gems: number; labs_unlock_wave: number; sources: { url: string; checked: string }[] };
-export type LabsSnapshot = { workers: LabsRow[]; automated: AutomatedBlock[]; reference: LabsReference };
+export type UnlockStage = "dry_run" | "canary" | "fleet" | "halted";
+export type UnlockRolloutRow = { slot: number; stage: UnlockStage; canary_worker: string | null;
+  dry_runs: number; price: number | null; halted_reason: string | null; evidence: string[] };
+export type LabsSnapshot = { workers: LabsRow[]; automated: AutomatedBlock[]; reference: LabsReference;
+  unlock_rollout?: UnlockRolloutRow[] };
 
 /** A labs lane holds either a single `lab_list` block, or `slot_track` blocks (possibly none yet). */
 export const isLabList = (labs: BuildRouteDocument["baseline"]["labs"]): boolean =>
