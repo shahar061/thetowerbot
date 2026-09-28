@@ -14,6 +14,10 @@ from typing import Any, Iterator, Mapping, Sequence
 
 import lab_catalog
 from lab_runtime import LabScope
+from fleet.build_route import is_lab_list
+# lab_list reaches back into this module only inside its functions, so it
+# loads without this one and the header import is not a cycle.
+from fleet.lab_list import evaluate_lab_list, validate_lab_list
 from fleet.strategy_blocks import COMPARISONS as _PURCHASE_COMPARISONS, MAX_BLOCKS, MAX_DEPTH
 
 GAME_SPEED = lab_catalog.GAME_SPEED
@@ -155,7 +159,6 @@ def validate_labs(value: object) -> tuple[dict[str, Any], ...]:
     if any(isinstance(raw, Mapping) and raw.get("type") == "lab_list" for raw in value):
         if len(value) != 1:
             raise ValueError("a lab list must be the labs lane's only block")
-        from fleet.lab_list import validate_lab_list
         return (validate_lab_list(value[0]),)
     ids = _Ids()
     owners: dict[int, str] = {}
@@ -386,6 +389,8 @@ class LabFacts:
     capabilities: Mapping[int, Mapping[str, bool]] | None = None
     account_id: str | None = None
     scope: LabScope | None = None
+    best_waves: Mapping[int, int] | None = None
+    coins_per_hour: float | None = None
 
 
 @dataclass(frozen=True)
@@ -421,6 +426,8 @@ class SlotPlan:
     why: tuple[str, ...]
     note: str | None = None
     capabilities: Mapping[str, bool] | None = None
+    role: str = "target"
+    saving_for: SlotNext | None = None
 
 
 @dataclass(frozen=True)
@@ -455,6 +462,7 @@ class LabPlan:
     account_id: str | None = None
     scope: LabScope | None = None
     evaluated_at: float | None = None
+    saving: Any = None
 
 
 @dataclass(frozen=True)
@@ -752,13 +760,16 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
                    current.automated if current else False, tuple(why), tuple(steps))
 
 
-def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
-    """Pure: per-slot Now/Next and the next gem step. No reads, writes or clocks."""
-    rules = route.rules
-    lab_blocks = (route.labs.blocks if route.labs.mode == "blocks"
-                  else legacy_lab_blocks(route.labs.steps))
-    gem_blocks = (route.gems.blocks if route.gems.mode == "blocks"
-                  else legacy_gem_blocks(route.gems.steps))
+@dataclass(frozen=True)
+class SlotContext:
+    known: dict[str, int]
+    running: dict[str, int]
+    unavailable: set[str]
+    nows: dict[int, SlotNow]
+
+
+def _slot_context(facts: LabFacts) -> SlotContext:
+    """Known and running levels, busy labs and per-slot Now - shared by every lane shape."""
     known, running = _known_levels(facts.slot1)
     known.update({key: level for key, level in (facts.completed_levels or {}).items()
                   if lab_catalog.lab(key) is not None and type(level) is int and level >= 0})
@@ -775,12 +786,40 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
                 known[lab_id] = max(known.get(lab_id, 0), target - 1)
     if facts.slot1 and facts.slot1.get("kind") == "wait_running":
         unavailable.add(GAME_SPEED)
-    slot2_now = _slot2_now(facts.slot2, facts.now)
     later = SlotNow("unknown")
-    nows = {1: _slot1_now(facts.slot1, facts.now), 2: slot2_now, 3: later, 4: later, 5: later}
+    nows = {1: _slot1_now(facts.slot1, facts.now), 2: _slot2_now(facts.slot2, facts.now),
+            3: later, 4: later, 5: later}
     for slot, record in (facts.slots or {}).items():
         if slot in LAB_SLOTS and isinstance(record, Mapping):
             nows[slot] = _observed_now(record, facts.now)
+    return SlotContext(known, running, unavailable, nows)
+
+
+def _capabilities(slot: int, automated: bool, now: SlotNow, facts: LabFacts,
+                  planned: bool) -> dict[str, bool]:
+    observed = (facts.slots or {}).get(slot)
+    capabilities = {"observe": True, "plan": planned,
+                    "execute": automated and now.state == "idle" and not now.stale
+                    and now.evidence_status == "current"
+                    and observed is not None and observed.get("confirmed") is True
+                    and observed.get("preview_only") is not True}
+    if facts.capabilities and slot in facts.capabilities:
+        capabilities = {key: capabilities[key] and facts.capabilities[slot].get(key, False)
+                        for key in capabilities}
+    return capabilities
+
+
+def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
+    """Pure: per-slot Now/Next and the next gem step. No reads, writes or clocks."""
+    rules = route.rules
+    lab_blocks = (route.labs.blocks if route.labs.mode == "blocks"
+                  else legacy_lab_blocks(route.labs.steps))
+    gem_blocks = (route.gems.blocks if route.gems.mode == "blocks"
+                  else legacy_gem_blocks(route.gems.steps))
+    ctx = _slot_context(facts)
+    if is_lab_list(route.labs):
+        return evaluate_lab_list(route, facts, ctx=ctx, gems=_gem_plan(gem_blocks, facts, rules))
+    known, running, unavailable, nows = ctx.known, ctx.running, ctx.unavailable, ctx.nows
     plans: list[SlotPlan] = []
     remaining_coins = facts.available_coins if facts.available_coins is not None else facts.wallet_coins
     for slot in LAB_SLOTS:
@@ -820,17 +859,8 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
         covered = (remaining_coins >= chosen.price
                    if chosen is not None and chosen.price is not None and remaining_coins is not None
                    else None)
-        observed = (facts.slots or {}).get(slot)
-        capabilities = {"observe": True, "plan": track is not None,
-                        "execute": automated and nows[slot].state == "idle" and not nows[slot].stale
-                        and nows[slot].evidence_status == "current"
-                        and observed is not None and observed.get("confirmed") is True
-                        and observed.get("preview_only") is not True}
-        if facts.capabilities and slot in facts.capabilities:
-            capabilities = {key: capabilities[key] and facts.capabilities[slot].get(key, False)
-                            for key in capabilities}
         plans.append(SlotPlan(slot, nows[slot], chosen, covered, automated, tuple(why), note,
-                              capabilities))
+                              _capabilities(slot, automated, nows[slot], facts, track is not None)))
         if chosen is not None and nows[slot].state == "idle":
             unavailable.add(chosen.lab_id)
             if remaining_coins is not None and chosen.price is not None and covered:
