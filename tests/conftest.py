@@ -333,3 +333,38 @@ def bot_in_run_fast() -> TowerBot:
         "in_run_fast", state=screens.ScreenState.IN_RUN,
         policy=Shopping(), auto_navigate=False,
     )
+
+
+@pytest.fixture
+def bot_with_frames() -> Callable[..., TowerBot]:
+    """Factory: a bot fed a fixed sequence of fixture frames, one new frame
+    per run_once() call.
+
+    Built on `_shopping_bot` for its usual fixed-up bot (fake device,
+    recording bus, pre-confirmed tracker), but overrides `refresh_screen` to
+    step through `frame_names` instead of freezing on one image - a
+    multi-scan loop test (e.g. the in-battle menu visit, which owns several
+    scans in a row) needs the screen to actually change underneath it. Once
+    the sequence is exhausted, the last frame repeats, so a test can call
+    run_once() more times than it supplied frames without an IndexError.
+    """
+    def build(frame_names: list[str], *, state: screens.ScreenState = screens.ScreenState.IN_RUN,
+              policy: Shopping = Shopping(), auto_navigate: bool = False,
+              claims: Claims = Claims()) -> TowerBot:
+        bot = _shopping_bot(
+            frame_names[0], state=state, policy=policy,
+            auto_navigate=auto_navigate, claims=claims,
+        )
+        images = [_frame(name) for name in frame_names]
+        step = {"i": 0}
+
+        def refresh() -> Image:
+            i = min(step["i"], len(images) - 1)
+            bot._screen = images[i]
+            step["i"] += 1
+            return bot._screen
+
+        bot.refresh_screen = refresh
+        return bot
+
+    return build
