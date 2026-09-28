@@ -34,7 +34,8 @@ _NEW_ACCOUNT = Rect(365, 1705, 370, 115)
 _SETTINGS_TITLE = Rect(350, 460, 370, 110)
 _SETTINGS_ACCOUNT = Rect(235, 775, 275, 120)
 _VERSION = Rect(790, 1875, 205, 105)
-_ID = re.compile(r"ID:\s*([0-9A-F]{16})", re.IGNORECASE)
+# The game drops a leading zero, so about one account in sixteen shows 15.
+_ID = re.compile(r"ID:\s*([0-9A-F]{15,16})", re.IGNORECASE)
 _WARNING_LINES = (
     ("Warning", Rect(385, 835, 310, 120)),
     ("You will be logged out of the current", Rect(140, 945, 800, 100)),

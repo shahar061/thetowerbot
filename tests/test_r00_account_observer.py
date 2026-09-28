@@ -236,6 +236,14 @@ def test_redacted_before_and_after_account_captures_have_distinct_ids() -> None:
     assert set(after.controls) == {"new_account"}
 
 
+def test_a_fifteen_character_id_is_read_and_a_shorter_one_refused() -> None:
+    def with_id(text: str) -> tuple[TextBox, ...]:
+        return tuple(replace(x, text=text) if x.text.startswith("ID:") else x for x in boxes())
+    reading = parse(with_id("ID:AAAAAAAAAAAAAAA"))  # live OCR joins "ID:" to the digits
+    assert reading is not None and reading.account_id == "AAAAAAAAAAAAAAA"
+    assert parse(with_id("ID: AAAAAAAAAAAAAA")) is None
+
+
 @pytest.mark.parametrize("change", [
     lambda b: tuple(replace(x, confidence=.7) if x.text.startswith("ID:") else x for x in b),
     lambda b: b + (next(x for x in b if x.text.startswith("ID:")),),
