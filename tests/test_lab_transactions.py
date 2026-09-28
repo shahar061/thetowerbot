@@ -10,7 +10,7 @@ from evidence_scope import BalanceInterval, FactScope
 from fleet.identity import IdentityEvidence
 import events
 import ledger
-from transactions import Intent, RecoveryEvidence, TransactionJournal, Transaction, Verdict
+from transactions import Intent, RecoveryEvidence, Stage, TransactionJournal, Transaction, Verdict
 from lab_runtime import LabRuntime
 from lab_visit import LabVisit
 from lab_plan import LabVisitOptions
@@ -438,26 +438,67 @@ def test_an_unlanded_unlock_tap_is_settled_as_not_charged(tmp_path: Path) -> Non
     assert journal.currencies.committed('gems') == 0
     with db.reader(journal.path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM currency_observations WHERE currency='gems'").fetchone()[0] == 0
     assert journal.refute_unlanded_unlock(txn.key, _unlanded(scope), now=14.) == outcome
 
 
-@pytest.mark.parametrize("overrides", [
-    {"observed_at": 12.5},     # too soon after the tap
-    {"wallet_after": 513},     # the gems moved
-    {"effect_changed": None},  # the slot was not read
-    {"slot": 3},               # another slot
-    {"frame_digest": ""},      # no frame behind the read
+_OTHER_SCOPE = FactScope('account-b', 'lease-b', 'generation-b', 0)
+
+
+@pytest.mark.parametrize("overrides,now", [
+    ({"observed_at": 12.5}, 13.),     # too soon after the tap
+    ({"wallet_after": 513}, 13.),     # the gems moved
+    ({"effect_changed": None}, 13.),  # the slot was not read
+    ({"slot": 3}, 13.),               # another slot
+    ({"frame_digest": ""}, 13.),      # no frame behind the read
+    ({"observed_at": 13.5}, 13.),     # the read claims to be after "now"
+    ({}, 44.),                        # the read is more than 30s stale by "now"
+    ({"scope": _OTHER_SCOPE}, 13.),   # evidence from a different account/scope
+    ({"category": "CARDS"}, 13.),     # category does not match the transaction
 ])
-def test_an_unlanded_unlock_needs_complete_proof(tmp_path: Path, overrides: dict) -> None:
+def test_an_unlanded_unlock_needs_complete_proof(tmp_path: Path, overrides: dict, now: float) -> None:
     _, journal, scope = authority(tmp_path)
     txn = prepared(journal, scope, operation='lab_unlock')
-    outcome = journal.refute_unlanded_unlock(txn.key, _unlanded(scope, **overrides), now=13.)
+    evidence = _unlanded(**{"scope": scope, **overrides})
+    outcome = journal.refute_unlanded_unlock(txn.key, evidence, now=now)
+    assert outcome.verdict == Verdict.UNPROVEN and outcome.spent is None
+    assert journal.open_transactions()[0].key == txn.key
+
+
+def test_an_unlanded_unlock_needs_an_acted_tap(tmp_path: Path) -> None:
+    """A prepared-but-not-yet-dispatched row can't be settled through this path:
+
+    no device action was ever claimed, so there is no tap to judge unlanded.
+    """
+    _, journal, scope = authority(tmp_path)
+    intent = Intent(item='Lab 2', category='LABS', currency='gems', price=100,
+        wallet_before=613, ts=10., operation='lab_unlock',
+        before={'slot': 2, 'research_id': None, 'source_level': None, 'target_level': None,
+                'evidence_digest': 'before'})
+    balance = BalanceInterval.from_reading('gems', 613, scope, 10., 'before')
+    txn = journal.prepare(intent, scope=scope, balance=balance)
+    assert txn is not None and txn.stage == Stage.INTENDED  # never record_action'd
+    outcome = journal.refute_unlanded_unlock(txn.key, _unlanded(scope), now=13.)
     assert outcome.verdict == Verdict.UNPROVEN and outcome.spent is None
     assert journal.open_transactions()[0].key == txn.key
 
 
 def test_only_a_lab_unlock_can_be_refuted_as_unlanded(tmp_path: Path) -> None:
+    """A gems row whose operation is not `lab_unlock` must not be refutable here.
+
+    Currency, category and slot all match the (missing) evidence so this can
+    only fail on the operation guard - proving the guard, not the currency
+    check, is what blocks a non-unlock row.
+    """
     _, journal, scope = authority(tmp_path)
-    txn = prepared(journal, scope, operation='lab_start')
-    evidence = _unlanded(scope, currency='coins', operation='lab_start', slot=1)
-    assert journal.refute_unlanded_unlock(txn.key, evidence, now=13.).verdict == Verdict.UNPROVEN
+    intent = Intent(item='Gem Pack', category='CARDS', currency='gems', price=100,
+        wallet_before=613, ts=10., operation='card_buy')
+    balance = BalanceInterval.from_reading('gems', 613, scope, 10., 'before')
+    txn = journal.prepare(intent, scope=scope, balance=balance)
+    assert txn is not None
+    journal.record_action(txn.key, at=11.)
+    evidence = _unlanded(scope, category='CARDS', slot=txn.before.get('slot'))
+    outcome = journal.refute_unlanded_unlock(txn.key, evidence, now=13.)
+    assert outcome.verdict == Verdict.UNPROVEN and outcome.spent is None
+    assert journal.open_transactions()[0].key == txn.key
