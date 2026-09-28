@@ -43,7 +43,7 @@ class FakeProgress:
     def __init__(self, plan: Any, *, options: LabVisitOptions | None = None) -> None:
         self.route_runtime = SimpleNamespace(current=lambda: SimpleNamespace(revision=REVISION))
         self._plan = plan
-        self._options = options or LabVisitOptions(unlock_slot2=False)
+        self._options = options or LabVisitOptions()
 
     def lab_visit_options(self) -> LabVisitOptions:
         return self._options
@@ -116,7 +116,7 @@ def test_uncalibrated_plan_choices_are_published_once_with_their_reason() -> Non
 
 def test_authorize_accepts_only_the_matching_gated_plan_action() -> None:
     b = bot(action())
-    b.lab_visit.request(action(), options=LabVisitOptions(unlock_slot2=False))
+    b.lab_visit.request(action(), options=LabVisitOptions())
     assert b._authorize_lab('lab_start', decision(), 1000.)
     assert not b._authorize_lab('lab_start', decision(level=5), 1000.)
 
@@ -130,7 +130,7 @@ def test_authorize_compares_strategy_revision() -> None:
 
 def test_authorize_refuses_drift_from_the_selected_action() -> None:
     b = bot(action())
-    b.lab_visit.request(action(level=3), options=LabVisitOptions(unlock_slot2=False))
+    b.lab_visit.request(action(level=3), options=LabVisitOptions())
     assert not b._authorize_lab('lab_start', decision(), 1000.)
 
 
@@ -144,8 +144,8 @@ def test_authorize_requires_the_route_gate_for_other_slots(monkeypatch: pytest.M
 
 
 def test_authorize_refuses_unlock_while_its_route_is_uncalibrated() -> None:
-    b = bot(None, options=LabVisitOptions(unlock_slot2=True, min_gems=100))
-    b.lab_visit.request(LabVisitOptions(unlock_slot2=True, min_gems=100))
+    b = bot(None, options=LabVisitOptions(unlock_slots=(2,)))
+    b.lab_visit.request(LabVisitOptions(unlock_slots=(2,)))
     assert not b._authorize_lab('lab_unlock', None, 1000.)
 
 

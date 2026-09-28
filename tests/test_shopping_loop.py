@@ -156,7 +156,7 @@ def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu)
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.lab_due.return_value = True
-    options = LabVisitOptions(start_research=False, unlock_slot2=False, min_gems=150)
+    options = LabVisitOptions(start_research=False, keep_gems=50)
     progress.lab_visit_options.return_value = options
     progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress

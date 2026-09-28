@@ -23,10 +23,10 @@ SLOT_STATES = frozenset({"locked", "owned"})
 
 @dataclass(frozen=True)
 class LabVisitOptions:
-    """What one Labs visit may do. Defaults are today's behavior."""
+    """What one Labs visit may do. Nothing is unlocked unless a slot is named."""
     start_research: bool = True
-    unlock_slot2: bool = True
-    min_gems: int = LAB2_GEMS
+    unlock_slots: tuple[int, ...] = ()
+    keep_gems: int = 0
 
 
 @dataclass(frozen=True)

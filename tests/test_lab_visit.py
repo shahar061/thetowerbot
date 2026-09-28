@@ -98,7 +98,7 @@ def test_read_only_slot_observer_receives_all_five_slots_with_wall_clock() -> No
     observed = []
     visit = LabVisit(vision.TemplateCache(Path("templates")),
                      slot_observer=observed.append, wall_clock=lambda: 1000.)
-    visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))
+    visit.request(LabVisitOptions(start_research=False))
     visit.advance(frame("menu_labs_active"), boxes("menu_labs_active"), Device(), 10.)
 
     assert len(observed) == 1
@@ -376,10 +376,10 @@ def test_auto_start_off_looks_but_never_opens_the_picker() -> None:
 def test_lab_two_unlock_respects_the_switch_and_the_gem_floor() -> None:
     home = LabHomeReading(True, "researching", None, None, gem_balance=150,
                           slot2_status="locked", slot2_price=100, slot2_point=(700, 450))
-    for options in (LabVisitOptions(unlock_slot2=False), LabVisitOptions(min_gems=200)):
+    for options in (LabVisitOptions(), LabVisitOptions(unlock_slots=(2,), keep_gems=100)):
         visit = LabVisit(vision.TemplateCache(Path("templates")))
         visit.request(options)
         assert visit._unlock_lab_two(home, Device()) is False
     visit = LabVisit(vision.TemplateCache(Path("templates")))
-    visit.request(LabVisitOptions(min_gems=150))
+    visit.request(LabVisitOptions(unlock_slots=(2,), keep_gems=50))
     assert visit._unlock_lab_two(home, Device()) is False  # no recorded unlock sequence

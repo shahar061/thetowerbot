@@ -119,7 +119,7 @@ class LabVisit:
                 self.recovery_status = 'lab_route_calibration_required'
                 return False
         self.selected_action = action
-        self._options = options or LabVisitOptions(unlock_slot2=action is None)
+        self._options = options or LabVisitOptions()
         self._stage_name, self._stage_scans, self._stage_started = 'idle', 0, 0.
         self._state = "open"
         self._started_at = 0.
@@ -202,7 +202,7 @@ class LabVisit:
         balance = replace(balance, catalog_revision=_catalog_revision())
         try:
             txn = self.journal.prepare(intent, scope=scope, balance=balance,
-                reserve=max(0, self._options.min_gems-price) if currency == 'gems' else 0)
+                reserve=self._options.keep_gems if currency == 'gems' else 0)
         except transactions.TransactionInFlight:
             return None
         if txn is None or txn.stage != transactions.Stage.INTENDED:
@@ -354,9 +354,10 @@ class LabVisit:
 
     def _unlock_lab_two(self, home: LabHomeReading, device: AdbDevice) -> bool:
         """On the way out, buy Lab 2 once from two matching affordable reads."""
-        if (not unlock_gate(2).enabled or not self._options.unlock_slot2 or self._slot2_tapped
+        if (not unlock_gate(2).enabled or 2 not in self._options.unlock_slots or self._slot2_tapped
                 or home.slot2_status != "locked" or home.slot2_price != 100
-                or home.gem_balance is None or home.gem_balance < self._options.min_gems
+                or home.gem_balance is None
+                or home.gem_balance < home.slot2_price + self._options.keep_gems
                 or home.slot2_point is None):
             return False
         self._slot2_home = home

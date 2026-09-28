@@ -1332,8 +1332,8 @@ class TowerBot:
             return False
         options = self.reroll_progress.lab_visit_options()
         if operation == 'lab_unlock':
-            return (unlock_gate(2).enabled and options.unlock_slot2
-                    and options.min_gems == self.lab_visit._options.min_gems)
+            return (unlock_gate(2).enabled and 2 in options.unlock_slots
+                    and options.keep_gems == self.lab_visit._options.keep_gems)
         if not options.start_research or decision is None:
             return False
         slot, research, target = decision.slot, decision.research_id, decision.target_level
@@ -1969,7 +1969,7 @@ class TowerBot:
             self.autopilot.suspend('Pending Lab transaction; read-only inspection')
             if not settings.paused:
                 if not self.lab_visit.active and self.lab_visit.recovery_status != 'lab_reconciliation_route_unavailable':
-                    self.lab_visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))
+                    self.lab_visit.request(LabVisitOptions(start_research=False))
                 try:
                     lab_boxes = reads.full()
                 except Exception:
@@ -2635,7 +2635,7 @@ class TowerBot:
             elif (self.lab_visit is not None
                     and self.maintenance.inspection_navigable(time.time())
                     and self.lab_visit.tab_status(self.screen) == 'unlocked'
-                    and self.lab_visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))):
+                    and self.lab_visit.request(LabVisitOptions(start_research=False))):
                 # Paced: an inspection a visit cannot acknowledge (partial
                 # strip, clock step) never re-arms on every menu pass.
                 self.maintenance.note_inspection_visit(time.time())

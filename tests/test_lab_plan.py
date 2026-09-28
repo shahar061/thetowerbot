@@ -246,7 +246,7 @@ def test_slot_two_check_honours_a_raised_gem_floor(tmp_path: Path) -> None:
     assert cadence.slot2_due(1100., wallet_gems=150, min_gems=150)
     assert cadence.slot2_due(1100., wallet_gems=100)  # the default floor is unchanged
     assert LAB2_GEMS == 100
-    assert LabVisitOptions() == LabVisitOptions(start_research=True, unlock_slot2=True, min_gems=100)
+    assert LabVisitOptions() == LabVisitOptions(start_research=True, unlock_slots=(), keep_gems=0)
 
 
 def test_lab_slots_file_records_each_slot_and_reads_the_old_slot_two_file_once(tmp_path: Path) -> None:

@@ -34,7 +34,8 @@ from fleet import coin_share
 from fleet.lab_facts import best_waves, coins_per_hour, just_in_time_hold
 from fleet.resource_blocks import (LabFacts, LabPlan, evaluate_lab_plan,
                                    gem_lane_blocks, next_unlock_slot)
-from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
+from lab_plan import LabCadence, LabDecision, LabVisitOptions
+import lab_catalog
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule, Strategy
 
@@ -110,16 +111,21 @@ class RerollProgress:
         if not self.lab_unlocked():
             return False
         rules = self.resource_rules()
-        slot2 = (rules.gems.auto_unlock_lab_slots and self.lab_cadence.slot2_due(
-            moment, wallet_gems, min_gems=LAB2_GEMS + rules.gems.keep))
-        slot1 = rules.labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
-        return slot2 or slot1
+        unlock = False
+        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
+        price = lab_catalog.lab_slot_gems(slot) if slot is not None else None
+        if price is not None:
+            unlock = self.lab_cadence.slot_due(slot, moment, wallet_gems,
+                                               min_gems=price + rules.gems.keep)
+        research = rules.labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
+        return unlock or research
 
     def lab_visit_options(self) -> LabVisitOptions:
         rules = self.resource_rules()
+        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
         return LabVisitOptions(start_research=rules.labs.auto_start,
-                               unlock_slot2=rules.gems.auto_unlock_lab_slots,
-                               min_gems=LAB2_GEMS + rules.gems.keep)
+                               unlock_slots=(slot,) if slot is not None else (),
+                               keep_gems=rules.gems.keep)
 
     def note_lab_coin_debit(self, now: float | None = None) -> None:
         """A confirmed lab coin debit spent the savings: empty the jar."""

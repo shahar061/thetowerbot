@@ -72,7 +72,7 @@ def test_action_level_mismatch_cannot_open_confirmation(tmp_path: Path, monkeypa
 def test_action_executes_one_semantic_purchase_and_returns_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     h = LabHarness(tmp_path, monkeypatch)
     h.visit.cancel('new request')
-    assert h.visit.request(action(), options=LabVisitOptions(unlock_slot2=False))
+    assert h.visit.request(action(), options=LabVisitOptions())
     h.confirmation()
     h.scan('menu_labs_game_speed_confirmation')
     txn = h.journal.open_transactions()[0]
@@ -96,7 +96,7 @@ def test_action_executes_one_semantic_purchase_and_returns_home(tmp_path: Path, 
 def test_read_only_inspection_waits_for_confirmed_complete_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     h = LabHarness(tmp_path, monkeypatch)
     h.visit.cancel('observe')
-    h.visit.request(options=LabVisitOptions(start_research=False, unlock_slot2=False))
+    h.visit.request(options=LabVisitOptions(start_research=False))
     h.scan('menu_labs_slot1_affordable')
     assert h.visit._state == 'home'
     assert h.device.taps == []
@@ -118,7 +118,7 @@ def test_picker_has_its_own_bounded_observation_budget(tmp_path: Path, monkeypat
 def test_unlock_cannot_be_authorized_by_synthetic_post_state() -> None:
     from fleet.resource_blocks import gem_automated
     visit = LabVisit(vision.TemplateCache(Path('templates')))
-    visit.request(LabVisitOptions(min_gems=150))
+    visit.request(LabVisitOptions(unlock_slots=(2,), keep_gems=50))
     home = lab_screen.LabHomeReading(True, 'idle', None, None, gem_balance=150,
                                     slot2_status='locked', slot2_price=100, slot2_point=(700, 450))
     assert not visit._unlock_lab_two(home, Device())

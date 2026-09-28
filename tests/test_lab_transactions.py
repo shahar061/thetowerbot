@@ -36,7 +36,7 @@ class LabHarness:
         self.visit = LabVisit(vision.TemplateCache(Path('templates')), journal=self.journal,
             account_state=self.account, runtime=self.runtime, wall_clock=lambda: self.time,
             event_sink=self.events.append)
-        self.visit.request(LabVisitOptions(unlock_slot2=False))
+        self.visit.request(LabVisitOptions())
 
     def tap(self, device: Device, x: int, y: int) -> None:
         device.taps.append((x, y))
@@ -98,7 +98,7 @@ def test_lab_without_shared_authority_never_confirms(tmp_path: Path, monkeypatch
     device = Device()
     taps = []
     monkeypatch.setattr('lab_visit.tap', lambda _device, x, y: taps.append((x, y)))
-    visit.request(LabVisitOptions(unlock_slot2=False))
+    visit.request(LabVisitOptions())
     for index, name in enumerate(('menu_labs_slot1_affordable', 'menu_labs_slot1_affordable',
             'menu_labs_game_speed_affordable', 'menu_labs_game_speed_affordable',
             'menu_labs_game_speed_confirmation', 'menu_labs_game_speed_confirmation')):
@@ -123,7 +123,7 @@ def test_production_constructor_wires_account_runtime_and_original_capture(tmp_p
     bot._screen_fact_scope = scope
     bot._screen_captured_at = 19.
     bot._bind_lab_runtime()
-    bot.lab_visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))
+    bot.lab_visit.request(LabVisitOptions(start_research=False))
     for stamp in (19., 19., 20.):
         bot._screen_captured_at = stamp
         bot._observe_labs_capture(boxes('menu_labs_active'))

@@ -14,6 +14,7 @@ from fleet.build_route_eval import RouteFacts
 from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route_store import BuildRouteStore
 from fleet.reroll_progress import RerollProgress
+from fleet.resource_blocks import template_gem_blocks
 from strategy import Strategy
 from policy import AutopilotPolicy
 
@@ -451,14 +452,31 @@ def test_auto_start_and_auto_unlock_switches_gate_the_lab_visit(tmp_path: Path) 
     progress.note_lab_observation(LabDecision("wait_coins", price=300, wallet_coins=100,
                                               game_speed_level=1), now=1000.)
     progress.note_lab_slot2("locked", 65, now=1000.)
-    assert progress.lab_visit_options() == LabVisitOptions()
+    assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(2,))
     _rules_route(tmp_path, {"labs": {"auto_start": False}, "gems": {"auto_unlock_lab_slots": False}})
     assert not progress.lab_due(now=1100., wallet_coins=5000, wallet_gems=500)
-    assert progress.lab_visit_options() == LabVisitOptions(start_research=False, unlock_slot2=False)
+    assert progress.lab_visit_options() == LabVisitOptions(start_research=False)
     _rules_route(tmp_path, {"gems": {"keep": 50}}, expected=1)
     assert not progress.lab_due(now=1100., wallet_coins=100, wallet_gems=120)
     assert progress.lab_due(now=1100., wallet_coins=100, wallet_gems=150)
-    assert progress.lab_visit_options().min_gems == 150
+    assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(2,), keep_gems=50)
+
+
+def _gem_blocks_route(root: Path, expected: int = 0) -> RouteDocument:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))
+    return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
+
+
+def test_lab_three_is_the_visit_unlock_once_lab_two_is_owned(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _gem_blocks_route(tmp_path)
+    progress.note_lab_unlocked("labs_tab", now=999.)
+    _game_speed_waits(progress)
+    progress.note_lab_slots({2: "owned", 3: "locked"}, 120, now=1000.)
+    assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(3,), keep_gems=0)
+    assert not progress.lab_due(now=1100., wallet_coins=100, wallet_gems=399)
+    assert progress.lab_due(now=1100., wallet_coins=100, wallet_gems=400)
 
 
 def _jit_route(root: Path, expected: int = 0) -> RouteDocument:
