@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import lab_catalog
 from fleet.build_route import RouteBaseline, RouteDocument
+from fleet.lab_list import SlotSaving
 from fleet.resource_blocks import LabFacts, LabPlan, evaluate_lab_plan
 
 NOW = 1_000_000.0
@@ -175,10 +177,11 @@ def test_no_survivor_names_the_most_common_skip_reason() -> None:
                   completed_levels={"labs.game-speed": 3, "labs.unlock-perks": 0, "labs.labs-speed": 10,
                                     "labs.coins-wave": 10})
     assert result.slots[1].next is None
-    assert result.slots[1].why[-1] == ("No entry can run now: locked for 2 of 3 remaining entries"
-                                       " (needs Tier 2 wave 150)")
-    assert plan_with_unread_levels().slots[1].why[-1] == (
-        "No entry can run now: level unread for 3 of 4 remaining entries")
+    # The closing skip line, then step 4's filler line (fillers are off in the default Route).
+    assert result.slots[1].why[-2:] == ("No entry can run now: locked for 2 of 3 remaining entries"
+                                        " (needs Tier 2 wave 150)", "Fillers off")
+    assert plan_with_unread_levels().slots[1].why[-2:] == (
+        "No entry can run now: level unread for 3 of 4 remaining entries", "Fillers off")
 
 
 def test_unlock_facts_are_never_guessed() -> None:
@@ -192,3 +195,107 @@ def test_unlock_facts_are_never_guessed() -> None:
                     completed_levels={"labs.game-speed": 3, "labs.unlock-perks": 1,
                                       "labs.standard-perks-bonus": 0})
     assert unlocked.slots[1].next.lab_id == "labs.standard-perks-bonus"
+
+
+FILLER_RULES = {"coins": {"lab_share": {"mode": "just_in_time", "pct": 25}},
+                "labs": {"filler": {"enabled": True, "max_price_pct_of_wallet": 10, "min_hours": 1}}}
+
+
+def evaluate(route: Route, **changes: Any) -> tuple[list[Any], list[Any], int | None]:
+    from fleet.lab_list import _evaluate_slots
+    from fleet.resource_blocks import _slot_context
+    lab_facts = facts(**changes)
+    return _evaluate_slots(route, lab_facts, _slot_context(lab_facts))
+
+
+def test_unaffordable_target_gets_shortest_cheap_filler() -> None:
+    # Game Speed L4 costs 50,000; the wallet holds 20,000, so the price cap is 2,000. Both
+    # Coins/Wave L3 (178 coins, 960 s) and Coins/Kill L6 (1,350 coins, 4,800 s) fit the cap and
+    # the ~4.2h gap (income 10,000/h at a 75% margin); the shorter one wins.
+    cw3, ckb6 = lab_catalog.level("labs.coins-wave", 3), lab_catalog.level("labs.coins-kill-bonus", 6)
+    assert cw3.seconds < ckb6.seconds and ckb6.coins <= 2_000
+    plans, savings, left = evaluate(Route(rules=FILLER_RULES), wallet_coins=20_000, available_coins=20_000)
+    slot1 = plans[0]
+    assert slot1.role == "filler" and slot1.saving_for.lab_id == "labs.game-speed"
+    assert (slot1.next.lab_id, slot1.next.level) == ("labs.coins-wave", 3)
+    assert slot1.covered is True
+    assert "Filler Coins / Wave L3 while saving for Game Speed L4" in slot1.why
+    # Game Speed is saved for until the filler ends; slot 2's Labs Speed starts now.
+    assert savings == [SlotSaving(1, slot1.saving_for, NOW + cw3.seconds, True, "S+")]
+    assert plans[1].role == "target" and plans[1].covered is True
+    assert left == 20_000 - cw3.coins - plans[1].next.price
+
+
+def test_filler_over_price_cap_is_refused() -> None:
+    # Cap = 500 coins: Coins/Wave L10 (6,180) and Coins/Kill L30 (147,960) are both over it.
+    result = plan(Route(rules=FILLER_RULES), wallet_coins=5_000, available_coins=5_000,
+                  completed_levels={"labs.game-speed": 3, "labs.labs-speed": 10,
+                                    "labs.coins-wave": 9, "labs.coins-kill-bonus": 29})
+    assert result.slots[0].role == "target" and result.slots[0].next.lab_id == "labs.game-speed"
+    assert result.slots[0].covered is False
+    assert result.slots[0].why[-1] == "No filler fits the price cap and the gap"
+
+
+def test_filler_longer_than_gap_is_refused() -> None:
+    # The only candidate is Coins/Kill L7 (2,130 coins, 6,960 s); the wallet is 49,000 of Game
+    # Speed's 50,000. At 1,500/h net income the gap is (50,000 - 46,870) / 1,500 = 2.09h, so it
+    # fits; at 7.5M/h the gap collapses to min_hours (1h), which the 1.9h filler overruns.
+    entries = [GS, {"id": "ckb", "lab_id": "labs.coins-kill-bonus", "to_level": 30, "tier": "A"}]
+    levels = {"labs.game-speed": 3, "labs.coins-kill-bonus": 6}
+    slow = plan(Route(entries, FILLER_RULES), wallet_coins=49_000, available_coins=49_000,
+                coins_per_hour=2_000.0, completed_levels=levels)
+    assert slow.slots[0].role == "filler" and slow.slots[0].next.level == 7
+    fast = plan(Route(entries, FILLER_RULES), wallet_coins=49_000, available_coins=49_000,
+                coins_per_hour=10_000_000.0, completed_levels=levels)
+    assert fast.slots[0].role == "target" and fast.slots[0].next.lab_id == "labs.game-speed"
+    assert fast.slots[0].why[-1] == "No filler fits the price cap and the gap"
+
+
+def test_unknown_income_caps_filler_at_min_hours() -> None:
+    # Coins/Kill L6 runs 4,800 s: it fits the ~4.2h gap with income known, not the 1h min_hours.
+    entries = [GS, {"id": "ckb", "lab_id": "labs.coins-kill-bonus", "to_level": 30, "tier": "A"}]
+    levels = {"labs.game-speed": 3, "labs.coins-kill-bonus": 5}
+    known = plan(Route(entries, FILLER_RULES), wallet_coins=20_000, available_coins=20_000,
+                 completed_levels=levels)
+    assert known.slots[0].role == "filler" and known.slots[0].next.level == 6
+    unknown = plan(Route(entries, FILLER_RULES), wallet_coins=20_000, available_coins=20_000,
+                   coins_per_hour=None, completed_levels=levels)
+    assert unknown.slots[0].role == "target" and unknown.slots[0].next.lab_id == "labs.game-speed"
+    # A filler within min_hours still runs: Coins/Wave L3 takes 960 s.
+    short = plan(Route(rules=FILLER_RULES), wallet_coins=20_000, available_coins=20_000, coins_per_hour=None)
+    assert short.slots[0].role == "filler" and short.slots[0].next.seconds == 960
+
+
+def test_slot_without_a_target_says_no_filler_fits() -> None:
+    # Game Speed is maxed and Coins/Wave L10 (6,180, tier C) is beyond its 0h save window, so slot 1
+    # has no target; the same lab is over the 200-coin filler cap.
+    entries = [GS, {"id": "cw", "lab_id": "labs.coins-wave", "to_level": 10, "tier": "C"}]
+    plans, savings, _ = evaluate(Route(entries, FILLER_RULES), wallet_coins=2_000, available_coins=2_000,
+                                 completed_levels={"labs.game-speed": 7, "labs.coins-wave": 9})
+    assert plans[0].next is None and plans[0].covered is None
+    assert plans[0].why[-2].startswith("No entry can run now")
+    assert plans[0].why[-1] == "No filler fits the price cap and the gap"
+    assert savings == []
+
+
+def test_disabled_filler_leaves_slot_waiting_on_target() -> None:
+    result = plan(wallet_coins=20_000, available_coins=20_000)
+    assert result.slots[0].role == "target" and result.slots[0].next.lab_id == "labs.game-speed"
+    assert result.slots[0].covered is False
+    assert result.slots[0].why[-1] == "Fillers off"
+
+
+def test_owned_unread_slot_targets_now_without_a_filler() -> None:
+    owned = {1: slot("idle"), 2: slot("owned_unread"), 3: slot("locked"), 4: slot("locked"), 5: slot("locked")}
+    plans, savings, _ = evaluate(Route(rules=FILLER_RULES), slots=owned, wallet_coins=5_000,
+                                 available_coins=5_000)
+    assert plans[1].role == "target" and plans[1].next.lab_id == "labs.labs-speed"
+    assert [s for s in savings if s.slot == 2] == [SlotSaving(2, plans[1].next, NOW, False, "S")]
+
+
+def test_researching_slot_targets_its_completion() -> None:
+    owned = {1: slot("researching", "labs.game-speed", 4, NOW + 7200), 2: slot("idle"),
+             3: slot("locked"), 4: slot("locked"), 5: slot("locked")}
+    plans, savings, _ = evaluate(Route(rules=FILLER_RULES), slots=owned)
+    assert plans[0].role == "target" and plans[0].next.level == 5
+    assert savings[0] == SlotSaving(1, plans[0].next, NOW + 7200, False, "S+")

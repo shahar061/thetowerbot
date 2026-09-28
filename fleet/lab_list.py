@@ -7,6 +7,7 @@ added below it. Kept apart from resource_blocks.py, which keeps slot tracks.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
 import lab_catalog
@@ -15,7 +16,7 @@ from fleet.lab_saving import income_rate
 from fleet.strategy_blocks import MAX_BLOCKS
 
 if TYPE_CHECKING:
-    from fleet.resource_blocks import GemPlan, LabFacts, LabPlan, SlotContext, SlotNext, SlotNow
+    from fleet.resource_blocks import GemPlan, LabFacts, LabPlan, SlotContext, SlotNext, SlotNow, SlotPlan
 
 # fleet.resource_blocks imports this module in its header, so every runtime
 # import from it below stays inside a function: importing it here would cycle.
@@ -187,19 +188,61 @@ def _target(slot: int, entries: list[Mapping[str, Any]], facts: LabFacts, ctx: S
     return None, None
 
 
-def evaluate_lab_list(route: Any, facts: LabFacts, *, ctx: SlotContext, gems: GemPlan) -> LabPlan:
-    """Pure: each owned slot's target. No reads, writes or clocks.
+@dataclass(frozen=True)
+class SlotSaving:
+    """A slot target the saving plan must fund by `needed_at` (None: completion unread)."""
+    slot: int
+    target: SlotNext
+    needed_at: float | None
+    idle_slot: bool
+    tier: str
+
+
+def _filler(slot: int, entries: list[Mapping[str, Any]], facts: LabFacts, ctx: SlotContext,
+            elsewhere: set[str], claimed: set[str], wallet: int, target: SlotNext | None,
+            rate: float | None, rule: Any) -> SlotNext | None:
+    """Step 4 of spec section 3: the shortest cheap entry whose duration fits the gap.
+
+    The gap is the hours until the target is affordable after paying for the filler,
+    never below min_hours, and exactly min_hours with income unknown or no target.
+    """
+    cap = wallet * rule.max_price_pct_of_wallet / 100
+    best: tuple[tuple[int, int], SlotNext] | None = None
+    for rank, entry in enumerate(entries):
+        if target is not None and entry["lab_id"] == target.lab_id:
+            continue
+        option, _ = _candidate(entry, slot, facts, ctx, elsewhere, claimed)
+        if option is None or option.seconds is None or option.price > cap:
+            continue
+        gap = rule.min_hours
+        if target is not None and rate is not None:
+            gap = max(gap, (target.price - (wallet - option.price)) / rate)
+        if option.seconds > gap * 3600:
+            continue
+        key = (option.seconds, rank)
+        if best is None or key < best[0]:
+            best = (key, option)
+    return best[1] if best else None
+
+
+def _evaluate_slots(route: Any, facts: LabFacts,
+                    ctx: SlotContext) -> tuple[list[SlotPlan], list[SlotSaving], int | None]:
+    """Each owned slot's plan, the targets the saving plan must fund, and the wallet left
+    after the starts that happen now.
 
     Every slot is judged against the same wallet: a slot's target takes no coins
-    from the slots after it (spec section 3, "Coins between slots").
+    from the slots after it (spec section 3, "Coins between slots"). The starts-now
+    spending is summed apart and only subtracted for the returned leftover.
     """
-    from fleet.resource_blocks import LAB_SLOTS, LabPlan, SlotPlan, _capabilities, research_automated
+    from fleet.resource_blocks import LAB_SLOTS, SlotPlan, _capabilities, research_automated
     rules = route.rules
     entries = route.labs.blocks[0]["entries"]
     rate = income_rate(facts, rules)
     wallet = facts.available_coins if facts.available_coins is not None else facts.wallet_coins
     claimed: set[str] = set()
-    plans = []
+    plans: list[SlotPlan] = []
+    savings: list[SlotSaving] = []
+    spent_now = 0
     for slot in LAB_SLOTS:
         now = ctx.nows[slot]
         if now.owned is not True:
@@ -207,19 +250,51 @@ def evaluate_lab_list(route: Any, facts: LabFacts, *, ctx: SlotContext, gems: Ge
                                   None, _capabilities(slot, False, now, facts, False)))
             continue
         own = now.research_id if now.state == "researching" else None
+        elsewhere = ctx.unavailable - {own}
         why: list[str] = []
-        target, _ = _target(slot, entries, facts, ctx, ctx.unavailable - {own}, claimed, wallet,
-                            rate, _hours_until(now, facts.now), rules, why)
-        automated = (target is not None and rules.labs.auto_start
-                     and research_automated(target.lab_id, slot))
-        note = "Start manually" if target is not None and not automated else None
-        starts_now = (target is not None and now.state == "idle" and wallet is not None
-                      and target.price <= wallet)
-        covered = (True if starts_now else None if wallet is None or target is None
-                   else False if now.state == "idle" else None)
-        plans.append(SlotPlan(slot, now, target, covered, automated, tuple(why), note,
-                              _capabilities(slot, automated, now, facts, True)))
-        if target is not None:
-            claimed.add(target.lab_id)
+        target, entry = _target(slot, entries, facts, ctx, elsewhere, claimed, wallet,
+                                rate, _hours_until(now, facts.now), rules, why)
+        next_, role, saving_for = target, "target", None
+        idle = now.state == "idle"
+        # Researching: due when its research completes. Idle or owned-but-unread: due now.
+        needed_at = now.completes_at if now.state == "researching" else facts.now
+        affordable = target is not None and wallet is not None and target.price <= wallet
+        if idle and not affordable:
+            filler = None
+            if not rules.labs.filler.enabled:
+                why.append("Fillers off")
+            elif wallet is None:
+                why.append("No filler: wallet unread")
+            else:
+                filler = _filler(slot, entries, facts, ctx, elsewhere, claimed, wallet, target,
+                                 rate, rules.labs.filler)
+                if filler is None:
+                    why.append("No filler fits the price cap and the gap")
+            if filler is not None:
+                next_, role, saving_for = filler, "filler", target
+                needed_at = facts.now + filler.seconds
+                why.append(f"Filler {filler.name} L{filler.level} while saving"
+                           + (f" for {target.name} L{target.level}" if target else ""))
+        starts_now = idle and next_ is not None and wallet is not None and next_.price <= wallet
+        automated = next_ is not None and rules.labs.auto_start and research_automated(next_.lab_id, slot)
+        note = "Start manually" if next_ is not None and not automated else None
+        covered = (True if starts_now else None if wallet is None or next_ is None
+                   else False if idle else None)
+        plans.append(SlotPlan(slot, now, next_, covered, automated, tuple(why), note,
+                              _capabilities(slot, automated, now, facts, True), role, saving_for))
+        for picked in (next_, saving_for):
+            if picked is not None:
+                claimed.add(picked.lab_id)
+        if starts_now:
+            spent_now += next_.price
+        if target is not None and entry is not None and not (starts_now and role == "target"):
+            savings.append(SlotSaving(slot, target, needed_at, idle, entry["tier"]))
+    return plans, savings, None if wallet is None else wallet - spent_now
+
+
+def evaluate_lab_list(route: Any, facts: LabFacts, *, ctx: SlotContext, gems: GemPlan) -> LabPlan:
+    """Pure: each owned slot's target or filler. No reads, writes or clocks."""
+    from fleet.resource_blocks import LabPlan
+    plans, _, _ = _evaluate_slots(route, facts, ctx)
     return LabPlan(facts.wallet_coins, facts.jar, tuple(plans), gems,
                    getattr(route, "revision", 0), facts.account_id, facts.scope, facts.now)
