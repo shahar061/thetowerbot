@@ -51,7 +51,6 @@ def test_just_in_time_requires_lab_list() -> None:
         RouteBaseline.from_dict(_baseline({"coins": {"lab_share": {"mode": "just_in_time", "pct": 25}}}))
 
 
-@pytest.mark.xfail(reason="lab_list lands in Task 4", strict=True)
 def test_just_in_time_with_lab_list_loads() -> None:
     labs = {"slot1_research": "game_speed", "steps": ["research_game_speed"], "mode": "blocks", "blocks": LIST}
     baseline = RouteBaseline.from_dict(_baseline({"coins": {"lab_share": {"mode": "just_in_time", "pct": 25}}}, labs))

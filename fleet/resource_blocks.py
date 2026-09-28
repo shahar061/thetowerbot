@@ -148,9 +148,15 @@ def _lab_children(items: object, ids: _Ids, depth: int) -> tuple[dict[str, Any],
 
 
 def validate_labs(value: object) -> tuple[dict[str, Any], ...]:
-    """Top level is slot tracks; each slot belongs to at most one track."""
+    """Top level is slot tracks; each slot belongs to at most one track. Or, a labs
+    lane may instead hold a single lab_list block in place of every slot track."""
     if not isinstance(value, (list, tuple)) or not value:
         raise ValueError("labs program needs at least one slot track")
+    if any(isinstance(raw, Mapping) and raw.get("type") == "lab_list" for raw in value):
+        if len(value) != 1:
+            raise ValueError("a lab list must be the labs lane's only block")
+        from fleet.lab_list import validate_lab_list
+        return (validate_lab_list(value[0]),)
     ids = _Ids()
     owners: dict[int, str] = {}
     tracks: list[dict[str, Any]] = []
