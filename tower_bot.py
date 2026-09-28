@@ -45,6 +45,7 @@ from lab_routes import research_gate, unlock_gate
 import lab_screen
 from identity_reverify import IdentityReverifier
 from labs import LabsState
+from local_env import load_local_env
 from account_state import AccountState, AccountRepository
 from account_screens import ScreenReadings
 
@@ -3450,6 +3451,8 @@ def serve_web(
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging(args.tui)
+    # Before anything reads a credential; fleet workers inherit the result.
+    load_local_env()
     try:
         runtime = resolve_worker_runtime(args)
         pools = (args.bluestacks_pool is not None) + (args.reroll_pool is not None)

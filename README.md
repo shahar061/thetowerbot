@@ -127,9 +127,10 @@ pool.
 Model recovery is **off by default**. Ordinary deterministic recovery and
 pause handling continue when OpenRouter is unconfigured, offline, rate limited
 or over budget. The backend environment variable is exactly
-`CLAUDE_OPENROUTER_API_KEY`; configure it in the worker process environment and
-restart the worker. Do not enter the key in the web dashboard, a strategy, a
-manifest, or a repository file. The configured candidate model defaults to
+`CLAUDE_OPENROUTER_API_KEY`; set it in `.env` (see
+[Local credentials](#local-credentials-env)) or the worker process environment
+and restart the worker. Do not enter the key in the web dashboard, a strategy,
+a manifest, or any tracked file. The configured candidate model defaults to
 `openai/gpt-5.4-nano`; the worker checks provider capability before sending,
 and there is no automatic model fallback.
 
@@ -1013,7 +1014,8 @@ export TELEGRAM_CHAT_ID='987654321'        # from @userinfobot
 ./run.sh
 ```
 
-There is no `--telegram` flag to forget beside them: both set means on,
+Or put the same two lines (without `export`) in `.env`; see
+[Local credentials](#local-credentials-env). There is no `--telegram` flag to forget beside them: both set means on,
 either missing means off. Open **Settings** at the bottom of the dashboard's
 single emulator or reroll fleet side menu to choose that mode's interval
 (1–1,440 minutes), enable or disable updates, and select the message fields.
@@ -1137,6 +1139,20 @@ burst of taps on a button that was already pressed.
 (`0.12`) are the shipped jitter defaults — what a fresh clone starts from.
 Tune them per profile on the Strategy page rather than here; see "Jitter"
 above for what each one does and why the cooldowns only stretch.
+
+### Local credentials (`.env`)
+
+Secrets never go in `config.py`. Copy `.env.example` to `.env` beside
+`tower_bot.py` and fill in what you use:
+
+```bash
+cp .env.example .env && chmod 600 .env
+```
+
+`.env` is git-ignored. `tower_bot.py` loads it once at startup and fleet
+workers inherit the result. A variable already set in the shell wins over the
+file, and the log names the variables it loaded, never their values. Git
+worktrees do not share it: it exists only in the checkout you created it in.
 
 ## Dependencies
 

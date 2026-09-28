@@ -82,6 +82,21 @@ def fenced_strategy_dir(tmp_path_factory: pytest.TempPathFactory):
         yield fenced
 
 
+@pytest.fixture(scope="session", autouse=True)
+def fenced_local_env():
+    """Keep tower_bot.main() from loading the operator's real .env.
+
+    In the main checkout that file holds live credentials; a test driving
+    main() would otherwise put a real Telegram token in os.environ and send
+    real digests. test_local_env.py exercises the loader directly.
+    """
+    import tower_bot
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(tower_bot, "load_local_env", lambda *a, **k: [])
+        yield
+
+
 @pytest.fixture(autouse=True)
 def no_ocr_reuse_between_tests():
     """ocr keeps the last menu full read at module level (spec P3). A test
