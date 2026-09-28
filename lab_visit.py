@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import logging
 from pathlib import Path
 import time
 from typing import Callable
@@ -26,6 +27,8 @@ import pages
 import vision
 from labs import LabJob, LabsReading
 from lab_unlock_rollout import LabUnlockRollout, RolloutChange
+
+logger = logging.getLogger(__name__)
 
 # Body lines unique to the first-visit LABS info popup, whitespace removed.
 _INTRO_LINES = ("LABSGRANTYOU", "GEMRUSHEFFICIENCY")
@@ -337,7 +340,10 @@ class LabVisit:
                     self._return(LabVisitResult('started', reason, self._purchase,
                         confirmed_job=job, observed_coin_spend=outcome.spent, transaction_key=txn.key))
                 else:
-                    self._return(replace(self._outcome or LabVisitResult('observed', 'slot_unlocked', LabDecision('unknown')),
+                    # A canary's tap settled on a later visit (the tapping one was
+                    # cancelled or restarted) still promotes the slot.
+                    self._note_unlock(txn, 'bought')
+                    self._return(self._unlock_outcome('observed', 'slot_unlocked',
                         slot_status=_slot_status(home, self._reading), unlocked_slot=txn.before['slot'],
                         gem_balance=home.gem_balance, gems_before=txn.wallet_before,
                         observed_gem_spend=outcome.spent, unlock_transaction_key=txn.key))
@@ -543,6 +549,8 @@ class LabVisit:
                 if outcome.verdict == transactions.Verdict.BOUGHT and outcome.spent == txn.price:
                     return self._unlock_bought(txn, home, outcome)
                 return self._unlock_uncertain(txn, slot, 'gem debit did not match the price')
+            # Owned but not yet confirmed: it breaks any run of still-locked reads.
+            self._unlanded_signature = None
         elif (strip and reading.slots_owned == slot - 1 and locked is not None
               and locked.slot == slot and locked.price == txn.price
               and home.gem_balance is not None and home.gem_balance == txn.wallet_before):
@@ -560,15 +568,33 @@ class LabVisit:
             return self._unlock_uncertain(txn, slot, 'post-tap screen was not understood')
         return None
 
+    def _note_unlock(self, txn: transactions.Transaction, outcome: str) -> None:
+        """Report a settled canary tap to the rollout; a no-op for any other worker or stage."""
+        if self.rollout is not None and self.worker is not None:
+            self._publish_change(self.rollout.note_unlock(txn.before['slot'], self.worker, txn.key,
+                                                          outcome, at=self.wall_clock()))
+
+    def _unlock_outcome(self, status: str, reason: str, **fields: object) -> LabVisitResult:
+        """The unlock's result, keeping what this visit already learned about research.
+
+        A research start confirmed earlier in the visit keeps its status and
+        reason; any other earlier outcome keeps its job and decision.
+        """
+        prior = self._outcome
+        if prior is None:
+            return LabVisitResult(status, reason, LabDecision('unknown'), **fields)
+        if prior.status == 'started':
+            return replace(prior, **fields)
+        return replace(prior, status=status, reason=reason, **fields)
+
     def _unlock_bought(self, txn: transactions.Transaction, home: LabHomeReading,
                        outcome: transactions.Outcome) -> None:
         slot = txn.before['slot']
         self._restore_receipts()  # publishes LabSlotUnlocked with the journal's values
-        self._publish_change(self.rollout.note_unlock(slot, self.worker, txn.key, 'bought',
-                                                      at=self.wall_clock()))
+        self._note_unlock(txn, 'bought')
         self._unlock_tap = None
         self.recovery_status = 'settled'
-        self._return(LabVisitResult('observed', 'slot_unlocked', LabDecision('unknown'),
+        self._return(self._unlock_outcome('observed', 'slot_unlocked',
             slot_status=_slot_status(home, self._reading), gem_balance=home.gem_balance,
             gems_before=txn.wallet_before, observed_gem_spend=outcome.spent,
             unlock_transaction_key=txn.key, unlocked_slot=slot))
@@ -576,25 +602,32 @@ class LabVisit:
 
     def _unlock_missed(self, txn: transactions.Transaction, home: LabHomeReading) -> None:
         self._restore_receipts()
-        self._publish_change(self.rollout.note_unlock(txn.before['slot'], self.worker, txn.key,
-                                                      'not_charged', at=self.wall_clock()))
+        self._note_unlock(txn, 'not_charged')
         self._unlock_tap = None
-        self._return(LabVisitResult('observed', 'unlock_not_landed', LabDecision('unknown'),
+        self._return(self._unlock_outcome('observed', 'unlock_not_landed',
             slot_status=_slot_status(home, self._reading), gem_balance=home.gem_balance))
         return None
 
     def _save_unlock_evidence(self, slot: int, txn: transactions.Transaction) -> tuple[str, ...]:
-        """The frames from the tap onward, as evidence/lab-unlock-slot<N>-<ts>-<k>.png."""
+        """The frames from the tap onward, as evidence/lab-unlock-slot<N>-<ts>-<k>.png.
+
+        Best effort: a frame that cannot be written is logged and left out, and
+        the halt goes ahead with whatever was saved.
+        """
         if self.evidence_dir is None:
             return ()
         import cv2
-        self.evidence_dir.mkdir(parents=True, exist_ok=True)
         stamp = int(txn.acted_at if txn.acted_at is not None else self.wall_clock())
         saved = []
-        for index, image in enumerate(self._unlock_frames):
-            path = self.evidence_dir / f"lab-unlock-slot{slot}-{stamp}-{index}.png"
-            if cv2.imwrite(str(path), image):
-                saved.append(str(path))
+        try:
+            self.evidence_dir.mkdir(parents=True, exist_ok=True)
+            for index, image in enumerate(self._unlock_frames):
+                path = self.evidence_dir / f"lab-unlock-slot{slot}-{stamp}-{index}.png"
+                if cv2.imwrite(str(path), image):
+                    saved.append(str(path))
+        except (OSError, cv2.error) as exc:
+            logger.warning("Lab unlock evidence for slot %s not fully saved to %s (%s)",
+                           slot, self.evidence_dir, exc)
         return tuple(saved)
 
     def _unlock_uncertain(self, txn: transactions.Transaction, slot: int,
@@ -606,8 +639,9 @@ class LabVisit:
             self._publish_change(self.rollout.halt(slot, reason, evidence))
         self._unlock_tap = None
         self.recovery_status = 'lab_unlock_uncertain'
-        return self._finish(LabVisitResult('failed', 'lab_unlock_uncertain', LabDecision('unknown'),
-                                           gems_before=txn.wallet_before))
+        # The tap may have landed: record no slot status from before it.
+        return self._finish(self._unlock_outcome('failed', 'lab_unlock_uncertain', slot_status=(),
+                                                 gems_before=txn.wallet_before))
 
     def advance(
         self, screen: Image, boxes: tuple[ocr.TextBox, ...],
@@ -625,11 +659,9 @@ class LabVisit:
             self._started_at = now
         self._scans += 1
         if self._scans > 48 or now - self._started_at > 90:
-            pending = self.pending_transaction
-            if self._unlock_tap is not None and pending is not None and pending.key == self._unlock_tap[0]:
-                return self._unlock_uncertain(pending, self._unlock_tap[1],
-                                              'the visit timed out before the tap settled')
-            if pending is not None:
+            # An unsettled unlock tap keeps its hold without halting the slot; the
+            # next visit's recovery settles it (and promotes a canary's slot).
+            if self.pending_transaction is not None:
                 self.recovery_status = 'lab_reconciliation_route_unavailable'
             return self._finish(self._outcome or LabVisitResult(
                 "failed", "visit_timeout", LabDecision("unknown")))

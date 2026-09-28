@@ -213,17 +213,126 @@ def test_an_unreadable_post_tap_screen_halts_the_canary_and_keeps_the_hold(tmp_p
     assert [e.slot for e in h.of(events.LabUnlockHalted)] == [2]
 
 
-def test_a_visit_that_times_out_before_the_tap_settles_halts_the_canary(tmp_path, monkeypatch) -> None:
+def settle_on_a_new_visit(h: UnlockHarness) -> None:
+    """A later visit reads slot 2 owned until its recovery settles the open tap."""
+    h.open()
+    for _ in range(4):
+        h.scan(owned_boxes())
+        if not h.journal.open_transactions():
+            return
+
+
+def test_a_visit_that_times_out_before_the_tap_settles_keeps_the_hold_without_halting(tmp_path, monkeypatch) -> None:
     h = UnlockHarness(tmp_path, monkeypatch)
     promote_canary(h.rollout)
     h.open()
     h.leave(locked_boxes())
     h.time += 100
     result = h.scan(dialog_boxes())
-    assert result is not None and result.reason == "lab_unlock_uncertain"
+    assert result is not None and not h.visit.active
+    assert h.visit.recovery_status == "lab_reconciliation_route_unavailable"
     state = h.rollout.slot(2)
-    assert (state.stage, state.halted_reason) == ("halted", "the visit timed out before the tap settled")
-    assert len(state.evidence) == 1 and h.journal.open_transactions()
+    assert (state.stage, state.canary_worker, state.evidence) == ("canary", "Air_1", ())
+    assert h.journal.open_transactions() and not h.of(events.LabUnlockHalted)
+    settle_on_a_new_visit(h)
+    assert h.journal.open_transactions() == () and h.rollout.slot(2).stage == "fleet"
+
+
+def test_a_canary_tap_settled_by_a_later_visit_promotes_the_slot(tmp_path, monkeypatch) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    assert h.leave(locked_boxes()) == "unlock_lab_slot_2"
+    h.visit.cancel("paused")
+    settle_on_a_new_visit(h)
+    assert h.journal.open_transactions() == ()
+    state = h.rollout.slot(2)
+    assert state.stage == "fleet" and state.unlock["outcome"] == "bought"
+    assert [e.stage for e in h.of(events.LabUnlockPromoted)] == ["fleet"]
+    assert [(e.slot, e.price) for e in h.of(events.LabSlotUnlocked)] == [(2, 100)]
+    assert h.device.taps.count(PRICE_POINT) == 1
+
+
+def test_an_owned_read_breaks_the_still_locked_chain(tmp_path, monkeypatch) -> None:
+    # locked, owned (not yet confirmed), locked is not two consecutive unlanded reads.
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    h.leave(locked_boxes())
+    h.scan(locked_boxes())
+    h.scan(owned_boxes(gems="150"))
+    h.scan(locked_boxes())
+    assert h.journal.open_transactions() and h.rollout.slot(2).unlock is None
+
+
+@pytest.mark.parametrize("failure", ["mkdir", "imwrite"])
+def test_a_failed_evidence_save_still_halts_the_canary(tmp_path, monkeypatch, failure) -> None:
+    import cv2
+    h = UnlockHarness(tmp_path, monkeypatch)
+    if failure == "mkdir":
+        h.visit.evidence_dir = h.root / "not-a-directory"
+        h.visit.evidence_dir.write_text("")
+    else:
+        writes = []
+        real = cv2.imwrite
+
+        def flaky(path, image):
+            writes.append(path)
+            if len(writes) > 1:
+                raise cv2.error("disk full")
+            return real(path, image)
+        monkeypatch.setattr(cv2, "imwrite", flaky)
+    promote_canary(h.rollout)
+    h.open()
+    h.leave(locked_boxes())
+    results = [h.scan(dialog_boxes()) for _ in range(3)]
+    assert results[-1] is not None and results[-1].reason == "lab_unlock_uncertain"
+    state = h.rollout.slot(2)
+    assert state.stage == "halted" and len(state.evidence) == (0 if failure == "mkdir" else 1)
+
+
+RUNNING = "menu_labs_game_speed_running"
+
+
+def running_boxes(gems: str = "150") -> tuple[ocr.TextBox, ...]:
+    """Lab 1 researching Game Speed, Lab 2 locked for 100 gems, `gems` in the header."""
+    return tuple(ocr.TextBox(gems, box.confidence, box.rect) if box.text == "69" else box
+                 for box in boxes(RUNNING))
+
+
+def running_owned_boxes(gems: str = "50") -> tuple[ocr.TextBox, ...]:
+    """Lab 1 researching, Lab 2 owned and idle, Lab 3 the next locked tile."""
+    kept = tuple(box for box in running_boxes(gems) if box.text not in {"Unlock Znd lab", "100"})
+    return kept + (ocr.TextBox("Lab Offline", .99, config.Rect(394, 832, 291, 52)),
+                   ocr.TextBox("Lab 3", .99, config.Rect(25, 1046, 97, 39)),
+                   ocr.TextBox("Unlock 3rd lab", .99, config.Rect(351, 1174, 378, 51)),
+                   ocr.TextBox("400", .99, config.Rect(536, 1271, 101, 53)))
+
+
+def test_one_visit_starts_research_and_unlocks_a_slot_and_reports_both(tmp_path, monkeypatch) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open(LabVisitOptions(unlock_slots=(2,)))
+    for name in ("menu_labs_slot1_affordable",) * 2 + ("menu_labs_game_speed_affordable",) * 2 \
+            + ("menu_labs_game_speed_confirmation",) * 2:
+        h.scan(boxes(name), name)
+    assert h.visit.last_tap is not None and h.visit.last_tap[0] == "confirm_game_speed"
+    for _ in range(8):
+        h.scan(running_boxes(), RUNNING)
+        if h.visit.last_tap is not None and h.visit.last_tap[0] == "unlock_lab_slot_2":
+            break
+    assert h.visit.last_tap[0] == "unlock_lab_slot_2"
+    for _ in range(6):
+        h.scan(running_owned_boxes(), RUNNING)
+        if h.visit.last_tap is not None and h.visit.last_tap[0] == "return_to_battle":
+            break
+    result = h.finish()
+    assert (result.status, result.reason) == ("started", "game_speed_confirmed")
+    assert result.confirmed_job is not None and result.observed_coin_spend == 300
+    assert result.transaction_key is not None
+    assert (result.unlocked_slot, result.observed_gem_spend, result.gem_balance) == (2, 100, 50)
+    assert result.slot_status == ((2, "owned"), (3, "locked"))
+    assert h.rollout.slot(2).stage == "fleet" and h.journal.open_transactions() == ()
 
 
 def test_a_debit_that_does_not_match_the_price_halts_the_canary(tmp_path, monkeypatch) -> None:
