@@ -31,6 +31,7 @@ from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
 from fleet import coin_share
+from fleet.lab_facts import best_waves, coins_per_hour
 from fleet.resource_blocks import LabFacts, LabPlan, evaluate_lab_plan
 from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
 from policy import AutopilotPolicy, UpgradeRule
@@ -179,7 +180,9 @@ class RerollProgress:
                     and wallet_gems >= 0 else None)
         facts = replace(facts, available_coins=available, wallet_coins=available,
                         wallet_gems=gems,
-                        jar=self.coin_jar.amount(quiet=True))
+                        jar=self.coin_jar.amount(quiet=True),
+                        coins_per_hour=coins_per_hour(self.root, self.account_id),
+                        best_waves=best_waves(self.root / "tower_bot.db") or None)
         route = self.route_runtime.current()
         return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
 
