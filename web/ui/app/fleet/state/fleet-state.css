@@ -1,0 +1,153 @@
+/* Fleet State: one column per emulator. Ported from the approved mockup onto
+   the Telemetry tokens, so both themes work. Every class is prefixed fs-. */
+
+.fs-root {
+  --fs-display: var(--font-chakra-petch), "Rajdhani", ui-sans-serif, system-ui, sans-serif;
+  --fs-line-soft: color-mix(in oklch, var(--border) 65%, transparent);
+  --fs-cash: light-dark(oklch(0.52 0.15 145), oklch(0.83 0.17 145));
+  --fs-coin: light-dark(oklch(0.58 0.13 85), oklch(0.86 0.14 92));
+  --fs-gem: var(--cat-cards);
+  min-height: 100%;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-x: clip;
+}
+.fs-mono, .fs-root .n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.fs-dim { color: var(--faint-foreground); }
+.fs-root small { font-size: 11px; color: var(--muted-foreground); }
+.fs-none { margin: 0; padding: 4px 0; font-size: 12px; color: var(--muted-foreground); }
+
+/* ---------- account column ---------- */
+.fs-acct {
+  --cut: 16px;
+  position: relative; min-width: 0;
+  background: linear-gradient(180deg, color-mix(in oklch, var(--acc) 12%, var(--card)) 0, var(--card) 220px);
+  border: 1px solid var(--border);
+  clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+}
+.fs-acct::before { content: ""; position: absolute; left: 0; top: 0; height: 3px; width: calc(100% - var(--cut)); background: var(--acc); }
+.fs-ah { padding: 14px 14px 10px; }
+.fs-ah-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.fs-emu { font-family: var(--fs-display); font-weight: 700; font-size: 18px; letter-spacing: .06em; color: var(--acc); }
+.fs-ah h2 { font-family: var(--fs-display); font-weight: 700; font-size: 20px; letter-spacing: .04em; margin: 0; text-transform: uppercase; }
+.fs-ser { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--faint-foreground); }
+.fs-live {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px;
+  font-family: var(--fs-display); font-weight: 700; font-size: 11px; letter-spacing: .16em;
+  color: var(--live); background: var(--live-surface); border: 1px solid color-mix(in oklch, var(--live) 50%, transparent);
+}
+.fs-live i { width: 8px; height: 8px; border-radius: 50%; background: var(--live); animation: fs-pulse 1.4s ease-out infinite; }
+@keyframes fs-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--live) 80%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+.fs-stale { padding: 1px 8px; font-family: var(--font-mono); font-size: 11px; color: var(--warn); border: 1px dashed var(--warn); }
+.fs-error { margin: 8px 0 0; padding: 6px 8px; font-size: 12px; color: var(--danger); background: var(--danger-surface); }
+.fs-bot { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 10px 0 0; font-size: 12px; }
+.fs-bot div { display: contents; }
+.fs-bot dt { color: var(--faint-foreground); font-family: var(--fs-display); text-transform: uppercase; letter-spacing: .1em; font-size: 11px; padding-top: 2px; white-space: nowrap; }
+.fs-bot dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.fs-scr { --c: var(--muted-foreground); font-family: var(--font-mono); font-weight: 600; font-size: 12px; color: var(--c); padding: 1px 6px; background: color-mix(in oklch, var(--c) 14%, transparent); border-left: 2px solid var(--c); }
+.fs-scr[data-screen="IN_RUN"] { --c: var(--live); }
+.fs-scr[data-screen="GAME_OVER"] { --c: var(--warn); }
+.fs-scr[data-screen="OFFLINE"] { --c: var(--danger); }
+
+.fs-top3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); border-top: 1px solid var(--border); }
+.fs-top3 > * { min-width: 0; padding: 12px 14px; border-bottom: 1px solid var(--fs-line-soft); }
+.fs-flow { column-gap: 0; }
+.fs-flow.wide { columns: 340px; column-rule: 1px solid var(--fs-line-soft); }
+.fs-sec { min-width: 0; break-inside: avoid; padding: 0 14px; border-bottom: 1px solid var(--fs-line-soft); }
+.fs-sb { padding-bottom: 14px; }
+.fs-sh {
+  display: flex; align-items: center; gap: 8px; padding: 12px 0; list-style: none; cursor: pointer;
+  font-family: var(--fs-display); font-weight: 600; text-transform: uppercase; letter-spacing: .14em; font-size: 12px; color: var(--muted-foreground);
+}
+.fs-sh::-webkit-details-marker { display: none; }
+.fs-sh::before { content: ""; width: 8px; height: 8px; background: var(--sc, var(--primary)); transform: rotate(45deg); }
+.fs-sh-v { margin-left: auto; color: var(--foreground); letter-spacing: 0; font-family: var(--font-mono); font-size: 12px; text-transform: none; }
+details > .fs-sh::after { content: ""; width: 6px; height: 6px; border-right: 1.5px solid var(--faint-foreground); border-bottom: 1.5px solid var(--faint-foreground); transform: rotate(-45deg); transition: transform .15s; margin-left: 4px; }
+details[open] > .fs-sh::after { transform: rotate(45deg); }
+section.fs-sec > .fs-sh { cursor: default; }
+
+/* battle HUD, balances, buy queue */
+.fs-hud { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.fs-hud.on { background: linear-gradient(90deg, color-mix(in oklch, var(--live) 10%, transparent), transparent 70%); }
+.fs-wave small, .fs-kv small { display: block; font-family: var(--fs-display); text-transform: uppercase; letter-spacing: .14em; font-size: 10px; }
+.fs-wave b { font-family: var(--fs-display); font-weight: 700; font-size: 40px; line-height: 1; letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+.fs-hud.on .fs-wave b { text-shadow: 0 0 18px color-mix(in oklch, var(--live) 45%, transparent); }
+.fs-tier { font-family: var(--fs-display); font-weight: 700; font-size: 12px; padding: 1px 6px; margin-left: 6px; color: var(--live-foreground); background: var(--live); vertical-align: 8px; }
+.fs-kvs { display: flex; gap: 16px; flex-wrap: wrap; }
+.fs-kv b { font-family: var(--font-mono); font-weight: 600; font-size: 16px; }
+.fs-kv b.fs-small { font-size: 13px; }
+.fs-cash { color: var(--fs-cash); }
+.fs-coin { color: var(--fs-coin); }
+.fs-gem { color: var(--fs-gem); }
+.fs-hint { display: block; }
+.fs-best { flex: 1 1 100%; }
+.fs-pb { height: 5px; background: var(--fs-line-soft); overflow: hidden; }
+.fs-pb i { display: block; height: 100%; background: var(--c, var(--live)); transition: width .6s; }
+.fs-bal { display: flex; gap: 6px 18px; flex-wrap: wrap; align-items: baseline; }
+.fs-bal .fs-kv b { font-size: 18px; }
+.fs-queue { display: grid; gap: 8px; }
+.fs-qh { font-family: var(--fs-display); font-weight: 600; text-transform: uppercase; letter-spacing: .14em; font-size: 12px; color: var(--muted-foreground); }
+.fs-q { --c: var(--primary); display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; font-size: 12px; }
+.fs-q .qk { font-family: var(--fs-display); text-transform: uppercase; letter-spacing: .1em; font-size: 10px; color: var(--c); }
+.fs-q .qn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* workshop tabs */
+.fs-split { display: flex; gap: 2px; height: 6px; margin-bottom: 10px; }
+.fs-split i { display: block; min-width: 2px; }
+.fs-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-bottom: 10px; }
+.fs-tab { --c: var(--primary); position: relative; text-align: left; background: transparent; border: 1px solid var(--border); border-top: 3px solid color-mix(in oklch, var(--c) 45%, transparent); padding: 6px 8px; min-width: 0; color: inherit; }
+.fs-tab span { display: block; font-family: var(--fs-display); font-weight: 600; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--c); }
+.fs-tab b { display: block; font-family: var(--font-mono); font-size: 16px; font-weight: 600; }
+.fs-tab small { display: block; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fs-tab[aria-selected="true"] { background: color-mix(in oklch, var(--c) 14%, transparent); border-color: color-mix(in oklch, var(--c) 60%, transparent); border-top-color: var(--c); }
+.fs-tab.hn::after { content: ""; position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--c); transform: rotate(45deg); box-shadow: 0 0 8px var(--c); }
+
+/* shared ledger */
+.fs-tw { overflow-x: auto; max-width: 100%; }
+.fs-root table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.fs-root th { font-family: var(--fs-display); font-weight: 600; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint-foreground); text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.fs-root td { padding: 5px; border-bottom: 1px solid var(--fs-line-soft); white-space: nowrap; }
+.fs-root th.n, .fs-root td.n { text-align: right; }
+.fs-ledger tr.next td { background: color-mix(in oklch, var(--c) 17%, transparent); }
+.fs-ledger tr.next td:first-child { box-shadow: inset 3px 0 0 var(--c); }
+.fs-ledger tr.next { animation: fs-glow 2.4s ease-in-out infinite; }
+.fs-ledger tr.locked td { opacity: .55; }
+@keyframes fs-glow { 50% { filter: brightness(1.25); } }
+.fs-tn { margin-left: 6px; padding: 0 5px; font: 700 9px/15px var(--fs-display); letter-spacing: .14em; color: var(--background); background: var(--c); vertical-align: 1px; }
+.fs-unlock { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 2px; padding: 6px 8px; font-size: 12px; border: 1px dashed var(--border); color: var(--muted-foreground); }
+.fs-unlock b { color: var(--foreground); font-weight: 600; }
+.fs-unlock-cost { margin-left: auto; font-family: var(--font-mono); }
+.fs-rh { margin: 12px 0 4px; font-family: var(--fs-display); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint-foreground); }
+.fs-recent { list-style: none; margin: 0; padding: 0; max-height: 150px; overflow-y: auto; border: 1px solid var(--fs-line-soft); font-size: 12px; scrollbar-width: thin; }
+.fs-recent li { display: grid; grid-template-columns: 52px 8px 1fr auto; gap: 8px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--fs-line-soft); }
+.fs-recent .ago { color: var(--faint-foreground); font-size: 11px; font-family: var(--font-mono); }
+.fs-recent .cd { width: 8px; height: 8px; transform: rotate(45deg); }
+.fs-recent .rn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-note { margin: 0 0 8px; font-size: 12px; color: var(--muted-foreground); }
+.fs-note b { color: var(--foreground); font-family: var(--font-mono); }
+
+/* labs timers */
+.fs-timers { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; font-size: 12px; }
+.fs-timers .tr { display: flex; justify-content: space-between; gap: 8px; }
+.fs-timers .free { padding: 6px 8px; border: 1px dashed var(--cat-labs); color: var(--cat-labs); }
+
+/* in-run upgrades and runs */
+.fs-upt { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.fs-upt b { font-family: var(--fs-display); font-size: 28px; font-weight: 700; line-height: 1; }
+.fs-leg { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--muted-foreground); margin: 6px 0 10px; }
+.fs-leg i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; transform: rotate(45deg); }
+.fs-ub { display: grid; grid-template-columns: minmax(0, 120px) 1fr 30px; gap: 8px; align-items: center; font-size: 12px; margin: 3px 0; }
+.fs-ub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+.fs-ub .b { height: 10px; background: var(--fs-line-soft); }
+.fs-ub .b i { display: block; height: 100%; transition: width .5s; }
+.fs-ub em { font-style: normal; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.fs-runs td .wb { display: inline-block; padding: 0 4px; background: linear-gradient(90deg, color-mix(in oklch, var(--primary) 35%, transparent) var(--w), transparent var(--w)); }
+.fs-runs .tier { font-family: var(--fs-display); font-weight: 700; color: var(--primary); }
+
+@media (max-width: 520px) {
+  .fs-wave b { font-size: 34px; }
+  .fs-ser { margin-left: 0; flex-basis: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fs-root *, .fs-root *::before, .fs-root *::after { animation: none !important; transition: none !important; }
+}
