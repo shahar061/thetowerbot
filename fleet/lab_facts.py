@@ -10,13 +10,14 @@ import json
 import math
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import db
 from account_state import completed_lab_level
 from fleet.build_route_preview_facts import read_lab_slots
-from fleet.coin_share import LabCoinJar
+from fleet.coin_share import LabCoinJar, jit_hold
 from fleet.reroll_lifetime import read_lifetime
-from fleet.resource_blocks import LabFacts
+from fleet.resource_blocks import LabFacts, evaluate_lab_plan
 from lab_plan import LabCadence
 
 
@@ -84,3 +85,11 @@ def persisted_lab_facts(worker_root: Path, account_id: str, *, now: float, coins
                     account_id=account_id, best_waves=waves or None,
                     coins_per_hour=coins_per_hour(worker_root, account_id),
                     completed_levels=_completed_levels(db_path, account_id))
+
+
+def just_in_time_hold(route: Any, worker_root: Path, account_id: str, *, wallet: int | None,
+                      db_path: Path, now: float) -> tuple[int, bool, str | None]:
+    """`coin_share.jit_hold` for `route`'s own saving plan over this worker's persisted lab facts."""
+    plan = evaluate_lab_plan(route, persisted_lab_facts(worker_root, account_id, now=now, coins=wallet,
+                                                        gems=None, db_path=db_path))
+    return jit_hold(plan.saving, wallet)

@@ -31,7 +31,7 @@ from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
 from fleet import coin_share
-from fleet.lab_facts import best_waves, coins_per_hour
+from fleet.lab_facts import best_waves, coins_per_hour, just_in_time_hold
 from fleet.resource_blocks import LabFacts, LabPlan, evaluate_lab_plan
 from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
 from policy import AutopilotPolicy, UpgradeRule
@@ -445,14 +445,12 @@ class RerollProgress:
                 lab_record, _ = self.lab_cadence.route_observation()
                 if effective.rules.coins.lab_share.mode == "just_in_time":
                     # The saving plan's hold replaces the jar, which is neither grown
-                    # nor reset here: a leftover save_pct amount stays on disk, unread
-                    # by Workshop, until a save_pct visit settles it (keeping at most
-                    # the waiting lab's price).
-                    from fleet.lab_facts import persisted_lab_facts
-                    lab_plan = evaluate_lab_plan(effective, persisted_lab_facts(
-                        self.root, self.account_id, now=time.time(), coins=facts.wallet_coins,
-                        gems=None, db_path=registration.db_path))
-                    jar, paused, saving_reason = coin_share.jit_hold(lab_plan.saving, facts.wallet_coins)
+                    # nor reset here. A leftover save_pct amount stays on disk, unused
+                    # by Workshop, until a visit in another mode settles it: save_pct
+                    # keeps up to the waiting lab's price, the other modes empty it.
+                    jar, paused, saving_reason = just_in_time_hold(
+                        effective, self.root, self.account_id, wallet=facts.wallet_coins,
+                        db_path=registration.db_path, now=time.time())
                 else:
                     # Grows at most once per visit key: this runs on every menu scan.
                     jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,

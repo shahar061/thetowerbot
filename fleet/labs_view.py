@@ -23,7 +23,7 @@ RECENT_LIMIT = 8
 
 def _unknown(worker: str, account_id: str | None, reason: str) -> dict[str, Any]:
     return {"worker": worker, "account_id": account_id, "strategy_name": None, "read_at": None,
-            "wallet": {"coins": None, "gems": None}, "plan": None, "state": "unknown",
+            "wallet": {"coins": None, "gems": None}, "plan": None, "saving": None, "state": "unknown",
             "reason": reason, "recent": [], "unknown_slots": 5,
             "freshness": "unknown", "blockers": [reason]}
 
@@ -44,6 +44,14 @@ def _menu_wallet(worker_root: Path, worker: str,
     observed = raw.get("observed_at")
     read_at = float(observed) if isinstance(observed, (int, float)) and not isinstance(observed, bool) else None
     return whole(raw.get("wallet_coins")), whole(raw.get("wallet_gems")), read_at
+
+
+def _saving(saving: Any) -> dict[str, Any] | None:
+    """The just-in-time saving plan (a lab_list lane only) in the spec's payload shape."""
+    if saving is None:
+        return None
+    return {"reserve": saving.reserve, "workshop_budget": saving.workshop_budget,
+            "targets": [asdict(target) for target in saving.targets], "why": list(saving.why)}
 
 
 def _history(db_path: Path) -> list[dict[str, Any]]:
@@ -105,6 +113,7 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
                  "historical" if historical_slots else "observed")
     return {"worker": worker, "account_id": account_id, "strategy_name": strategy,
             "read_at": read_at, "wallet": {"coins": coins, "gems": gems}, "plan": asdict(plan),
+            "saving": _saving(plan.saving),
             "state": "ok", "reason": route_error, "recent": recent,
             "unknown_slots": unknown_slots, "freshness": freshness, "blockers": blockers}
 
