@@ -27,6 +27,7 @@ from account_state import completed_lab_level
 from concepts import REGISTRY
 from currencies import currency_overview
 from fleet import workshop_prices
+from fleet.reroll_lifetime import read_lifetime
 from fleet.state_records import ForeignDatabase, read_records
 from runtime_records import RuntimeRecords, RuntimeRecordsError
 
@@ -269,6 +270,25 @@ def build_balances(overview: Mapping[str, Any] | None,
             "stones": None}
 
 
+def build_totals(lifetime: Mapping[str, Any] | None, gems_claimed: int) -> dict[str, Any]:
+    """Lifetime coins and stones from the game's Stats screen, gems the bot claimed.
+
+    The Stats screen has no gems row, so gems are what this worker's own claims
+    added - a floor on the account's lifetime gems, labelled as such.
+    """
+    lifetime = lifetime or {}
+
+    def count(key: str) -> int | None:
+        value = lifetime.get(key)
+        return value if type(value) is int and value >= 0 else None
+
+    return {"coins": count("lifetime_coins"),
+            "coins_incomplete": lifetime.get("coins_incomplete") is True,
+            "stones": count("lifetime_stones"),
+            "gems_claimed": gems_claimed,
+            "observed_at": iso(_number(lifetime.get("observed_at")))}
+
+
 def build_runs(rows: Iterable[Mapping[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
     """The newest finished runs, newest first."""
     runs = []
@@ -450,7 +470,8 @@ def _blank(member: Mapping[str, Any]) -> dict[str, Any]:
     return {"id": name, "name": name, "serial": member.get("endpoint") or None,
             "online": False, "stale_seconds": None, "scan": None, "error": None,
             "strategy": None, "next_buy": None, "best_wave": None,
-            "bot": build_bot(None), "battle": None, "balances": None, "decision": None,
+            "bot": build_bot(None), "battle": None, "balances": None, "totals": None,
+            "decision": None,
             "workshop": None, "cards": None, "labs": None, "run_upgrades": None, "runs": None}
 
 
@@ -496,6 +517,9 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
         battle=_section("battle", build_battle, status, tier, records.best_waves),
         best_wave=_section("best_wave", build_best_wave, records.best_waves),
         balances=_section("balances", build_balances, overview, records.balances),
+        totals=_section("totals", build_totals,
+                        read_lifetime(worker_root, registration.account_id),
+                        records.gems_claimed),
         workshop=_section("workshop", build_workshop, records.revision,
                           records.workshop_spent, records.workshop_recent),
         cards=_section("cards", build_cards, records.revision, records.card_gems,

@@ -47,8 +47,28 @@ test("an offline worker shows its stale age, its error, and a dash for every unk
   expect(screen.getByText("stale · 42s")).toBeInTheDocument();
   expect(screen.getByRole("status")).toHaveTextContent("Worker database is missing");
   expect(screen.getByText("OFFLINE")).toBeInTheDocument();
-  expect(screen.getAllByText("Unavailable")).toHaveLength(4);  // workshop, cards, labs, runs
+  expect(screen.getAllByText("Unavailable")).toHaveLength(5);  // totals, workshop, cards, labs, runs
   expect(screen.getByText("No run recorded yet")).toBeInTheDocument();
+});
+
+test("lifetime totals show the Stats reading's age and label gems as bot claims", () => {
+  show(makeAccount({ online: true, totals: {
+    coins: 1.86e12, coins_incomplete: true, stones: 450, gems_claimed: 320,
+    observed_at: "2026-09-28T07:00:00+00:00" } }));
+  const section = screen.getByText("Lifetime totals").closest("section")!;
+  expect(within(section).getByText("1.86T")).toBeInTheDocument();
+  expect(within(section).getByText("some runs unread")).toBeInTheDocument();
+  expect(within(section).getByText("claimed by bot")).toBeInTheDocument();
+  expect(section).toHaveTextContent("Stats read 3h ago");
+});
+
+test("totals before any Stats read are dashes, never zero", () => {
+  show(makeAccount({ online: true, totals: {
+    coins: null, coins_incomplete: false, stones: null, gems_claimed: 0, observed_at: null } }));
+  const section = screen.getByText("Lifetime totals").closest("section")!;
+  expect(within(section).getAllByText("—")).toHaveLength(2);
+  expect(within(section).queryByText("some runs unread")).toBeNull();
+  expect(section).toHaveTextContent("Stats screen not read yet");
 });
 
 test("a new account with zero runs says so instead of inventing a wave", () => {

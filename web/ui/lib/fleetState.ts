@@ -12,6 +12,13 @@ export interface FleetStateBattle {
   elapsed_s: number | null; best_wave: number | null;
 }
 export interface FleetStateBalances { coins: number | null; gems: number | null; stones: null }
+/** Lifetime coins and stones off the game's Stats screen, as of `observed_at`
+ *  (coins topped up by later runs). The Stats screen has no gems row, so gems
+ *  are only what this worker's own claims added. */
+export interface FleetStateTotals {
+  coins: number | null; coins_incomplete: boolean; stones: number | null;
+  gems_claimed: number; observed_at: string | null;
+}
 export interface FleetStateDecision {
   phase: string; reason: string; upgrade_id: string | null;
   category: StateCategory | null; name: string | null; cost: number | null;
@@ -70,6 +77,7 @@ export interface FleetStateAccount {
   strategy: FleetStateStrategy | null; next_buy: FleetStateNextBuy | null;
   best_wave: FleetStateBestWave | null;
   bot: FleetStateBot; battle: FleetStateBattle | null; balances: FleetStateBalances | null;
+  totals: FleetStateTotals | null;
   decision: FleetStateDecision | null; workshop: FleetStateWorkshop | null;
   cards: FleetStateCards | null; labs: FleetStateLabs | null;
   run_upgrades: FleetStateRunUpgrades | null; runs: FleetStateRun[] | null;

@@ -7,7 +7,7 @@ export function makeAccount(overrides: Partial<FleetStateAccount> = {}): FleetSt
     id, name: id, serial: "127.0.0.1:5555", online: false,
     stale_seconds: null, scan: null, error: null,
     strategy: null, next_buy: null, best_wave: null,
-    bot: { screen: null, now: null, live: false }, battle: null, balances: null,
+    bot: { screen: null, now: null, live: false }, battle: null, balances: null, totals: null,
     decision: null, workshop: null, cards: null, labs: null, run_upgrades: null, runs: null,
     ...overrides,
   };

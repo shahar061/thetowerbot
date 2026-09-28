@@ -304,12 +304,16 @@ class RerollProgress:
                     fields = {field.get("key"): field for field in latest.get("fields", [])}
                     started_field = fields.get("game_started") or {}
                     rate_field = fields.get("recent_coins_per_hour") or {}
+                    stones_field = fields.get("stones_earned") or {}
                     started = (game_started_date(started_field["raw_value"])
                                if started_field.get("status") == "observed"
                                and isinstance(started_field.get("raw_value"), str) else None)
                     hourly = (ocr.parse_number(rate_field["raw_value"])
                               if rate_field.get("status") == "observed"
                               and isinstance(rate_field.get("raw_value"), str) else None)
+                    stones = (ocr.parse_number(stones_field["raw_value"])
+                              if stones_field.get("status") == "observed"
+                              and isinstance(stones_field.get("raw_value"), str) else None)
                     stored = self.lifetime_record()
                     observed_at = latest.get("observed_at")
                     if (persist_lifetime and isinstance(observed_at, (int, float))
@@ -329,7 +333,9 @@ class RerollProgress:
                                            "baseline_run_id": baseline_run_id,
                                            **({"game_started": started} if started else {}),
                                            **({"recent_coins_per_hour": hourly}
-                                              if hourly is not None and hourly >= 0 else {})}, output)
+                                              if hourly is not None and hourly >= 0 else {}),
+                                           **({"lifetime_stones": stones}
+                                              if stones is not None and stones >= 0 else {})}, output)
                                 output.write("\n")
                                 output.flush()
                                 os.fsync(output.fileno())
