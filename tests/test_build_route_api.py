@@ -349,3 +349,15 @@ def test_preview_respects_pending_choice_and_simulates_the_next_revision(tmp_pat
     assert member["proposed"]["pending"]["revision"] == saved.revision + 1
     assert member["proposed"]["pending"]["chosen_id"] != current.pending.chosen_id
     assert runtime.choice_path.read_bytes() == before
+
+
+def test_assignment_actor_is_recorded(tmp_path: Path) -> None:
+    _registered_worker(tmp_path, "ACCOUNT-A", "ACCOUNT-A")
+    fleet = FleetSetupService(tmp_path, qualification_root=tmp_path / "qualifications")
+    fleet._reroll_pool = SimpleNamespace(members=lambda: [{"name": "Air_38"}])
+    fleet._reroll_runs = SimpleNamespace(hidden_names=lambda: set())
+    assert fleet.visible_workers() == {"Air_38"}
+    fleet.assign_strategy(expected_revision=0, strategy_id="opening", strategy_version=1,
+                          workers=[{"worker": "Air_38", "account_id": "ACCOUNT-A"}], actor="auto")
+    audit = json.loads((tmp_path / "build-route-history" / "1.json").read_text())["audit"]
+    assert audit["actor"] == "auto"
