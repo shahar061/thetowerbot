@@ -11,8 +11,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+import cards
+import lab_catalog
 import upgrades
 import workshop_levels
+from account_state import completed_lab_level
+from concepts import REGISTRY
 from fleet import workshop_prices
 
 CATEGORIES = ("attack", "defense", "utility")
@@ -151,3 +155,176 @@ def build_workshop(revision: Mapping[str, Any] | None,
                                 "next_unlock": next_unlock(category, owned)}
     return {"totals": category_totals(rows), "categories": categories,
             "recent": workshop_recent(recent_rows)}
+
+
+def _whole(value: object) -> int | None:
+    return value if type(value) is int else None
+
+
+def _number(value: object) -> float | int | None:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def build_bot(status: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Screen, current activity ("Now") and whether a battle is live."""
+    if status is None:
+        return {"screen": None, "now": None, "live": False}
+    screen = status.get("screen") if isinstance(status.get("screen"), str) else None
+    activity = status.get("activity")
+    now = activity.get("label") if isinstance(activity, Mapping) else None
+    return {"screen": screen, "now": now if isinstance(now, str) else None,
+            "live": screen == "IN_RUN"}
+
+
+def build_decision(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The autopilot's latest decision. It carries no price, so `cost` stays None."""
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("phase"), str):
+        return None
+    upgrade_id = raw.get("upgrade_id") if isinstance(raw.get("upgrade_id"), str) else None
+    upgrade = upgrades.by_id(upgrade_id) if upgrade_id else None
+    return {"phase": raw["phase"], "reason": str(raw.get("reason") or ""),
+            "upgrade_id": upgrade_id,
+            "category": _category(upgrade.category) if upgrade else None,
+            "name": upgrade.name if upgrade else None, "cost": None}
+
+
+def build_battle(status: Mapping[str, Any] | None, tier: int | None,
+                 best_waves: Mapping[int, int]) -> dict[str, Any] | None:
+    """The live battle HUD, or None when the worker is not in a run."""
+    if status is None or status.get("screen") != "IN_RUN":
+        return None
+    run = status.get("run") if isinstance(status.get("run"), Mapping) else {}
+    return {"tier": tier, "wave": _whole(status.get("wave")),
+            "cash": _number(status.get("wallet")), "elapsed_s": _number(run.get("elapsed")),
+            "best_wave": best_waves.get(tier) if tier is not None else None}
+
+
+def build_balances(overview: Mapping[str, Any] | None,
+                   ledger: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Coins and gems from the live scope when fresh, else the ledger's last reading.
+
+    Stones have no reader yet, so they are always None.
+    """
+    overview, ledger = overview or {}, ledger or {}
+    coins = overview.get("coins_lower")
+    gems = overview.get("gems")
+    return {"coins": coins if coins is not None else ledger.get("coins"),
+            "gems": gems if gems is not None else ledger.get("gems"),
+            "stones": None}
+
+
+def build_runs(rows: Iterable[Mapping[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    """The newest finished runs, newest first."""
+    runs = []
+    for row in list(rows)[:limit]:
+        started, ended = _number(row.get("started_at")), _number(row.get("ended_at"))
+        runs.append({"tier": row.get("tier"), "wave": row.get("wave"), "coins": row.get("coins"),
+                     "duration_s": round(ended - started, 1)
+                     if started is not None and ended is not None else None,
+                     "ended_at": iso(ended), "abandoned": bool(row.get("abandoned"))})
+    return runs
+
+
+def build_run_upgrades(rows: Iterable[Mapping[str, Any]], scope: str | None) -> dict[str, Any] | None:
+    """In-run upgrade levels bought in the current run, or the last one.
+
+    None only when there is no run to describe. A run that bought nothing is
+    a real answer: total 0 and no items.
+    """
+    if scope is None:
+        return None
+    by_category = dict.fromkeys(CATEGORIES, 0)
+    items = []
+    for row in rows:
+        upgrade_id, levels = row.get("upgrade_id"), row.get("levels")
+        if not isinstance(upgrade_id, str) or not upgrade_id or type(levels) is not int or levels <= 0:
+            continue
+        upgrade = upgrades.by_id(upgrade_id)
+        category = _category(upgrade.category) if upgrade else None
+        if category is not None:
+            by_category[category] += levels
+        items.append({"id": upgrade_id, "name": upgrade.name if upgrade else upgrade_id,
+                      "category": category, "levels": levels})
+    items.sort(key=lambda item: (-item["levels"], item["name"]))
+    return {"scope": scope, "total": sum(item["levels"] for item in items),
+            "by_category": by_category, "items": items}
+
+
+def build_cards(revision: Mapping[str, Any] | None, gems_invested: int | None,
+                recent_rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Card slots, per-card level and copies, gems spent and recent card buys."""
+    facts = {fact.get("concept_id"): fact.get("value")
+             for fact in (revision or {}).get("cards") or ()}
+    capacity = _whole(facts.get(cards.SLOT_CAPACITY_KEY))
+    items: dict[str, dict[str, Any]] = {}
+    for key, value in facts.items():
+        if not isinstance(key, str) or not key.startswith("cards.") or key.count(".") != 2:
+            continue
+        concept_id, _, field = key.rpartition(".")
+        if field not in ("level", "copies"):
+            continue
+        concept = REGISTRY.by_id(concept_id)
+        entry = items.setdefault(concept_id, {"name": concept.name if concept else concept_id,
+                                              "level": None, "copies": None})
+        entry[field] = _whole(value)
+    return {"slots": {"equipped": _whole(facts.get(cards.SLOT_EQUIPPED_KEY)), "capacity": capacity,
+                      "next_slot_gems": lab_catalog.card_slot_gems(capacity + 1)
+                      if capacity is not None else None},
+            "items": sorted(items.values(), key=lambda item: item["name"]),
+            "gems_invested": gems_invested,
+            "recent": [{"ts": iso(row.get("ts")), "name": str(row.get("item") or "Card"),
+                        "gems": row.get("price")} for row in list(recent_rows)[:RECENT_LIMIT]]}
+
+
+def _lab_name(concept_id: str) -> str:
+    concept = REGISTRY.by_id(concept_id)
+    if concept is not None:
+        return concept.name
+    entry = lab_catalog.lab(concept_id)
+    return entry.name if entry is not None else concept_id
+
+
+def build_labs(revision: Mapping[str, Any] | None, recent_rows: Iterable[Mapping[str, Any]],
+               now: float) -> dict[str, Any]:
+    """Lab slots, running jobs, known levels with the next price, and the next lab."""
+    revision = revision or {}
+    known: dict[str, int | None] = {}
+    levels = []
+    for fact in revision.get("lab_levels") or ():
+        concept_id = fact.get("concept_id")
+        if not isinstance(concept_id, str):
+            continue
+        level = completed_lab_level(fact.get("status"), fact.get("value"))
+        known[concept_id] = level
+        step = lab_catalog.level(concept_id, level + 1) if level is not None else None
+        levels.append({"id": concept_id, "name": _lab_name(concept_id), "level": level,
+                       "next_cost": step.coins if step is not None else None})
+    running = []
+    for fact in revision.get("lab_jobs") or ():
+        concept_id, completes = fact.get("concept_id"), _number(fact.get("value"))
+        # A job past its completion time has finished; the revision just has
+        # not been re-read since. Listing it would show a timer below zero.
+        if not isinstance(concept_id, str) or completes is None or completes <= now:
+            continue
+        level = known.get(concept_id)
+        running.append({"id": concept_id, "name": _lab_name(concept_id),
+                        "to_level": level + 1 if level is not None else None,
+                        "completes_at": iso(completes)})
+    busy = {job["id"] for job in running}
+    priced = [row for row in levels if row["id"] not in busy and row["next_cost"] is not None]
+    upcoming: dict[str, Any] | None = None
+    if priced:
+        cheapest = min(priced, key=lambda row: row["next_cost"])
+        upcoming = {"id": cheapest["id"], "name": cheapest["name"], "cost": cheapest["next_cost"]}
+    else:
+        entry = next((lab for lab in lab_catalog.CATALOG.labs if lab.id not in busy), None)
+        if entry is not None:
+            step = lab_catalog.level(entry.id, (known.get(entry.id) or 0) + 1)
+            upcoming = {"id": entry.id, "name": entry.name,
+                        "cost": step.coins if step is not None else None}
+    return {"slots": _whole(revision.get("lab_slots_owned")), "running": running,
+            "levels": levels, "next": upcoming,
+            "recent": [{"ts": iso(row.get("ts")),
+                        "name": _lab_name(item) if isinstance(item := row.get("item"), str)
+                        and item.startswith("labs.") else str(item or "Lab"),
+                        "price": row.get("price")} for row in list(recent_rows)[:RECENT_LIMIT]]}

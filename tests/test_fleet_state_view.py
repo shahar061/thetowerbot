@@ -101,3 +101,116 @@ def test_recent_workshop_buys_are_capped() -> None:
     rows = [{"ts": float(i), "item": "Damage", "category": "ATTACK", "price": i}
             for i in range(50)]
     assert len(state_view.workshop_recent(rows)) == state_view.RECENT_LIMIT == 30
+
+
+def test_bot_and_decision_come_from_the_worker_status() -> None:
+    status = {"screen": "IN_RUN", "activity": {"label": "Navigating · RETRY", "at": 5.},
+              "decision": {"phase": "buying", "reason": "cheapest", "upgrade_id": "damage", "at": 5.}}
+    assert state_view.build_bot(status) == {"screen": "IN_RUN", "now": "Navigating · RETRY",
+                                            "live": True}
+    assert state_view.build_bot(None) == {"screen": None, "now": None, "live": False}
+    assert state_view.build_decision(status["decision"]) == {
+        "phase": "buying", "reason": "cheapest", "upgrade_id": "damage", "category": "attack",
+        "name": "Damage", "cost": None}
+    assert state_view.build_decision({"phase": "saving", "reason": "wait"})["name"] is None
+    assert state_view.build_decision(None) is None
+
+
+def test_the_battle_is_live_only_in_a_run_and_measured_against_its_tier_best() -> None:
+    status = {"screen": "IN_RUN", "wave": 4812, "wallet": 8420000000, "run": {"elapsed": 5780.4}}
+    assert state_view.build_battle(status, 11, {11: 5020, 7: 1420}) == {
+        "tier": 11, "wave": 4812, "cash": 8420000000, "elapsed_s": 5780.4, "best_wave": 5020}
+    assert state_view.build_battle({**status, "screen": "GAME_OVER"}, 11, {11: 5020}) is None
+    assert state_view.build_battle(None, 11, {11: 5020}) is None
+
+
+def test_a_new_account_with_zero_runs_has_no_tier_no_best_and_no_upgrades() -> None:
+    """Review Focus: a brand-new account has not finished a single run."""
+    assert state_view.build_runs([]) == []
+    battle = state_view.build_battle({"screen": "IN_RUN", "wave": None, "wallet": None}, None, {})
+    assert battle == {"tier": None, "wave": None, "cash": None, "elapsed_s": None,
+                      "best_wave": None}
+    assert state_view.build_run_upgrades([], None) is None
+
+
+def test_runs_keep_the_newest_five_with_their_duration() -> None:
+    rows = [{"tier": 11, "wave": 5020 - i, "coins": 310000000, "started_at": 1000. * i,
+             "ended_at": 1000. * i + 6020, "abandoned": i == 1} for i in range(7)]
+    runs = state_view.build_runs(rows)
+    assert len(runs) == 5
+    assert runs[0] == {"tier": 11, "wave": 5020, "coins": 310000000, "duration_s": 6020.0,
+                       "ended_at": "1970-01-01T01:40:20+00:00", "abandoned": False}
+    assert runs[1]["abandoned"] is True
+
+
+def test_run_upgrades_total_split_by_category_and_sorted() -> None:
+    upgrades_view = state_view.build_run_upgrades(
+        [{"upgrade_id": "health", "levels": 4}, {"upgrade_id": "damage", "levels": 31},
+         {"upgrade_id": "mystery", "levels": 2}, {"upgrade_id": "", "levels": 9}], "current")
+    assert upgrades_view == {
+        "scope": "current", "total": 37,
+        "by_category": {"attack": 31, "defense": 4, "utility": 0},
+        "items": [{"id": "damage", "name": "Damage", "category": "attack", "levels": 31},
+                  {"id": "health", "name": "Health", "category": "defense", "levels": 4},
+                  {"id": "mystery", "name": "mystery", "category": None, "levels": 2}]}
+    assert state_view.build_run_upgrades([], "last") == {
+        "scope": "last", "total": 0, "by_category": {"attack": 0, "defense": 0, "utility": 0},
+        "items": []}
+
+
+def test_balances_prefer_the_live_scope_and_never_invent_stones() -> None:
+    live = {"coins_lower": 3840000000, "gems": 1842}
+    assert state_view.build_balances(live, {"coins": 1, "gems": 2}) == {
+        "coins": 3840000000, "gems": 1842, "stones": None}
+    assert state_view.build_balances({"coins_lower": None, "gems": None},
+                                     {"coins": 500, "gems": None}) == {
+        "coins": 500, "gems": None, "stones": None}
+    assert state_view.build_balances(None, None) == {"coins": None, "gems": None, "stones": None}
+
+
+def test_cards_read_slots_per_card_facts_and_the_next_slot_price() -> None:
+    revision = {"cards": [{"concept_id": "cards.slots.equipped", "value": 1},
+                          {"concept_id": "cards.slots.capacity", "value": 1},
+                          {"concept_id": "cards.damage.level", "value": 5},
+                          {"concept_id": "cards.damage.copies", "value": 12}]}
+    view = state_view.build_cards(revision, 70, [{"ts": 10., "item": "Damage", "price": 20}])
+    assert view["slots"] == {"equipped": 1, "capacity": 1, "next_slot_gems": 50}
+    assert view["items"] == [{"name": "Damage", "level": 5, "copies": 12}]
+    assert view["gems_invested"] == 70
+    assert view["recent"] == [{"ts": "1970-01-01T00:00:10+00:00", "name": "Damage", "gems": 20}]
+    empty = state_view.build_cards(None, 0, [])
+    assert empty["slots"] == {"equipped": None, "capacity": None, "next_slot_gems": None}
+    assert empty["items"] == []
+
+
+def test_labs_list_levels_running_jobs_and_the_cheapest_known_next() -> None:
+    revision = {"lab_slots_owned": 2,
+                "lab_levels": [{"concept_id": "labs.game-speed", "value": 3, "status": "owned"},
+                               {"concept_id": "labs.damage", "value": 11, "status": "owned"}],
+                "lab_jobs": [{"concept_id": "labs.damage", "value": 5000., "status": "researching"}]}
+    labs = state_view.build_labs(revision, [{"ts": 10., "item": "labs.damage", "price": 4100000},
+                                            {"ts": 9., "item": "Game Speed", "price": 12000}],
+                                 now=1000.)
+    assert labs["slots"] == 2
+    assert labs["running"] == [{"id": "labs.damage", "name": "Damage", "to_level": 12,
+                                "completes_at": "1970-01-01T01:23:20+00:00"}]
+    assert labs["levels"] == [
+        {"id": "labs.game-speed", "name": "Game Speed", "level": 3, "next_cost": 50000},
+        {"id": "labs.damage", "name": "Damage", "level": 11, "next_cost": None}]
+    assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 50000}
+    assert [row["name"] for row in labs["recent"]] == ["Damage", "Game Speed"]
+
+
+def test_a_lab_job_past_its_completion_time_is_not_running() -> None:
+    """Review Focus: the revision still holds a job the game has already finished."""
+    revision = {"lab_levels": [{"concept_id": "labs.damage", "value": 11, "status": "owned"}],
+                "lab_jobs": [{"concept_id": "labs.damage", "value": 999., "status": "researching"}]}
+    labs = state_view.build_labs(revision, [], now=1000.)
+    assert labs["running"] == []
+    assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 300}
+
+
+def test_labs_on_a_new_account_point_at_game_speed_level_one() -> None:
+    labs = state_view.build_labs(None, [], now=1000.)
+    assert (labs["slots"], labs["running"], labs["levels"]) == (None, [], [])
+    assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 300}
