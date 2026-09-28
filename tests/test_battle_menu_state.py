@@ -85,27 +85,28 @@ def test_creates_missing_parent_directory(tmp_path):
     assert path.exists()
 
 
-def test_oserror_on_save_preserves_in_memory_state(tmp_path, monkeypatch):
+def test_oserror_on_save_preserves_in_memory_state(tmp_path, monkeypatch, caplog):
     from pathlib import Path
 
     path = tmp_path / "battle-menu-state.json"
     state = BattleMenuState(path)
-    state.handled("event", BLUE, now=0)
+    state.handled("event", BLUE, now=0)  # First save succeeds
 
-    # Monkeypatch write_text to raise OSError on next call
-    original_write_text = Path.write_text
-    call_count = [0]
-
+    # Monkeypatch write_text to raise OSError on ALL calls
     def failing_write_text(self, text, *args, **kwargs):
-        call_count[0] += 1
-        if call_count[0] > 1:  # First call succeeds (parent dir creation write), second fails
-            raise OSError("Simulated write failure")
-        return original_write_text(self, text, *args, **kwargs)
+        raise OSError("Simulated write failure")
 
     monkeypatch.setattr(Path, "write_text", failing_write_text)
 
     # This should not raise despite OSError
     state.handled("event", RED, now=100)
 
-    # But the in-memory state should be updated
-    assert state.due(menu(event=RED), now=200) == []
+    # Verify warning was logged
+    assert "battle menu state not persisted" in caplog.text
+
+    # Verify in-memory state is preserved (same badge, cooldown active)
+    assert state.due(menu(event=RED), now=200) == []  # Within cooldown
+    assert state.due(menu(event=RED), now=1900) == ["event"]  # Cooldown expired
+
+    # Verify badge change is detected in-memory
+    assert state.due(menu(event=BLUE), now=200) == ["event"]  # Badge changed
