@@ -31,8 +31,9 @@ from urllib.request import urlopen
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Literal
 
-from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from starlette.requests import HTTPConnection
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -61,6 +62,9 @@ from progression import compare_tiers, rates as progression_rates
 from control import ControlError, Controls
 from events import EventBus
 from frames import FrameBuffer
+from stream.hub import StreamHub
+from stream.messages import ConfigMessage, End, FrameMessage
+from stream.origin import origin_allowed
 from fleet.dashboard import FleetController, FleetRequestError
 from bluestacks import HostCapabilityError
 from runner import BotRunner, RunnerError
@@ -372,6 +376,7 @@ def create_app(
     telegram_reporter: TelegramReporter | None = None,
     telegram_interval_override: float | None = None,
     telegram_suppressed: bool = False,
+    stream_hub: StreamHub | None = None,
 ) -> FastAPI:
     # See event_stream()'s docstring for why this exists: without it, an
     # open dashboard tab and a shutting-down uvicorn wait on each other
@@ -445,7 +450,7 @@ def create_app(
             return None
         return path if path is not None and path.is_file() else None
 
-    def _live_choice(request: Request) -> AccountChoice | None:
+    def _live_choice(request: HTTPConnection) -> AccountChoice | None:
         key = request.query_params.get("scope")
         expected = request.query_params.get("expected_account_id")
         if key is None:
@@ -1067,6 +1072,59 @@ def create_app(
             media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    @app.websocket("/api/stream")
+    async def live_stream(websocket: WebSocket) -> None:
+        # Accept before any close: a close sent during the handshake reaches
+        # the browser as a bare 1006, and the page needs these codes to choose
+        # its fallback.
+        await websocket.accept()
+        host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host")
+        if not origin_allowed(websocket.headers.get("origin"), host):
+            await websocket.close(code=4403)
+            return
+        try:
+            choice = _live_choice(websocket)
+        except HTTPException:
+            await websocket.close(code=4409)
+            return
+        if stream_hub is None or not config.STREAM_ENABLED:
+            await websocket.close(code=4503)
+            return
+        subscription = stream_hub.subscribe()
+        # The client never sends anything, so this only completes when it goes
+        # away. On a still screen there are no sends to fail, so this is the
+        # only way to notice.
+        gone = asyncio.ensure_future(websocket.receive())
+        checked = time.monotonic()
+        try:
+            while not shutdown.is_set() and not gone.done():
+                message = await asyncio.to_thread(subscription.get, 0.5)
+                if isinstance(message, ConfigMessage):
+                    await websocket.send_text(message.to_json())
+                elif isinstance(message, FrameMessage):
+                    await websocket.send_bytes(message.to_bytes())
+                elif message is End.UNAVAILABLE:
+                    await websocket.close(code=4503)
+                    return
+                elif message is End.GOING_AWAY:
+                    break
+                if choice is not None and time.monotonic() - checked >= config.STREAM_ACCOUNT_RECHECK_SECONDS:
+                    checked = time.monotonic()
+                    try:
+                        current = _live_choice(websocket)
+                    except HTTPException:
+                        current = None
+                    if current is None or current.account_id != choice.account_id:
+                        await websocket.close(code=4409)
+                        return
+            if not gone.done():
+                await websocket.close(code=1001)
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            pass  # the viewer left mid-send
+        finally:
+            gone.cancel()
+            subscription.close()
 
     if controls is not None:
 

@@ -17,6 +17,7 @@ dependencies = [
     # output can shift between versions, and the confidence floor in
     # config.py is calibrated against this one.
     "rapidocr-onnxruntime==1.4.4",
+    "websockets>=15",
 ]
 
 [tool.uv]
