@@ -893,3 +893,17 @@ def test_the_rounding_allowance_survives_a_restart(tmp_path: Path) -> None:
     restarted = ledger.LedgerWriter(conn)
 
     assert restarted.lines_for(_thorns(450, 3, 3.0))[0].kind == "ROUNDING"
+
+
+def test_a_later_lab_slot_unlock_debits_its_own_price() -> None:
+    (line,) = ledger.classify(events.LabSlotUnlocked(
+        slot=3, price=400, gems_before=500, gems_after=100, seq=16, ts=1000.))
+    assert (line.item, line.currency, line.delta, line.price) == ("Lab slot 3", "gems", -400, 400)
+
+
+def test_rollout_events_are_not_account_history() -> None:
+    for event in (events.LabUnlockRehearsed(slot=2, price=100, gems=150),
+                  events.LabUnlockPromoted(slot=2, stage="canary"),
+                  events.LabUnlockHalted(slot=2, reason="Post-tap screen was not understood")):
+        assert ledger.classify(event) == ()
+        assert event.type not in ledger._REPLAYABLE

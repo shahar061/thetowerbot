@@ -93,6 +93,28 @@ class LabSlotUnlocked(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class LabUnlockRehearsed(Event):
+    """A clean lab-slot unlock rehearsal: read twice, nothing tapped or prepared."""
+    slot: int
+    price: int
+    gems: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class LabUnlockPromoted(Event):
+    """The fleet's rollout for this slot moved forward, to canary or fleet."""
+    slot: int
+    stage: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class LabUnlockHalted(Event):
+    """Nobody taps this slot until the owner resets it."""
+    slot: int
+    reason: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class AutopilotDecided(Event):
     """The battle autopilot changed what it is doing, and why.
 

@@ -157,3 +157,14 @@ group("splitEvent speed events", () => {
     expect(line).not.toContain("null");
   });
 });
+
+group("lab unlock rollout events", () => {
+  it("reads the rehearsal, promotion and halt", () => {
+    expect(describe({ type: "LabUnlockRehearsed", seq: 1, ts: 0, slot: 2, price: 100, gems: 150 }))
+      .toContain("rehearsed Lab 2 unlock: 100 gems, wallet 150");
+    expect(describe({ type: "LabUnlockPromoted", seq: 2, ts: 0, slot: 2, stage: "canary" }))
+      .toContain("Lab 2 unlock promoted to canary");
+    expect(describe({ type: "LabUnlockHalted", seq: 3, ts: 0, slot: 3, reason: "price 120" }))
+      .toContain("Lab 3 unlock halted: price 120");
+  });
+});
