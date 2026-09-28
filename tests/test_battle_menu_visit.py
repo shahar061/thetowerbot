@@ -132,54 +132,26 @@ def test_unreadable_page_bails_out_after_budget(monkeypatch):
                      now=100) == []
 
 
-def event_page_boxes(claim_rect=(500, 900, 150, 60)):
-    """A minimal fabricated Event page: title, one ready Claim, the footer.
-
-    Built directly rather than via ocr.read() so the claim-cap tests don't
-    need the OCR engine installed - the read_page/event_claims contract
-    only cares about the TextBox shape, not where it came from.
-    """
-    return (
+def test_event_page_is_visit_and_return_even_with_a_ready_claim():
+    """Claiming Event missions belongs to main's Events walk (events_claim),
+    armed from home by the Events dot. In battle the visitor only returns:
+    a ready Claim on the Event page is never tapped."""
+    v, d = visitor(), Device()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    icon = v.current
+    boxes = (
         ocr.TextBox("EVENT - STEAMPUNK", 0.99, config.Rect(50, 50, 400, 60)),
-        ocr.TextBox("Claim", 0.99, config.Rect(*claim_rect)),
+        ocr.TextBox("Claim", 0.99, config.Rect(500, 900, 150, 60)),
         ocr.TextBox("Tap To Return To Game", 0.99, config.Rect(400, 2200, 300, 80)),
     )
-
-
-def test_claim_branch_taps_ready_claim():
-    v, d = visitor(), Device()
-    step(v, d, "collapsed_badged", 0)
-    step(v, d, "open_badged", 1)
-    boxes = event_page_boxes()
     assert step(v, d, "event_page", 2, boxes) is Outcome.TAPPED
-    assert d.taps[-1] == (575, 930)
-
-
-def test_sticky_claim_caps_and_terminates():
-    """A "Claim" box OCR keeps reporting ready, frame after frame, must not
-    wedge the visitor in IN_PAGE forever - it should give up on claiming
-    after BATTLE_MENU_MAX_CLAIMS taps, take the return path, and the visit
-    must actually end within a bounded number of further frames."""
-    v, d = visitor(), Device()
-    step(v, d, "collapsed_badged", 0)
-    step(v, d, "open_badged", 1)
-    boxes = event_page_boxes()
-    now = 2
-    for _ in range(config.BATTLE_MENU_MAX_CLAIMS):
-        assert step(v, d, "event_page", now, boxes) is Outcome.TAPPED
-        assert d.taps[-1] == (575, 930)
-        now += 1
-    # Cap reached: the same still-ready Claim box no longer gets a tap -
-    # this frame takes the footer return instead.
-    assert step(v, d, "event_page", now, boxes) is Outcome.TAPPED
-    assert d.taps[-1] == (550, 2240)
-    now += 1
-    assert v.active
-    # The game closes the menu on return; the visit must terminate.
-    assert step(v, d, "collapsed_badged", now) is Outcome.HOLD
+    assert d.taps[-1] == (550, 2240)                  # the footer, not (575, 930)
+    assert (575, 930) not in d.taps
+    assert step(v, d, "collapsed_badged", 3) is Outcome.HOLD
     assert not v.active
-    claim_taps = sum(1 for t in d.taps if t == (575, 930))
-    assert claim_taps <= config.BATTLE_MENU_MAX_CLAIMS
+    assert any(isinstance(e, events.BattleMenuIconHandled) and e.icon == icon
+               and e.outcome == "visited" for e in v._bus.published)
 
 
 def test_never_taps_a_price_or_exit_battle():

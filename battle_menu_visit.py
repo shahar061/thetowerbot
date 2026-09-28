@@ -46,7 +46,6 @@ class BattleMenuVisit:
         self.current: Icon | None = None
         self._badge: battle_menu.Badge | None = None
         self._scrolls = 0
-        self._claims = 0
         self._outcome = "visited"
         # The "now" at which the current icon was tapped into, not the time
         # we happen to finish or give up on it - a cooldown measures from
@@ -122,14 +121,9 @@ class BattleMenuVisit:
                 return Outcome.HOLD
             self._tap(device, policy, close)
             return Outcome.TAPPED
-        if reading.page == "event":
-            claims = battle_menu.event_claims(boxes())
-            if claims and self._claims < config.BATTLE_MENU_MAX_CLAIMS:
-                self._claims += 1
-                self._outcome = "claimed"
-                self._tap(device, policy, claims[0])
-                self._waited = 0
-                return Outcome.TAPPED
+        # The Event page itself is visit-and-return: main's Events walk
+        # (events_claim.EventsClaim) owns claiming and scrolling, armed from
+        # home by the main-menu Events dot, which a visit here leaves lit.
         if reading.page == "store":
             if battle_menu.free_gem_tile(screen, boxes()) is not None:
                 self._outcome = "free_tile_seen"   # Task 7 turns this into an ad watch
@@ -171,7 +165,7 @@ class BattleMenuVisit:
             return Outcome.TAPPED
         self.current = self._queue.pop(0)
         reading = menu[self.current]
-        self._badge, self._scrolls, self._claims, self._outcome = reading.badge, 0, 0, "visited"
+        self._badge, self._scrolls, self._outcome = reading.badge, 0, "visited"
         self._entered = now
         self._tap(device, policy, reading.point)
         self._go(Step.IN_PAGE)

@@ -115,48 +115,6 @@ def test_event_modal_close_is_right_of_title():
 
 
 @needs_ocr
-def test_event_page_has_no_ready_claims_and_never_offers_the_boost():
-    assert battle_menu.event_claims(boxes("battle_menu/event_page")) == []
-
-
-@needs_ocr
-def test_event_claims_page_gated_against_store():
-    # The Store's website-gift "Claim" (store_free_tiles has one, at the
-    # real coordinates test_event_claims_skip_website_gift_claim exercises
-    # below) must never be offered as an Event mission claim just because
-    # it says "Claim" - the page must actually be the Event page.
-    assert battle_menu.event_claims(boxes("battle_menu/store_free_tiles")) == []
-
-
-def test_event_claims_skip_rows_with_a_price():
-    R = config.Rect
-    fake = (
-        ocr.TextBox("EVENT-STEAMPUNK", 0.99, R(33, 113, 543, 40)),
-        ocr.TextBox("EVENT BOOST + GEMS + RELICS", 0.9, R(30, 900, 700, 60)),
-        ocr.TextBox("Claim", 0.9, R(800, 1150, 120, 50)),       # inside boost card
-        ocr.TextBox("₪49.90", 0.9, R(800, 1130, 200, 60)),
-        ocr.TextBox("Claim", 0.9, R(800, 1800, 120, 50)),       # a mission row
-    )
-    assert battle_menu.event_claims(fake) == [(860, 1825)]
-
-
-def test_event_claims_skip_website_gift_claim():
-    # Same coordinates as the Store's free-gem tile's own offerwall Claim
-    # (store_free_tiles.png): "VISIT OUR WEBSITE" / "FOR A FREE GIFT!" over
-    # a Claim button. Even on a (hypothetical) Event page carrying the same
-    # wording, that Claim must never be offered - only the real mission row is.
-    R = config.Rect
-    fake = (
-        ocr.TextBox("EVENT-STEAMPUNK", 0.99, R(33, 113, 543, 40)),
-        ocr.TextBox("VISIT OUR WEBSITE", 0.9, R(574, 1031, 363, 37)),
-        ocr.TextBox("FOR A FREE GIFT!", 0.9, R(600, 1081, 312, 33)),
-        ocr.TextBox("Claim", 0.9, R(695, 1207, 124, 45)),       # offerwall gift
-        ocr.TextBox("Claim", 0.9, R(800, 1800, 120, 50)),       # a mission row
-    )
-    assert battle_menu.event_claims(fake) == [(860, 1825)]
-
-
-@needs_ocr
 def test_free_gem_tile_found_on_scrolled_store():
     screen = frame("battle_menu/store_free_tiles")
     point = battle_menu.free_gem_tile(screen, boxes("battle_menu/store_free_tiles"))

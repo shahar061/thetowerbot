@@ -112,7 +112,7 @@ def read_menu(screen: Image, templates: TemplateCache) -> dict[Icon, IconReading
 # These read the pages the in-battle menu opens: the Event page and its info
 # modal, and the Store. All of them carry real-money buy buttons, so a
 # reader here must never hand back a price as a tap target - `is_price`
-# exists to keep that promise, and `event_claims`/`free_gem_tile` both lean
+# exists to keep that promise, and `free_gem_tile` leans
 # on it rather than trusting position alone.
 
 Page = Literal["event_info", "event", "store", "other", "none"]
@@ -176,12 +176,6 @@ def event_modal_close(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, i
     return (x0 + int(np.median(xs)), y0 + int(np.median(ys)))
 
 
-def _is_event_page(boxes: tuple[TextBox, ...]) -> bool:
-    # OCR sometimes drops the space around the title's dash ("EVENT-STEAMPUNK"),
-    # so match with or without one rather than a fixed literal.
-    return any(re.match(r"event\s*-", _norm(b.text)) for b in boxes)
-
-
 def _is_store_page(boxes: tuple[TextBox, ...]) -> bool:
     return any(_norm(b.text).startswith("store") for b in boxes)
 
@@ -189,34 +183,6 @@ def _is_store_page(boxes: tuple[TextBox, ...]) -> bool:
 def _tile_contains(tile: Rect, rect: Rect) -> bool:
     cx, cy = _centre(rect)
     return tile.x <= cx <= tile.x + tile.w and tile.y <= cy <= tile.y + tile.h
-
-
-def event_claims(boxes: tuple[TextBox, ...]) -> list[tuple[int, int]]:
-    """Ready mission Claim buttons on the Event page only - never inside the
-    priced Event Boost card, and never a website/gift offerwall Claim (the
-    Store's free-gem tile has one too, and this reader must stay page-safe)."""
-    if not _is_event_page(boxes):
-        return []
-    # OCR sometimes drops the space between "EVENT" and "BOOST" too
-    # ("EVENTBOOST+GEMS+RELICS"), so this also matches with none.
-    boost = next((b for b in boxes if re.search(r"event\s*boost", _norm(b.text))), None)
-    boost_band = (boost.rect.y, boost.rect.y + 450) if boost else None
-    prices = [b.rect for b in boxes if is_price(b.text)]
-    points = []
-    for box in boxes:
-        if _norm(box.text) != "claim":
-            continue
-        cx, cy = _centre(box.rect)
-        if boost_band and boost_band[0] <= cy <= boost_band[1]:
-            continue
-        if any(abs(_centre(p)[1] - cy) < 120 for p in prices):
-            continue
-        tile = Rect(cx - 150, cy - 250, 300, 450)
-        if any(("website" in _norm(b.text) or "gift" in _norm(b.text))
-               and _tile_contains(tile, b.rect) for b in boxes):
-            continue
-        points.append((cx, cy))
-    return points
 
 
 def free_gem_tile(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] | None:
