@@ -70,6 +70,31 @@ class _OwnedChild:
             return True
 
 
+class _AdoptedChild:
+    """A worker spawned by an earlier coordinator that outlived it.
+
+    It is not our child, so it cannot be held as a zombie. Instead argv and
+    birth time are re-proved under the lock immediately before every poll and
+    signal: a reused PID would need the same argv and the same start second.
+    """
+
+    def __init__(self, pid: int, proven: Callable[[], bool]) -> None:
+        self.pid = pid
+        self.proven = proven
+        self.lock = RLock()
+
+    def alive(self) -> bool:
+        with self.lock:
+            return self.proven()
+
+    def signal(self, callback: Callable[[int], None]) -> bool:
+        with self.lock:
+            if not self.proven():
+                return False
+            callback(self.pid)
+            return True
+
+
 def _process_identity(pid: int) -> tuple[str, ...] | None:
     if pid <= 0:
         return None
@@ -146,7 +171,7 @@ class RerollSupervisor:
         self.terminate = terminate
         self.force_kill = force_kill
         self.state_root = self.root / "reroll-processes"
-        self._owned: dict[str, _OwnedChild] = {}
+        self._owned: dict[str, _OwnedChild | _AdoptedChild] = {}
         self._worker_mutexes: dict[str, RLock] = {}
         self._worker_mutex_guard = Lock()
         self._lock_depth = local()
@@ -182,9 +207,32 @@ class RerollSupervisor:
             "pid", "process_birth", "attempt_id", "lease_id", "endpoint",
             "input_generation", "args", "spawned_at"))
 
-    def _owned_child(self, name: str, pid: int) -> _OwnedChild | None:
+    def _owned_child(self, name: str, pid: int) -> _OwnedChild | _AdoptedChild | None:
         child = self._owned.get(name)
-        return child if child is not None and child.pid == pid else None
+        if child is not None and child.pid == pid:
+            return child
+        return self._adopt(name, pid)
+
+    def _adopt(self, name: str, pid: int) -> _AdoptedChild | None:
+        """Take over a worker left running by a restarted coordinator.
+
+        Adoption needs the birth-time proof: argv alone cannot tell a reused PID.
+        """
+        record = self._read(name)
+        if (self.process_birth is None or record is None or record.get("pid") != pid
+                or not isinstance(record.get("args"), list)):
+            return None
+        expected = tuple(record["args"])
+
+        def proven() -> bool:
+            return (self._birth_matches(record)
+                    and tuple(self.process_identity(pid) or ()) == expected)
+
+        if not proven():
+            return None
+        child = _AdoptedChild(pid, proven)
+        self._owned[name] = child
+        return child
 
     @contextmanager
     def _capacity_locked(self) -> Iterator[None]:

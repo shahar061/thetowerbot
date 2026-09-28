@@ -186,6 +186,32 @@ def test_reused_pid_with_same_argv_but_new_birth_is_never_killed(tmp_path: Path)
     assert killed == []
 
 
+def test_restarted_supervisor_adopts_a_surviving_worker_it_can_prove(tmp_path: Path) -> None:
+    births = {4000: "first birth"}
+    make, spawned, live, killed = _harness(tmp_path, births=births)
+    assert make().start("Tiramisu64_20")["state"] == "running"
+    restarted = make()
+    assert restarted.reconcile()["Tiramisu64_20"]["state"] == "running"
+    assert restarted.start("Tiramisu64_20")["state"] == "running"
+    assert len(spawned) == 1
+    assert restarted.pause("Tiramisu64_20")["state"] == "paused"
+    assert killed == [4000] and 4000 not in live
+
+
+def test_restarted_supervisor_never_adopts_a_reused_pid(tmp_path: Path) -> None:
+    births = {4000: "first birth"}
+    make, spawned, live, killed = _harness(tmp_path, births=births)
+    assert make().start("Tiramisu64_20")["state"] == "running"
+    restarted = make()
+    assert restarted.reconcile()["Tiramisu64_20"]["state"] == "running"
+    births[4000] = "second birth"
+    assert restarted.reconcile()["Tiramisu64_20"]["state"] == "identity_changed"
+    assert restarted.pause("Tiramisu64_20")["state"] == "identity_changed"
+    assert restarted.kill("Tiramisu64_20")["state"] == "identity_changed"
+    assert make().start("Tiramisu64_20")["state"] == "identity_changed"
+    assert killed == [] and len(spawned) == 1
+
+
 def test_capacity_reports_pressure_and_defers_extra_member(tmp_path: Path) -> None:
     make, spawned, _, _ = _harness(tmp_path)
     original = make()
