@@ -10,7 +10,8 @@ from fleet.lab_saving import SavingPlan, SavingTarget, saving_plan
 
 def plan(reserve: int | None, wallet: int | None) -> SavingPlan:
     target = SavingTarget(1, "labs.game-speed", "Game Speed", 4, 50_000, 0.0, None, False)
-    return SavingPlan(reserve, 0, wallet, 1_000.0, (target,), ("Slot 1 Game Speed L4: needs 50k, due now",))
+    return SavingPlan(reserve, 0, wallet, 1_000.0, (target,),
+                      ("Slot 1 Game Speed L4: needs 50k, due now", "Reserve 4k; Workshop may spend 0"))
 
 
 def route(limit_pct: int) -> SimpleNamespace:
@@ -22,7 +23,7 @@ def test_no_saving_holds_nothing() -> None:
 
 
 def test_reserve_is_held_and_full_reserve_pauses() -> None:
-    assert jit_hold(plan(4_000, 10_000), 10_000) == (4_000, False, "Slot 1 Game Speed L4: needs 50k, due now")
+    assert jit_hold(plan(4_000, 10_000), 10_000) == (4_000, False, "Reserve 4k; Workshop may spend 0")
     jar, paused, _ = jit_hold(plan(10_000, 10_000), 10_000)
     assert (jar, paused) == (10_000, True)
 
@@ -57,3 +58,16 @@ def test_worker_ceiling_equals_the_saving_plans_workshop_budget(
     saving = saving_plan(pending, wallet=wallet - starts_now, rate=None, spend_limit_pct=limit, now=0.0)
     jar, _, _ = jit_hold(saving, wallet)
     assert workshop_ceiling(route(limit), wallet, jar) == saving.workshop_budget
+
+
+def test_paused_reason_is_the_plans_summary_not_one_slots_line() -> None:
+    pending = [SimpleNamespace(slot=slot, needed_at=0.0, researching=False, tier="S+",
+                               target=SimpleNamespace(lab_id=lab, name=name, level=level, price=price))
+               for slot, lab, name, level, price in ((1, "labs.game-speed", "Game Speed", 4, 50_000),
+                                                     (2, "labs.labs-speed", "Labs Speed", 11, 16_710))]
+    saving = saving_plan(pending, wallet=20_000, rate=None, spend_limit_pct=100, now=0.0)
+    jar, paused, reason = jit_hold(saving, 20_000)
+    assert (jar, paused) == (20_000, True)
+    assert reason == saving.why[-1] and reason.startswith("Reserve ") and "Workshop may spend" in reason
+    assert jit_hold(saving_plan(pending, wallet=None, rate=None, spend_limit_pct=100, now=0.0),
+                    None)[2] == "Wallet unread: Workshop waits"

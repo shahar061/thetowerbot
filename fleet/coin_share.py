@@ -66,11 +66,13 @@ def jit_hold(saving: Any, wallet: int | None) -> tuple[int, bool, str | None]:
     the labs starting now (the wallet above the plan's wallet') and the reserve, so
     `workshop_ceiling(route, wallet, jar)` is the plan's `workshop_budget`. Paused when
     the hold takes the whole wallet, or when either wallet is unread (Workshop never
-    spends blind). No saving plan (not a lab list) holds nothing.
+    spends blind). No saving plan (not a lab list) holds nothing. The reason is the
+    plan's closing summary line ("Reserve ...; Workshop may spend ...", or "Wallet
+    unread ..."), which speaks for every slot, not just one.
     """
     if saving is None:
         return 0, False, None
-    reason = saving.why[0] if saving.why else None
+    reason = saving.why[-1] if saving.why else None
     if wallet is None:
         return 0, True, reason
     if saving.reserve is None or saving.wallet is None:

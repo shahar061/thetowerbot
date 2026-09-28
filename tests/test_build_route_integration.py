@@ -505,4 +505,4 @@ def test_just_in_time_pauses_workshop_when_the_reserve_takes_the_wallet(tmp_path
     assert paused.enabled and paused.workshop == ()
     assert [(d.state, d.reason) for d in published] == [(
         "save_coins", "Workshop paused: saving coins for labs · "
-                      "Slot 1: income unread, holding 2.5k for Game Speed L2")]
+                      "Reserve 1k; Workshop may spend 0")]
