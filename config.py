@@ -668,9 +668,24 @@ BATTLE_MENU_TEMPLATES: dict[str, str] = {
     "labs": "battle_menu/labs.png",
     "event": "battle_menu/event.png",
 }
-# The badge sits on the icon frame's top-left corner, outside the inner crop.
-# Offsets are from the located template's top-left; measured in Task 2.
-BATTLE_MENU_BADGE_PATCH = Rect(x=-36, y=-36, w=60, h=60)
+# The badge sits on the icon frame's top-left corner, outside the inner crop,
+# and overlaps the crop itself by only a few pixels. Offsets are from the
+# located template's top-left; measured in Task 2 on open_badged.png /
+# collapsed_badged.png (all coordinates are (x, y) offsets from that corner,
+# or absolute pixel bounding boxes as noted):
+#   hamburger red dot: abs x 963-987, y 16-41    -> offset x -27..-3, y -24..-1
+#   cart red "1":       abs x 859-883, y 15-40    -> offset x -25..-1, y -25..0
+#   event blue "1":     abs x 961-993, y 446-479  -> offset x -33..-1, y -24..+9
+#   settings' red dot (must NOT fall in missions' patch): abs x 963-995,
+#     y 226-258, while missions' own box starts at x 884 - clear by 79px.
+# BATTLE_MENU_BADGE_PATCH covers the union of the three badge boxes above
+# with margin: x -38..+6, y -30..+14.
+BATTLE_MENU_BADGE_PATCH = Rect(x=-38, y=-30, w=44, h=44)
+# Measured red_pixels()/blue_pixels() counts on open_badged.png / collapsed_badged.png
+# with the patch above:
+#   hamburger (badged, red): 521   cart (badged, red): 476   event (badged, blue): 828
+#   missions/cards/labs (clear): 0   settings dot leaking into missions patch: 0
+# 120 keeps a wide margin below every badged count and well above the clear ones.
 BATTLE_MENU_BADGE_MIN_PIXELS = 120
 # Lavender count badge (the Event star's "1"); OpenCV hue 0-180.
 BATTLE_MENU_BLUE_HUE = (112, 140)
