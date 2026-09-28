@@ -657,6 +657,34 @@ class Rect(NamedTuple):
     h: int
 
 
+# -- in-battle menu (battle_menu.py) ------------------------------------------
+BATTLE_MENU_TEMPLATES: dict[str, str] = {
+    "hamburger": "battle_menu/hamburger.png",
+    "close": "battle_menu/close.png",
+    "exit_battle": "battle_menu/exit_battle.png",
+    "cart": "battle_menu/cart.png",
+    "missions": "battle_menu/missions.png",
+    "cards": "battle_menu/cards.png",
+    "labs": "battle_menu/labs.png",
+    "event": "battle_menu/event.png",
+}
+# The badge sits on the icon frame's top-left corner, outside the inner crop.
+# Offsets are from the located template's top-left; measured in Task 2.
+BATTLE_MENU_BADGE_PATCH = Rect(x=-36, y=-36, w=60, h=60)
+BATTLE_MENU_BADGE_MIN_PIXELS = 120
+# Lavender count badge (the Event star's "1"); OpenCV hue 0-180.
+BATTLE_MENU_BLUE_HUE = (112, 140)
+BATTLE_MENU_BLUE_MIN_SAT = 70
+BATTLE_MENU_BLUE_MIN_VAL = 150
+BATTLE_MENU_COOLDOWNS: dict[str, float] = {
+    "event": 1800.0, "cart": 1800.0, "missions": 600.0, "cards": 600.0, "labs": 600.0,
+}
+BATTLE_MENU_MAX_BACKOFF = 7200.0
+BATTLE_MENU_MIN_SESSION_GAP = 180.0
+BATTLE_MENU_STEP_FRAMES = 6
+BATTLE_MENU_WATCH_ADS = False
+
+
 # A tile is a bright bordered rectangle: a half-width upgrade tile, or a
 # full-width unlock tile. Both the workshop and the in-run panel use them.
 #
