@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import cv2
+import pytest
 
 import config
 import ocr
@@ -268,9 +269,6 @@ def test_labs_navigation_and_page_anchor_match_recorded_frames() -> None:
     assert 740 < target.center[0] < 890
     assert 2220 < target.center[1] < 2380
     assert pages.classify_page(frame("menu_labs_slot1_idle"), cache).page == "LABS"
-
-
-import pytest
 
 
 def _owned_two_locked_three(price: str | None = "400") -> tuple[ocr.TextBox, ...]:

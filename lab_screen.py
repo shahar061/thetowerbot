@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
 import math
@@ -136,6 +137,25 @@ def _enabled_card_border(screen: Image, name: ocr.TextBox) -> bool:
     return min(blue, green, red) >= 215
 
 
+def _lab_title_and_headers(boxes: Sequence[ocr.TextBox], width: int, height: int
+                           ) -> dict[int, list[ocr.TextBox]] | None:
+    """The per-slot "Lab N" headers below the single page title.
+
+    None means the page title wasn't read exactly once (a wrong page, or an
+    unreadable one). An empty dict means the title read but no slot headers did.
+    """
+    titles = [b for b in boxes if b.text.strip().upper() == "LAB"
+              and b.rect.x < width * .2 and b.rect.y < height * .1]
+    if len(titles) != 1:
+        return None
+    headers: dict[int, list[ocr.TextBox]] = {}
+    for box in boxes:
+        match = re.fullmatch(r"Lab\s+([1-5])", box.text.strip(), re.I)
+        if match and box.rect.x < width * .25 and box.rect.y > titles[0].rect.y:
+            headers.setdefault(int(match[1]), []).append(box)
+    return headers
+
+
 def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                observed_at: float) -> LabsReading:
     """Read owned cards independently; this observer never supplies tap targets.
@@ -156,15 +176,7 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                   and box.rect.w > 0 and box.rect.h > 0
                   and 0 <= box.rect.x < box.rect.x + box.rect.w <= width
                   and 0 <= box.rect.y < box.rect.y + box.rect.h <= height)
-    titles = [b for b in valid if b.text.strip().upper() == "LAB"
-              and b.rect.x < width * .2 and b.rect.y < height * .1]
-    if len(titles) != 1:
-        return empty
-    headers: dict[int, list[ocr.TextBox]] = {}
-    for box in valid:
-        match = re.fullmatch(r"Lab\s+([1-5])", box.text.strip(), re.I)
-        if match and box.rect.x < width * .25 and box.rect.y > titles[0].rect.y:
-            headers.setdefault(int(match[1]), []).append(box)
+    headers = _lab_title_and_headers(valid, width, height)
     if not headers:
         return empty
 
@@ -235,15 +247,9 @@ def read_next_locked(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LockedSlo
     """
     height, width = screen.shape[:2]
     trusted = [box for box in boxes if _trusted(box)]
-    titles = [box for box in trusted if box.text.strip().upper() == "LAB"
-              and box.rect.x < width * .2 and box.rect.y < height * .1]
-    if len(titles) != 1:
+    headers = _lab_title_and_headers(trusted, width, height)
+    if headers is None:
         return None
-    headers: dict[int, list[ocr.TextBox]] = {}
-    for box in trusted:
-        match = re.fullmatch(r"Lab\s+([1-5])", box.text.strip(), re.I)
-        if match and box.rect.x < width * .25 and box.rect.y > titles[0].rect.y:
-            headers.setdefault(int(match[1]), []).append(box)
     tops = sorted(h.rect.y for group in headers.values() for h in group)
     for slot in sorted(set(headers) & set(_ORDINALS)):
         if len(headers[slot]) != 1:
