@@ -154,6 +154,33 @@ def test_build_route_preview_reconstructs_verified_workshop_facts(tmp_path: Path
     assert member["current"]["status"] != "unknown"
 
 
+def _jit_draft() -> RouteDocument:
+    from fleet import resource_blocks as rb
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
+    raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
+    raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    return RouteDocument.from_dict(raw)
+
+
+def test_build_route_preview_holds_the_just_in_time_drafts_own_saving(tmp_path: Path) -> None:
+    from lab_plan import LabCadence, LabDecision
+    worker_root = registered_worker(tmp_path, "Air_38", "account-a")
+    now = time.time()
+    # The worker's published jar (0) is not what a just_in_time draft would hold.
+    (worker_root / "build-route-facts.json").write_text(json.dumps(asdict(RouteFacts(
+        "account-a", "Air_38", "main_menu", now, now, best_tier_1_wave=1, wallet_coins=3000,
+        prices={"damage": 10, "attack_speed": 12}, utility_spent_coins=0, lab_coin_jar=0))))
+    # Slot 1 idle: Game Speed L2 costs 2,500 and starts now, leaving 500.
+    LabCadence(worker_root, "account-a").note(
+        LabDecision("wait_coins", price=2500, wallet_coins=100, game_speed_level=2), now=now)
+
+    member = preview_service(tmp_path).build_route_preview(_jit_draft())["members"][0]
+
+    assert member["current"]["trace"]["spend_ceiling"] == 3000
+    assert member["proposed"]["trace"]["spend_ceiling"] == 500
+
+
 def test_setup_discovers_existing_proof_and_persists_host_policy(tmp_path: Path) -> None:
     qualification(tmp_path)
     store = FleetSetupStore(tmp_path / "fleet", qualification_root=tmp_path)

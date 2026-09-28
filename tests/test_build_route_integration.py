@@ -459,3 +459,50 @@ def test_auto_start_and_auto_unlock_switches_gate_the_lab_visit(tmp_path: Path) 
     assert not progress.lab_due(now=1100., wallet_coins=100, wallet_gems=120)
     assert progress.lab_due(now=1100., wallet_coins=100, wallet_gems=150)
     assert progress.lab_visit_options().min_gems == 150
+
+
+def _jit_route(root: Path, expected: int = 0) -> RouteDocument:
+    from fleet import resource_blocks as rb
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
+    raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
+    raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
+
+
+def test_just_in_time_ceiling_is_the_saving_plans_workshop_budget(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _jit_route(tmp_path)
+    _game_speed_waits(progress)  # slot 1 idle; Game Speed L2 costs 2,500 and starts now
+    (progress.root / "lab-coin-jar.json").write_text(json.dumps(
+        {"account_id": "account-a", "amount": 700, "visit_key": "old", "updated_at": 1.0}))
+    jar_before = (progress.root / "lab-coin-jar.json").read_bytes()
+    progress.route_facts = _facts("visit-1", wallet=3000)  # type: ignore[method-assign]
+    progress.shopping_policy(Strategy.from_config().shopping)
+    from fleet.build_route import resolve_route
+    from fleet.lab_facts import persisted_lab_facts
+    from fleet.resource_blocks import evaluate_lab_plan
+    saving = evaluate_lab_plan(resolve_route(BuildRouteStore(tmp_path).read(), "Air_38", "account-a"),
+                               persisted_lab_facts(progress.root, "account-a", now=time.time(), coins=3000,
+                                                   gems=None, db_path=progress.root / "tower_bot.db")).saving
+    # Holding only the (zero) reserve would leave the whole 3,000 spendable.
+    assert (saving.reserve, saving.workshop_budget) == (0, 500)
+    assert progress._route_evaluation.trace.spend_ceiling == saving.workshop_budget
+    assert json.loads((progress.root / "build-route-facts.json").read_text())["lab_coin_jar"] == 2500
+    # The leftover save_pct jar is neither grown nor reset in this mode.
+    assert (progress.root / "lab-coin-jar.json").read_bytes() == jar_before
+
+
+def test_just_in_time_pauses_workshop_when_the_reserve_takes_the_wallet(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    published = []
+    progress._publish = lambda decision: published.append(decision)  # type: ignore[method-assign]
+    _jit_route(tmp_path)
+    _game_speed_waits(progress)
+    _bought_once(progress)
+    progress.route_facts = _facts("visit-1", wallet=1000)  # type: ignore[method-assign]
+    paused = progress.shopping_policy(replace(Strategy.from_config().shopping, enabled=True))
+    assert paused.enabled and paused.workshop == ()
+    assert [(d.state, d.reason) for d in published] == [(
+        "save_coins", "Workshop paused: saving coins for labs · "
+                      "Reserve 1k; Workshop may spend 0")]

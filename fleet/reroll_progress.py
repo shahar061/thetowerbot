@@ -31,6 +31,7 @@ from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
 from fleet import coin_share
+from fleet.lab_facts import best_waves, coins_per_hour, just_in_time_hold
 from fleet.resource_blocks import LabFacts, LabPlan, evaluate_lab_plan
 from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
 from policy import AutopilotPolicy, UpgradeRule
@@ -179,7 +180,9 @@ class RerollProgress:
                     and wallet_gems >= 0 else None)
         facts = replace(facts, available_coins=available, wallet_coins=available,
                         wallet_gems=gems,
-                        jar=self.coin_jar.amount(quiet=True))
+                        jar=self.coin_jar.amount(quiet=True),
+                        coins_per_hour=coins_per_hour(self.root, self.account_id),
+                        best_waves=best_waves(self.root / "tower_bot.db") or None)
         route = self.route_runtime.current()
         return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
 
@@ -421,6 +424,7 @@ class RerollProgress:
         self._spend_fraction = None
         jar = 0
         paused = False
+        saving_reason: str | None = None
         route_wallet: int | None = None
         if route is not None and route.revision > 0:
             from web.account_catalog import registered_worker
@@ -439,10 +443,20 @@ class RerollProgress:
                 facts = self.route_facts()
                 effective = resolve_route(route, self.root.name, self.account_id)
                 lab_record, _ = self.lab_cadence.route_observation()
-                # Grows at most once per visit key: this runs on every menu scan.
-                jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,
-                                           facts.visit_id or "", time.time())
-                paused = coin_share.workshop_paused(effective, lab_record, facts.wallet_coins)
+                if effective.rules.coins.lab_share.mode == "just_in_time":
+                    # The saving plan's hold replaces the jar, which is neither grown
+                    # nor reset here. A leftover save_pct amount stays on disk, unused
+                    # by Workshop, until a visit in another mode settles it: save_pct
+                    # keeps up to the waiting lab's price, the other modes empty it.
+                    jar, paused, saving_reason = just_in_time_hold(
+                        effective, self.root, self.account_id, wallet=facts.wallet_coins,
+                        db_path=registration.db_path, now=time.time())
+                else:
+                    # Grows at most once per visit key: this runs on every menu scan.
+                    jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,
+                                               facts.visit_id or "", time.time())
+                    paused = coin_share.workshop_paused(effective, lab_record, facts.wallet_coins)
+                    saving_reason = None
                 facts = replace(facts, lab_coin_jar=jar)
                 route_wallet = facts.wallet_coins
                 self.route_runtime.publish_facts(facts)
@@ -482,15 +496,18 @@ class RerollProgress:
                            cards=replace(base.cards, enabled=False))
         if paused:
             # labs_first: an automated lab waits for coins, so Workshop holds
-            # every coin until the lab check starts it. Claims, the tutorial
+            # every coin until the lab check starts it. just_in_time: the labs
+            # starting now plus the reserve take the whole wallet (or it is
+            # unread). Claims, the tutorial
             # grant and Cards are not Workshop visits, so they continue.
             # Publish that Workshop is paused instead of the buy `plan` above:
             # that plan cannot run while paused, and publishing it anyway
             # would show a "next buy" on the fleet UI that never happens.
-            price = coin_share.waiting_lab_price(effective, lab_record)
+            reason = (f"Workshop paused: saving coins for labs · {saving_reason}" if saving_reason
+                      else f"Workshop paused: saving coins for the next automated lab "
+                           f"({coin_share.waiting_lab_price(effective, lab_record)} coins).")
             self._publish(replace(plan, state="save_coins", upgrade_id=None, item=None, category=None,
-                                  price=None, reason=f"Workshop paused: saving coins for the next "
-                                  f"automated lab ({price} coins)."))
+                                  price=None, reason=reason))
             return replace(base, workshop=())
         self._publish(plan)
         if plan.stage == "strategy_observe":

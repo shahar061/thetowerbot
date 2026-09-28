@@ -243,8 +243,8 @@ def test_labs_list_levels_running_jobs_and_the_cheapest_known_next() -> None:
                                 "completes_at": "1970-01-01T01:23:20+00:00"}]
     assert labs["levels"] == [
         {"id": "labs.game-speed", "name": "Game Speed", "level": 3, "next_cost": 50000},
-        {"id": "labs.damage", "name": "Damage", "level": 11, "next_cost": None}]
-    assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 50000}
+        {"id": "labs.damage", "name": "Damage", "level": 11, "next_cost": 10_560}]
+    assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 50000}  # Damage is running
     assert [row["name"] for row in labs["recent"]] == ["Damage", "Game Speed"]
 
 
@@ -254,7 +254,7 @@ def test_a_lab_job_past_its_completion_time_is_not_running() -> None:
                 "lab_jobs": [{"concept_id": "labs.damage", "value": 999., "status": "researching"}]}
     labs = state_view.build_labs(revision, [], now=1000.)
     assert labs["running"] == []
-    assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 300}
+    assert labs["next"] == {"id": "labs.damage", "name": "Damage", "cost": 10_560}
 
 
 def test_labs_on_a_new_account_point_at_game_speed_level_one() -> None:

@@ -441,6 +441,7 @@ class FleetSetupService:
                                             evaluate_resources)
         from fleet.build_route_runtime import BuildRouteRuntime
         from fleet.build_route_preview_facts import load_preview_facts
+        from fleet.lab_facts import just_in_time_hold
         from web.account_catalog import registered_worker
 
         saved = self.build_route_store().read()
@@ -468,7 +469,15 @@ class FleetSetupService:
                 if evidence.workshop.facts is not None:
                     facts = evidence.workshop.facts
                     current = evaluate(current_effective, facts, runtime.pending())
-                    proposed = evaluate(proposed_effective, facts, None)
+                    proposed_facts = facts
+                    if proposed_effective.rules.coins.lab_share.mode == "just_in_time":
+                        # The draft's own saving plan, not the jar the worker holds today.
+                        jar, _, _ = just_in_time_hold(
+                            proposed_effective, worker_root, account_id, wallet=facts.wallet_coins,
+                            db_path=registration.db_path,
+                            now=facts.now if facts.now is not None else time.time())
+                        proposed_facts = replace(facts, lab_coin_jar=jar)
+                    proposed = evaluate(proposed_effective, proposed_facts, None)
                 else:
                     facts = RouteFacts(account_id, worker_root.name)
                     reason = evidence.workshop.reason or "Workshop evidence unavailable"

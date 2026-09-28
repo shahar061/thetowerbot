@@ -6,11 +6,12 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from fleet.build_route import BattleBranch, BattlePhase, EffectiveRoute
+from fleet.build_route import BattleBranch, BattlePhase, EffectiveRoute, is_lab_list
 from fleet.coin_share import spendable_wallet, workshop_ceiling, workshop_limit_pct
 from fleet.reroll_planner import (DRAW_SHARPNESS, RerollDecision, RerollFacts,
                                   _ban_closure, choose_next)
 import builds
+import lab_catalog
 import upgrades
 
 
@@ -123,6 +124,9 @@ def _future_gem_action(route: EffectiveRoute) -> str | None:
 def _future_lab_action(route: EffectiveRoute) -> str | None:
     if route.labs.mode != "blocks":
         return next((step for step in route.labs.steps if step != "research_game_speed"), None)
+    if is_lab_list(route.labs):
+        return next((f"research_{entry['lab_id']}" for entry in route.labs.blocks[0]["entries"]
+                     if entry["lab_id"] != lab_catalog.GAME_SPEED), None)
     track = next((item for item in route.labs.blocks if 1 in item["slots"]), None)
     if track is None:
         return None

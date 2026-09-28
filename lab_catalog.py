@@ -1,8 +1,8 @@
-"""Lab and gem price facts from catalog/labs.v1.json, validated at import.
+"""Lab and gem price facts from catalog/labs.v2.json, validated at import.
 
-Only Game Speed has a price table. Every other lab has `levels: null`, which
-means its price is unknown - never zero. A bad file stops the import, the same
-way the Workshop price catalog does.
+Tables come from the wiki (tools/import_wiki_lab_tables.py). A lab without a
+readable table has `levels: null`, which means its price is unknown - never
+zero. A bad file stops the import, the same way the Workshop price catalog does.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 import concepts
 
-CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "labs.v1.json"
+CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "labs.v2.json"
 GAME_SPEED = "labs.game-speed"
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -25,14 +25,15 @@ class LabLevel:
     level: int
     coins: int
     seconds: int
-    max_speed: float
+    max_speed: float | None
+    value: str | None = None
 
 
 @dataclass(frozen=True)
 class CatalogLab:
     id: str
     name: str
-    unlock: Mapping[str, int] | None
+    unlock: tuple[dict[str, Any], ...]
     max_level: int | None
     levels: tuple[LabLevel, ...] | None
     source_url: str
@@ -88,7 +89,29 @@ def _gem_prices(raw: object, slots: range, where: str) -> tuple[GemPrice, ...]:
     return tuple(prices)
 
 
-def _lab(raw: object) -> CatalogLab:
+def _unlock(raw: object, lab_id: str, version: int) -> tuple[dict[str, Any], ...]:
+    if raw is None:
+        return ()
+    if version == 1:
+        if not isinstance(raw, dict) or set(raw) != {"best_tier_1_wave"}:
+            raise ValueError(f"{lab_id}: unlock must be {{best_tier_1_wave: int}} or null")
+        return ({"tier": 1, "wave": _positive(raw["best_tier_1_wave"], f"{lab_id} unlock wave")},)
+    if not isinstance(raw, list):
+        raise ValueError(f"{lab_id}: unlock must be a list of conditions")
+    conditions: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict) and set(item) == {"tier", "wave"}:
+            conditions.append({"tier": _positive(item["tier"], f"{lab_id} unlock tier"),
+                               "wave": _positive(item["wave"], f"{lab_id} unlock wave")})
+        elif isinstance(item, dict) and set(item) == {"lab", "level"} and isinstance(item["lab"], str):
+            conditions.append({"lab": item["lab"],
+                               "level": _positive(item["level"], f"{lab_id} unlock level")})
+        else:
+            raise ValueError(f"{lab_id}: unlock condition must be {{tier, wave}} or {{lab, level}}")
+    return tuple(conditions)
+
+
+def _lab(raw: object, version: int) -> CatalogLab:
     if not isinstance(raw, dict):
         raise ValueError("lab entries must be objects")
     lab_id, name = raw.get("id"), raw.get("name")
@@ -98,11 +121,7 @@ def _lab(raw: object) -> CatalogLab:
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"{lab_id}: name is required")
     url, checked = _provenance(raw, lab_id)
-    unlock = raw.get("unlock")
-    if unlock is not None:
-        if not isinstance(unlock, dict) or set(unlock) != {"best_tier_1_wave"}:
-            raise ValueError(f"{lab_id}: unlock must be {{best_tier_1_wave: int}} or null")
-        _positive(unlock["best_tier_1_wave"], f"{lab_id} unlock wave")
+    unlock = _unlock(raw.get("unlock"), lab_id, version)
     levels_raw = raw.get("levels")
     if levels_raw is None:
         return CatalogLab(lab_id, name, unlock, None, None, url, checked)
@@ -114,31 +133,79 @@ def _lab(raw: object) -> CatalogLab:
         if not isinstance(entry, dict) or entry.get("level") != number:
             raise ValueError(f"{lab_id}: levels must run 1 to max_level in order")
         speed = entry.get("max_speed")
-        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed <= 0:
-            raise ValueError(f"{lab_id}: max_speed must be a positive number")
+        if lab_id == GAME_SPEED or version == 1:
+            if isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed <= 0:
+                raise ValueError(f"{lab_id}: max_speed must be a positive number")
+            speed = float(speed)
+        elif speed is not None:
+            raise ValueError(f"{lab_id}: only Game Speed has max_speed")
+        value = entry.get("value")
+        if value is not None and (not isinstance(value, str) or len(value) > 40):
+            raise ValueError(f"{lab_id}: value must be a short string")
+        seconds = entry.get("seconds")
+        if version == 1:
+            seconds = _positive(seconds, f"{lab_id} seconds")
+        elif type(seconds) is not int or seconds < 0:
+            raise ValueError(f"{lab_id} seconds must be a non-negative integer")
         levels.append(LabLevel(number, _positive(entry.get("coins"), f"{lab_id} coins"),
-                               _positive(entry.get("seconds"), f"{lab_id} seconds"),
-                               float(speed)))
-    if any(later.coins <= earlier.coins or later.max_speed <= earlier.max_speed
+                               seconds, speed, value))
+    if any(later.coins < earlier.coins or later.seconds < earlier.seconds
            for earlier, later in zip(levels, levels[1:])):
+        raise ValueError(f"{lab_id}: level prices and times must rise")
+    if lab_id == GAME_SPEED and any(later.coins <= earlier.coins or later.max_speed <= earlier.max_speed
+                                    for earlier, later in zip(levels, levels[1:])):
         raise ValueError(f"{lab_id}: level prices and speeds must rise")
     return CatalogLab(lab_id, name, unlock, max_level, tuple(levels), url, checked)
 
 
+def _check_no_unlock_cycles(labs: tuple[CatalogLab, ...]) -> None:
+    """Spec: unlocks form no cycles. DFS with a gray/black coloring."""
+    by_id = {entry.id: entry for entry in labs}
+    UNVISITED, VISITING, DONE = 0, 1, 2
+    state = {entry.id: UNVISITED for entry in labs}
+
+    def visit(lab_id: str, path: list[str]) -> None:
+        state[lab_id] = VISITING
+        path.append(lab_id)
+        for condition in by_id[lab_id].unlock:
+            prereq = condition.get("lab")
+            if prereq is None or prereq not in by_id:
+                continue
+            if state[prereq] == VISITING:
+                cycle = " -> ".join(path[path.index(prereq):] + [prereq])
+                raise ValueError(f"unlock cycle: {cycle}")
+            if state[prereq] == UNVISITED:
+                visit(prereq, path)
+        path.pop()
+        state[lab_id] = DONE
+
+    for entry in labs:
+        if state[entry.id] == UNVISITED:
+            visit(entry.id, [])
+
+
 def load(payload: object) -> LabCatalog:
     """Validate a catalog payload; any problem raises ValueError."""
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    if not isinstance(payload, dict) or payload.get("version") not in (1, 2):
         raise ValueError("unsupported lab catalog version")
+    version = payload["version"]
     labs_raw = payload.get("labs")
     if not isinstance(labs_raw, list):
         raise ValueError("labs must be a list")
-    labs = tuple(_lab(item) for item in labs_raw)
+    labs = tuple(_lab(item, version) for item in labs_raw)
     ids = [entry.id for entry in labs]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate lab id")
     game_speed = next((entry for entry in labs if entry.id == GAME_SPEED), None)
     if game_speed is None or game_speed.levels is None:
         raise ValueError("Game Speed needs its price table")
+    id_set = set(ids)
+    for entry in labs:
+        for condition in entry.unlock:
+            name = condition.get("lab")
+            if name is not None and name not in id_set:
+                raise ValueError(f"{entry.id}: unlock names unknown lab {name}")
+    _check_no_unlock_cycles(labs)
     unlock, card = payload.get("labs_unlock"), payload.get("card_gems")
     if not isinstance(unlock, dict) or not isinstance(card, dict):
         raise ValueError("labs_unlock and card_gems must be objects")
@@ -161,6 +228,12 @@ def lab(lab_id: str) -> CatalogLab | None:
 
 def lab_ids() -> tuple[str, ...]:
     return tuple(_BY_ID)
+
+
+def tier_one_wave(lab_id: str) -> int | None:
+    entry = _BY_ID.get(lab_id)
+    return next((item["wave"] for item in (entry.unlock if entry else ())
+                 if item.get("tier") == 1), None)
 
 
 def level(lab_id: str, number: int) -> LabLevel | None:

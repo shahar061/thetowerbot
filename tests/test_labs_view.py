@@ -86,6 +86,60 @@ def test_a_row_uses_the_menu_wallet_cadence_and_recent_lab_activity(tmp_path: Pa
         ("CARD_BUY", 20, "Card mission"), ("LAB", 2500, None)]
 
 
+def test_a_just_in_time_row_carries_its_saving_plan(tmp_path: Path) -> None:
+    from fleet import resource_blocks as rb
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    root = _registered(tmp_path, "Air_38", "account-a")
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
+    raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
+    (root / "build-route-resource-facts.json").write_text(json.dumps({
+        "account_id": "account-a", "worker": "Air_38", "observed_at": 900.,
+        "wallet_coins": 1000, "wallet_gems": 60}))
+    LabCadence(root, "account-a").note(LabDecision("wait_coins", price=2500, wallet_coins=100,
+                                                   game_speed_level=2), now=900.)
+    (row,) = labs_snapshot(tmp_path, ["Air_38"], now=1000.)["workers"]
+    saving = row["saving"]
+    assert set(saving) == {"reserve", "workshop_budget", "targets", "why"}
+    assert (saving["reserve"], saving["workshop_budget"]) == (1000, 0)
+    assert [(t["slot"], t["lab_id"], t["price"]) for t in saving["targets"]] == [(1, "labs.game-speed", 2500)]
+    assert saving["why"] == ["Slot 1: income unread, holding 2.5k for Game Speed L2",
+                             "Reserve 1k; Workshop may spend 0"]
+    # No on-disk jar here; the stale-jar case is covered below.
+    assert row["plan"]["jar"] == 1000
+
+
+def test_a_just_in_time_row_shows_its_hold_not_a_stale_save_pct_jar(tmp_path: Path) -> None:
+    from fleet import resource_blocks as rb
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    root = _registered(tmp_path, "Air_38", "account-a")
+    (root / "build-route-resource-facts.json").write_text(json.dumps({
+        "account_id": "account-a", "worker": "Air_38", "observed_at": 900.,
+        "wallet_coins": 1000, "wallet_gems": 60}))
+    LabCadence(root, "account-a").note(LabDecision("wait_coins", price=2500, wallet_coins=100,
+                                                   game_speed_level=2), now=900.)
+    # Left over from the account's old save_pct strategy; just-in-time never reads it.
+    (root / "lab-coin-jar.json").write_text(json.dumps({"account_id": "account-a", "amount": 700}))
+    (before,) = labs_snapshot(tmp_path, ["Air_38"], now=1000.)["workers"]
+    assert before["saving"] is None and before["plan"]["jar"] == 700  # other modes keep the jar
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
+    raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
+    (row,) = labs_snapshot(tmp_path, ["Air_38"], now=1000.)["workers"]
+    assert row["saving"]["reserve"] == 1000 and row["plan"]["jar"] == 1000
+
+
+def test_rows_without_a_saving_plan_say_so(tmp_path: Path) -> None:
+    _registered(tmp_path, "Air_38", "account-a")
+    (row, unknown) = labs_snapshot(tmp_path, ["Air_38", "Air_1"], now=1000.)["workers"]
+    assert row["state"] == "ok" and row["saving"] is None
+    assert unknown["state"] == "unknown" and unknown["saving"] is None
+
+
 def test_other_account_records_are_not_shown(tmp_path: Path) -> None:
     root = _registered(tmp_path, "Air_38", "account-a")
     (root / "build-route-resource-facts.json").write_text(json.dumps({
@@ -130,6 +184,7 @@ def test_labs_endpoint_lists_visible_workers(tmp_path: Path) -> None:
     response = _client(tmp_path, ("Air_38",)).get("/api/fleet/labs")
     assert response.status_code == 200
     assert [row["worker"] for row in response.json()["workers"]] == ["Air_38"]
+    assert response.json()["workers"][0]["saving"] is None  # the fleet baseline has no lab list
 
 
 def test_labs_endpoint_is_unavailable_without_the_fleet() -> None:

@@ -2,6 +2,8 @@ import type { BuildRouteDocument } from "./buildRoute";
 
 type Base = { id: string; label?: string };
 export type Comparison = "gte" | "lte" | "gt" | "lt" | "eq";
+export type LabTier = "S+" | "S" | "A" | "B" | "C";
+export type LabListEntry = { id: string; lab_id: string; to_level: number; tier: LabTier; pin_slot?: number; label?: string };
 export type LabBlock =
   | (Base & { type: "slot_track"; slots: number[]; children: LabBlock[]; paused?: boolean; on_blocked?: "wait" | "skip";
       slot_policies?: Record<string, { paused?: boolean; on_blocked?: "wait" | "skip" }> })
@@ -10,6 +12,7 @@ export type LabBlock =
       max_price_pct_of_wallet?: number; caps?: Record<string, number> })
   | (Base & { type: "condition"; field: "best_tier_1_wave" | "game_speed_maxed" | "lab_level"; cmp: Comparison;
       value: number; lab_id?: string; then: LabBlock[]; else: LabBlock[] })
+  | (Base & { type: "lab_list"; entries: LabListEntry[] })
   | (Base & { type: "wait" });
 export type GemBlock =
   | (Base & { type: "unlock_lab_slot"; slot: number })
@@ -19,17 +22,21 @@ export type GemBlock =
   | (Base & { type: "wait" });
 export type ResourceBlock = LabBlock | GemBlock;
 
-export type LabShareMode = "when_affordable" | "save_pct" | "labs_first";
+export type LabShareMode = "when_affordable" | "save_pct" | "labs_first" | "just_in_time";
 export type RouteRules = {
   coins: { lab_share: { mode: LabShareMode; pct: number }; workshop_spend_limit_pct: number };
   labs: { auto_start: boolean; idle_fill: "leave_idle" | "shortest_under_30m";
-    pool: { selection: "cheapest" | "ordered" | "shortest"; max_price_pct_of_wallet: number | null; max_seconds: number | null } };
+    pool: { selection: "cheapest" | "ordered" | "shortest"; max_price_pct_of_wallet: number | null; max_seconds: number | null };
+    saving: { income_margin_pct: number; window_hours: Record<LabTier, number> };
+    filler: { enabled: boolean; max_price_pct_of_wallet: number; min_hours: number } };
   gems: { auto_unlock_lab_slots: boolean; spend_limit_pct: number; keep: number };
 };
 /** Mirrors RouteRules() in fleet/build_route.py: today's behavior. */
 export const DEFAULT_RULES: RouteRules = {
   coins: { lab_share: { mode: "when_affordable", pct: 25 }, workshop_spend_limit_pct: 100 },
-  labs: { auto_start: true, idle_fill: "leave_idle", pool: { selection: "ordered", max_price_pct_of_wallet: null, max_seconds: null } },
+  labs: { auto_start: true, idle_fill: "leave_idle", pool: { selection: "ordered", max_price_pct_of_wallet: null, max_seconds: null },
+    saving: { income_margin_pct: 75, window_hours: { "S+": 72, S: 24, A: 12, B: 4, C: 0 } },
+    filler: { enabled: true, max_price_pct_of_wallet: 10, min_hours: 1 } },
   gems: { auto_unlock_lab_slots: true, spend_limit_pct: 100, keep: 0 },
 };
 /** Mirrors fleet/resource_blocks.py LEGACY_SLOT2_POOL. */
@@ -42,13 +49,18 @@ export type SlotNow = { state: "researching" | "idle" | "locked" | "owned_unread
   evidence_status?: "unknown" | "historical" | "current" };
 export type SlotNext = { lab_id: string; name: string; level: number | null; price: number | null; seconds: number | null };
 export type SlotPlan = { slot: number; now: SlotNow; next: SlotNext | null; covered: boolean | null; automated: boolean;
-  why: string[]; note: string | null; capabilities?: { observe: boolean; plan: boolean; execute: boolean } };
+  why: string[]; note: string | null; capabilities?: { observe: boolean; plan: boolean; execute: boolean };
+  role?: "target" | "filler"; saving_for?: SlotNext | null };
 export type GemStep = { block_id: string; type: GemBlock["type"]; label: string; state: "done" | "current" | "next";
   price: number | null; automated: boolean };
 export type GemPlan = { wallet: number | null; next: GemStep | null; price: number | null; have: number | null;
   need: number | null; automated: boolean; why: string[]; steps: GemStep[] };
+export type SavingTarget = { slot: number; lab_id: string; name: string; level: number | null; price: number;
+  needed_at: number | null; ready_at: number | null; covered: boolean | null };
+export type SavingPlan = { reserve: number | null; workshop_budget: number; wallet: number | null;
+  coins_per_hour: number | null; targets: SavingTarget[]; why: string[] };
 export type LabPlan = { wallet_coins: number | null; jar: number; slots: SlotPlan[]; gems: GemPlan;
-  strategy_revision?: number; account_id?: string | null; evaluated_at?: number | null;
+  saving?: SavingPlan | null; strategy_revision?: number; account_id?: string | null; evaluated_at?: number | null;
   scope?: { account_id: string; lease_id: string | null; generation: string | null; epoch: number } | null };
 export type LabsActivity = { at: number; kind: "LAB" | "CARD_BUY"; item: string | null; category: string | null;
   currency: string | null; amount: number | null; reason: string | null };
@@ -61,6 +73,10 @@ export type LabsReference = { labs: { id: string; name: string; max_level: numbe
   lab_slots: { slot: number; gems: number }[]; card_slots: { slot: number; gems: number }[];
   card_gems: number; labs_unlock_wave: number; sources: { url: string; checked: string }[] };
 export type LabsSnapshot = { workers: LabsRow[]; automated: AutomatedBlock[]; reference: LabsReference };
+
+/** A labs lane holds either a single `lab_list` block, or `slot_track` blocks (possibly none yet). */
+export const isLabList = (labs: BuildRouteDocument["baseline"]["labs"]): boolean =>
+  labs.mode === "blocks" && (labs.blocks?.length ?? 0) === 1 && labs.blocks?.[0]?.type === "lab_list";
 
 type Baseline = BuildRouteDocument["baseline"];
 
@@ -275,21 +291,41 @@ export function laneProblems(lane: "labs" | "gems", blocks: ResourceBlock[], rul
   return problems;
 }
 
+/** Mirrors fleet/coin_share.py jit_hold. The just-in-time hold is the labs starting
+ * now (the wallet above the plan's wallet') plus the reserve. An unread reserve or plan wallet
+ * holds the whole wallet - Workshop never spends blind. */
+export function jitHold(saving: SavingPlan, wallet: number): { hold: number; paused: boolean } {
+  if (saving.reserve === null || saving.wallet === null) return { hold: wallet, paused: true };
+  const hold = Math.max(0, wallet - Math.max(0, saving.wallet) + saving.reserve);
+  return { hold, paused: hold > 0 && hold >= wallet };
+}
+
 /** Mirrors fleet/coin_share.py for one visit: jar vs what Workshop may spend.
  *
- * Pauses exactly when the worker's own wait_coins path would: labs_first,
- * auto_start on, a known price, and the wallet short of it. With auto_start
- * off nothing is held back for labs - the jar stays at 0 and Workshop sees
- * the full ceiling, matching the worker (which never runs coin_share at all
- * once auto_start is off). */
-export function splitPreview(rules: RouteRules, wallet: number | null, jar: number, price: number | null):
+ * just_in_time holds its reserve whether or not auto_start is on (manual-start
+ * targets are still saved for), exactly like the worker's jit_hold; a row with
+ * no saving plan (the observed account isn't on just-in-time) gets the normal
+ * ceiling split. Otherwise it pauses exactly when the worker's own wait_coins
+ * path would: labs_first, auto_start on, a known price, and the wallet short of
+ * it. With auto_start off nothing is held back for labs - the jar stays at 0 and
+ * Workshop sees the full ceiling, matching the worker (which never runs
+ * coin_share at all once auto_start is off). */
+export function splitPreview(rules: RouteRules, wallet: number | null, jar: number, price: number | null,
+  saving?: SavingPlan | null):
   { jar: number; workshop: number; price: number | null; progress: number | null; paused: boolean } | null {
   if (wallet === null) return null;
   const ceiling = (spendable: number) => Math.floor(Math.max(0, spendable) * rules.coins.workshop_spend_limit_pct / 100);
+  const mode = rules.coins.lab_share.mode;
+  if (mode === "just_in_time") {
+    if (!saving) return { jar: 0, workshop: ceiling(wallet), price, progress: null, paused: false };
+    const { hold, paused } = jitHold(saving, wallet);
+    const first = saving.targets[0]?.price ?? null;
+    return { jar: hold, workshop: ceiling(wallet - hold), price: first,
+      progress: first && saving.reserve !== null ? Math.min(1, saving.reserve / first) : null, paused };
+  }
   if (!rules.labs.auto_start) {
     return { jar: 0, workshop: ceiling(wallet), price, progress: price ? 0 : null, paused: false };
   }
-  const mode = rules.coins.lab_share.mode;
   const held = mode === "save_pct" && price !== null ? Math.min(price, Math.max(0, jar)) : 0;
   const paused = mode === "labs_first" && price !== null && wallet < price;
   const workshop = paused ? 0 : ceiling(wallet - held);

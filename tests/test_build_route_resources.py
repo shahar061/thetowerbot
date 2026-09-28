@@ -109,3 +109,17 @@ def test_blocks_mode_lab_step_never_raises_when_no_track_owns_slot_1() -> None:
     )))
     result = evaluate_resources(no_slot_1, replace(_facts(), lab_slot2_owned=True, game_speed_maxed=True))
     assert (result.lab_step.action, result.lab_step.status) == ("game_speed_maxed", "supported")
+
+
+def test_lab_list_lane_names_the_next_non_game_speed_entry() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    entries = [{"id": "gs", "lab_id": "labs.game-speed", "to_level": 7, "tier": "S+", "pin_slot": 1},
+               {"id": "cw", "lab_id": "labs.coins-wave", "to_level": 10, "tier": "B"}]
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[{"id": "l", "type": "lab_list", "entries": entries}])
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    result = evaluate_resources(route, replace(_facts(), game_speed_maxed=True))
+    assert (result.lab_step.action, result.lab_step.status) == ("research_labs.coins-wave", "planned")
+    only_game_speed = replace(route, labs=replace(route.labs, blocks=(
+        {"id": "l", "type": "lab_list", "entries": entries[:1]},)))
+    result = evaluate_resources(only_game_speed, replace(_facts(), game_speed_maxed=True))
+    assert (result.lab_step.action, result.lab_step.status) == ("game_speed_maxed", "supported")

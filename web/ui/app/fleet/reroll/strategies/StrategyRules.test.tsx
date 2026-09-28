@@ -11,7 +11,7 @@ const row = { worker: "Air_38", account_id: "a", strategy_name: "x", read_at: 1,
     gems: { wallet: 60, next: null, price: null, have: 60, need: null, automated: false, why: [], steps: [] } } } as LabsRow;
 
 test("four sections, each rule tagged Live or Planned, safety rules locked", () => {
-  render(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} onChange={vi.fn()} />);
+  render(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} labList={false} onChange={vi.fn()} />);
   for (const name of ["Coins: Workshop vs Labs", "Labs", "Gems", "Fixed safety rules"])
     expect(screen.getByRole("group", { name })).toBeInTheDocument();
   expect(within(screen.getByRole("group", { name: "Coins: Workshop vs Labs" })).getAllByText("Live").length).toBe(2);
@@ -21,7 +21,7 @@ test("four sections, each rule tagged Live or Planned, safety rules locked", () 
 
 test("changing the sharing mode reports new rules and keeps the rest", () => {
   const onChange = vi.fn();
-  render(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} onChange={onChange} />);
+  render(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} labList={false} onChange={onChange} />);
   fireEvent.change(screen.getByLabelText("Lab share mode"), { target: { value: "save_pct" } });
   expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "save_pct", pct: 25 } } });
   fireEvent.click(screen.getByLabelText("Start labs automatically"));
@@ -29,18 +29,39 @@ test("changing the sharing mode reports new rules and keeps the rest", () => {
 });
 
 test("a template's rules are read-only", () => {
-  render(<StrategyRules rules={DEFAULT_RULES} locked rows={[]} onChange={vi.fn()} />);
+  render(<StrategyRules rules={DEFAULT_RULES} locked rows={[]} labList={false} onChange={vi.fn()} />);
   expect(screen.getByLabelText("Lab share mode")).toBeDisabled();
   expect(screen.getByLabelText("Keep gems")).toBeDisabled();
 });
 
 test("previews the wallet split for the selected emulator", () => {
   const saving = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "save_pct" as const, pct: 20 } } };
-  const { rerender } = render(<StrategyRules rules={saving} locked={false} rows={[row]} onChange={vi.fn()} />);
+  const { rerender } = render(<StrategyRules rules={saving} locked={false} rows={[row]} labList={false} onChange={vi.fn()} />);
   const preview = screen.getByRole("complementary", { name: "Wallet split preview" });
   expect(preview).toHaveTextContent("Lab jar 200 / 2500 coins");
   expect(preview).toHaveTextContent("Workshop may spend 800 coins");
   const first = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "labs_first" as const, pct: 25 } } };
-  rerender(<StrategyRules rules={first} locked={false} rows={[row]} onChange={vi.fn()} />);
+  rerender(<StrategyRules rules={first} locked={false} rows={[row]} labList={false} onChange={vi.fn()} />);
   expect(screen.getByRole("complementary", { name: "Wallet split preview" })).toHaveTextContent("Workshop paused until Game Speed starts");
+});
+
+test("just in time shows save windows and filler fields", () => {
+  const onChange = vi.fn();
+  const rules = { ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "just_in_time" as const, pct: 25 } } };
+  render(<StrategyRules rules={rules} locked={false} rows={[]} labList onChange={onChange} />);
+  fireEvent.change(screen.getByLabelText("Save window S+ (hours)"), { target: { value: "96" } });
+  expect(onChange).toHaveBeenLastCalledWith({ ...rules, labs: { ...rules.labs,
+    saving: { ...rules.labs.saving, window_hours: { ...rules.labs.saving.window_hours, "S+": 96 } } } });
+  expect(screen.getByLabelText("Filler max price (% of wallet)")).toHaveValue(10);
+  expect(screen.getByLabelText("Filler minimum length (hours)")).toHaveValue(1);
+});
+
+test("just in time is offered only for a ranked lab list lane", () => {
+  const { rerender } = render(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} labList={false} onChange={vi.fn()} />);
+  const option = (): HTMLOptionElement => within(screen.getByLabelText("Lab share mode"))
+    .getByRole("option", { name: /Just in time/ }) as HTMLOptionElement;
+  expect(option()).toBeDisabled();
+  expect(option()).toHaveTextContent("needs a ranked lab list");
+  rerender(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} labList onChange={vi.fn()} />);
+  expect(option()).toBeEnabled();
 });

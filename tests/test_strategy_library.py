@@ -168,10 +168,9 @@ def test_common_labs_and_gems_template_is_protected_and_copyable(tmp_path: Path)
     assert baseline["workshop"]["blocks"] == opening["baseline"]["workshop"]["blocks"]
     assert baseline["battle"]["blocks"] == opening["baseline"]["battle"]["blocks"]
     assert (baseline["gems"]["mode"], baseline["labs"]["mode"]) == ("blocks", "blocks")
-    assert baseline["rules"]["coins"]["lab_share"] == {"mode": "save_pct", "pct": 25}
-    assert baseline["rules"]["labs"]["pool"] == {"selection": "cheapest", "max_price_pct_of_wallet": 10,
-                                                 "max_seconds": None}
-    assert baseline["rules"]["labs"]["idle_fill"] == "shortest_under_30m"
+    assert baseline["labs"]["blocks"][0]["type"] == "lab_list"
+    assert baseline["rules"]["coins"]["lab_share"] == {"mode": "just_in_time", "pct": 25}
+    assert baseline["rules"]["labs"]["filler"] == {"enabled": True, "max_price_pct_of_wallet": 10, "min_hours": 1.0}
     assert baseline["rules"]["labs"]["auto_start"] and baseline["rules"]["gems"]["auto_unlock_lab_slots"]
     with pytest.raises(ValueError, match="protected"):
         library.save(expected_revision=0, name="Overwrite", source_template="labs_gems",

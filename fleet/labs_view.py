@@ -14,10 +14,9 @@ import db
 import lab_catalog
 from fleet.build_route import RouteDocument, resolve_route
 from fleet.build_route_store import BuildRouteStore, RouteUnavailable
-from fleet.build_route_preview_facts import read_lab_slots
-from fleet.coin_share import LabCoinJar
-from fleet.resource_blocks import LabFacts, automated_list, evaluate_lab_plan
-from lab_plan import LabCadence
+from fleet.coin_share import jit_hold
+from fleet.lab_facts import persisted_lab_facts
+from fleet.resource_blocks import automated_list, evaluate_lab_plan
 
 logger = logging.getLogger(__name__)
 RECENT_LIMIT = 8
@@ -25,7 +24,7 @@ RECENT_LIMIT = 8
 
 def _unknown(worker: str, account_id: str | None, reason: str) -> dict[str, Any]:
     return {"worker": worker, "account_id": account_id, "strategy_name": None, "read_at": None,
-            "wallet": {"coins": None, "gems": None}, "plan": None, "state": "unknown",
+            "wallet": {"coins": None, "gems": None}, "plan": None, "saving": None, "state": "unknown",
             "reason": reason, "recent": [], "unknown_slots": 5,
             "freshness": "unknown", "blockers": [reason]}
 
@@ -48,17 +47,23 @@ def _menu_wallet(worker_root: Path, worker: str,
     return whole(raw.get("wallet_coins")), whole(raw.get("wallet_gems")), read_at
 
 
-def _history(db_path: Path) -> tuple[int | None, list[dict[str, Any]]]:
+def _saving(saving: Any) -> dict[str, Any] | None:
+    """The just-in-time saving plan (a lab_list lane only) in the spec's payload shape."""
+    if saving is None:
+        return None
+    return {"reserve": saving.reserve, "workshop_budget": saving.workshop_budget,
+            "targets": [asdict(target) for target in saving.targets], "why": list(saving.why)}
+
+
+def _history(db_path: Path) -> list[dict[str, Any]]:
     try:
         with db.reader(db_path) as connection:
-            best = connection.execute(
-                "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL").fetchone()[0]
             rows = connection.execute(
                 "SELECT ts, kind, item, category, currency, delta, price, reason, detail FROM ledger "
                 "WHERE kind IN ('LAB','CARD_BUY') AND dry_run=0 ORDER BY ts DESC, id DESC LIMIT ?",
                 (RECENT_LIMIT,)).fetchall()
     except (OSError, sqlite3.Error):
-        return None, []
+        return []
     recent = []
     for ts, kind, item, category, currency, delta, price, reason, detail in rows:
         try:
@@ -68,7 +73,7 @@ def _history(db_path: Path) -> tuple[int | None, list[dict[str, Any]]]:
         recent.append({"at": ts, "kind": kind, "item": item, "category": category,
                        "currency": currency, "amount": -delta if delta is not None else price,
                        "reason": reason or detail_reason})
-    return best, recent
+    return recent
 
 
 def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
@@ -87,14 +92,16 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
                 else assignment.strategy_name if assignment.account_id == account_id
                 else "Fleet baseline · assignment inactive")
     coins, gems, read_at = _menu_wallet(worker_root, worker, account_id)
-    best, recent = _history(registration.db_path)
-    slot1, slot2 = LabCadence(worker_root, account_id).route_observation()
-    observed_slots = read_lab_slots(worker_root, account_id)
-    jar = LabCoinJar(worker_root, account_id, read_only=True).amount(quiet=True)
-    plan = evaluate_lab_plan(resolve_route(route, worker, account_id),
-                             LabFacts(now, coins, gems, best, slot1, slot2, jar,
-                                      slots=observed_slots, available_coins=coins,
-                                      account_id=account_id))
+    recent = _history(registration.db_path)
+    facts = persisted_lab_facts(worker_root, account_id, now=now, coins=coins, gems=gems,
+                                db_path=registration.db_path)
+    effective = resolve_route(route, worker, account_id)
+    plan = evaluate_lab_plan(effective, facts)
+    plan_row = asdict(plan)
+    if effective.rules.coins.lab_share.mode == "just_in_time":
+        # The worker holds the saving plan's hold, not the on-disk jar a save_pct
+        # strategy may have left behind, so the row shows what is really held.
+        plan_row["jar"] = jit_hold(plan.saving, coins)[0]
     unknown_slots = sum(slot.now.state == "unknown" for slot in plan.slots)
     stale_slots = sum(slot.now.stale for slot in plan.slots)
     blockers = ([route_error] if route_error else [])
@@ -112,7 +119,8 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
     freshness = ("stale" if stale_slots else "unknown" if unknown_slots == 5 else
                  "historical" if historical_slots else "observed")
     return {"worker": worker, "account_id": account_id, "strategy_name": strategy,
-            "read_at": read_at, "wallet": {"coins": coins, "gems": gems}, "plan": asdict(plan),
+            "read_at": read_at, "wallet": {"coins": coins, "gems": gems}, "plan": plan_row,
+            "saving": _saving(plan.saving),
             "state": "ok", "reason": route_error, "recent": recent,
             "unknown_slots": unknown_slots, "freshness": freshness, "blockers": blockers}
 

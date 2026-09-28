@@ -14,6 +14,10 @@ from typing import Any, Iterator, Mapping, Sequence
 
 import lab_catalog
 from lab_runtime import LabScope
+from fleet.build_route import is_lab_list
+# lab_list reaches back into this module only inside its functions, so it
+# loads without this one and the header import is not a cycle.
+from fleet.lab_list import evaluate_lab_list, validate_lab_list
 from fleet.strategy_blocks import COMPARISONS as _PURCHASE_COMPARISONS, MAX_BLOCKS, MAX_DEPTH
 
 GAME_SPEED = lab_catalog.GAME_SPEED
@@ -148,9 +152,14 @@ def _lab_children(items: object, ids: _Ids, depth: int) -> tuple[dict[str, Any],
 
 
 def validate_labs(value: object) -> tuple[dict[str, Any], ...]:
-    """Top level is slot tracks; each slot belongs to at most one track."""
+    """Top level is slot tracks; each slot belongs to at most one track. Or, a labs
+    lane may instead hold a single lab_list block in place of every slot track."""
     if not isinstance(value, (list, tuple)) or not value:
         raise ValueError("labs program needs at least one slot track")
+    if any(isinstance(raw, Mapping) and raw.get("type") == "lab_list" for raw in value):
+        if len(value) != 1:
+            raise ValueError("a lab list must be the labs lane's only block")
+        return (validate_lab_list(value[0]),)
     ids = _Ids()
     owners: dict[int, str] = {}
     tracks: list[dict[str, Any]] = []
@@ -357,6 +366,59 @@ def template_rules() -> dict[str, Any]:
     }
 
 
+def template_lab_list() -> tuple[dict[str, Any], ...]:
+    """The early-game ranked list: Game Speed on slot 1, Labs Speed on slot 2, the rest ranked.
+
+    Order from the spec's template table (tier list v29 + the Discord Lab Progression Guide).
+    Any lab without a price table in the catalog is left out of the template.
+    """
+    rows = [
+        ("game_speed", "labs.game-speed", 7, "S+", 1, "Game Speed to max"),
+        ("unlock_perks", "labs.unlock-perks", 1, "S+", None, "Unlock Perks"),
+        ("first_perk", "labs.first-perk-choice", 1, "S+", None, "First Perk Choice"),
+        ("perk_options", "labs.perk-option-quantity", 2, "S+", None, "Perk Option Quantity"),
+        ("ban_perks", "labs.ban-perks", 1, "S", None, "First perk ban"),
+        ("light_speed", "labs.light-speed-shots", 1, "S", None, "Light Speed Shots when affordable"),
+        ("coins_wave", "labs.coins-wave", 10, "B", None, "Coins / Wave while under 100 waves"),
+        ("labs_speed_50", "labs.labs-speed", 50, "S", 2, "Labs Speed to 50"),
+        ("coins_kill", "labs.coins-kill-bonus", 30, "A", None, "Coins / Kill Bonus to 30"),
+        ("cash_bonus", "labs.cash-bonus", 20, "A", None, "Cash Bonus to 20"),
+        ("attack_speed", "labs.attack-speed", 50, "A", None, "Attack Speed to 50"),
+        ("health", "labs.health", 30, "B", None, "Health: fast early levels"),
+        ("damage", "labs.damage", 30, "B", None, "Damage: fast early levels"),
+        ("standard_perks", "labs.standard-perks-bonus", 10, "S", None, "Standard Perks Bonus"),
+        ("trade_off", "labs.improve-trade-off-perks", 5, "S", None, "Improve Trade-Off Perks"),
+        ("ws_attack", "labs.workshop-attack-discount", 20, "C", None, "Workshop Attack Discount: cheap levels"),
+        ("ws_defense", "labs.workshop-defense-discount", 20, "C", None, "Workshop Defense Discount: cheap levels"),
+        ("ws_utility", "labs.workshop-utility-discount", 20, "C", None, "Workshop Utility Discount: cheap levels"),
+        ("labs_speed_99", "labs.labs-speed", 99, "A", 2, "Labs Speed to max"),
+    ]
+    entries = []
+    for key, lab_id, level, tier, pin, label in rows:
+        entry = lab_catalog.lab(lab_id)
+        if entry is None or entry.levels is None:
+            continue  # Spec: a lab without a price table is left out of the template.
+        item = {"id": f"labs.list.{key}", "lab_id": lab_id, "to_level": min(level, entry.max_level),
+                "tier": tier, "label": label}
+        if pin is not None:
+            item["pin_slot"] = pin
+        entries.append(item)
+    return validate_labs([{"id": "labs.list", "type": "lab_list", "label": "Early game", "entries": entries}])
+
+
+def template_lab_list_rules() -> dict[str, Any]:
+    """Just-in-time saving toward the ranked list's targets, with a cheap idle filler."""
+    return {
+        "coins": {"lab_share": {"mode": "just_in_time", "pct": 25}, "workshop_spend_limit_pct": 100},
+        "labs": {"auto_start": True, "idle_fill": "leave_idle",
+                 "pool": {"selection": "ordered", "max_price_pct_of_wallet": None, "max_seconds": None},
+                 "saving": {"income_margin_pct": 75,
+                            "window_hours": {"S+": 72, "S": 24, "A": 12, "B": 4, "C": 0}},
+                 "filler": {"enabled": True, "max_price_pct_of_wallet": 10, "min_hours": 1}},
+        "gems": {"auto_unlock_lab_slots": True, "spend_limit_pct": 100, "keep": 0},
+    }
+
+
 # ---- Evaluation -----------------------------------------------------------
 
 STALE_SECONDS = 86400
@@ -380,6 +442,8 @@ class LabFacts:
     capabilities: Mapping[int, Mapping[str, bool]] | None = None
     account_id: str | None = None
     scope: LabScope | None = None
+    best_waves: Mapping[int, int] | None = None
+    coins_per_hour: float | None = None
 
 
 @dataclass(frozen=True)
@@ -415,6 +479,8 @@ class SlotPlan:
     why: tuple[str, ...]
     note: str | None = None
     capabilities: Mapping[str, bool] | None = None
+    role: str = "target"
+    saving_for: SlotNext | None = None
 
 
 @dataclass(frozen=True)
@@ -449,6 +515,7 @@ class LabPlan:
     account_id: str | None = None
     scope: LabScope | None = None
     evaluated_at: float | None = None
+    saving: Any = None
 
 
 @dataclass(frozen=True)
@@ -568,7 +635,7 @@ def _pool_choice(block: Mapping[str, Any], facts: LabFacts, pool: Any,
             continue
         entry = lab_catalog.lab(lab_id)
         assert entry is not None
-        requirement = entry.unlock.get("best_tier_1_wave") if entry.unlock else None
+        requirement = lab_catalog.tier_one_wave(lab_id)
         if (requirement is not None and facts.best_tier_1_wave is not None
                 and facts.best_tier_1_wave < requirement):
             continue
@@ -639,7 +706,7 @@ def _choose(children: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any,
                 why.append(f"{block['id']}: {entry.name} reached {block['to_level']}")
                 continue
             option = _option(lab_id, level)
-            requirement = entry.unlock.get("best_tier_1_wave") if entry.unlock else None
+            requirement = lab_catalog.tier_one_wave(lab_id)
             budget = facts.available_coins if facts.available_coins is not None else facts.wallet_coins
             reason = ("already running or reserved" if lab_id in unavailable else
                       "prerequisite unread" if requirement is not None and facts.best_tier_1_wave is None else
@@ -746,16 +813,21 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
                    current.automated if current else False, tuple(why), tuple(steps))
 
 
-def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
-    """Pure: per-slot Now/Next and the next gem step. No reads, writes or clocks."""
-    rules = route.rules
-    lab_blocks = (route.labs.blocks if route.labs.mode == "blocks"
-                  else legacy_lab_blocks(route.labs.steps))
-    gem_blocks = (route.gems.blocks if route.gems.mode == "blocks"
-                  else legacy_gem_blocks(route.gems.steps))
+@dataclass(frozen=True)
+class SlotContext:
+    known: dict[str, int]
+    running: dict[str, int]
+    unavailable: set[str]
+    nows: dict[int, SlotNow]
+
+
+def _slot_context(facts: LabFacts) -> SlotContext:
+    """Known and running levels, busy labs and per-slot Now - shared by every lane shape."""
     known, running = _known_levels(facts.slot1)
-    known.update({key: level for key, level in (facts.completed_levels or {}).items()
-                  if lab_catalog.lab(key) is not None and type(level) is int and level >= 0})
+    # The newest reading wins: a stale account revision never lowers the slot-1 record's level.
+    for key, level in (facts.completed_levels or {}).items():
+        if lab_catalog.lab(key) is not None and type(level) is int and level >= 0:
+            known[key] = max(known.get(key, level), level)
     unavailable = set(facts.running_research) | set(facts.reserved_research)
     for record in (facts.slots or {}).values():
         if record.get("state") != "researching":
@@ -769,12 +841,40 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
                 known[lab_id] = max(known.get(lab_id, 0), target - 1)
     if facts.slot1 and facts.slot1.get("kind") == "wait_running":
         unavailable.add(GAME_SPEED)
-    slot2_now = _slot2_now(facts.slot2, facts.now)
     later = SlotNow("unknown")
-    nows = {1: _slot1_now(facts.slot1, facts.now), 2: slot2_now, 3: later, 4: later, 5: later}
+    nows = {1: _slot1_now(facts.slot1, facts.now), 2: _slot2_now(facts.slot2, facts.now),
+            3: later, 4: later, 5: later}
     for slot, record in (facts.slots or {}).items():
         if slot in LAB_SLOTS and isinstance(record, Mapping):
             nows[slot] = _observed_now(record, facts.now)
+    return SlotContext(known, running, unavailable, nows)
+
+
+def _capabilities(slot: int, automated: bool, now: SlotNow, facts: LabFacts,
+                  planned: bool) -> dict[str, bool]:
+    observed = (facts.slots or {}).get(slot)
+    capabilities = {"observe": True, "plan": planned,
+                    "execute": automated and now.state == "idle" and not now.stale
+                    and now.evidence_status == "current"
+                    and observed is not None and observed.get("confirmed") is True
+                    and observed.get("preview_only") is not True}
+    if facts.capabilities and slot in facts.capabilities:
+        capabilities = {key: capabilities[key] and facts.capabilities[slot].get(key, False)
+                        for key in capabilities}
+    return capabilities
+
+
+def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
+    """Pure: per-slot Now/Next and the next gem step. No reads, writes or clocks."""
+    rules = route.rules
+    lab_blocks = (route.labs.blocks if route.labs.mode == "blocks"
+                  else legacy_lab_blocks(route.labs.steps))
+    gem_blocks = (route.gems.blocks if route.gems.mode == "blocks"
+                  else legacy_gem_blocks(route.gems.steps))
+    ctx = _slot_context(facts)
+    if is_lab_list(route.labs):
+        return evaluate_lab_list(route, facts, ctx=ctx, gems=_gem_plan(gem_blocks, facts, rules))
+    known, running, unavailable, nows = ctx.known, ctx.running, ctx.unavailable, ctx.nows
     plans: list[SlotPlan] = []
     remaining_coins = facts.available_coins if facts.available_coins is not None else facts.wallet_coins
     for slot in LAB_SLOTS:
@@ -814,17 +914,8 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
         covered = (remaining_coins >= chosen.price
                    if chosen is not None and chosen.price is not None and remaining_coins is not None
                    else None)
-        observed = (facts.slots or {}).get(slot)
-        capabilities = {"observe": True, "plan": track is not None,
-                        "execute": automated and nows[slot].state == "idle" and not nows[slot].stale
-                        and nows[slot].evidence_status == "current"
-                        and observed is not None and observed.get("confirmed") is True
-                        and observed.get("preview_only") is not True}
-        if facts.capabilities and slot in facts.capabilities:
-            capabilities = {key: capabilities[key] and facts.capabilities[slot].get(key, False)
-                            for key in capabilities}
         plans.append(SlotPlan(slot, nows[slot], chosen, covered, automated, tuple(why), note,
-                              capabilities))
+                              _capabilities(slot, automated, nows[slot], facts, track is not None)))
         if chosen is not None and nows[slot].state == "idle":
             unavailable.add(chosen.lab_id)
             if remaining_coins is not None and chosen.price is not None and covered:
