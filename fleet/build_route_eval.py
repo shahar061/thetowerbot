@@ -12,6 +12,7 @@ from fleet.reroll_planner import (DRAW_SHARPNESS, RerollDecision, RerollFacts,
                                   _ban_closure, choose_next)
 import builds
 import lab_catalog
+import lab_routes
 import upgrades
 
 
@@ -139,6 +140,13 @@ def evaluate_resources(route: EffectiveRoute, facts: RouteFacts) -> ResourceEval
     """Describe existing lab automation and mark future route nodes as plans."""
     if facts.wallet_gems is None or facts.lab_slot2_owned is None:
         gem = ResourceStep("unlock_lab_slot_2", "unknown", "Gem balance or lab ownership unverified")
+    elif not facts.lab_slot2_owned and not lab_routes.unlock_gate(2).enabled:
+        # lab_visit refuses the spend without a recorded sequence; never
+        # report a reserve as if the unlock were about to happen.
+        gem = ResourceStep("unlock_lab_slot_2", "planned",
+                           "Planning only · Lab 2 unlock not calibrated")
+    elif not facts.lab_slot2_owned and not route.rules.gems.auto_unlock_lab_slots:
+        gem = ResourceStep("unlock_lab_slot_2", "planned", "Planned · auto-unlock off")
     elif not facts.lab_slot2_owned:
         gem = (ResourceStep("unlock_lab_slot_2", "supported", "100 gems reserved for lab slot 2")
                if facts.wallet_gems >= route.gems.lab_slot2_reserve else

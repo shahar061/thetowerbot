@@ -25,11 +25,38 @@ def _facts() -> RouteFacts:
                       lab_decision_kind="start", lab_price=300)
 
 
+@pytest.fixture
+def calibrated_unlock(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lab_routes
+    monkeypatch.setattr(lab_routes, "unlock_gate", lambda slot: lab_routes.RouteGate(
+        slot == 2, "validated_recorded_sequence", "recorded"))
+
+
+@pytest.mark.usefixtures("calibrated_unlock")
 def test_first_hundred_gems_waits_then_unlocks_second_lab() -> None:
     assert evaluate_resources(_route(), _facts()).gem_step.status == "blocked"
     at_hundred = evaluate_resources(_route(), replace(_facts(), wallet_gems=100))
     assert at_hundred.gem_step.status == "supported"
     assert at_hundred.gem_step.action == "unlock_lab_slot_2"
+
+
+def test_uncalibrated_second_lab_unlock_is_only_planned_at_any_balance() -> None:
+    # The shipped manifest records no Lab 2 unlock, so nothing will spend.
+    for gems in (99, 100, 250):
+        step = evaluate_resources(_route(), replace(_facts(), wallet_gems=gems)).gem_step
+        assert step.action == "unlock_lab_slot_2"
+        assert step.status == "planned"
+        assert "not calibrated" in step.reason
+
+
+@pytest.mark.usefixtures("calibrated_unlock")
+def test_auto_unlock_off_is_only_planned() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["rules"]["gems"]["auto_unlock_lab_slots"] = False
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    step = evaluate_resources(route, replace(_facts(), wallet_gems=150)).gem_step
+    assert step.status == "planned"
+    assert "auto-unlock off" in step.reason.lower()
 
 
 def test_owned_second_lab_releases_reserve_and_future_card_step_is_planned() -> None:

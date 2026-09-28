@@ -58,7 +58,11 @@ def preview_service(root: Path, worker: str = "Air_38") -> FleetSetupService:
     return service
 
 
-def test_build_route_preview_keeps_missing_lanes_independent(tmp_path: Path) -> None:
+def test_build_route_preview_keeps_missing_lanes_independent(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import lab_routes
+    monkeypatch.setattr(lab_routes, "unlock_gate", lambda slot: lab_routes.RouteGate(
+        True, "validated_recorded_sequence", "recorded"))
     worker_root = registered_worker(tmp_path, "Air_38", "account-a")
     now = time.time()
     (worker_root / "build-route-resource-facts.json").write_text(json.dumps({
