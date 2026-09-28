@@ -87,6 +87,23 @@ def test_restart_from_inbox_returns_then_verifies_account() -> None:
     assert device.taps == [(540, 2301), (1, 2), (3, 4), (940, 585), (910, 490)]
 
 
+def test_restart_from_event_information_closes_it_and_returns() -> None:
+    device = Device()
+    supervisor = Supervisor("ACCOUNT-A")
+    verify_restart_account(device=device, supervisor=supervisor,
+        expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
+        observe=observer([
+            frame("event_information", controls={"close": (910, 492)}),
+            frame("events", controls={"return_to_game": (540, 2301)}),
+            frame("home", controls={"settings": (1, 2)}),
+            frame("settings", controls={"account": (3, 4)}),
+            frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
+            frame("settings", controls={"close": (910, 490)}), frame("home"),
+        ]))
+    assert supervisor.verified == "ACCOUNT-A"
+    assert device.taps == [(910, 492), (540, 2301), (1, 2), (3, 4), (940, 585), (910, 490)]
+
+
 def test_wrong_account_stops_before_closing_popup() -> None:
     device = Device()
     with pytest.raises(RecoveryBlocked, match="wrong account"):

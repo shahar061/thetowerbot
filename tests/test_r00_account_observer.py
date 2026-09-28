@@ -18,7 +18,7 @@ from fleet.account_observer import (parse_account_popup, parse_google_play_profi
                                     parse_tower_consent,
                                     parse_new_account_warning,
                                     parse_game_stats_home,
-                                    parse_settings, parse_home, parse_inbox,
+                                    parse_settings, parse_home, parse_inbox, parse_events,
                                     parse_link_account_prompt,
                                     StagingAccountObserver)
 import vision
@@ -368,6 +368,22 @@ def test_live_inbox_exposes_only_its_measured_return_caption(
     )(device)
     assert observed_frame.screen == "inbox"
     assert observed_frame.controls == reading.controls
+
+
+@pytest.mark.parametrize(("capture", "screen", "controls"), [
+    ("menu_events_info.png", "event_information", {"close": (910, 492)}),
+    ("menu_events_missions.png", "events", {"return_to_game": (540, 2301)}),
+])
+def test_live_events_page_exposes_one_way_out(
+        capture: str, screen: str, controls: dict[str, tuple[int, int]]) -> None:
+    import ocr
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / capture))
+    observed = ocr.read(frame, strict=True, min_confidence=0.)
+    reading = parse_events(frame, observed, observed_at=101.,
+                           app_version="29.0.3", evidence_ref="capture://events")
+    assert reading is not None
+    assert reading.screen == screen
+    assert reading.controls == controls
 
 
 def test_inbox_requires_anchored_header_and_bottom_return_caption() -> None:

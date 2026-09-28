@@ -1666,6 +1666,15 @@ class TowerBot:
                             and footer.rect is not None
                             and footer.rect[1] > self.screen.shape[0] * .85):
                         observed_screen = "INBOX"
+                if observed_screen == "UNKNOWN":
+                    # Named the same way, or the events walk cannot close the
+                    # first-visit EVENT INFORMATION card nor anything leave.
+                    events_preflight = events_screen.parse(self.screen, boxes)
+                    footer = events_preflight.back
+                    if (events_preflight.visible and footer is not None
+                            and footer.rect is not None
+                            and footer.rect[1] > self.screen.shape[0] * .85):
+                        observed_screen = "EVENTS"
                 # Last, so it outranks every reader: a stall means whatever
                 # this frame was named, taps on it have stopped working.
                 if (stall_verdict == stall_watchdog.ESCAPE
