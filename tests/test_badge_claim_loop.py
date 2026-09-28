@@ -8,6 +8,7 @@ import cv2
 
 import events
 import screens
+import tier_select
 from evidence_scope import FactScope
 from strategy import Claims, Shopping
 from tests.conftest import _shopping_bot
@@ -149,3 +150,46 @@ def test_read_only_reconciliation_is_due_even_after_claims_are_disabled() -> Non
     disabled = SimpleNamespace(strategy=SimpleNamespace(
         claims=SimpleNamespace(enabled=False)))
     assert bot._claim_owed(disabled)
+
+
+def test_events_dot_arms_the_shared_transaction_without_tapping() -> None:
+    bot = bot_with_claims()
+    bot._last_claim['missions'] = time.time()
+    bot._screen = cv2.imread(str(Path(__file__).parent / 'fixtures' /
+                                 'menu_main_events_badge_tier_next.png'))
+    bot._observe_menu_notifications(time.time())
+    assert bot._events_badge
+    assert bot._offer_claim(bot.controls.snapshot()) == 'events'
+    assert bot.claim.active
+    assert bot.claim.snapshot()['target'] == 'events'
+    assert bot._offer_claim(bot.controls.snapshot()) is None
+    assert bot.device.taps == []
+
+
+def test_lit_tier_arrow_is_tapped_and_holds_battle_until_the_panel_redraws() -> None:
+    bot = bot_with_claims()
+    fixtures = Path(__file__).parent / 'fixtures'
+    bot._screen = cv2.imread(str(fixtures / 'menu_main_events_badge_tier_next.png'))
+    settings = bot.controls.snapshot()
+    assert bot._advance_tier(settings)
+    assert len(bot.device.taps) == 1
+    x, y = bot.device.taps[0]
+    assert abs(x - 689) <= 20 and abs(y - 1320) <= 20
+    assert bot._advance_tier(settings)
+    assert len(bot.device.taps) == 1
+    bot._tier_tap_at = float('-inf')
+    bot._screen = cv2.imread(str(fixtures / 'menu_main_events_badge_tier2_top.png'))
+    assert not bot._advance_tier(settings)
+    assert len(bot.device.taps) == 1
+
+
+def test_resume_battle_menu_keeps_its_tier() -> None:
+    bot = bot_with_claims()
+    # A lit arrow pasted over the resume frame's dim one: the arrow alone
+    # must not move a suspended run's tier.
+    fixtures = Path(__file__).parent / 'fixtures'
+    lit = cv2.imread(str(fixtures / 'menu_main_events_badge_tier_next.png'))
+    bot._screen[1278:1362, 652:726] = lit[1278:1362, 652:726]
+    assert tier_select.read_next(bot._screen, bot.templates).available
+    assert not bot._advance_tier(bot.controls.snapshot())
+    assert bot.device.taps == []

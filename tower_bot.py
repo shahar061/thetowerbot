@@ -22,12 +22,15 @@ from __future__ import annotations
 from account_collection import StatsCollection, at_home
 from cards_intro import CardsIntro, popup_visible as cards_popup_visible
 import battle_upgrade_info
+import events_badge
+import events_screen
 import milestones_badge
 import menu_badges
 from notification_state import MissionReceiptBus, NotificationState
 from evidence_scope import FactScope
 import mail_screen
 import nav_arrow
+import tier_select
 from milestones_claim import MilestonesClaim
 from milestones_screen import MilestonesReadings, parse_frame as parse_milestones_frame
 from missions_claim import MissionsClaim
@@ -351,6 +354,10 @@ class TowerBot:
         self._milestones_badge = False
         self._missions_badge = False
         self._mail_badge = False
+        self._events_badge = False
+        # When the tier arrow was last tapped: the panel redraws after a tap,
+        # so the next read waits out the same cooldown navigation does.
+        self._tier_tap_at = float('-inf')
         self._last_menu_badge_check_at: float | None = None
         self._notifications = NotificationState()
         self._notification_scope: dict[str, Any] | None = None
@@ -437,6 +444,7 @@ class TowerBot:
         self._missions_badge = missions is True
         self._mail_badge = menu_badges.read_badge(
             self.screen, self.templates, "mail") is not None
+        self._events_badge = events_badge.badge_visible(self.screen, self.templates) is True
         self._last_menu_badge_check_at = now
 
     @property
@@ -856,6 +864,8 @@ class TowerBot:
                 missions_badge=False,
                 mail_badge=self._mail_badge,
                 last_mail=self._last_claim.get("mail"),
+                events_badge=self._events_badge,
+                last_events=self._last_claim.get("events"),
                 missions_notification_due=self._notifications.eligible("missions", now),
                 missions_blocked=(mission_row["uncertain"] or mission_row["in_flight"]
                                   or mission_row["prior_uncertain"]
@@ -934,6 +944,31 @@ class TowerBot:
             return False
         return self.cards_intro.request()
 
+    def _advance_tier(self, settings: Any) -> bool:
+        """Tap the lit right tier arrow, so BATTLE always starts the highest tier.
+
+        True holds BATTLE for this frame: after a tap, until the panel has
+        redrawn and been read again. Only a plain BATTLE menu is touched - a
+        suspended run's RESUME BATTLE is left on the tier it was started on.
+        """
+        now = time.monotonic()
+        if now - self._tier_tap_at < config.NAVIGATION_COOLDOWN_SECONDS:
+            return True
+        battle = config.NAV_BUTTONS["MAIN_MENU"][0][1]
+        if vision.locate_template(self.screen, self.templates.get(battle), .8) is None:
+            return False
+        arrow = tier_select.read_next(self.screen, self.templates)
+        if arrow is None or not arrow.available:
+            return False
+        x, y = jitter.point(*arrow.point, settings.strategy.tap_jitter_px)
+        jitter.pause(settings.strategy.tap_delay, settings.strategy.timing_jitter)
+        tap(self.device, x, y)
+        self._tier_tap_at = now
+        logger.info("A higher tier is available; tapped the tier arrow at %s.", arrow.point)
+        self.bus.publish(events.Tapped(action='tier_next', x=x, y=y, score=arrow.score))
+        self.bus.publish(events.TierAdvanced(point=arrow.point))
+        return True
+
     def _menu_tab_unlocked(self, tab: str) -> bool:
         """Check the unlocked icon before a reroll visit navigates to a tab."""
         match = vision.locate_template(
@@ -957,8 +992,9 @@ class TowerBot:
         kind = self._claim_due(settings)
         if kind is None:
             return None
-        if kind == 'mail':
-            if not self.claim.request_mail():
+        if kind in ('mail', 'events'):
+            if not (self.claim.request_mail() if kind == 'mail'
+                    else self.claim.request_events()):
                 return None
             self._last_claim[kind] = time.time()
             return kind
@@ -1488,7 +1524,7 @@ class TowerBot:
             logger.warning("Unproven mission claim retained uncredited after verification "
                            "exhaustion; mission claims resume.")
         if (self.claim.active and not self._mission_attempt
-                and self.claim.snapshot().get("target") != "mail"):
+                and self.claim.snapshot().get("target") not in ("mail", "events")):
             mission_row = self._notifications.snapshot()["kinds"]["missions"]
             if (mission_row["uncertain"] or mission_row["in_flight"]
                     or mission_row["prior_uncertain"]
@@ -1969,6 +2005,7 @@ class TowerBot:
             self.milestones.observe(None)
             panel = missions_page = milestones_page = False
             inbox = mail_screen.MailReading()
+            events_page = events_screen.EventsReading()
         else:
             panel = screen_readings.scan(self.screen)
             # The same passive ownership for the Daily Missions page. The bot
@@ -2008,7 +2045,11 @@ class TowerBot:
             milestones_page = self.milestones.scan(self.screen, boxes=shared_boxes)
             inbox = (mail_screen.parse(self.screen, shared_boxes)
                      if shared_boxes is not None else mail_screen.MailReading(error='mail_unreadable'))
-        if not inbox.visible and inbox.error is None:
+            events_page = (events_screen.parse(self.screen, shared_boxes)
+                           if shared_boxes is not None
+                           else events_screen.EventsReading(error='events_unreadable'))
+        if (not inbox.visible and inbox.error is None
+                and not events_page.visible and events_page.error is None):
             self._mail_recovery_taps = 0
         if (self.reroll_progress is not None and not settings.paused
                 and not panel and not missions_page and not milestones_page and not inbox.visible
@@ -2065,11 +2106,16 @@ class TowerBot:
         # Cancelling a mail walk while paused can leave a full-screen Inbox
         # whose lifecycle state is UNKNOWN. Its current semantic footer is
         # the only permitted recovery action; never restart reward traversal.
-        if inbox.visible and not walking_now and not self.shopping.active:
+        # The Events page is left the same way, by its `Tap To Return To
+        # Game` footer: the stall watchdog will not press anything there,
+        # because its mission text ("Buy 20 cards") reads as a purchase.
+        stranded = inbox if inbox.visible else events_page if events_page.visible else None
+        if stranded is not None and not walking_now and not self.shopping.active:
+            page_name = 'mail' if stranded is inbox else 'events'
             self.controls.drain()
             self.wallet = None
-            self.autopilot.suspend('Inbox recovery; actions held')
-            footer = inbox.back
+            self.autopilot.suspend(f'{page_name} page recovery; actions held')
+            footer = stranded.back
             recovered = False
             moment = time.monotonic()
             if (not settings.paused and settings.strategy.auto_navigate
@@ -2084,11 +2130,12 @@ class TowerBot:
                 self._mail_recovery_taps += 1
                 self._mail_recovery_at = moment
                 recovered = True
-                self.bus.publish(events.Tapped(action='mail_recovery:return', x=x, y=y,
+                self.bus.publish(events.Tapped(action=f'{page_name}_recovery:return', x=x, y=y,
                                               score=footer.score))
             else:
-                self.bus.publish(events.Skipped(action='*', reason='mail_recovery_guard',
-                                               detail='Inbox is open; waiting for a safe return.'))
+                self.bus.publish(events.Skipped(action='*', reason=f'{page_name}_recovery_guard',
+                                               detail=f'The {page_name} page is open; '
+                                               'waiting for a safe return.'))
             if self.frames is not None:
                 self.frames.set_boxes([])
             self.bus.publish(events.ScanCompleted(screen=state.value,
@@ -2574,46 +2621,48 @@ class TowerBot:
             # here, one screen early, or the bot never reaches the menu to
             # be asked at all. Same gate begin() uses, so a detour is only
             # taken when the visit it exists for will actually start.
-            self.navigator.maybe_navigate(
-                self.screen,
-                state,
-                self.device,
-                now=time.monotonic(),
-                tuning=settings.strategy,
-                go_home=((self.shopping.due(shopping_policy, self.runs.completed)
-                          and (self.reroll_progress is None
-                               or self.reroll_progress.initial_workshop_due()
-                               or self.reroll_progress.workshop_worthwhile(
-                                   publish_estimate=state is screens.ScreenState.GAME_OVER)))
-                         or self._claim_owed(settings)
-                         # A held purchase re-inspects only on MAIN_MENU; detour
-                         # home when its paced retry is due (never spends).
-                         or (state is screens.ScreenState.GAME_OVER
-                             and self.shopping.reconciliation_retry_due(time.time()))
-                         or (state is screens.ScreenState.GAME_OVER
-                             and self._menu_badge_check_due(settings))
-                         or (state is screens.ScreenState.GAME_OVER
-                             and self.reroll_progress is not None
-                             and self.reroll_progress.stats_due())
-                         or (state is screens.ScreenState.GAME_OVER
-                             and self.reroll_progress is not None
-                             and self.reroll_progress.lab_due())),
-                # The way off a menu page. NAV_BUTTONS is keyed by
-                # ScreenState, which has no member for one, so the bot could
-                # neither act on the workshop (the loop above gates on
-                # IN_RUN) nor leave it: measured live, twenty unbroken
-                # minutes on the UTILITY tab. UNKNOWN with nothing named
-                # still taps nothing - see config.MENU_NAV_BUTTONS.
-                menu_page=("MILESTONES" if deadlocked and milestones_page
-                           and self.milestones.current_evidence()['screen_id']
-                           == 'milestones.ladder' else
-                           None if menu_page == pages.UNKNOWN else menu_page),
-                # Only once the hold above has proved itself permanent. A
-                # ceremony has no exit button of its own, so without this
-                # the released guard buys nothing: navigation looks for a
-                # menu page's exit, finds none, and taps nothing forever.
-                dismiss=deadlocked,
-            )
+            if not (state is screens.ScreenState.MAIN_MENU
+                    and self._advance_tier(settings)):
+                self.navigator.maybe_navigate(
+                    self.screen,
+                    state,
+                    self.device,
+                    now=time.monotonic(),
+                    tuning=settings.strategy,
+                    go_home=((self.shopping.due(shopping_policy, self.runs.completed)
+                              and (self.reroll_progress is None
+                                   or self.reroll_progress.initial_workshop_due()
+                                   or self.reroll_progress.workshop_worthwhile(
+                                       publish_estimate=state is screens.ScreenState.GAME_OVER)))
+                             or self._claim_owed(settings)
+                             # A held purchase re-inspects only on MAIN_MENU; detour
+                             # home when its paced retry is due (never spends).
+                             or (state is screens.ScreenState.GAME_OVER
+                                 and self.shopping.reconciliation_retry_due(time.time()))
+                             or (state is screens.ScreenState.GAME_OVER
+                                 and self._menu_badge_check_due(settings))
+                             or (state is screens.ScreenState.GAME_OVER
+                                 and self.reroll_progress is not None
+                                 and self.reroll_progress.stats_due())
+                             or (state is screens.ScreenState.GAME_OVER
+                                 and self.reroll_progress is not None
+                                 and self.reroll_progress.lab_due())),
+                    # The way off a menu page. NAV_BUTTONS is keyed by
+                    # ScreenState, which has no member for one, so the bot could
+                    # neither act on the workshop (the loop above gates on
+                    # IN_RUN) nor leave it: measured live, twenty unbroken
+                    # minutes on the UTILITY tab. UNKNOWN with nothing named
+                    # still taps nothing - see config.MENU_NAV_BUTTONS.
+                    menu_page=("MILESTONES" if deadlocked and milestones_page
+                               and self.milestones.current_evidence()['screen_id']
+                               == 'milestones.ladder' else
+                               None if menu_page == pages.UNKNOWN else menu_page),
+                    # Only once the hold above has proved itself permanent. A
+                    # ceremony has no exit button of its own, so without this
+                    # the released guard buys nothing: navigation looks for a
+                    # menu page's exit, finds none, and taps nothing forever.
+                    dismiss=deadlocked,
+                )
 
         # Checked after navigation, and begin() checked after advance() below:
         # a visit that just ended this same scan must not restart within it,
