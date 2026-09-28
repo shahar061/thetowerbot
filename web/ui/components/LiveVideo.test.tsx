@@ -127,6 +127,54 @@ group("LiveVideo", () => {
     expect(decoder.chunks.map(chunk => chunk.init.timestamp)).toEqual([1, 2, 3]);
   });
 
+  it("arms the fell-behind rule for a first subscriber, whose live marker arrives before the config", () => {
+    // A first subscriber (nothing cached yet) gets the hub's "live" marker
+    // BEFORE the config message, since there's nothing to replay. A config
+    // message must not clear replayDone - it's sent exactly once per
+    // connection, and no second one is ever coming.
+    mount();
+    const socket = MockSocket.latest();
+    act(() => { socket.receive(LIVE_TEXT); socket.receive(CONFIG_TEXT); });
+    const decoder = MockDecoder.latest();
+    decoder.decodeQueueSize = 0; // the fresh decoder's first frame: always decoded (it's a keyframe)
+    act(() => socket.receive(frameBytes(true, 1, [0x65])));
+    decoder.decodeQueueSize = CAUGHT_UP_DECODE_QUEUE;
+    act(() => socket.receive(frameBytes(false, 2, [0x41])));
+    decoder.decodeQueueSize = 31;
+    act(() => socket.receive(frameBytes(false, 3, [0x41])));
+    expect(decoder.chunks.map(chunk => chunk.init.timestamp)).toEqual([1, 2]);
+  });
+
+  it("re-arms caughtUp after a mid-stream config change, without a second live marker", () => {
+    mount();
+    const socket = MockSocket.latest();
+    act(() => { socket.receive(CONFIG_TEXT); socket.receive(LIVE_TEXT); socket.receive(frameBytes(true, 1, [0x65])); });
+    // The config rotates mid-stream (e.g. the encoder's resolution changed).
+    // The hub never sends a second "live" marker for the same connection, so
+    // replayDone must survive this and only caughtUp resets.
+    act(() => socket.receive(CONFIG_TEXT));
+    const decoder = MockDecoder.latest();
+    decoder.decodeQueueSize = 0; // the new decoder's first frame too reports 0
+    act(() => socket.receive(frameBytes(true, 2, [0x65])));
+    decoder.decodeQueueSize = CAUGHT_UP_DECODE_QUEUE;
+    act(() => socket.receive(frameBytes(false, 3, [0x41])));
+    decoder.decodeQueueSize = 31;
+    act(() => socket.receive(frameBytes(false, 4, [0x41])));
+    expect(decoder.chunks.map(chunk => chunk.init.timestamp)).toEqual([2, 3]);
+  });
+
+  it("ignores a text message with an unrecognized type and leaves the decoder alone", () => {
+    mount();
+    const socket = MockSocket.latest();
+    act(() => socket.receive(CONFIG_TEXT));
+    const decoder = MockDecoder.latest();
+    const config = decoder.config;
+    act(() => socket.receive(JSON.stringify({ type: "ping" })));
+    expect(MockDecoder.latest()).toBe(decoder);
+    expect(decoder.config).toBe(config);
+    expect(decoder.state).toBe("configured");
+  });
+
   it("skips once the queue exceeds the hard cap, even if the decoder never catches up", () => {
     // A device that's always too slow would never see a small queue, so
     // caughtUp would never become true on its own - the hard cap is what

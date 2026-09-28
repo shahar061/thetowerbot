@@ -153,8 +153,12 @@ def test_frames_before_the_first_keyframe_are_dropped() -> None:
 
 
 def test_a_late_joiner_gets_the_current_picture_on_a_still_screen() -> None:
-    hub, shutdown, _ = hub_over([FakeSession(opening(key(1), delta(2), delta(3)))])
-    assert len(drain(hub.subscribe(), 4)) == 4
+    hub, shutdown, opened = hub_over([FakeSession(opening(key(1), delta(2), delta(3)))])
+    hub.subscribe()
+    # Wait for the session to have handled every scripted event (not just a
+    # drain count - with ReplayDone now also in the first subscriber's queue,
+    # draining a fixed count no longer guarantees delta(3) is cached yet).
+    wait_until(lambda: bool(opened) and opened[0].played.is_set())
     # The session is idling now: no packet will ever arrive for the newcomer.
     assert drain(hub.subscribe(), 4) == [CONFIG_MSG, key_msg(1), delta_msg(2), delta_msg(3)]
     shutdown.set()

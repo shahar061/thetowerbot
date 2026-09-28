@@ -174,7 +174,7 @@ control them.
 | Direction | Frame | Content |
 |---|---|---|
 | server → client | text | `{"type":"config","codec":"avc1.42C028","width":576,"height":1280}`. Sent first, and again whenever the encoder config changes. |
-| server → client | text | `{"type":"live"}`. Sent exactly once per connection, right after the config and any replayed GOP - marks where a late joiner's replay ends and live frames begin. |
+| server → client | text | `{"type":"live"}`. Follows whatever was cached when the viewer subscribed - config, GOP, both, or neither - and arrives exactly once per connection, marking where that replay ends and live frames begin. |
 | server → client | binary | 1 flag byte (bit 0 = keyframe), an 8-byte big-endian PTS in µs, then one Annex-B access unit. |
 | client → server | none | The client sends no messages. |
 
