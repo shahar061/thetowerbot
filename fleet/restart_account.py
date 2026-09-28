@@ -13,6 +13,8 @@ from supervisor import DeviceSupervisor, RecoveryBlocked, RecoveryState
 
 _CONTROLS = {
     "inbox": "return_to_game",
+    "event_information": "close",
+    "events": "return_to_game",
     "home": "settings",
     "settings": "account",
     "game_over": "home_from_game_over",
@@ -23,6 +25,8 @@ _CONTROLS = {
 }
 _NEXT_SCREEN = {
     "inbox": "home",
+    "event_information": "events",
+    "events": "home",
     "home": "settings",
     "settings": "account",
     "game_over": "home",

@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import account_collection
 import cv2
+import events_screen
 import config
 import ocr
 import pages
@@ -306,6 +307,31 @@ def parse_inbox(
     )
 
 
+def parse_events(
+    frame: Image, boxes: tuple[TextBox, ...], *, observed_at: float,
+    app_version: str, evidence_ref: str,
+) -> AccountFrame | None:
+    """Expose the first-visit info X, else the bottom return caption."""
+    if not app_version.strip() or not evidence_ref.strip() or not math.isfinite(observed_at):
+        return None
+    page = events_screen.parse(frame, boxes)
+    back = page.back
+    if (not page.visible or back is None or back.rect is None
+            or back.rect[1] <= frame.shape[0] * .85):
+        return None
+    close = page.info_close
+    if close is not None and close.point is None:
+        return None
+    return AccountFrame(
+        screen="events" if close is None else "event_information",
+        account_id=None, app_version=app_version,
+        digest=hashlib.sha256(frame.tobytes()).hexdigest(),
+        observed_at=observed_at, evidence_ref=evidence_ref,
+        controls=({"return_to_game": back.point} if close is None
+                  else {"close": close.point}),
+    )
+
+
 def parse_home(
     frame: Image, boxes: tuple[TextBox, ...], cache: vision.TemplateCache, *,
     observed_at: float, app_version: str, evidence_ref: str,
@@ -454,6 +480,10 @@ class StagingAccountObserver:
                             app_version=version, evidence_ref=evidence_ref)
         if inbox is not None:
             return inbox
+        events_page = parse_events(frame, boxes, observed_at=observed_at,
+                                   app_version=version, evidence_ref=evidence_ref)
+        if events_page is not None:
+            return events_page
         home = parse_home(frame, boxes, self.cache, observed_at=observed_at,
                           app_version=version, evidence_ref=evidence_ref)
         if home is not None:
