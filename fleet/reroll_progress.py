@@ -223,6 +223,8 @@ class RerollProgress:
         if wallet_gems is not None:
             gems = (min(gems, wallet_gems) if type(gems) is int and type(wallet_gems) is int
                     and wallet_gems >= 0 else None)
+        rollout = self.unlock_rollout()
+        rollout_slots = rollout.slots() if rollout is not None else None
         facts = replace(facts, available_coins=available, wallet_coins=available,
                         wallet_gems=gems,
                         jar=self.coin_jar.amount(quiet=True),
@@ -230,7 +232,8 @@ class RerollProgress:
                         best_waves=best_waves(self.root / "tower_bot.db") or None,
                         slot_ownership=self.lab_cadence.slot_records(),
                         owned_floor=(getattr(runtime, "slots_owned", None)
-                                     if type(getattr(runtime, "slots_owned", None)) is int else None))
+                                     if type(getattr(runtime, "slots_owned", None)) is int else None),
+                        rollout=rollout_slots, worker=self.worker_id)
         route = self.route_runtime.current()
         return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
 
@@ -251,12 +254,15 @@ class RerollProgress:
                 self.account_id, self.root.name, "main_menu", time.time(), time.time(),
                 wallet_coins=wallet_coins, wallet_gems=wallet_gems,
                 lab_slot2_owned=(slot2.get("status") == "owned" if slot2 else None),
+                lab_slot_status=self.lab_cadence.slot_status_map(),
                 game_speed_maxed=(lab.get("kind") == "done" if lab else None),
                 lab_decision_kind=(str(lab["kind"]) if lab and isinstance(lab.get("kind"), str) else None),
                 lab_price=(lab.get("price") if lab and type(lab.get("price")) is int else None),
             )
+            rollout = self.unlock_rollout()
             self.route_runtime.publish_resources(
-                evaluate_resources(resolve_route(route, self.root.name, self.account_id), facts), facts)
+                evaluate_resources(resolve_route(route, self.root.name, self.account_id), facts,
+                                   rollout.slots() if rollout is not None else None), facts)
         except (OSError, ValueError, RouteUnavailable) as exc:
             self.route_error = str(exc)
 

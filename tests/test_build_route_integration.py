@@ -15,6 +15,7 @@ from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route_store import BuildRouteStore
 from fleet.reroll_progress import RerollProgress
 from fleet.resource_blocks import template_gem_blocks
+from lab_unlock_rollout import LabUnlockRollout
 from strategy import Strategy
 from policy import AutopilotPolicy
 
@@ -524,3 +525,17 @@ def test_just_in_time_pauses_workshop_when_the_reserve_takes_the_wallet(tmp_path
     assert [(d.state, d.reason) for d in published] == [(
         "save_coins", "Workshop paused: saving coins for labs · "
                       "Reserve 1k; Workshop may spend 0")]
+
+
+def test_published_gem_step_names_the_canary(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {})
+    progress.note_lab_slots({2: "locked"}, 150, now=time.time())
+    rollout = LabUnlockRollout(tmp_path)
+    rollout.note_dry_run(2, "Air_38", 100, 150, 0., account_id="account-a")
+    rollout.note_dry_run(2, "Air_38", 100, 150, 700., account_id="account-a")
+    progress.resource_evaluation(500, 150)
+    published = json.loads((tmp_path / "workers" / "Air_38" / "build-route-resources.json").read_text())
+    assert published["gem_step"]["reason"] == "Canary: Air_38 unlocks slot 2 next visit"
+    facts = json.loads((tmp_path / "workers" / "Air_38" / "build-route-resource-facts.json").read_text())
+    assert facts["lab_slot_status"] == {"2": "locked"}

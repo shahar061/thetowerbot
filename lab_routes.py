@@ -46,7 +46,6 @@ def _artifact(root: Path, reference: dict[str, Any]) -> Path:
 
 _RESEARCH_STAGES = ('home', 'home', 'picker', 'picker', 'confirmation', 'confirmation',
                     'running', 'running', 'running', 'return')
-_UNLOCK_STAGES = ('home', 'home', 'unlocked', 'unlocked', 'return')
 
 
 # Pixel page expected for each recorded stage. The picker overlay has no
@@ -238,89 +237,48 @@ def _validate_record(record: dict[str, Any], root: Path) -> tuple[int, str]:
     return slot, research
 
 
-def _validate_unlock(record: dict[str, Any], root: Path) -> int:
-    """Verify a Lab unlock: locked card, one input, owned card, gem debit, return.
-
-    Only Lab 2 has a locked-card reader and executor; other slots fail closed.
-    """
-    from lab_screen import read_home, read_slots
-
-    slot = record['slot']
-    if record['kind'] != 'unlock' or type(slot) is not int or slot != 2:
-        raise ValueError('route_identity')
-    stamps = _provenance(record, _UNLOCK_STAGES, root)
-    homes, owned = [], []
-    for frame, image, boxes in _frames(record, root):
-        if frame['stage'] == 'return':
-            continue
-        strip = read_slots(image, boxes, observed_at=frame['captured_at'])
-        if not strip.strip_read():
-            raise ValueError('complete_strip_required')
-        (homes if frame['stage'] == 'home' else owned).append((read_home(image, boxes), strip.slots_owned))
-    locked = homes[0][0]
-    price, gems = locked.slot2_price, locked.gem_balance
-    if (locked.slot2_status != 'locked' or type(price) is not int or price <= 0
-            or type(gems) is not int or gems < price or locked.slot2_point is None
-            or any(h != homes[0] for h in homes) or homes[0][1] != 1
-            or any(h.slot2_status != 'owned' or h.gem_balance != gems - price or n != 2
-                   for h, n in owned)):
-        raise ValueError('unlock_semantics')
-    _inputs(record['frames'], {1: {'kind': 'unlock_slot', 'point': list(locked.slot2_point)}}, 3)
-    _receipt(record, root, operation='lab_unlock', currency='gems', price=price,
-             wallet_before=gems, acted_at=stamps[1], before={'slot': slot})
-    return slot
-
-
 # ImportError/RuntimeError: a missing reader dependency must fail closed, never
 # break research_gate for the legacy route.
 _ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError,
            ImportError, RuntimeError, sqlite3.Error)
 
 
-def _load(manifest: Path, evidence_root: Path | None) -> tuple[dict[tuple[int, str], RouteGate], dict[int, RouteGate]]:
-    """Malformed, partial and isolated evidence cannot add execution support."""
+def _load(manifest: Path, evidence_root: Path | None) -> dict[tuple[int, str], RouteGate]:
+    """Malformed, partial and isolated evidence cannot add execution support.
+
+    Lab slot unlocks are never recorded routes: lab_unlock_rollout.py gates them.
+    """
     try:
         document = json.loads(manifest.read_text())
         if document.get('schema_version') != 1 or not isinstance(document.get('routes'), list):
-            return {}, {}
+            return {}
     except (OSError, ValueError, AttributeError):
-        return {}, {}
+        return {}
     root = evidence_root or manifest.parent
     research: dict[tuple[int, str], RouteGate] = {}
-    unlocks: dict[int, RouteGate] = {}
     for record in document['routes']:
         try:
             if record['kind'] == 'unlock':
-                unlocks[_validate_unlock(record, root)] = RouteGate(True, 'validated_recorded_sequence',
-                    'Recorded locked card, one input, owned card and one durable gem debit verified')
-            else:
-                research[_validate_record(record, root)] = RouteGate(True, 'validated_recorded_sequence',
-                    'Recorded semantic sequence and one durable debit verified')
+                continue
+            research[_validate_record(record, root)] = RouteGate(True, 'validated_recorded_sequence',
+                'Recorded semantic sequence and one durable debit verified')
         except _ERRORS:
             continue
-    return research, unlocks
+    return research
 
 
 def load_recorded_routes(manifest: Path, *, evidence_root: Path | None = None) -> dict[tuple[int, str], RouteGate]:
-    return _load(manifest, evidence_root)[0]
-
-
-def load_recorded_unlocks(manifest: Path, *, evidence_root: Path | None = None) -> dict[int, RouteGate]:
-    return _load(manifest, evidence_root)[1]
+    return _load(manifest, evidence_root)
 
 
 @lru_cache(maxsize=1)
-def _recorded() -> tuple[dict[tuple[int, str], RouteGate], dict[int, RouteGate]]:
+def _recorded() -> dict[tuple[int, str], RouteGate]:
     """Calibration changes are reviewed deployment inputs; reload on restart."""
     return _load(MANIFEST, MANIFEST.parent.parent)
 
 
 def recorded_routes() -> dict[tuple[int, str], RouteGate]:
-    return _recorded()[0]
-
-
-def recorded_unlocks() -> dict[int, RouteGate]:
-    return _recorded()[1]
+    return _recorded()
 
 
 def research_gate(slot: int, research_id: str) -> RouteGate:
@@ -328,15 +286,9 @@ def research_gate(slot: int, research_id: str) -> RouteGate:
         LEGACY_GAME_SPEED if (slot, research_id) == (1, 'labs.game-speed') else UNCALIBRATED)
 
 
-def unlock_gate(slot: int) -> RouteGate:
-    return recorded_unlocks().get(slot) or RouteGate(False, 'missing_recorded_sequence',
-        f'Planning only: Lab {slot} unlock lacks a recorded spend and owned-result sequence')
-
-
 def route_gates() -> dict[str, dict[str, object]]:
     return {
         'game_speed_slot_1': asdict(LEGACY_GAME_SPEED),
-        **{f'unlock_slot_{slot}': asdict(unlock_gate(slot)) for slot in range(2, 6)},
         'general_research': asdict(UNCALIBRATED),
         **{f'research:{slot}:{research}': asdict(gate)
            for (slot, research), gate in recorded_routes().items()},

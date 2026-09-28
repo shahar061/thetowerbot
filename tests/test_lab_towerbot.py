@@ -110,7 +110,7 @@ def test_uncalibrated_plan_choices_are_published_once_with_their_reason() -> Non
     assert len(skipped) == 1
     assert skipped[0].action == 'labs' and skipped[0].reason == 'lab_route_calibration_required'
     assert any(line.startswith('Lab 3 labs.coins-wave: Planning only:') for line in b.lab_route_pending)
-    assert any(line.startswith('gems.lab2: Planning only:') for line in b.lab_route_pending)
+    assert not any(line.startswith('gems.lab2:') for line in b.lab_route_pending)
     assert 'Lab 1' not in skipped[0].detail  # the legacy route is executable, not pending
 
 

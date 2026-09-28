@@ -204,6 +204,10 @@ class LabCadence:
                 records[int(key)] = entry
         return records
 
+    def slot_status_map(self) -> dict[str, str]:
+        """Slot 2-5 statuses only, string-keyed to survive a JSON facts snapshot."""
+        return {str(slot): str(record["status"]) for slot, record in self.slot_records().items()}
+
     def slot_owned(self, slot: int) -> bool:
         record = self.slot_records().get(slot)
         return record is not None and record["status"] == "owned"

@@ -44,9 +44,12 @@ def research_automated(lab_id: str, slot: int) -> bool:
     return research_gate(slot, lab_id).enabled
 
 
-def gem_automated(block: Mapping[str, Any]) -> bool:
-    from lab_routes import unlock_gate
-    return block.get("type") == "unlock_lab_slot" and unlock_gate(block.get("slot")).enabled
+def gem_automated(block: Mapping[str, Any], rollout: Mapping[int, Any] | None = None) -> bool:
+    """A slot unlock is automated once its rollout reached canary or fleet."""
+    if block.get("type") != "unlock_lab_slot" or lab_catalog.lab_slot_gems(block.get("slot")) is None:
+        return False
+    state = (rollout or {}).get(block.get("slot"))
+    return state is not None and state.stage in ("canary", "fleet")
 
 
 class _Ids:
@@ -448,6 +451,9 @@ class LabFacts:
     slot_ownership: Mapping[int, Mapping[str, Any]] | None = None
     # A complete strip read proves every slot up to here owned.
     owned_floor: int | None = None
+    # The fleet's lab-unlock rollout per slot, and this worker's id, for the gem lane.
+    rollout: Mapping[int, Any] | None = None
+    worker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -818,6 +824,14 @@ def _gem_price(block: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _unlock_line(block: Mapping[str, Any], facts: LabFacts) -> str:
+    from lab_unlock_rollout import SlotRollout, rollout_status
+    slot = block["slot"]
+    if lab_catalog.lab_slot_gems(slot) is None:
+        return f"Slot {slot} price unknown"
+    return rollout_status((facts.rollout or {}).get(slot) or SlotRollout(), slot, facts.worker)
+
+
 def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) -> GemPlan:
     steps: list[GemStep] = []
     why: list[str] = []
@@ -825,10 +839,9 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
     ownership = _ownership(facts)
     for block in blocks:
         met = _gem_met(block, ownership, facts.owned_floor)
-        automated = gem_automated(block) and rules.gems.auto_unlock_lab_slots
-        if block["type"] == "unlock_lab_slot" and not gem_automated(block):
-            from lab_routes import unlock_gate
-            why.append(f"{block['id']}: {unlock_gate(block['slot']).reason}")
+        automated = gem_automated(block, facts.rollout) and rules.gems.auto_unlock_lab_slots
+        if block["type"] == "unlock_lab_slot" and not gem_automated(block, facts.rollout):
+            why.append(f"{block['id']}: {_unlock_line(block, facts)}")
         if block["type"] == "buy_cards":
             why.append(f"{block['id']}: unavailable; independent card reward/inventory evidence is not calibrated")
         if current is None and met is True:
@@ -837,7 +850,7 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
         elif current is None:
             state = "current"
             why.append(f"{block['id']}: {'ownership unread' if met is None else 'next'}")
-            if gem_automated(block) and not rules.gems.auto_unlock_lab_slots:
+            if gem_automated(block, facts.rollout) and not rules.gems.auto_unlock_lab_slots:
                 why.append("Auto-unlock off")
         else:
             state = "next"

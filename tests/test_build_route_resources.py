@@ -6,9 +6,11 @@ from dataclasses import replace
 
 import pytest
 
+import lab_catalog
 from fleet.build_route import RouteDocument, resolve_route
 from fleet.build_route_eval import RouteFacts, evaluate_resources
 from fleet.resource_blocks import template_gem_blocks, template_lab_blocks
+from lab_unlock_rollout import DryRun, SlotRollout
 
 
 def _route(steps: list[str] | None = None):
@@ -25,14 +27,6 @@ def _facts() -> RouteFacts:
                       lab_decision_kind="start", lab_price=300)
 
 
-@pytest.fixture
-def calibrated_unlock(monkeypatch: pytest.MonkeyPatch) -> None:
-    import lab_routes
-    monkeypatch.setattr(lab_routes, "unlock_gate", lambda slot: lab_routes.RouteGate(
-        slot == 2, "validated_recorded_sequence", "recorded"))
-
-
-@pytest.mark.usefixtures("calibrated_unlock")
 def test_first_hundred_gems_waits_then_unlocks_second_lab() -> None:
     assert evaluate_resources(_route(), _facts()).gem_step.status == "blocked"
     at_hundred = evaluate_resources(_route(), replace(_facts(), wallet_gems=100))
@@ -40,16 +34,40 @@ def test_first_hundred_gems_waits_then_unlocks_second_lab() -> None:
     assert at_hundred.gem_step.action == "unlock_lab_slot_2"
 
 
-def test_uncalibrated_second_lab_unlock_is_only_planned_at_any_balance() -> None:
-    # The shipped manifest records no Lab 2 unlock, so nothing will spend.
-    for gems in (99, 100, 250):
-        step = evaluate_resources(_route(), replace(_facts(), wallet_gems=gems)).gem_step
-        assert step.action == "unlock_lab_slot_2"
-        assert step.status == "planned"
-        assert "not calibrated" in step.reason
+def test_gem_step_follows_the_rollout_stage() -> None:
+    route, facts = _route(), replace(_facts(), wallet_gems=150)
+    assert evaluate_resources(route, facts).gem_step.reason == "Rehearsing slot 2 · 0/2 dry runs"
+    one = SlotRollout(dry_runs=(DryRun("Air_38", 1., 100, 150, "a1"),))
+    assert evaluate_resources(route, facts, {2: one}).gem_step.reason == "Rehearsing slot 2 · 1/2 dry runs"
+    held = SlotRollout(stage="canary", canary_worker="Air_38")
+    step = evaluate_resources(route, facts, {2: held}).gem_step
+    assert (step.status, step.reason) == ("supported", "Canary: Air_38 unlocks slot 2 next visit")
+    other = evaluate_resources(route, facts, {2: replace(held, canary_worker="Air_39")}).gem_step
+    assert (other.status, other.reason) == ("blocked", "Waiting for canary")
+    fleet = evaluate_resources(route, facts, {2: SlotRollout(stage="fleet")}).gem_step
+    assert (fleet.action, fleet.status, fleet.reason) == ("unlock_lab_slot_2", "supported", "Unlocking slot 2")
+    halted = SlotRollout(stage="halted", halted_reason="price 120", evidence=("a.png",))
+    step = evaluate_resources(route, facts, {2: halted}).gem_step
+    assert (step.status, step.reason) == ("blocked", "Halted: price 120 · 1 evidence frame(s)")
+    short = evaluate_resources(route, replace(facts, wallet_gems=60), {2: SlotRollout(stage="fleet")})
+    assert short.gem_step.reason == "Save 40 more gems"
 
 
-@pytest.mark.usefixtures("calibrated_unlock")
+def test_owned_slots_wait_for_the_lab_starter() -> None:
+    step = evaluate_resources(_route(), replace(_facts(), lab_slot_status={"2": "owned"})).gem_step
+    assert (step.action, step.status, step.reason) == (
+        "lab_slot_2_owned", "supported", "Slot 2 owned · waiting for lab starter")
+    three = evaluate_resources(_route(["unlock_lab_slot_2", "unlock_lab_slot_3"]),
+        replace(_facts(), wallet_gems=500, lab_slot_status={"2": "owned", "3": "locked"})).gem_step
+    assert (three.action, three.reason) == ("unlock_lab_slot_3", "Rehearsing slot 3 · 0/2 dry runs")
+
+
+def test_a_slot_without_a_catalog_price_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lab_catalog, "lab_slot_gems", lambda slot: None)
+    step = evaluate_resources(_route(), replace(_facts(), wallet_gems=500)).gem_step
+    assert (step.status, step.reason) == ("blocked", "Slot 2 price unknown")
+
+
 def test_auto_unlock_off_is_only_planned() -> None:
     raw = RouteDocument.compatibility().to_dict()
     raw["baseline"]["rules"]["gems"]["auto_unlock_lab_slots"] = False
@@ -118,7 +136,10 @@ def test_blocks_mode_resource_evaluation_names_the_next_planned_block() -> None:
     raw["baseline"]["labs"].update(mode="blocks", blocks=list(template_lab_blocks()))
     route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
     result = evaluate_resources(route, replace(_facts(), lab_slot2_owned=True, game_speed_maxed=True))
-    assert (result.gem_step.action, result.gem_step.status) == ("unlock_lab_slot_3", "planned")
+    # Slot 2 owned proves nothing about slot 3 under the rollout-based gem
+    # lane (only an owned higher slot, or a locked lower one, proves a slot's
+    # status), so with no lab_slot_status facts slot 3 is genuinely unknown.
+    assert (result.gem_step.action, result.gem_step.status) == ("unlock_lab_slot_3", "unknown")
     assert (result.lab_step.action, result.lab_step.status) == ("research_labs.attack-speed", "planned")
 
 

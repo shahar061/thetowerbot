@@ -12,7 +12,6 @@ from fleet.reroll_planner import (DRAW_SHARPNESS, RerollDecision, RerollFacts,
                                   _ban_closure, choose_next)
 import builds
 import lab_catalog
-import lab_routes
 import upgrades
 
 
@@ -56,6 +55,8 @@ class RouteFacts:
     upgrade_rows: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     wallet_gems: int | None = None
     lab_slot2_owned: bool | None = None
+    # lab-slots.json statuses keyed "2"-"5" (string keys survive the JSON facts snapshot).
+    lab_slot_status: Mapping[str, str] = field(default_factory=dict)
     game_speed_maxed: bool | None = None
     lab_decision_kind: str | None = None
     lab_price: int | None = None
@@ -113,15 +114,6 @@ class ResourceEvaluation:
     lab_step: ResourceStep
 
 
-def _future_gem_action(route: EffectiveRoute) -> str | None:
-    if route.gems.mode != "blocks":
-        return next((step for step in route.gems.steps if step != "unlock_lab_slot_2"), None)
-    for block in route.gems.blocks[1:]:
-        return (f"unlock_lab_slot_{block['slot']}" if block["type"] == "unlock_lab_slot"
-                else block["type"])
-    return None
-
-
 def _future_lab_action(route: EffectiveRoute) -> str | None:
     if route.labs.mode != "blocks":
         return next((step for step in route.labs.steps if step != "research_game_speed"), None)
@@ -136,26 +128,65 @@ def _future_lab_action(route: EffectiveRoute) -> str | None:
     return None
 
 
-def evaluate_resources(route: EffectiveRoute, facts: RouteFacts) -> ResourceEvaluation:
-    """Describe existing lab automation and mark future route nodes as plans."""
-    if facts.wallet_gems is None or facts.lab_slot2_owned is None:
-        gem = ResourceStep("unlock_lab_slot_2", "unknown", "Gem balance or lab ownership unverified")
-    elif not facts.lab_slot2_owned and not lab_routes.unlock_gate(2).enabled:
-        # lab_visit refuses the spend without a recorded sequence; never
-        # report a reserve as if the unlock were about to happen.
-        gem = ResourceStep("unlock_lab_slot_2", "planned",
-                           "Planning only · Lab 2 unlock not calibrated")
-    elif not facts.lab_slot2_owned and not route.rules.gems.auto_unlock_lab_slots:
-        gem = ResourceStep("unlock_lab_slot_2", "planned", "Planned · auto-unlock off")
-    elif not facts.lab_slot2_owned:
-        gem = (ResourceStep("unlock_lab_slot_2", "supported", "100 gems reserved for lab slot 2")
-               if facts.wallet_gems >= route.gems.lab_slot2_reserve else
-               ResourceStep("unlock_lab_slot_2", "blocked",
-                            f"Save {route.gems.lab_slot2_reserve - facts.wallet_gems} more gems"))
-    else:
-        future = _future_gem_action(route)
-        gem = (ResourceStep(future, "planned", "Planned · not automated") if future else
-               ResourceStep("lab_slot_2_owned", "supported", "Second lab unlocked; reserve released"))
+def _slot_ownership(facts: RouteFacts) -> dict[int, dict[str, str]]:
+    """Slot 2-5 ownership from the worker's lab-slots record, else the legacy slot-2 flag."""
+    if facts.lab_slot_status:
+        return {int(slot): {"status": status} for slot, status in facts.lab_slot_status.items()
+                if str(slot) in {"2", "3", "4", "5"} and status in {"owned", "locked"}}
+    if facts.lab_slot2_owned is None:
+        return {}
+    return {2: {"status": "owned" if facts.lab_slot2_owned else "locked"}}
+
+
+def _gem_action(route: EffectiveRoute, block: Mapping[str, Any]) -> str:
+    if block["type"] == "unlock_lab_slot":
+        return f"unlock_lab_slot_{block['slot']}"
+    return block["id"].removeprefix("legacy.gems.") if route.gems.mode != "blocks" else block["type"]
+
+
+def _gem_step(route: EffectiveRoute, facts: RouteFacts,
+              rollout: Mapping[int, Any] | None) -> ResourceStep:
+    """Fleet State's gem step: the next slot unlock and where its rollout stands."""
+    from fleet.resource_blocks import _gem_met, gem_lane_blocks
+    from lab_unlock_rollout import SlotRollout, rollout_status
+    blocks = gem_lane_blocks(route.gems)
+    ownership = _slot_ownership(facts)
+    first = _gem_action(route, blocks[0]) if blocks else "unlock_lab_slot_2"
+    if facts.wallet_gems is None:
+        return ResourceStep(first, "unknown", "Gem balance or lab ownership unverified")
+    pending = next((block for block in blocks if _gem_met(block, ownership) is not True), None)
+    if pending is not None and pending["type"] == "unlock_lab_slot":
+        slot, action = pending["slot"], _gem_action(route, pending)
+        if _gem_met(pending, ownership) is None:
+            return ResourceStep(action, "unknown", "Gem balance or lab ownership unverified")
+        price = lab_catalog.lab_slot_gems(slot)
+        if price is None:
+            return ResourceStep(action, "blocked", f"Slot {slot} price unknown")
+        if not route.rules.gems.auto_unlock_lab_slots:
+            return ResourceStep(action, "planned", "Planned · auto-unlock off")
+        state = (rollout or {}).get(slot) or SlotRollout()
+        if state.stage == "halted":
+            frames = f" · {len(state.evidence)} evidence frame(s)" if state.evidence else ""
+            return ResourceStep(action, "blocked", rollout_status(state, slot, facts.worker) + frames)
+        need = price + route.rules.gems.keep
+        if facts.wallet_gems < need:
+            return ResourceStep(action, "blocked", f"Save {need - facts.wallet_gems} more gems")
+        waiting = state.stage == "canary" and state.canary_worker != facts.worker
+        return ResourceStep(action, "blocked" if waiting else "supported",
+                            rollout_status(state, slot, facts.worker))
+    owned = max((slot for slot, record in ownership.items() if record["status"] == "owned"), default=None)
+    if owned is None:
+        return ResourceStep(first, "unknown", "Gem balance or lab ownership unverified")
+    starter = f"Slot {owned} owned · waiting for lab starter"
+    if pending is not None:
+        return ResourceStep(_gem_action(route, pending), "planned", f"{starter} · planned, not automated")
+    return ResourceStep(f"lab_slot_{owned}_owned", "supported", starter)
+
+
+def evaluate_resources(route: EffectiveRoute, facts: RouteFacts,
+                       rollout: Mapping[int, Any] | None = None) -> ResourceEvaluation:
+    """Describe the gem step from the unlock rollout, and existing lab automation."""
+    gem = _gem_step(route, facts, rollout)
     if facts.game_speed_maxed is True:
         future_lab = _future_lab_action(route)
         lab = (ResourceStep(future_lab, "planned", "Planned · not automated") if future_lab else

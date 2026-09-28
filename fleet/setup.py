@@ -449,6 +449,8 @@ class FleetSetupService:
         members: list[dict[str, object]] = []
         current_names = {member["name"] for member in self._manual_pool().members()}
         workers = self.root / "workers"
+        from lab_unlock_rollout import LabUnlockRollout
+        unlock_rollout = LabUnlockRollout(self.root).slots(quarantine=False)
         if workers.is_dir():
             for worker_root in sorted(workers.iterdir()):
                 if (worker_root.name not in current_names or not worker_root.is_dir()
@@ -494,8 +496,8 @@ class FleetSetupService:
                     current_battle = proposed_battle = unknown
                 if evidence.resources.facts is not None and evidence.resources.status != "stale":
                     resource_facts = evidence.resources.facts
-                    current_resources = evaluate_resources(current_effective, resource_facts)
-                    proposed_resources = evaluate_resources(proposed_effective, resource_facts)
+                    current_resources = evaluate_resources(current_effective, resource_facts, unlock_rollout)
+                    proposed_resources = evaluate_resources(proposed_effective, resource_facts, unlock_rollout)
                 else:
                     reason = evidence.resources.reason or "Resource evidence unavailable"
                     unknown_step = ResourceStep("unknown", "unknown", reason)

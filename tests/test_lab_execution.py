@@ -51,7 +51,7 @@ def test_uncalibrated_action_is_retained_without_enabling_a_visit() -> None:
     assert visit.pending_action == requested
     assert visit.recovery_status == 'lab_route_calibration_required'
     matrix = labs.capabilities()
-    assert matrix['route_gates']['unlock_slot_2']['enabled'] is False
+    assert not any(key.startswith('unlock_slot_') for key in matrix['route_gates'])
     assert matrix['route_gates']['in_battle_labs']['enabled'] is False
     assert matrix['route_gates']['in_battle_missions']['enabled'] is False
     assert matrix['route_gates']['game_speed_slot_1']['evidence'] == 'legacy_fixture_regression'
@@ -376,163 +376,14 @@ def test_frames_must_be_a_contiguous_recorded_window_of_the_capture_log(
         _validate_record(record, tmp_path)
 
 
-def _unlock_record(tmp_path: Path, owned_image: str = 'menu_labs_slot1_idle') -> dict:
-    """Schema-only: forged OCR boxes plus a real offline journal receipt.
-
-    With the default `owned_image` this is the reviewer's forgery: every
-    non-return frame is the same locked PNG and only the stored OCR differs.
-    """
-    import json
-    import sqlite3
-    import config
-    import ocr
-    from tests.test_lab_transactions import authority, prepared
-    from transactions import RecoveryEvidence
-    _, journal, scope = authority(tmp_path)
-    txn = prepared(journal, scope, operation='lab_unlock')
-    journal.reconcile(txn.key, RecoveryEvidence(category='LABS', currency='gems', wallet_after=513,
-        effect_changed=True, observed_at=12., frame_digest='after', scope=scope, operation='lab_unlock',
-        slot=2, research_id=None, target_level=None), now=12.)
-    journal_copy = tmp_path / 'receipt.db'
-    with sqlite3.connect(journal.path) as source, sqlite3.connect(journal_copy) as target:
-        source.backup(target)
-    original = boxes('menu_labs_slot1_idle')
-    locked = tuple(ocr.TextBox('613', b.confidence, b.rect) if b.text == '65' else b for b in original)
-    gem = next(b for b in locked if b.text == '613')
-    owned = tuple(b for b in locked if b.text not in {'Unlock Znd lab', '100', '613'}) + (
-        ocr.TextBox('513', gem.confidence, gem.rect),
-        ocr.TextBox('Lab Offline', .99, config.Rect(394, 832, 291, 52)),
-        ocr.TextBox('Lab 3', .99, config.Rect(25, 1046, 97, 39)),
-        ocr.TextBox('Unlock 3rd lab', .99, config.Rect(351, 1174, 378, 51)))
-
-    def dump(text: tuple) -> str:
-        return json.dumps([{'text': b.text, 'confidence': b.confidence,
-                            'rect': [b.rect.x, b.rect.y, b.rect.w, b.rect.h]} for b in text])
-
-    frames = []
-    for index, (stage, image, text) in enumerate([
-            ('home', 'menu_labs_slot1_idle', locked), ('home', 'menu_labs_slot1_idle', locked),
-            ('unlocked', owned_image, owned), ('unlocked', owned_image, owned),
-            ('return', 'menu_main_labs_unlocked', ())]):
-        record = {'stage': stage, 'captured_at': 10. + index, 'capture_id': f'unlock-{index}',
-                  'image': _copy(tmp_path, image, f'u{index}')}
-        if stage != 'return':
-            text_path = tmp_path / f'u{index}.json'
-            text_path.write_text(dump(text))
-            record['ocr'] = _reference(text_path)
-        if index == 1:
-            record['input'] = {'kind': 'unlock_slot', 'point': [586, 906]}
-        if index == 3:
-            record['input'] = {'kind': 'return_home'}
-        frames.append(record)
-    record = {'kind': 'unlock', 'source': 'continuous_live_capture', 'slot': 2,
-              'account_id': 'account-a', 'session_id': 'schema-test-only', 'game_version': 'test-only',
-              'reviewed_by': 'schema-test-only', 'layout': [1080, 2400], 'frames': frames,
-              'journal': _reference(journal_copy), 'receipt_key': txn.key}
-    _log(tmp_path, record)
-    return record
-
-
-def _trust_stored_ocr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, record: dict) -> None:
-    """EXPLICIT integrity bypass: serve each frame's stored (forged) OCR as if
-    it were the fresh read, so the remaining checks can be exercised alone."""
-    import json
-    import cv2
-    import config
-    import lab_routes
-    import ocr
-    by_digest = {}
-    for frame in record['frames']:
-        if 'ocr' in frame:
-            image = cv2.imread(str(tmp_path / frame['image']['path']))
-            entries = json.loads((tmp_path / frame['ocr']['path']).read_text())
-            by_digest[image.tobytes()] = tuple(ocr.TextBox(e['text'], e['confidence'], config.Rect(*e['rect']))
-                                               for e in entries)
-    monkeypatch.setattr(lab_routes, '_fresh_boxes', lambda image: by_digest[image.tobytes()])
-
-
-def test_unlock_validator_semantics_behind_an_explicit_ocr_bypass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Positive path only with the OCR re-read bypassed in plain sight."""
-    from lab_routes import load_recorded_routes, load_recorded_unlocks
-    record = _unlock_record(tmp_path, owned_image='menu_labs_slot1_affordable')
-    _trust_stored_ocr(monkeypatch, tmp_path, record)
-    manifest = _install(tmp_path, record)
-    assert load_recorded_unlocks(manifest)[2].enabled
-    assert load_recorded_routes(manifest) == {}  # an unlock never enables research
-    for key, value in (('input', {'kind': 'unlock_slot', 'point': [1, 1]}), ('source', 'synthetic'), ('slot', 3)):
-        broken = dict(record, frames=[dict(f) for f in record['frames']])
-        if key == 'input':
-            broken['frames'][1]['input'] = value
-            _log(tmp_path, broken)
-        else:
-            broken[key] = value
-        assert load_recorded_unlocks(_install(tmp_path, broken)) == {}
-    _log(tmp_path, record)
-
-
-def test_forged_unlock_with_one_png_before_and_after_is_refused(tmp_path: Path) -> None:
-    from lab_routes import _validate_unlock, load_recorded_unlocks
-    record = _unlock_record(tmp_path)
-    assert len({f['image']['sha256'] for f in record['frames'][:4]}) == 1
-    # Unchanged pixels cannot show a new state, whatever the stored OCR says.
-    with pytest.raises(ValueError, match='state_change_without_new_pixels'):
-        _validate_unlock(record, tmp_path)
-    assert load_recorded_unlocks(_install(tmp_path, record)) == {}
-    # And the forged locked-state OCR (613 gems) contradicts a fresh read (65).
-    record['frames'][2]['image'] = record['frames'][3]['image'] = _copy(
-        tmp_path, 'menu_labs_slot1_affordable', 'owned')
-    _log(tmp_path, record)
-    with pytest.raises(ValueError, match='ocr_mismatch'):
-        _validate_unlock(record, tmp_path)
-
-
-def test_forged_unlock_over_an_unrelated_png_is_refused(tmp_path: Path) -> None:
-    from lab_routes import _validate_unlock, load_recorded_unlocks
-    record = _unlock_record(tmp_path)
-    for frames, name in ((record['frames'][:2], 'menu_main'), (record['frames'][2:4], 'menu_missions')):
-        unrelated = _copy(tmp_path, name, name)
-        for frame in frames:
-            frame['image'] = unrelated
-    _log(tmp_path, record)
-    with pytest.raises(ValueError, match='stage_page'):
-        _validate_unlock(record, tmp_path)
-    assert load_recorded_unlocks(_install(tmp_path, record)) == {}
-
-
-def test_forged_unlock_in_the_production_catalog_layout_enables_nothing(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unlock_records_in_the_route_manifest_enable_nothing(tmp_path: Path) -> None:
     import json
     import lab_routes
-    from fleet.resource_blocks import gem_automated
-    record = _unlock_record(tmp_path)
-    catalog = tmp_path / 'catalog'
-    catalog.mkdir()
-    manifest = catalog / 'lab-routes.v1.json'
-    manifest.write_text(json.dumps({'schema_version': 1, 'routes': [record]}))
-    monkeypatch.setattr(lab_routes, 'MANIFEST', manifest)  # evidence root = tmp_path
-    lab_routes._recorded.cache_clear()
-    try:
-        assert lab_routes.recorded_unlocks() == {}
-        assert not lab_routes.unlock_gate(2).enabled
-        assert not gem_automated({'type': 'unlock_lab_slot', 'slot': 2})
-        assert lab_routes.route_gates()['unlock_slot_2']['enabled'] is False
-    finally:
-        lab_routes._recorded.cache_clear()
-
-
-def test_unlock_gate_is_data_driven_but_shipped_manifest_enables_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    import json
-    import lab_routes
-    from fleet.resource_blocks import gem_automated
-    shipped = json.loads(lab_routes.MANIFEST.read_text())
-    assert shipped['schema_version'] == 1 and shipped['routes'] == []
-    assert lab_routes.recorded_unlocks() == {} and lab_routes.recorded_routes() == {}
-    assert not lab_routes.unlock_gate(2).enabled
-    monkeypatch.setattr(lab_routes, 'recorded_unlocks',
-                        lambda: {2: lab_routes.RouteGate(True, 'validated_recorded_sequence', 'test')})
-    assert lab_routes.unlock_gate(2).enabled and not lab_routes.unlock_gate(3).enabled
-    assert gem_automated({'type': 'unlock_lab_slot', 'slot': 2})
-    assert lab_routes.route_gates()['unlock_slot_2']['enabled'] is True
+    manifest = tmp_path / 'lab-routes.v1.json'
+    manifest.write_text(json.dumps({'schema_version': 1, 'routes': [{'kind': 'unlock', 'slot': 2}]}))
+    assert lab_routes.load_recorded_routes(manifest) == {}
+    assert not hasattr(lab_routes, 'unlock_gate') and not hasattr(lab_routes, 'recorded_unlocks')
+    assert not any(key.startswith('unlock_slot_') for key in lab_routes.route_gates())
 
 
 @pytest.mark.parametrize('text', ['Game Speed Lv.1', 'GameSpeed Lv.1', 'Game  Speed Lv.1', 'game speed Lv.1'])

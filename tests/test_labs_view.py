@@ -36,8 +36,7 @@ def test_an_unregistered_worker_is_an_unknown_row(tmp_path: Path) -> None:
     snapshot = labs_snapshot(tmp_path, ["Air_1"], now=1000.)
     (row,) = snapshot["workers"]
     assert (row["worker"], row["state"], row["plan"]) == ("Air_1", "unknown", None)
-    # Only Game Speed on slot 1 is executed; the Lab 2 gems unlock is
-    # gate-controlled (lab_routes.unlock_gate) and stays uncalibrated.
+    # Only Game Speed on slot 1 is a route; lab slot unlocks follow the rollout record.
     assert snapshot["automated"] == [
         {"lane": "labs", "type": "research", "lab_id": "labs.game-speed", "slot": 1}]
     assert len(snapshot["reference"]["game_speed"]) == 7
