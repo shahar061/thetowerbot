@@ -28,6 +28,7 @@ class Step(Enum):
     NEWS_SCROLL = auto()
     NEWS_DETAIL = auto()
     MAIL_DETAIL = auto()
+    MAIL_TAB = auto()
 
 
 class MailClaim(ControlTaps):
@@ -59,6 +60,8 @@ class MailClaim(ControlTaps):
         self._pending_mail: str | None = None
         self._mail_mode = False
         self._opened_mail = 0
+        self._mail_checked = False
+        self._detail_open = False
         self._news_scrolls = 0
         self._scroll_fingerprint: tuple[str, ...] = ()
         self._scroll_pages: set[tuple[str, ...]] = set()
@@ -88,6 +91,8 @@ class MailClaim(ControlTaps):
         self._pending_mail = None
         self._mail_mode = False
         self._opened_mail = 0
+        self._mail_checked = False
+        self._detail_open = False
         self._seen_mail.clear()
         self._news_scrolls = 0
         self._scroll_fingerprint = ()
@@ -132,10 +137,17 @@ class MailClaim(ControlTaps):
             return self._tap_target(badge.control, device, 'mail_open', Step.READ, moment)
         if self._step is Step.CONFIRM_HOME:
             if not page.visible and not page.error and at_home(state, readings.current_evidence()):
+                self._detail_open = False
                 if (self._news_mode or self._mail_mode) and self._opened_news + self._opened_mail < MAX_INBOX_ENTRIES:
                     self._enter(Step.OPEN)
                     return None
                 return self._finish('completed', self._reason, 'Returned from mail to the main menu.', moment)
+            if self._detail_open and page.visible and not page.error and page.selected_tab is not None:
+                # Measured live: an opened entry's footer returns to its
+                # tab's list, not home. Carry on from that list.
+                self._detail_open = False
+                self._enter(Step.READ)
+                return None
             return self._wait('home_not_restored', 'Waiting for mail to close.', moment)
         if page.error or not page.visible:
             return self._wait('mail_not_readable', 'No confirmed MAIL/INBOX page; no control guessed.', moment)
@@ -161,6 +173,7 @@ class MailClaim(ControlTaps):
                       if mail_screen.normalise(entry.title) not in self._seen_news]
             if unread and self._opened_news + self._opened_mail < MAX_INBOX_ENTRIES:
                 self._pending_news = unread[0].title
+                self._detail_open = True
                 return self._tap_target(unread[0].control, device, 'news_item', Step.NEWS_DETAIL, moment)
             if not unread and page.news_badge and self._news_scrolls < MAX_NEWS_SCROLLS:
                 points = mail_screen.news_scroll_points(screen, page)
@@ -195,6 +208,10 @@ class MailClaim(ControlTaps):
             self._opened_mail += 1
             self._pending_mail = None
             self._enter(Step.READ)
+        if self._step is Step.MAIL_TAB:
+            if page.selected_tab != 'mail':
+                return self._wait('mail_tab_unconfirmed', 'Waiting for the Mail tab.', moment)
+            self._enter(Step.READ)
         if self._step is Step.VERIFY:
             before, was_confirmed, coins, gems = self._pending
             proof = ('unclaimed_count_decreased' if before is not None and page.unclaimed is not None
@@ -222,16 +239,28 @@ class MailClaim(ControlTaps):
                     and self._opened_news + self._opened_mail < MAX_INBOX_ENTRIES):
                 self._mail_mode = True
                 self._pending_mail = unread_mail[0].title
+                self._detail_open = True
                 return self._tap_target(unread_mail[0].control, device, 'mail_item', Step.MAIL_DETAIL, moment)
             if page.selected_tab == 'mail':
                 self._mail_mode = False
-            if (page.news_tab is not None and page.news_badge
+                self._mail_checked = True
+            elif page.selected_tab == 'news' and not self._mail_checked and page.mail_tab is not None:
+                # The inbox reopens on its last tab. The envelope badge can
+                # be News alone, but claimable rewards live under Mail.
+                self._mail_checked = True
+                return self._tap_target(page.mail_tab, device, 'mail_tab', Step.MAIL_TAB, moment)
+            if ((page.news_tab is not None or page.selected_tab == 'news') and page.news_badge
                     and self._opened_news + self._opened_mail < MAX_INBOX_ENTRIES):
                 self._news_mode = True
+                if page.selected_tab == 'news':
+                    # Never tap the tab that is already selected.
+                    self._enter(Step.NEWS_LIST)
+                    return None
                 return self._tap_target(page.news_tab, device, 'news_tab', Step.NEWS_LIST, moment)
             if page.news_tab is not None:
                 self._news_mode = False
-            if self._claimed == 0:
+            # Leaving one opened entry for its list is not the visit's end.
+            if self._claimed == 0 and not self._detail_open:
                 self._reason = 'no_eligible_mail_reward'
                 bus.publish(events.ClaimSkipped(target='mail', reason=self._reason,
                                                detail='No unambiguous free claim button on this mail page.'))
@@ -263,7 +292,15 @@ class MailClaim(ControlTaps):
         self._waited += 1
         if self._waited > self._budget:
             self._uncertain(reason)
-            if self._step in {Step.READ, Step.NEWS_LIST, Step.NEWS_SCROLL, Step.NEWS_DETAIL, Step.MAIL_DETAIL, Step.VERIFY}:
+            if self._step in {Step.READ, Step.NEWS_LIST, Step.NEWS_SCROLL, Step.NEWS_DETAIL,
+                              Step.MAIL_DETAIL, Step.MAIL_TAB, Step.VERIFY}:
+                # An entry whose detail never matched (e.g. a wrapped list
+                # title) is not reopened; its footer leads back to the list.
+                if self._step is Step.NEWS_DETAIL and self._pending_news is not None:
+                    self._seen_news.add(mail_screen.normalise(self._pending_news))
+                if self._step is Step.MAIL_DETAIL and self._pending_mail is not None:
+                    self._seen_mail.add(mail_screen.normalise(self._pending_mail))
+                self._pending_news = self._pending_mail = None
                 self._reason = reason
                 self._news_mode = False
                 self._mail_mode = False

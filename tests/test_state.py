@@ -167,6 +167,19 @@ def test_navigation_shopping_and_claims_set_the_current_activity(
     assert len(state.snapshot()["tail"]) == 1
 
 
+def test_a_claim_s_activity_clears_when_that_claim_ends() -> None:
+    state = BotState()
+    state.apply(stamped(events.ClaimStarted(target="mail")))
+    state.apply(stamped(events.ClaimEnded(target="missions", claimed=0, reason="x", aborted=True)))
+    assert state.snapshot()["activity"]["label"] == "Claiming · mail"
+
+    state.apply(stamped(events.ClaimEnded(target="mail", claimed=0,
+                                          reason="home_not_restored", aborted=True)))
+
+    assert state.snapshot()["activity"] is None
+    assert len(state.snapshot()["tail"]) == 3
+
+
 def test_the_wave_follows_in_run_scans_and_clears_off_the_run() -> None:
     state = BotState()
     assert state.snapshot()["wave"] is None

@@ -36,6 +36,7 @@ class MailReading:
     coins: int | None = None
     gems: int | None = None
     news_tab: ControlTarget | None = None
+    mail_tab: ControlTarget | None = None
     news_badge: bool = False
     news: tuple[NewsEntry, ...] = ()
     news_detail_title: str | None = None
@@ -108,7 +109,7 @@ def parse(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> MailReading:
             amounts[match[2].lower()].append(int(match[1]))
     confirmed = any(normalise(b.text) in {'rewardclaimed', 'rewardsclaimed', 'allrewardsclaimed'}
                     and b.confidence >= .95 for b in boxes)
-    news_tab, news_badge = None, False
+    news_tab, mail_tab, news_badge = None, None, False
     tabs = [b for b in boxes if b.confidence >= .95 and normalise(b.text) == 'news'
             and b.rect.y < height * .2]
     mail_tabs = [b for b in boxes if b.confidence >= .90 and normalise(b.text) == 'mail'
@@ -128,6 +129,8 @@ def parse(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> MailReading:
         # brighter purple. Read the background below the observed caption,
         # avoiding glyphs/cursor. This is state evidence, never a tap point.
         r = mail_tabs[0].rect
+        mail_tab = ControlTarget('mail_tab', (r.x + r.w // 2, r.y + r.h // 2),
+                                 'located', mail_tabs[0].confidence, (r.x, r.y, r.w, r.h))
         # The cursor can obscure the News caption, as in our captured list.
         # Its notification still lies in the measured right-hand tab pane.
         news_badge = red_pixels(screen[max(0, r.y - 35):r.y + r.h, width // 2:width]) > 30
@@ -186,7 +189,7 @@ def parse(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> MailReading:
                        # single visible amount is not proof of its total.
                        coins=amounts['coins'][0] if not claim_all and len(amounts['coins']) == 1 else None,
                        gems=amounts['gems'][0] if not claim_all and len(amounts['gems']) == 1 else None,
-                       news_tab=news_tab, news_badge=news_badge,
+                       news_tab=news_tab, mail_tab=mail_tab, news_badge=news_badge,
                        news=tuple(news), news_detail_title=detail_title,
                        mail=tuple(mail), selected_tab=selected_tab)
 

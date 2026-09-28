@@ -441,3 +441,88 @@ def test_unreadable_badge_after_return_never_reports_badge_clearance(monkeypatch
     assert not walk.active
     assert walk.snapshot()['result']['reason'] == 'mail_badge_not_readable'
     assert 'not verified' in walk.snapshot()['result']['detail']
+
+
+def _news_inbox() -> tuple[mail_screen.MailReading, mail_screen.MailReading, tuple[mail_screen.NewsEntry, ...]]:
+    from dataclasses import replace
+    back = ControlTarget('mail_return', (540, 2300), 'located', 1, (240, 2270, 600, 60))
+    news_tab = ControlTarget('news_tab', (814, 228), 'located', 1, (754, 200, 120, 56))
+    mail_tab = ControlTarget('mail_tab', (270, 228), 'located', 1, (210, 200, 120, 56))
+    rows = tuple(mail_screen.NewsEntry(f'Patch Notes {i}', ControlTarget(
+        'inbox_item', (346, 365 + i * 200), 'located', 1, (40, 330 + i * 200, 1000, 180))) for i in range(2))
+    listing = mail_screen.MailReading(visible=True, back=back, news_tab=news_tab, mail_tab=mail_tab,
+                                      news_badge=True, selected_tab='news', news=rows)
+    return listing, replace(listing, selected_tab='mail', news=()), rows
+
+
+def test_news_only_badge_checks_mail_then_backs_out_of_each_post_to_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+    walk = mail_claim.MailClaim(frame_budget=2)
+    walk.request(now=0)
+    walk._step = mail_claim.Step.READ
+    bus, device = FakeBus(), FakeDevice()
+    listing, mail_list, rows = _news_inbox()
+    current = listing  # The inbox reopened on the News tab it was left on.
+    monkeypatch.setattr(mail_claim.mail_screen, 'scan', lambda *a: current)
+    def step(state: str = 'UNKNOWN') -> None:
+        walk.advance(screen=image('menu_main_bluestacks_1920'), device=device, templates=FakeTemplates(),
+                     readings=FakePanel(), state=state, bus=bus, now=1)
+    step()
+    assert device.taps == [listing.mail_tab.point]
+    step()  # Tab switch not drawn yet
+    assert len(device.taps) == 1
+    current = mail_list
+    step()  # No unread mail; News tab
+    assert device.taps[-1] == listing.news_tab.point
+    current = listing
+    step()
+    assert device.taps[-1] == rows[0].control.point
+    current = mail_screen.MailReading(visible=True, back=listing.back, news_detail_title='Patch Notes 0')
+    step()  # Read; the post's own footer
+    assert device.taps[-1] == listing.back.point
+    assert not bus.of(events.ClaimSkipped)
+    current = listing  # The footer led back to the list, not home.
+    step()
+    step()  # Still badged: into the list without re-tapping its tab
+    step()
+    assert device.taps[-1] == rows[1].control.point
+    assert device.taps.count(listing.news_tab.point) == 1
+    current = mail_screen.MailReading(visible=True, back=listing.back, news_detail_title='Patch Notes 1')
+    step()
+    current = replace(listing, news_badge=False)
+    step()
+    step()  # Nothing left: skip and leave from the list
+    assert [event.reason for event in bus.of(events.ClaimSkipped)] == ['no_eligible_mail_reward']
+    assert device.taps[-1] == listing.back.point
+    current = mail_screen.MailReading()
+    step('MAIN_MENU')
+    assert not walk.active
+    assert [event.title for event in bus.of(events.NewsRead)] == ['Patch Notes 0', 'Patch Notes 1']
+    assert [(event.reason, event.aborted) for event in bus.of(events.ClaimEnded)] == [
+        ('no_eligible_mail_reward', False)]
+
+
+def test_unmatched_news_detail_is_left_for_its_list_and_not_reopened(monkeypatch: pytest.MonkeyPatch) -> None:
+    walk = mail_claim.MailClaim(frame_budget=1)
+    walk.request(now=0)
+    walk._step = mail_claim.Step.NEWS_LIST
+    walk._news_mode = walk._mail_checked = True
+    bus, device = FakeBus(), FakeDevice()
+    listing, _, rows = _news_inbox()
+    current = listing
+    monkeypatch.setattr(mail_claim.mail_screen, 'scan', lambda *a: current)
+    def step() -> None:
+        walk.advance(screen=image('menu_main_bluestacks_1920'), device=device, templates=FakeTemplates(),
+                     readings=FakePanel(), state='UNKNOWN', bus=bus, now=1)
+    step()
+    assert device.taps == [rows[0].control.point]
+    # A list title wrapped onto two lines never equals the detail heading.
+    current = mail_screen.MailReading(visible=True, back=listing.back, news_detail_title='Patch')
+    for _ in range(3):
+        step()
+    assert device.taps[-1] == listing.back.point
+    current = listing
+    for _ in range(3):
+        step()
+    assert device.taps[-1] == rows[1].control.point
+    assert not bus.of(events.ClaimEnded)

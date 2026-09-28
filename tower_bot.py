@@ -2169,8 +2169,11 @@ class TowerBot:
         # The Events page is left the same way, by its `Tap To Return To
         # Game` footer: the stall watchdog will not press anything there,
         # because its mission text ("Buy 20 cards") reads as a purchase.
+        # A held purchase reconciliation alone is not a visit: it waits for
+        # the main menu, which only this footer tap can restore. Gating on
+        # `shopping.active` here deadlocked a worker in its inbox.
         stranded = inbox if inbox.visible else events_page if events_page.visible else None
-        if stranded is not None and not walking_now and not self.shopping.active:
+        if stranded is not None and not walking_now and not self.shopping.visit_in_progress:
             page_name = 'mail' if stranded is inbox else 'events'
             self.controls.drain()
             self.wallet = None

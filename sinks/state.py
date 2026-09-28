@@ -141,6 +141,12 @@ class BotState:
                 case events.ClaimStarted():
                     self.activity = {"label": f"Claiming · {event.target}", "at": event.ts}
                     self.tail.append(render(event))
+                case events.ClaimEnded():
+                    # Only the claim it started; a later activity is kept.
+                    if (self.activity is not None
+                            and self.activity["label"] == f"Claiming · {event.target}"):
+                        self.activity = None
+                    self.tail.append(render(event))
                 case _:
                     self.tail.append(render(event))
 
