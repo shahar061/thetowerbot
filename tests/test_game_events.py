@@ -2,11 +2,10 @@
 
 menu_main_events_badge_tier_next: Tier 1 at best wave 126, the right arrow lit
 and the Events dot on. menu_main_events_badge_tier2_top: one tap later, Tier 2
-with the right arrow dim. menu_events_*: the Events page itself, with nothing
-claimable - no claimable card has been recorded, so the claim path is driven
-by a `Claim` label added to the recorded boxes.
+with the right arrow dim. menu_events_*: the Events page itself - the top of
+the list with nothing claimable, a mid-list opening, the end of the list, and
+menu_events_claimable with a real `CLAIM 10` card twenty cards down.
 """
-from dataclasses import replace
 import json
 from pathlib import Path
 from typing import Any
@@ -49,8 +48,9 @@ def test_events_dot_is_read_beside_its_own_icon() -> None:
     assert events_badge.badge_visible(image('menu_main_events_badge_tier_next'), templates) is True
     assert events_badge.badge_visible(image('menu_main_events_badge_tier2_top'), templates) is True
     # A padlocked or undotted icon, including the 1920-tall layout.
+    # Cleared by the claim itself (menu_main_events_cleared, after the walk).
     for name in ('menu_main', 'main_menu_resume', 'menu_main_bluestacks_1920',
-                 'menu_main_labs_unlocked'):
+                 'menu_main_labs_unlocked', 'menu_main_events_cleared'):
         assert events_badge.badge_visible(image(name), templates) is False, name
     assert events_badge.badge_visible(image('menu_events_missions'), templates) is None
 
@@ -65,23 +65,18 @@ def test_reader_names_the_info_modal_list_and_shop() -> None:
     assert missions.back is not None and missions.back.point[1] > 2250
     shop = events_screen.parse(image('menu_events_shop'), recorded('menu_events_shop'))
     assert shop.visible and not shop.missions and shop.missions_tab is not None
+    assert missions.at_top
+    middle = events_screen.parse(image('menu_events_mid_list'), recorded('menu_events_mid_list'))
+    assert middle.missions and not middle.at_top and middle.claims == ()
     menu = events_screen.parse(image('menu_main_events_badge_tier_next'),
                                recorded('menu_main_events_badge_tier_next'))
     assert not menu.visible
 
 
-def claimable(counter: str = '1/3', claim: bool = True) -> tuple[ocr.TextBox, ...]:
-    boxes = []
-    for box in recorded('menu_events_missions'):
-        if box.text == 'Login for 7 days':
-            boxes.append(box)
-            if claim:
-                boxes.append(ocr.TextBox('CLAIM', .99, config.Rect(460, 1415, 160, 50)))
-        elif box.text == 'New!1/3' and box.rect.y == 1282:
-            boxes.append(replace(box, text=counter))
-        elif box.text != '1/7':
-            boxes.append(box)
-    return tuple(boxes)
+def test_real_claim_button_carries_its_medal_amount() -> None:
+    page = parsed('menu_events_claimable')
+    assert page.missions and not page.at_top
+    assert [c.point for c in page.claims] == [(506, 1062)]
 
 
 class Walk:
@@ -105,48 +100,79 @@ def parsed(name: str, boxes: tuple[ocr.TextBox, ...] | None = None) -> events_sc
     return events_screen.parse(image(name), recorded(name) if boxes is None else boxes)
 
 
-def test_walk_opens_closes_info_claims_proves_and_returns(monkeypatch: pytest.MonkeyPatch) -> None:
+UP = (540, 1300, 540, 2000, events_claim.SCROLL_SECONDS)
+DOWN = (540, 2000, 540, 1300, events_claim.SCROLL_SECONDS)
+
+
+def test_walk_claims_what_it_opens_on_then_rewinds_and_scans_to_the_end(
+        monkeypatch: pytest.MonkeyPatch) -> None:
     run = Walk(monkeypatch)
-    home = events_screen.EventsReading()
     assert run.step('menu_main_events_badge_tier_next').name == 'events_open'
     assert run.step('menu_events_info', parsed('menu_events_info')).name == 'events_info_close'
-    page = parsed('menu_events_missions', claimable())
-    assert run.step('menu_events_missions', page).name == 'events_claim'
-    assert run.device.taps[-1] == (540, 1440)
-    after = parsed('menu_events_missions', claimable(counter='2/3', claim=False))
-    assert run.step('menu_events_missions', after).name == 'events_scroll'
+    assert run.step('menu_events_claimable', parsed('menu_events_claimable')).name == 'events_claim'
+    assert run.device.taps[-1] == (506, 1062)
+    # Recorded one tap later: 10 medals, the card on to `Buy 150` at 2/3.
+    after = parsed('menu_events_claimed')
+    assert after.claims == () and '2' in after.counters
+    # Proven, then the list is rewound: it opened mid-way down.
+    assert run.step('menu_events_claimed', after).name == 'events_rewind'
+    top = parsed('menu_events_missions')
+    assert run.step('menu_events_missions', top).name == 'events_scroll'
+    end = parsed('menu_events_list_end')
+    assert run.step('menu_events_list_end', end).name == 'events_scroll'
     # The list did not move: the end of it. Leave by the footer.
-    assert run.step('menu_events_missions', after) is None
-    assert run.step('menu_events_missions', after).name == 'events_return'
-    assert run.step('menu_main_events_badge_tier_next', home) is None
+    assert run.step('menu_events_list_end', end) is None
+    assert run.step('menu_events_list_end', end).name == 'events_return'
+    assert run.step('menu_main_events_badge_tier_next', events_screen.EventsReading()) is None
+    assert run.device.swipes == [UP, DOWN, DOWN]
     assert not run.walk.active
     assert run.walk.snapshot()['result']['status'] == 'completed'
     assert [e.confirmation for e in run.bus.of(events.EventMissionClaimed)] == ['claim_label_gone']
     assert run.bus.of(events.ClaimEnded)[0].claimed == 1
 
 
+def test_claim_above_the_opening_frame_is_found_by_rewinding(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Walk(monkeypatch)
+    run.step('menu_main_events_badge_tier_next')
+    assert run.step('menu_events_list_end', parsed('menu_events_list_end')).name == 'events_rewind'
+    assert run.step('menu_events_claimable', parsed('menu_events_claimable')).name == 'events_claim'
+    assert run.device.swipes == [UP]
+
+
+def test_rewind_that_cannot_reach_the_top_still_scans_down(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Walk(monkeypatch)
+    run.step('menu_main_events_badge_tier_next')
+    middle = parsed('menu_events_mid_list')
+    assert run.step('menu_events_mid_list', middle).name == 'events_rewind'
+    assert run.step('menu_events_mid_list', middle) is None
+    # Unchanged after a rewind: treated as the top, not the end.
+    assert run.step('menu_events_mid_list', middle).name == 'events_scroll'
+    assert run.device.swipes == [UP, DOWN]
+
+
 def test_unproven_claim_is_reported_uncertain_not_repeated(monkeypatch: pytest.MonkeyPatch) -> None:
     run = Walk(monkeypatch)
     run.step('menu_main_events_badge_tier_next')
-    page = parsed('menu_events_missions', claimable())
-    run.step('menu_events_missions', page)
-    assert run.step('menu_events_missions', page) is None
-    assert run.step('menu_events_missions', page).name == 'events_return'
+    page = parsed('menu_events_claimable')
+    run.step('menu_events_claimable', page)
+    assert run.step('menu_events_claimable', page) is None
+    assert run.step('menu_events_claimable', page).name == 'events_return'
     assert len(run.bus.of(events.ClaimUncertain)) == 1
     assert run.bus.of(events.EventMissionClaimed) == []
-    assert [t for t in run.device.taps if t == (540, 1440)] == [(540, 1440)]
+    assert run.device.taps.count((506, 1062)) == 1
 
 
-def test_nothing_claimable_scrolls_then_returns_as_an_ordinary_outcome(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nothing_claimable_scans_the_list_then_returns(monkeypatch: pytest.MonkeyPatch) -> None:
     run = Walk(monkeypatch)
     run.step('menu_main_events_badge_tier_next')
     page = parsed('menu_events_missions')
     assert run.step('menu_events_missions', page).name == 'events_scroll'
-    assert run.device.swipes == [(540, 2000, 540, 1300, .35)]
     run.step('menu_events_missions', page)
     assert run.step('menu_events_missions', page).name == 'events_return'
     run.step('menu_main_events_badge_tier_next', events_screen.EventsReading())
+    assert run.device.swipes == [DOWN]
     assert run.walk.snapshot()['result']['reason'] == 'no_claimable_event_mission'
     assert run.bus.of(events.ClaimSkipped)[0].target == 'events'
 

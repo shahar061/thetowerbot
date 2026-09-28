@@ -5,10 +5,9 @@ lit at the icon's top-right corner. The template stops short of the dot, so
 one template finds the icon with and without it (and the padlocked icon of an
 account that has not unlocked Events, which never carries a dot).
 
-The dot is not proof of a claim: measured live, it stayed lit after every tab
-of a running event had been opened with nothing claimable. So the walk it
-arms treats "nothing to claim" as an ordinary outcome, and the scheduler
-throttles how often the dot alone may re-arm it.
+The game lights the dot while a mission tier is claimable. The claim can be
+anywhere down a list that outgrows the screen - once measured twenty cards
+below the opening frame - which is why the walk scrolls the whole list.
 """
 
 from __future__ import annotations

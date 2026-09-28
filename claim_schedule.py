@@ -39,10 +39,6 @@ MILESTONE_WAVES: tuple[int, ...] = (
 # crossing by construction.
 MIN_MILESTONES_HOURS = 1.0
 MIN_BADGE_HOURS = 1.0
-# The Events dot was measured staying lit after a visit found nothing to
-# claim, so a lit dot alone would re-walk the page every badge window. Event
-# mission tiers complete over hours to days; this is often enough.
-MIN_EVENTS_HOURS = 3.0
 
 
 def crossed_threshold(best_wave: int | None, claimed_best_wave: int | None) -> bool:
@@ -131,16 +127,16 @@ def due(
     if state.missions_notification_due and not state.missions_blocked:
         return "missions"
 
-    badges: tuple[tuple[ClaimKind, bool, float | None, float], ...] = (
-        ('missions', state.missions_badge, state.last_missions, MIN_BADGE_HOURS),
-        ('mail', state.mail_badge, state.last_mail, MIN_BADGE_HOURS),
-        ('events', state.events_badge, state.last_events, MIN_EVENTS_HOURS),
+    badges: tuple[tuple[ClaimKind, bool, float | None], ...] = (
+        ('missions', state.missions_badge, state.last_missions),
+        ('mail', state.mail_badge, state.last_mail),
+        ('events', state.events_badge, state.last_events),
     )
-    for kind, visible, last, hours in badges:
+    for kind, visible, last in badges:
         if kind == 'missions' and state.missions_blocked:
             continue
         if visible and (last is None or (math.isfinite(last)
-                         and now - last >= hours * SECONDS_PER_HOUR)):
+                         and now - last >= MIN_BADGE_HOURS * SECONDS_PER_HOUR)):
             return kind
 
     if not math.isfinite(missions_every_hours) or missions_every_hours <= 0:
