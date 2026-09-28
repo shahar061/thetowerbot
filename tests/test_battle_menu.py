@@ -119,12 +119,38 @@ def test_event_page_has_no_ready_claims_and_never_offers_the_boost():
     assert battle_menu.event_claims(boxes("battle_menu/event_page")) == []
 
 
+@needs_ocr
+def test_event_claims_page_gated_against_store():
+    # The Store's website-gift "Claim" (store_free_tiles has one, at the
+    # real coordinates test_event_claims_skip_website_gift_claim exercises
+    # below) must never be offered as an Event mission claim just because
+    # it says "Claim" - the page must actually be the Event page.
+    assert battle_menu.event_claims(boxes("battle_menu/store_free_tiles")) == []
+
+
 def test_event_claims_skip_rows_with_a_price():
     R = config.Rect
     fake = (
+        ocr.TextBox("EVENT-STEAMPUNK", 0.99, R(33, 113, 543, 40)),
         ocr.TextBox("EVENT BOOST + GEMS + RELICS", 0.9, R(30, 900, 700, 60)),
         ocr.TextBox("Claim", 0.9, R(800, 1150, 120, 50)),       # inside boost card
         ocr.TextBox("₪49.90", 0.9, R(800, 1130, 200, 60)),
+        ocr.TextBox("Claim", 0.9, R(800, 1800, 120, 50)),       # a mission row
+    )
+    assert battle_menu.event_claims(fake) == [(860, 1825)]
+
+
+def test_event_claims_skip_website_gift_claim():
+    # Same coordinates as the Store's free-gem tile's own offerwall Claim
+    # (store_free_tiles.png): "VISIT OUR WEBSITE" / "FOR A FREE GIFT!" over
+    # a Claim button. Even on a (hypothetical) Event page carrying the same
+    # wording, that Claim must never be offered - only the real mission row is.
+    R = config.Rect
+    fake = (
+        ocr.TextBox("EVENT-STEAMPUNK", 0.99, R(33, 113, 543, 40)),
+        ocr.TextBox("VISIT OUR WEBSITE", 0.9, R(574, 1031, 363, 37)),
+        ocr.TextBox("FOR A FREE GIFT!", 0.9, R(600, 1081, 312, 33)),
+        ocr.TextBox("Claim", 0.9, R(695, 1207, 124, 45)),       # offerwall gift
         ocr.TextBox("Claim", 0.9, R(800, 1800, 120, 50)),       # a mission row
     )
     assert battle_menu.event_claims(fake) == [(860, 1825)]
@@ -145,15 +171,33 @@ def test_free_gem_tile_absent_on_store_top():
                                      boxes("battle_menu/store_top")) is None
 
 
+@needs_ocr
+def test_free_gem_tile_requires_store_page():
+    # Same frame and FREE caption as test_free_gem_tile_found_on_scrolled_store
+    # (real ▶ button, real red dot) but with the STORE title box removed -
+    # the page gate alone must stop it, since the pixel check would otherwise
+    # pass right here.
+    screen = frame("battle_menu/store_free_tiles")
+    without_title = tuple(b for b in boxes("battle_menu/store_free_tiles")
+                           if b.text.strip() != "STORE")
+    assert battle_menu.free_gem_tile(screen, without_title) is None
+
+
+@needs_ocr
 def test_free_gem_tile_rejects_offerwall_and_priced_tiles():
+    screen = frame("battle_menu/store_free_tiles")
+    real = boxes("battle_menu/store_free_tiles")
+    store_title = next(b for b in real if b.text.strip() == "STORE")
+    free_box = next(b for b in real if b.text.strip() == "FREE")
     R = config.Rect
-    screen = frame("battle_menu/store_top")
-    fake = (
-        ocr.TextBox("complete offers for free gems", 0.9, R(60, 1900, 400, 40)),
-        ocr.TextBox("FREE", 0.9, R(280, 900, 100, 50)),
-        ocr.TextBox("₪17.90", 0.9, R(250, 1040, 160, 50)),
-    )
-    assert battle_menu.free_gem_tile(screen, fake) is None
+    # Text mentioning "free" but not the exact caption must never be treated as it.
+    offerwall = ocr.TextBox("complete offers for free gems", 0.9, R(60, 1900, 400, 40))
+    assert battle_menu.free_gem_tile(screen, (store_title, offerwall)) is None
+    # A price sharing the real FREE tile must block the tap even though that
+    # tile's own red dot (in `screen`, at its real coordinates) would
+    # otherwise satisfy the pixel check on its own.
+    price = ocr.TextBox("₪17.90", 0.9, R(280, 1150, 160, 50))
+    assert battle_menu.free_gem_tile(screen, (store_title, free_box, price)) is None
 
 
 @pytest.mark.parametrize("text,price", [

@@ -176,8 +176,27 @@ def event_modal_close(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, i
     return (x0 + int(np.median(xs)), y0 + int(np.median(ys)))
 
 
+def _is_event_page(boxes: tuple[TextBox, ...]) -> bool:
+    # OCR sometimes drops the space around the title's dash ("EVENT-STEAMPUNK"),
+    # so match with or without one rather than a fixed literal.
+    return any(re.match(r"event\s*-", _norm(b.text)) for b in boxes)
+
+
+def _is_store_page(boxes: tuple[TextBox, ...]) -> bool:
+    return any(_norm(b.text).startswith("store") for b in boxes)
+
+
+def _tile_contains(tile: Rect, rect: Rect) -> bool:
+    cx, cy = _centre(rect)
+    return tile.x <= cx <= tile.x + tile.w and tile.y <= cy <= tile.y + tile.h
+
+
 def event_claims(boxes: tuple[TextBox, ...]) -> list[tuple[int, int]]:
-    """Ready mission Claim buttons, never inside the priced Event Boost card."""
+    """Ready mission Claim buttons on the Event page only - never inside the
+    priced Event Boost card, and never a website/gift offerwall Claim (the
+    Store's free-gem tile has one too, and this reader must stay page-safe)."""
+    if not _is_event_page(boxes):
+        return []
     # OCR sometimes drops the space between "EVENT" and "BOOST" too
     # ("EVENTBOOST+GEMS+RELICS"), so this also matches with none.
     boost = next((b for b in boxes if re.search(r"event\s*boost", _norm(b.text))), None)
@@ -192,19 +211,25 @@ def event_claims(boxes: tuple[TextBox, ...]) -> list[tuple[int, int]]:
             continue
         if any(abs(_centre(p)[1] - cy) < 120 for p in prices):
             continue
+        tile = Rect(cx - 150, cy - 250, 300, 450)
+        if any(("website" in _norm(b.text) or "gift" in _norm(b.text))
+               and _tile_contains(tile, b.rect) for b in boxes):
+            continue
         points.append((cx, cy))
     return points
 
 
 def free_gem_tile(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] | None:
-    """The ▶ under the Store's exact 'FREE' caption, only if no price shares its tile."""
+    """The ▶ under the Store's exact 'FREE' caption, only on the Store page,
+    only if no price shares its tile."""
+    if not _is_store_page(boxes):
+        return None
     for box in boxes:
         if box.text.strip() != "FREE":
             continue
         cx, cy = _centre(box.rect)
         tile = Rect(cx - 150, cy - 250, 300, 450)
-        if any(is_price(b.text) and tile.x <= _centre(b.rect)[0] <= tile.x + tile.w
-               and tile.y <= _centre(b.rect)[1] <= tile.y + tile.h for b in boxes):
+        if any(is_price(b.text) and _tile_contains(tile, b.rect) for b in boxes):
             continue
         button = (cx, cy + 138)
         # The ▶ button carries its own red dot at its top-right corner.
