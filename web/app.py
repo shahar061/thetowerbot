@@ -1560,6 +1560,12 @@ def create_app(
             raise HTTPException(status_code=503, detail="fleet_labs_unavailable")
         return fleet.labs_snapshot()
 
+    @app.get("/api/fleet/state")
+    def fleet_state_snapshot() -> dict[str, Any]:
+        if fleet is None or not callable(getattr(fleet, "state_snapshot", None)):
+            raise HTTPException(status_code=503, detail="fleet_state_unavailable")
+        return fleet.state_snapshot()
+
     def _build_route_capability() -> Any:
         if fleet is None or not callable(getattr(fleet, "build_route_store", None)):
             raise HTTPException(status_code=503, detail="build_route_unavailable")

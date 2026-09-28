@@ -8,8 +8,15 @@ value nobody observed is None, never 0 and never a guess.
 
 from __future__ import annotations
 
+import json
+import logging
+import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Sequence
+from urllib.request import urlopen
 
 import cards
 import lab_catalog
@@ -17,10 +24,17 @@ import upgrades
 import workshop_levels
 from account_state import completed_lab_level
 from concepts import REGISTRY
+from currencies import currency_overview
 from fleet import workshop_prices
+from fleet.state_records import ForeignDatabase, read_records
+from runtime_records import RuntimeRecords, RuntimeRecordsError
+
+logger = logging.getLogger(__name__)
 
 CATEGORIES = ("attack", "defense", "utility")
 RECENT_LIMIT = 30
+STATUS_TIMEOUT = .2
+MAX_WORKERS = 8
 
 
 def iso(ts: float | None) -> str | None:
@@ -328,3 +342,120 @@ def build_labs(revision: Mapping[str, Any] | None, recent_rows: Iterable[Mapping
                         "name": _lab_name(item) if isinstance(item := row.get("item"), str)
                         and item.startswith("labs.") else str(item or "Lab"),
                         "price": row.get("price")} for row in list(recent_rows)[:RECENT_LIMIT]]}
+
+
+def read_status(web_port: int | None, fetch: Callable[..., Any]) -> dict[str, Any] | None:
+    """The worker's /api/status, or None when it is not answering."""
+    if not web_port:
+        return None
+    try:
+        with fetch(f"http://127.0.0.1:{web_port}/api/status", timeout=STATUS_TIMEOUT) as response:
+            payload = json.load(response)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _section(name: str, builder: Callable[..., Any], *args: Any) -> Any:
+    """One section of one account. A builder that raises blanks only itself."""
+    try:
+        return builder(*args)
+    except Exception:  # noqa: BLE001 - one broken section must not hide the rest
+        logger.exception("Fleet state section %s failed", name)
+        return None
+
+
+def _live_run_id(status: Mapping[str, Any] | None) -> int | None:
+    run = status.get("run") if status is not None and status.get("screen") == "IN_RUN" else None
+    run_id = run.get("id") if isinstance(run, Mapping) else None
+    return run_id if type(run_id) is int and run_id > 0 else None
+
+
+def _currency(worker_root: Path, db_path: Path, account_id: str, lease_id: object,
+              now: float) -> dict[str, Any] | None:
+    """The live-scope balance overview, when this worker's scope can be named."""
+    try:
+        records = RuntimeRecords(worker_root / "runtime-records.json").read()
+    except RuntimeRecordsError:
+        return None
+    start = records.get("start") if isinstance(records, dict) else None
+    if (not isinstance(start, dict) or not isinstance(start.get("generation"), str)
+            or not isinstance(lease_id, str) or not lease_id):
+        return None
+    return currency_overview(db_path, account_id=account_id, lease_id=lease_id,
+                             generation=start["generation"], now=now)
+
+
+def _blank(member: Mapping[str, Any]) -> dict[str, Any]:
+    name = str(member["name"])
+    return {"id": name, "name": name, "serial": member.get("endpoint") or None,
+            "online": False, "stale_seconds": None, "scan": None, "error": None,
+            "bot": build_bot(None), "battle": None, "balances": None, "decision": None,
+            "workshop": None, "cards": None, "labs": None, "run_upgrades": None, "runs": None}
+
+
+def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., Any],
+                  now: float) -> dict[str, Any]:
+    """One account column: status first, then the worker's own database."""
+    from web.account_catalog import registered_worker
+
+    account = _blank(member)
+    worker_root = Path(root) / "workers" / account["id"]
+    registration = registered_worker(worker_root)
+    if registration is None or registration.account_id is None:
+        return {**account, "error": "Worker is not registered to an account"}
+    status = read_status(registration.web_port, fetch)
+    if status is not None:
+        scans = status.get("scans")
+        account.update(online=True, stale_seconds=0,
+                       scan=scans if type(scans) is int else None,
+                       bot=_section("bot", build_bot, status) or build_bot(None),
+                       decision=_section("decision", build_decision, status.get("decision")))
+    try:
+        records = read_records(registration.db_path, registration.account_id, _live_run_id(status))
+    except ForeignDatabase:
+        return {**account, "error": "Worker database belongs to another account"}
+    except FileNotFoundError:
+        return {**account, "error": "Worker database is missing"}
+    except (OSError, sqlite3.Error) as exc:
+        return {**account, "error": f"Worker database unavailable ({exc})"}
+    if status is None and records.last_seen is not None:
+        account["stale_seconds"] = max(0, round(now - records.last_seen))
+    tier = records.runs[0]["tier"] if records.runs else None
+    overview = _section("currency", _currency, worker_root, registration.db_path,
+                        registration.account_id, member.get("lease_id"), now)
+    account.update(
+        battle=_section("battle", build_battle, status, tier, records.best_waves),
+        balances=_section("balances", build_balances, overview, records.balances),
+        workshop=_section("workshop", build_workshop, records.revision,
+                          records.workshop_spent, records.workshop_recent),
+        cards=_section("cards", build_cards, records.revision, records.card_gems,
+                       records.card_recent),
+        labs=_section("labs", build_labs, records.revision, records.lab_recent, now),
+        run_upgrades=_section("run_upgrades", build_run_upgrades, records.run_upgrades,
+                              records.run_upgrades_scope),
+        runs=_section("runs", build_runs, records.runs))
+    return account
+
+
+def _guarded(root: Path, member: Mapping[str, Any], fetch: Callable[..., Any],
+             now: float) -> dict[str, Any]:
+    try:
+        return build_account(root, member, fetch, now)
+    except Exception:  # noqa: BLE001 - one worker's failure must not hide its peers
+        logger.exception("Fleet state unavailable for %s", member.get("name"))
+        return {**_blank(member), "error": "Account state unavailable"}
+
+
+def fleet_state(root: Path, members: Sequence[Mapping[str, Any]], *,
+                fetch: Callable[..., Any] | None = None, now: float | None = None) -> dict[str, Any]:
+    """Every member's column, fetched concurrently so one slow worker delays no other."""
+    moment = time.time() if now is None else now
+    reader = fetch if fetch is not None else urlopen
+    members = list(members)
+    accounts: list[dict[str, Any]] = []
+    if members:
+        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(members))) as pool:
+            accounts = list(pool.map(lambda member: _guarded(Path(root), member, reader, moment),
+                                     members))
+    return {"generated_at": iso(moment), "accounts": accounts}

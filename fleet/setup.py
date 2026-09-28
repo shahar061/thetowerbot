@@ -379,6 +379,14 @@ class FleetSetupService:
                          - self._runs().hidden_names())
         return labs_snapshot(self.root, visible)
 
+    def state_snapshot(self) -> dict[str, Any]:
+        """Read-only Fleet State columns for the visible pool members."""
+        from fleet.state_view import fleet_state
+        hidden = self._runs().hidden_names()
+        members = sorted((member for member in self._manual_pool().members()
+                          if member["name"] not in hidden), key=lambda member: member["name"])
+        return fleet_state(self.root, members)
+
     def build_route_validate_bindings(self, route: Any) -> None:
         """Reject a draft bound to an account that has since been replaced."""
         import db as bot_db

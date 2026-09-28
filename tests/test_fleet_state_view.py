@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Any
+import io
+import json
+import sqlite3
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
 
+import pytest
+from fastapi.testclient import TestClient
+
+import db
 import workshop_levels
+from events import EventBus
 from fleet import state_view
+from fleet.setup import FleetSetupService
+from sinks.sse import SseSink
+from sinks.state import BotState
+from web.app import create_app
 
 
 def _fact(upgrade_id: str, raw: str, value: float) -> dict[str, Any]:
@@ -214,3 +229,165 @@ def test_labs_on_a_new_account_point_at_game_speed_level_one() -> None:
     labs = state_view.build_labs(None, [], now=1000.)
     assert (labs["slots"], labs["running"], labs["levels"]) == (None, [], [])
     assert labs["next"] == {"id": "labs.game-speed", "name": "Game Speed", "cost": 300}
+
+
+def _registered(root: Path, worker: str, account: str, port: int) -> Path:
+    worker_root = root / "workers" / worker
+    checkpoint = worker_root / "checkpoints" / ("a" * 32 + ".json")
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text(json.dumps({"worker_id": worker, "account_id": account,
+                                      "endpoint": "127.0.0.1:5555", "lease_id": "lease"}))
+    (worker_root / "fleet-registration.json").write_text(json.dumps({
+        "state": "registered", "instance": worker, "account_id": account,
+        "web_port": port, "binding": str(checkpoint),
+        "endpoint": "127.0.0.1:5555", "lease_id": "lease"}))
+    db.bind_account(worker_root / "tower_bot.db", account)
+    return worker_root
+
+
+def _fetch(statuses: dict[int, Any]) -> Callable[..., Any]:
+    """A urlopen stand-in: a dict is the status JSON, an exception is raised."""
+    def fetch(url: str, timeout: float) -> io.BytesIO:
+        assert timeout == state_view.STATUS_TIMEOUT
+        value = statuses.get(int(url.split(":")[2].split("/")[0]), OSError("refused"))
+        if isinstance(value, Exception):
+            raise value
+        if callable(value):
+            value = value()
+        return io.BytesIO(json.dumps(value).encode())
+    return fetch
+
+
+LIVE = {"screen": "IN_RUN", "scans": 18442, "wallet": 8420000000, "wave": 4812,
+        "run": {"id": 2, "elapsed": 5780.0},
+        "activity": {"label": "Shopping", "at": 1.0},
+        "decision": {"phase": "buying", "reason": "cheapest", "upgrade_id": "damage", "at": 1.0}}
+
+
+def test_an_online_worker_becomes_a_full_account_column(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO runs(id, started_at, ended_at, wave, coins, tier) "
+                     "VALUES (1, 0, 6020, 5020, 310000000, 11)")
+    member = {"name": "Air_1", "endpoint": "127.0.0.1:5555", "lease_id": "lease"}
+
+    state = state_view.fleet_state(tmp_path, [member], fetch=_fetch({8001: LIVE}), now=7000.)
+
+    (account,) = state["accounts"]
+    assert state["generated_at"] == "1970-01-01T01:56:40+00:00"
+    assert {k: account[k] for k in ("id", "serial", "online", "stale_seconds", "scan", "error")} == {
+        "id": "Air_1", "serial": "127.0.0.1:5555", "online": True, "stale_seconds": 0,
+        "scan": 18442, "error": None}
+    assert account["bot"] == {"screen": "IN_RUN", "now": "Shopping", "live": True}
+    assert account["battle"] == {"tier": 11, "wave": 4812, "cash": 8420000000,
+                                 "elapsed_s": 5780.0, "best_wave": 5020}
+    assert account["decision"]["name"] == "Damage"
+    assert account["balances"] == {"coins": None, "gems": None, "stones": None}
+    assert account["run_upgrades"]["scope"] == "current"
+    assert [run["wave"] for run in account["runs"]] == [5020]
+    assert account["workshop"]["totals"] == {"attack": 0, "defense": 0, "utility": 0}
+
+
+def test_an_offline_worker_is_built_from_its_database_with_a_stale_age(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO events(seq, ts, type) VALUES (1, 6958.0, 'ScanCompleted')")
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}], fetch=_fetch({}),
+                                        now=7000.)["accounts"]
+    assert (account["online"], account["stale_seconds"], account["scan"]) == (False, 42, None)
+    assert account["battle"] is None and account["bot"]["screen"] is None
+    assert account["workshop"] is not None and account["error"] is None
+
+
+def test_a_reachable_worker_whose_database_is_missing_keeps_its_live_status(
+        tmp_path: Path) -> None:
+    """Review Focus: the bot answers /api/status but its database file is gone."""
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    (root / "tower_bot.db").unlink()
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}],
+                                        fetch=_fetch({8001: LIVE}), now=7000.)["accounts"]
+    assert account["online"] is True and account["scan"] == 18442
+    assert account["bot"]["screen"] == "IN_RUN"
+    assert account["error"] == "Worker database is missing"
+    assert all(account[key] is None for key in ("workshop", "cards", "labs", "runs", "battle"))
+
+
+def test_a_locked_database_errors_one_account_and_leaves_the_others(tmp_path: Path) -> None:
+    """Review Focus: one worker holds a write lock while the page polls."""
+    locked = _registered(tmp_path, "Air_1", "account-a", 8001)
+    _registered(tmp_path, "Air_2", "account-b", 8002)
+    with db.connect(locked / "tower_bot.db") as conn:
+        conn.execute("PRAGMA journal_mode=DELETE")
+    locker = sqlite3.connect(locked / "tower_bot.db")
+    locker.execute("BEGIN EXCLUSIVE")
+    try:
+        accounts = state_view.fleet_state(tmp_path, [{"name": "Air_1"}, {"name": "Air_2"}],
+                                          fetch=_fetch({}), now=7000.)["accounts"]
+    finally:
+        locker.rollback()
+        locker.close()
+    assert accounts[0]["error"].startswith("Worker database unavailable")
+    assert accounts[0]["workshop"] is None
+    assert accounts[1]["error"] is None and accounts[1]["workshop"] is not None
+
+
+def test_workers_are_fetched_concurrently(tmp_path: Path) -> None:
+    _registered(tmp_path, "Air_1", "account-a", 8001)
+    _registered(tmp_path, "Air_2", "account-b", 8002)
+    both = threading.Barrier(2, timeout=2)
+
+    def waiting() -> dict[str, Any]:
+        both.wait()  # raises BrokenBarrierError if the two fetches were sequential
+        return LIVE
+
+    accounts = state_view.fleet_state(tmp_path, [{"name": "Air_1"}, {"name": "Air_2"}],
+                                      fetch=_fetch({8001: waiting, 8002: waiting}),
+                                      now=7000.)["accounts"]
+    assert [account["online"] for account in accounts] == [True, True]
+
+
+def test_unregistered_and_foreign_workers_are_error_accounts(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_2", "account-b", 8002)
+    (root / "tower_bot.db").unlink()
+    db.bind_account(root / "tower_bot.db", "account-other")
+    accounts = state_view.fleet_state(tmp_path, [{"name": "Air_1"}, {"name": "Air_2"}],
+                                      fetch=_fetch({}), now=7000.)["accounts"]
+    assert [account["error"] for account in accounts] == [
+        "Worker is not registered to an account", "Worker database belongs to another account"]
+
+
+def test_a_failing_builder_blanks_only_its_own_section(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _registered(tmp_path, "Air_1", "account-a", 8001)
+
+    def broken(*args: Any) -> dict[str, Any]:
+        raise KeyError("boom")
+
+    monkeypatch.setattr(state_view, "build_cards", broken)
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}], fetch=_fetch({}),
+                                        now=7000.)["accounts"]
+    assert account["cards"] is None
+    assert account["labs"] is not None and account["workshop"] is not None
+    assert account["error"] is None
+
+
+def _client(root: Path, names: tuple[str, ...]) -> TestClient:
+    fleet = FleetSetupService(root, qualification_root=root / "qualifications")
+    fleet._reroll_pool = SimpleNamespace(members=lambda: [{"name": name} for name in names])
+    fleet._reroll_runs = SimpleNamespace(hidden_names=lambda: {"Air_9"})
+    return TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                 db_path=None, fleet=fleet))
+
+
+def test_the_state_endpoint_lists_visible_members_in_name_order(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(state_view, "urlopen", _fetch({}))
+    _registered(tmp_path, "Air_2", "account-b", 8002)
+    response = _client(tmp_path, ("Air_2", "Air_9", "Air_1")).get("/api/fleet/state")
+    assert response.status_code == 200
+    assert [account["id"] for account in response.json()["accounts"]] == ["Air_1", "Air_2"]
+
+
+def test_the_state_endpoint_is_unavailable_without_the_fleet() -> None:
+    client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(), db_path=None))
+    assert client.get("/api/fleet/state").status_code == 503
