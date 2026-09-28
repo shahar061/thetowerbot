@@ -627,13 +627,15 @@ STREAM_ENABLED: bool = True
 # host core per watched emulator in the spike. Full size at 30 fps cost 4x that.
 STREAM_MAX_SIZE: int = 1280
 STREAM_MAX_FPS: int = 15
-# Keyframe spacing while the screen moves. It bounds how much a viewer joining
-# mid-stream has to replay before it sees the current picture.
+# Keyframe spacing while the screen moves. In theory it bounds how much a
+# viewer joining mid-stream has to replay before it sees the current picture -
+# in practice, BlueStacks Air ignores this and sends keyframes about every
+# 10 s regardless, so STREAM_GOP_FRAMES below is what actually bounds it.
 STREAM_I_FRAME_INTERVAL_S: int = 2
 # How long the stream outlives its last viewer, so a card scrolled away and
 # back (or a tab flipped) does not restart the encoder.
 STREAM_LINGER_SECONDS: float = 10.0
-# How far a *live* viewer may fall behind (4 s at 15 fps) before it skips to
+# How many live frames a viewer may queue (4 s at 15 fps) before it skips to
 # the next keyframe. A late joiner's replay of the GOP cache is exempt.
 STREAM_SUBSCRIBER_FRAMES: int = 60
 # The GOP cache for late joiners: latest keyframe and every frame since, up to

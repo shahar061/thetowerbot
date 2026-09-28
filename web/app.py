@@ -63,7 +63,7 @@ from control import ControlError, Controls
 from events import EventBus
 from frames import FrameBuffer
 from stream.hub import StreamHub
-from stream.messages import ConfigMessage, End, FrameMessage
+from stream.messages import ConfigMessage, End, FrameMessage, ReplayDone
 from stream.origin import origin_allowed
 from fleet.dashboard import FleetController, FleetRequestError
 from bluestacks import HostCapabilityError
@@ -1100,7 +1100,7 @@ def create_app(
         try:
             while not shutdown.is_set() and not gone.done():
                 message = await asyncio.to_thread(subscription.get, 0.5)
-                if isinstance(message, ConfigMessage):
+                if isinstance(message, (ConfigMessage, ReplayDone)):
                     await websocket.send_text(message.to_json())
                 elif isinstance(message, FrameMessage):
                     await websocket.send_bytes(message.to_bytes())

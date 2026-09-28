@@ -18,7 +18,7 @@ from events import EventBus
 from sinks.sse import SseSink
 from sinks.state import BotState
 from stream.hub import StreamHub
-from stream.messages import ConfigMessage, End, FrameMessage, Message
+from stream.messages import ConfigMessage, End, FrameMessage, Message, ReplayDone
 from stream.origin import origin_allowed
 from stream.scrcpy_session import StreamError
 from web.app import create_app
@@ -106,6 +106,14 @@ def test_streams_the_config_then_binary_frames() -> None:
     assert data[0] == 1
     assert int.from_bytes(data[1:9], "big") == 1000
     assert data[9:] == KEY.data
+
+
+def test_streams_the_replay_done_marker_as_text() -> None:
+    hub = FakeHub([CONFIG_MSG, ReplayDone()])
+    with client_for(hub).websocket_connect("/api/stream") as ws:
+        assert json.loads(ws.receive_text()) == {"type": "config", "codec": "avc1.42C029",
+                                                 "width": 576, "height": 1280}
+        assert json.loads(ws.receive_text()) == {"type": "live"}
 
 
 def test_an_unavailable_stream_closes_with_4503() -> None:

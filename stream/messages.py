@@ -31,9 +31,23 @@ class FrameMessage:
         return bytes([1 if self.key else 0]) + self.pts_us.to_bytes(8, "big") + self.data
 
 
+@dataclass(frozen=True)
+class ReplayDone:
+    """Marks the end of a new subscription's replay (config + any cached GOP).
+
+    Sent exactly once per subscription, right after that replay, even when
+    there was nothing to replay. It tells the client where its own catch-up
+    burst ends and genuinely live frames begin - see
+    web/ui/components/LiveVideo.tsx.
+    """
+
+    def to_json(self) -> str:
+        return json.dumps({"type": "live"})
+
+
 class End(enum.Enum):
     UNAVAILABLE = "unavailable"  # the session failed; viewers fall back to MJPEG
     GOING_AWAY = "going_away"  # the worker process is shutting down
 
 
-Message = ConfigMessage | FrameMessage | End
+Message = ConfigMessage | FrameMessage | ReplayDone | End

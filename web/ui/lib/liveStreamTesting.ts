@@ -43,6 +43,8 @@ export class MockDecoder {
 }
 
 export const CONFIG_TEXT = JSON.stringify({ type: "config", codec: "avc1.42C029", width: 576, height: 1280 });
+/** The server's marker for "the replay - config plus any cached GOP - has ended; live frames follow." */
+export const LIVE_TEXT = JSON.stringify({ type: "live" });
 
 export function frameBytes(key: boolean, timestamp: number, payload: number[]): ArrayBuffer {
   const buffer = new ArrayBuffer(9 + payload.length);

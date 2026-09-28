@@ -127,7 +127,7 @@ control them.
 - A new subscriber first receives the current config message and the whole GOP
   cache, then live frames. A viewer who joins mid-stream sees the current
   picture within about 100 ms, even on a still screen that sends no new frames.
-- Each subscriber has a bounded queue of about 2 s of frames (30 messages).
+- Each subscriber has a bounded queue of about 4 s of frames (60 messages).
   - When it overflows, that queue is cleared and the subscriber skips ahead to
     the next keyframe.
   - Other subscribers are not affected.
@@ -174,6 +174,7 @@ control them.
 | Direction | Frame | Content |
 |---|---|---|
 | server → client | text | `{"type":"config","codec":"avc1.42C028","width":576,"height":1280}`. Sent first, and again whenever the encoder config changes. |
+| server → client | text | `{"type":"live"}`. Sent exactly once per connection, right after the config and any replayed GOP - marks where a late joiner's replay ends and live frames begin. |
 | server → client | binary | 1 flag byte (bit 0 = keyframe), an 8-byte big-endian PTS in µs, then one Annex-B access unit. |
 | client → server | none | The client sends no messages. |
 

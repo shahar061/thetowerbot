@@ -2,7 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import {
-  CAUGHT_UP_DECODE_QUEUE, FIRST_FRAME_TIMEOUT_MS, MAX_DECODE_QUEUE, parseFrame, streamUrl, type StreamConfig,
+  CATCH_UP_DECODE_LIMIT, CAUGHT_UP_DECODE_QUEUE, FIRST_FRAME_TIMEOUT_MS, MAX_DECODE_QUEUE, parseFrame, streamUrl,
+  type LiveMessage, type StreamConfig,
 } from "@/lib/liveStream";
 
 /**
@@ -30,10 +31,17 @@ export function LiveVideo({ dashboardUrl, scope, expectedAccountId, label, class
     socket.binaryType = "arraybuffer";
     let decoder: VideoDecoder | null = null;
     let waitingForKey = true;
-    // Becomes true once a message has arrived while the decoder's queue was
-    // small - only then does falling behind again mean skipping to the next
-    // keyframe. Until then (e.g. a late joiner's replayed backlog), every
-    // frame decodes so the backlog plays through quickly.
+    // Set once the server's "live" marker arrives: the replay (config plus
+    // any cached GOP) is done and frames from here on are genuinely live. A
+    // fresh decoder reports queue 0 before it's been given any work, so a
+    // small queue on the replay's own first frame is not by itself evidence
+    // of catching up - only this marker is.
+    let replayDone = false;
+    // Becomes true once, after replayDone, a message has arrived while the
+    // decoder's queue was small - only then does falling behind again mean
+    // skipping to the next keyframe. Until then (replaying a late joiner's
+    // backlog), every frame decodes so the backlog plays through quickly,
+    // bounded only by the CATCH_UP_DECODE_LIMIT hard cap below.
     let caughtUp = false;
     let drawn = false;
     let finished = false;
@@ -71,24 +79,33 @@ export function LiveVideo({ dashboardUrl, scope, expectedAccountId, label, class
     socket.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
       try {
         if (typeof event.data === "string") {
-          const config = JSON.parse(event.data) as StreamConfig;
+          const message = JSON.parse(event.data) as StreamConfig | LiveMessage;
+          if (message.type === "live") {
+            replayDone = true;
+            return;
+          }
           if (decoder && decoder.state !== "closed") decoder.close();
           decoder = new VideoDecoder({ output: draw, error: fail });
-          decoder.configure({ codec: config.codec, codedWidth: config.width, codedHeight: config.height,
+          decoder.configure({ codec: message.codec, codedWidth: message.width, codedHeight: message.height,
             optimizeForLatency: true });
           waitingForKey = true;
+          replayDone = false;
           caughtUp = false;
           return;
         }
         if (!decoder || decoder.state !== "configured") return;
-        if (!caughtUp && decoder.decodeQueueSize <= CAUGHT_UP_DECODE_QUEUE) caughtUp = true;
+        if (!caughtUp && replayDone && decoder.decodeQueueSize <= CAUGHT_UP_DECODE_QUEUE) caughtUp = true;
         const frame = parseFrame(event.data);
-        if (!frame.key && (waitingForKey || (caughtUp && decoder.decodeQueueSize > MAX_DECODE_QUEUE))) {
-          // A delta is useless without everything since its keyframe: before
-          // the first one, or once a caught-up decoder falls behind, wait for
-          // the next. Before the decoder has ever caught up - e.g. a late
-          // joiner's replayed backlog - every frame decodes instead, so the
-          // backlog plays through quickly rather than being thrown away.
+        // A delta is useless without everything since its keyframe: before
+        // the first one, wait for the next. Once fallen behind, wait too -
+        // but only once the decoder has actually caught up before (or,
+        // regardless, once the queue blows past the hard cap: a
+        // permanently-slow decoder must still be bounded). Before that -
+        // e.g. a late joiner's replayed backlog - every other frame decodes,
+        // so the backlog plays through quickly rather than being thrown away.
+        const fellBehind = decoder.decodeQueueSize > MAX_DECODE_QUEUE
+          && (caughtUp || decoder.decodeQueueSize > CATCH_UP_DECODE_LIMIT);
+        if (!frame.key && (waitingForKey || fellBehind)) {
           waitingForKey = true;
           return;
         }

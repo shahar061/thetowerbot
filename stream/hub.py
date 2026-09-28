@@ -18,7 +18,7 @@ from collections.abc import Callable
 
 import config
 from stream.h264 import codec_string, find_sps, starts_with_sps
-from stream.messages import ConfigMessage, End, FrameMessage, Message
+from stream.messages import ConfigMessage, End, FrameMessage, Message, ReplayDone
 from stream.scrcpy_session import Packet, SessionInfo, StreamError, StreamSession
 
 logger = logging.getLogger(__name__)
@@ -59,8 +59,10 @@ class Subscription:
                     if self._frames >= self._capacity:
                         # Too far behind. The queued frames are worthless
                         # without the ones about to be dropped, so throw them
-                        # all away (config messages stay, counted or not) and
-                        # resume at a keyframe.
+                        # all away (config messages stay) and resume at a
+                        # keyframe. A ReplayDone marker is not a FrameMessage
+                        # either, so it stays too - a clear only ever drops
+                        # frames, never the other message kinds.
                         self._items = deque(item for item in self._items if not isinstance(item[0], FrameMessage))
                         self._frames = 0
                         if not message.key:
@@ -140,6 +142,10 @@ class StreamHub:
                 sub.put(self._config_msg)
             for frame in self._gop:
                 sub.put(frame, counts=False)
+            # Exactly one per subscription, always right after the replay -
+            # even when there was nothing to replay - so the client always
+            # learns unambiguously where its own catch-up burst ends.
+            sub.put(ReplayDone())
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, name=f"live-stream {self._label}".strip(),
                                                 daemon=True)
