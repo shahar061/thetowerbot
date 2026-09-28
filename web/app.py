@@ -462,6 +462,10 @@ def create_app(
             raise HTTPException(409, "selected_account_not_running")
         return choice
 
+    # key -> (account_id, monotonic time) of each worker's last verified "yes".
+    remote_verified: dict[str, tuple[str | None, float]] = {}
+    remote_verified_lock = threading.Lock()
+
     @app.get("/api/accounts")
     def account_catalog(local_only: bool = False) -> dict[str, Any]:
         choices = _choices()
@@ -473,15 +477,31 @@ def create_app(
                 return False
             try:
                 with urlopen(f"http://127.0.0.1:{choice.web_port}/api/accounts?local_only=true",
-                             timeout=0.15) as response:
+                             timeout=config.ACCOUNT_PROBE_TIMEOUT_SECONDS) as response:
                     payload = json.load(response)
-                return (payload.get("active") == choice.key
-                        and any(item.get("key") == choice.key
-                                and item.get("account_id") == choice.account_id
-                                and item.get("running") is True
-                                for item in payload.get("accounts", [])))
-            except (OSError, ValueError, TypeError, KeyError):
+                running = (payload.get("active") == choice.key
+                           and any(item.get("key") == choice.key
+                                   and item.get("account_id") == choice.account_id
+                                   and item.get("running") is True
+                                   for item in payload.get("accounts", [])))
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                # A timeout is silence, not a "no": keep a recent verification
+                # of this same account. Anything else (refused, bad payload) is.
+                silent = isinstance(error, TimeoutError) or isinstance(
+                    getattr(error, "reason", None), TimeoutError)
+                with remote_verified_lock:
+                    verified = remote_verified.get(choice.key)
+                    if (silent and verified is not None and verified[0] == choice.account_id
+                            and time.monotonic() - verified[1] < config.ACCOUNT_PROBE_GRACE_SECONDS):
+                        return True
+                    remote_verified.pop(choice.key, None)
                 return False
+            with remote_verified_lock:
+                if running:
+                    remote_verified[choice.key] = (choice.account_id, time.monotonic())
+                else:
+                    remote_verified.pop(choice.key, None)
+            return running
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             remote = {choice.key for choice, running in zip(choices, pool.map(remote_running, choices))

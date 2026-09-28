@@ -7,11 +7,14 @@ import io
 import threading
 from pathlib import Path
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
+from urllib.error import URLError
 
 from fastapi.testclient import TestClient
 import numpy as np
 import pytest
 
+import config
 import db
 from autopilot import AutopilotState
 from events import EventBus
@@ -177,6 +180,66 @@ def test_catalog_recognizes_only_matching_running_worker_dashboard(tmp_path: Pat
     assert result["accounts"][0]["dashboard_url"] == "http://127.0.0.1:10018/"
     payload["accounts"][0]["account_id"] = "WRONG"
     assert client.get("/api/accounts").json()["active"] is None
+
+
+def _remote_worker_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, dict[str, Any]]:
+    """A catalog over one remote worker whose probe answers `probe["answer"]`:
+    a payload dict, or an exception to raise."""
+    root = tmp_path / "fleet"
+    db.bind_account(_worker(root, "Tiramisu64_18", "ABC12345"), "ABC12345")
+    fleet = type("Fleet", (), {"root": root})()
+    running = {"active": "worker:Tiramisu64_18", "accounts": [{
+        "key": "worker:Tiramisu64_18", "account_id": "ABC12345", "running": True}]}
+    probe: dict[str, Any] = {"answer": running}
+
+    def fake_urlopen(url: str, timeout: float) -> io.BytesIO:
+        if isinstance(probe["answer"], BaseException):
+            raise probe["answer"]
+        return io.BytesIO(json.dumps(probe["answer"]).encode())
+
+    monkeypatch.setattr("web.app.urlopen", fake_urlopen)
+    return TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(),
+                                 db_path=None, fleet=fleet)), probe
+
+
+def _remote_running(client: TestClient) -> bool:
+    return client.get("/api/accounts").json()["accounts"][0]["running"]
+
+
+@pytest.mark.parametrize("slow", [TimeoutError("read timed out"), URLError(TimeoutError("connect timed out"))])
+def test_catalog_keeps_verified_worker_through_slow_answer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                           slow: Exception) -> None:
+    client, probe = _remote_worker_client(tmp_path, monkeypatch)
+    probe["answer"] = slow
+    assert _remote_running(client) is False  # silence never verifies a worker
+    probe["answer"] = {"active": "worker:Tiramisu64_18", "accounts": [{
+        "key": "worker:Tiramisu64_18", "account_id": "ABC12345", "running": True}]}
+    assert _remote_running(client) is True
+    probe["answer"] = slow
+    assert _remote_running(client) is True
+
+
+@pytest.mark.parametrize("no", [
+    {"active": None, "accounts": [{"key": "worker:Tiramisu64_18", "account_id": "ABC12345", "running": False}]},
+    {"active": "worker:Tiramisu64_18", "accounts": [{"key": "worker:Tiramisu64_18", "account_id": "OTHER", "running": True}]},
+    URLError(ConnectionRefusedError("worker dashboard is down")),
+])
+def test_catalog_drops_worker_that_answers_no(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                              no: dict[str, Any] | Exception) -> None:
+    client, probe = _remote_worker_client(tmp_path, monkeypatch)
+    assert _remote_running(client) is True
+    probe["answer"] = no
+    assert _remote_running(client) is False
+    probe["answer"] = TimeoutError("read timed out")
+    assert _remote_running(client) is False  # a real "no" is not remembered as "yes"
+
+
+def test_catalog_drops_worker_silent_past_grace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "ACCOUNT_PROBE_GRACE_SECONDS", 0.0)
+    client, probe = _remote_worker_client(tmp_path, monkeypatch)
+    assert _remote_running(client) is True
+    probe["answer"] = TimeoutError("read timed out")
+    assert _remote_running(client) is False
 
 
 def test_observations_alone_prevent_rebinding(tmp_path: Path) -> None:
