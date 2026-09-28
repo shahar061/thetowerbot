@@ -1,8 +1,34 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { MatchBox } from "@/lib/types";
 import { accountScope } from "@/lib/accountScope";
+import { FeedBadge } from "@/components/FeedBadge";
+import { LiveVideo } from "@/components/LiveVideo";
+import { useLiveFallback } from "@/lib/useLiveFallback";
+
+type Source = "live" | "bot";
+const SOURCE_KEY = "towerbot.deviceView.mode";
+
+function rememberedSource(): Source {
+  try {
+    return window.localStorage.getItem(SOURCE_KEY) === "bot" ? "bot" : "live";
+  } catch {
+    return "live"; // storage blocked (private window): just don't remember
+  }
+}
+
+function SourceToggle({ shown, onChoose }: { shown: Source; onChoose: (source: Source) => void }): React.JSX.Element {
+  return <div role="group" aria-label="Screen source"
+    className="absolute right-2 top-2 z-10 flex overflow-hidden rounded-md border bg-background/90 text-[11px]">
+    {(["live", "bot"] as const).map(value => (
+      <button key={value} type="button" aria-pressed={shown === value} onClick={() => onChoose(value)}
+        className={`px-2 py-1 ${shown === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+        {value === "live" ? "Live" : "Bot's view"}
+      </button>
+    ))}
+  </div>;
+}
 
 export function DeviceView({
   boxes,
@@ -12,6 +38,20 @@ export function DeviceView({
   size: { width: number; height: number } | null;
 }) {
   const [overlay, setOverlay] = useState(true);
+  const [source, setSource] = useState<Source>("live");
+  const { supported, live, markUnavailable } = useLiveFallback();
+  useEffect(() => setSource(rememberedSource()), []);
+  const choose = (next: Source): void => {
+    setSource(next);
+    try {
+      window.localStorage.setItem(SOURCE_KEY, next);
+    } catch {
+      // storage blocked: the choice lasts until reload
+    }
+  };
+  // Live is the default, but the bot's view is what shows whenever live
+  // can't: unsupported browser, or a stream that just failed.
+  const shown: Source = source === "live" && live ? "live" : "bot";
   const best = boxes.length ? boxes.reduce((a, b) => (b.score > a.score ? b : a)) : null;
   const scope = accountScope();
 
@@ -21,7 +61,10 @@ export function DeviceView({
           pixel dimensions, so the image can be any size on screen and the
           overlay follows it - no coordinate maths in two languages. */}
       <div className="relative w-full overflow-hidden rounded-t-xl bg-well">
-        {size ? (
+        {shown === "live" ? (
+          // Same origin: this page is served by the worker it shows.
+          <LiveVideo scope={scope} label="device screen, live" onUnavailable={markUnavailable} className="block w-full" />
+        ) : size ? (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={`/api/frame${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`} alt="device screen" className="block w-full" />
@@ -96,6 +139,8 @@ export function DeviceView({
             Waiting for the first frame…
           </p>
         )}
+        {(shown === "live" || size) && <FeedBadge live={shown === "live"} />}
+        {supported && <SourceToggle shown={shown} onChoose={choose} />}
       </div>
 
       {/* The strongest match, spelled out. The overlay says where; this says

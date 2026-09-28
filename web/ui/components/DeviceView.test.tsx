@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe as group, expect, it } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe as group, expect, it } from "vitest";
 import { DeviceView } from "./DeviceView";
 import type { MatchBox } from "@/lib/types";
+import { MockSocket, installLiveStreamMocks, uninstallLiveStreamMocks } from "@/lib/liveStreamTesting";
 
 // A non-square frame so a width/height transposition (using `width` to scale
 // a `y`/`h` offset, or vice versa) would produce a wrong percentage and fail
@@ -67,5 +68,42 @@ group("DeviceView", () => {
     expect(screen.queryByAltText("device screen")).toBeNull();
     expect(screen.queryByTitle(/Damage/)).toBeNull();
     expect(screen.queryByTitle(/Health/)).toBeNull();
+  });
+});
+
+group("DeviceView screen source", () => {
+  afterEach(() => { uninstallLiveStreamMocks(); window.localStorage.clear(); });
+
+  it("defaults to live video when supported, without the match overlay", () => {
+    installLiveStreamMocks();
+    const { container } = render(<DeviceView boxes={[matched]} size={size} />);
+    expect(container.querySelector("canvas")).not.toBeNull();
+    expect(screen.queryByTitle(/Damage 0/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Live" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("switches to the bot's view with its match boxes and remembers the choice", () => {
+    installLiveStreamMocks();
+    const first = render(<DeviceView boxes={[matched]} size={size} />);
+    fireEvent.click(screen.getByRole("button", { name: "Bot's view" }));
+    expect(screen.getByTitle(/Damage 0/)).toBeInTheDocument();
+    expect(first.container.querySelector("canvas")).toBeNull();
+    first.unmount();
+    render(<DeviceView boxes={[matched]} size={size} />);
+    expect(screen.getByRole("button", { name: "Bot's view" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("falls back to the bot's view when the live stream is unavailable", () => {
+    installLiveStreamMocks();
+    const { container } = render(<DeviceView boxes={[matched]} size={size} />);
+    act(() => MockSocket.latest().serverClose(4503));
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(screen.getByTitle(/Damage 0/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Bot's view" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("has no toggle where live video is not supported", () => {
+    render(<DeviceView boxes={[matched]} size={size} />);
+    expect(screen.queryByRole("group", { name: "Screen source" })).toBeNull();
   });
 });
