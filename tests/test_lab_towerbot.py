@@ -274,3 +274,28 @@ def test_cancelled_purple_dot_visit_releases_labs_in_flight(tmp_path: Path) -> N
     for n, visible in enumerate((False, False, True, True)):
         state.observe('labs', visible, 10. + n, frame_id=f'g{n}')
     assert state.eligible('labs', 10_000.)
+
+
+class RecordingProgress:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
+    def note_lab_slots(self, slots: dict, gems: int | None) -> None:
+        self.calls.append(('slots', slots))
+
+    def note_lab_observation(self, decision: LabDecision) -> None:
+        self.calls.append(('observation', decision.kind))
+
+
+def test_a_finished_visit_logs_the_slot_it_unlocked(caplog: pytest.LogCaptureFixture) -> None:
+    from lab_visit import LabVisitResult
+    b = bot(None)
+    b._notifications = SimpleNamespace(snapshot=lambda: {'kinds': {'labs': {'in_flight': False}}})
+    b.reroll_progress = RecordingProgress()
+    result = LabVisitResult('observed', 'auto_start_off', LabDecision('inspect'),
+                            slot_status=((2, 'owned'), (3, 'owned'), (4, 'locked')),
+                            gem_balance=100, gems_before=500, observed_gem_spend=400, unlocked_slot=3)
+    with caplog.at_level('INFO', logger='tower_bot'):
+        b._finish_lab_visit(result)
+    assert '; Lab 3 unlocked' in caplog.text and 'Lab 2 unlocked' not in caplog.text
+    assert ('observation', 'inspect') not in b.reroll_progress.calls

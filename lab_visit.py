@@ -62,6 +62,17 @@ def _inside(point: tuple[int, int], tile: tuple[int, int, int, int]) -> bool:
     return x <= point[0] < x + width and y <= point[1] < y + height
 
 
+def _debit_mismatch(txn: transactions.Transaction, gems_after: int) -> bool:
+    """The gems moved by an amount the header's rounding cannot make either nothing or the price.
+
+    An unchanged or lagging header is not a mismatch: the debit may still show.
+    """
+    assert txn.wallet_before is not None and txn.price is not None
+    drop = txn.wallet_before - gems_after
+    slack = transactions.reading_tolerance(txn.wallet_before, gems_after)
+    return abs(drop) > slack and abs(drop - txn.price) > slack
+
+
 def _slot_status(home: LabHomeReading | None, reading: LabsReading | None) -> tuple[tuple[int, str], ...]:
     """Slots 2-5 this visit proved owned or locked. Nothing when the strip was not read."""
     if home is None or reading is None or not reading.strip_read() or reading.slots_owned is None:
@@ -123,10 +134,12 @@ class LabVisit:
         self._unlock_signature: tuple[LockedSlot, int] | None = None
         self._unlock_reads = 0
         self._unlock_done = False
+        self._owned_canary_checked = False
         self._unlock_tap: tuple[str, int] | None = None
         self._unlock_frames: list[Image] = []
         self._unlock_scans = 0
         self._unlock_strikes = 0
+        self._debit_strike = False
         self._unlanded_signature: tuple[int, LockedSlot, int] | None = None
         self._options = LabVisitOptions()
         self.selected_action: LabAction | None = None
@@ -174,6 +187,7 @@ class LabVisit:
         self._unlock_signature = None
         self._unlock_reads = 0
         self._unlock_done = False
+        self._owned_canary_checked = False
         self._unlock_tap = None
         self._unlock_frames = []
         self._unlock_scans = 0
@@ -443,8 +457,10 @@ class LabVisit:
         lane names that same slot; a stale slot record never moves the target.
         """
         locked, scope = home.next_locked, self._scope()
-        if (self._unlock_done or self.rollout is None or self.worker is None or scope is None
-                or locked is None or locked.slot not in self._options.unlock_slots):
+        if self._unlock_done or self.rollout is None or self.worker is None or scope is None:
+            return False
+        self._halt_owned_canary(scope)
+        if locked is None or locked.slot not in self._options.unlock_slots:
             return False
         catalog = lab_catalog.lab_slot_gems(locked.slot)
         if catalog is None:
@@ -497,6 +513,31 @@ class LabVisit:
         self._skip(slot, 'waiting_for_canary')
         return False
 
+    def _halt_owned_canary(self, scope: FactScope) -> None:
+        """Halt this worker's canary slot that is already owned with no unlock left to settle.
+
+        Once per visit, on a confirmed strip read. The canary's unlock can only be
+        proven through its own open transaction; with none open, a slot this
+        account owns was bought some other way (a landed tap judged not charged,
+        a lost rollout write, an owner's reconciliation), and nothing would ever
+        move the slot on again. The owner sees the halt and can Reset it.
+        """
+        reading = self._reading
+        if self._owned_canary_checked or reading is None or not reading.strip_read():
+            return
+        snapshot = self.runtime.snapshot()
+        if (not snapshot.strip_complete or snapshot.observed_at != self._capture_at
+                or snapshot.slots_owned != reading.slots_owned or reading.slots_owned < 2):
+            return
+        self._owned_canary_checked = True
+        if self.pending_transaction is not None:
+            return
+        for slot, state in self.rollout.slots().items():
+            if (slot <= reading.slots_owned and state.stage == 'canary'
+                    and state.canary_worker == self.worker and state.canary_account == scope.account_id):
+                self._publish_change(self.rollout.halt_canary(
+                    slot, self.worker, scope.account_id, f"Slot {slot} owned without a proven canary unlock"))
+
     def _tap_unlock(self, locked: LockedSlot, gems: int, screen: Image, device: AdbDevice) -> bool:
         assert locked.price is not None and locked.point is not None
         txn = self._prepare('lab_unlock', gems, locked.price, unlock_slot=locked.slot)
@@ -506,6 +547,7 @@ class LabVisit:
         self._unlock_tap = (txn.key, locked.slot)
         self._unlock_frames = [screen]
         self._unlock_scans = self._unlock_strikes = 0
+        self._debit_strike = False
         self._unlanded_signature = None
         self._tap(device, locked.point, f"unlock_lab_slot_{locked.slot}")
         self._state = "confirm_slot"
@@ -525,8 +567,10 @@ class LabVisit:
 
         Bought: slot N confirmed owned since the tap and the gems down by the price.
         Not landed: two matching Labs home reads, taken after the tap, with slot N
-        still the first locked tile at its price and the gems unchanged. Anything
-        else is a strike; three strikes, or eight post-tap scans, is uncertain.
+        still the first locked tile at its price and the gems unchanged. A debit
+        that provably is not the price is uncertain at once. Anything else is a
+        strike, including a confirmed owned slot whose gem header is unreadable or
+        not yet down; three strikes, or eight post-tap scans, is uncertain.
         """
         assert self._unlock_tap is not None
         key, slot = self._unlock_tap
@@ -548,7 +592,13 @@ class LabVisit:
                                                  now=self.wall_clock())
                 if outcome.verdict == transactions.Verdict.BOUGHT and outcome.spent == txn.price:
                     return self._unlock_bought(txn, home, outcome)
-                return self._unlock_uncertain(txn, slot, 'gem debit did not match the price')
+                if _debit_mismatch(txn, home.gem_balance):
+                    return self._unlock_uncertain(txn, slot, 'gem debit did not match the price')
+            if current:
+                # Owned, but the header is unreadable or has not caught up with the
+                # debit yet: an unclassified read, and the transaction stays open.
+                self._unlock_strikes += 1
+                self._debit_strike = True
             # Owned but not yet confirmed: it breaks any run of still-locked reads.
             self._unlanded_signature = None
         elif (strip and reading.slots_owned == slot - 1 and locked is not None
@@ -563,9 +613,11 @@ class LabVisit:
             self._unlanded_signature = signature
         else:
             self._unlock_strikes += 1
+            self._debit_strike = False
             self._unlanded_signature = None
         if self._unlock_strikes >= _UNLOCK_STRIKES or self._unlock_scans >= _UNLOCK_SCANS:
-            return self._unlock_uncertain(txn, slot, 'post-tap screen was not understood')
+            return self._unlock_uncertain(txn, slot, 'gem debit was not proven' if self._debit_strike
+                                          else 'post-tap screen was not understood')
         return None
 
     def _note_unlock(self, txn: transactions.Transaction, outcome: str) -> None:
@@ -578,12 +630,14 @@ class LabVisit:
         """The unlock's result, keeping what this visit already learned about research.
 
         A research start confirmed earlier in the visit keeps its status and
-        reason; any other earlier outcome keeps its job and decision.
+        reason, and so does an auto-start-off read, which TowerBot uses to keep
+        the saved Game Speed evidence; any other earlier outcome keeps its job
+        and decision. The unlock's own verdict is in its fields and recovery_status.
         """
         prior = self._outcome
         if prior is None:
             return LabVisitResult(status, reason, LabDecision('unknown'), **fields)
-        if prior.status == 'started':
+        if prior.status == 'started' or prior.reason == 'auto_start_off':
             return replace(prior, **fields)
         return replace(prior, status=status, reason=reason, **fields)
 

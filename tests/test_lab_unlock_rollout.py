@@ -167,6 +167,40 @@ def test_a_file_that_is_not_valid_utf8_is_quarantined_too(tmp_path: Path) -> Non
     assert aside.read_bytes().startswith(b'{"schema_version"')
 
 
+def test_an_unreadable_file_is_never_overwritten_by_a_write(tmp_path: Path, monkeypatch) -> None:
+    # A read error is not "missing": writing only the changed slot would erase slot 2's halt.
+    rollout = LabUnlockRollout(tmp_path)
+    rollout.halt(2, "operator check")
+    path = tmp_path / "lab-unlock-rollout.json"
+    before = path.read_text()
+    real = Path.read_text
+
+    def unreadable(self: Path, *args, **kwargs) -> str:
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    assert rollout.slots()[2] == SlotRollout()  # a read still falls back to dry run
+    with pytest.raises(OSError):
+        rollout.note_dry_run(3, "Air_1", 400, 500, 1., account_id="a")
+    with pytest.raises(OSError):
+        rollout.halt(3, "another check")
+    monkeypatch.setattr(Path, "read_text", real)
+    assert path.read_text() == before
+    assert rollout.slot(2).halted_reason == "operator check"
+
+
+def test_halt_canary_halts_only_the_named_workers_canary(tmp_path: Path) -> None:
+    rollout = LabUnlockRollout(tmp_path)
+    canary(rollout)
+    assert not rollout.halt_canary(2, "Air_2", "account-a", "owned").halted
+    assert not rollout.halt_canary(2, "Air_1", "account-b", "owned").halted
+    change = rollout.halt_canary(2, "Air_1", "account-a", "owned")
+    assert change.halted and (change.after.stage, change.after.halted_reason) == ("halted", "owned")
+    assert not rollout.halt_canary(3, "Air_1", "account-a", "owned").halted
+    assert rollout.slot(3) == SlotRollout()
+
+
 def test_concurrent_writers_never_lose_a_rehearsal(tmp_path: Path) -> None:
     workers = [f"Air_{index}" for index in range(8)]
 

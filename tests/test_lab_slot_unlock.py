@@ -167,6 +167,21 @@ def test_the_canary_taps_once_and_a_proven_unlock_promotes_the_slot_to_fleet(tmp
             "SELECT item, delta FROM ledger WHERE kind='LAB'")] == [("Lab slot 2", -100)]
 
 
+def test_an_unlock_keeps_the_auto_start_off_outcome(tmp_path, monkeypatch) -> None:
+    # TowerBot keeps the saved Game Speed evidence only while the reason stays auto_start_off.
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    h.leave(locked_boxes())
+    h.scan(owned_boxes())
+    h.scan(owned_boxes())
+    h.leave(owned_boxes())
+    result = h.finish()
+    assert (result.status, result.reason) == ("observed", "auto_start_off")
+    assert (result.unlocked_slot, result.observed_gem_spend) == (2, 100)
+    assert result.slot_status == ((2, "owned"), (3, "locked"))
+
+
 def test_one_transitional_frame_after_the_tap_does_not_halt(tmp_path, monkeypatch) -> None:
     h = UnlockHarness(tmp_path, monkeypatch)
     promote_canary(h.rollout)
@@ -188,8 +203,9 @@ def test_a_tap_that_did_not_land_is_not_charged_and_a_second_miss_halts(tmp_path
         h.scan(locked_boxes())
         h.scan(locked_boxes())
         assert h.journal.open_transactions() == ()
+        assert h.rollout.slot(2).unlock["outcome"] == "not_charged"
         assert h.leave(locked_boxes()) == "return_to_battle"
-        assert h.finish().reason == "unlock_not_landed"
+        assert h.finish().reason == "auto_start_off"  # the unlock's verdict is in the rollout
     assert h.rollout.slot(2).stage == "halted"
     assert [e.reason for e in h.of(events.LabUnlockHalted)] == ["The canary's unlock tap did not land twice"]
     assert not h.of(events.LabSlotUnlocked)
@@ -203,8 +219,7 @@ def test_an_unreadable_post_tap_screen_halts_the_canary_and_keeps_the_hold(tmp_p
     h.open()
     h.leave(locked_boxes())
     results = [h.scan(dialog_boxes()) for _ in range(3)]
-    assert results[-1] is not None and results[-1].reason == "lab_unlock_uncertain"
-    assert h.visit.recovery_status == "lab_unlock_uncertain"
+    assert results[-1] is not None and h.visit.recovery_status == "lab_unlock_uncertain"
     assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
     state = h.rollout.slot(2)
     assert (state.stage, state.halted_reason) == ("halted", "post-tap screen was not understood")
@@ -286,7 +301,7 @@ def test_a_failed_evidence_save_still_halts_the_canary(tmp_path, monkeypatch, fa
     h.open()
     h.leave(locked_boxes())
     results = [h.scan(dialog_boxes()) for _ in range(3)]
-    assert results[-1] is not None and results[-1].reason == "lab_unlock_uncertain"
+    assert results[-1] is not None and h.visit.recovery_status == "lab_unlock_uncertain"
     state = h.rollout.slot(2)
     assert state.stage == "halted" and len(state.evidence) == (0 if failure == "mkdir" else 1)
 
@@ -335,16 +350,48 @@ def test_one_visit_starts_research_and_unlocks_a_slot_and_reports_both(tmp_path,
     assert h.rollout.slot(2).stage == "fleet" and h.journal.open_transactions() == ()
 
 
-def test_a_debit_that_does_not_match_the_price_halts_the_canary(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("gems", ["40", "300"], ids=["fell_by_110", "rose_by_150"])
+def test_a_debit_that_does_not_match_the_price_halts_the_canary(tmp_path, monkeypatch, gems) -> None:
+    # Whole-number headers: 150 -> 40 or 150 -> 300 is provably not a 100-gem debit.
     h = UnlockHarness(tmp_path, monkeypatch)
     promote_canary(h.rollout)
     h.open()
     h.leave(locked_boxes())
-    h.scan(owned_boxes(gems="40"))
-    result = h.scan(owned_boxes(gems="40"))
-    assert result is not None and result.reason == "lab_unlock_uncertain"
+    assert h.scan(owned_boxes(gems=gems)) is None  # owned, not yet confirmed
+    result = h.scan(owned_boxes(gems=gems))  # the first reconciled read halts at once
+    assert result is not None and h.visit.recovery_status == "lab_unlock_uncertain"
     assert h.rollout.slot(2).halted_reason == "gem debit did not match the price"
-    assert h.journal.open_transactions()
+    assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+
+
+@pytest.mark.parametrize("lagging", [1, 2])
+def test_a_lagging_gem_header_after_the_tap_does_not_halt(tmp_path, monkeypatch, lagging) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    h.leave(locked_boxes())
+    for _ in range(1 + lagging):  # slot 2 owned, header still at the pre-tap 150
+        assert h.scan(owned_boxes(gems="150")) is None
+    assert h.journal.open_transactions() and h.rollout.slot(2).stage == "canary"
+    h.scan(owned_boxes(gems="50"))
+    assert h.journal.open_transactions() == ()
+    assert h.rollout.slot(2).stage == "fleet" and not h.of(events.LabUnlockHalted)
+    assert [(e.slot, e.price, e.gems_before, e.gems_after)
+            for e in h.of(events.LabSlotUnlocked)] == [(2, 100, 150, 50)]
+
+
+@pytest.mark.parametrize("gems", ["150", None], ids=["unchanged", "unreadable"])
+def test_a_gem_header_that_never_shows_the_debit_halts_after_three_strikes(tmp_path, monkeypatch, gems) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    h.leave(locked_boxes())
+    text = tuple(box for box in owned_boxes() if box.text != "50") if gems is None else owned_boxes(gems=gems)
+    results = [h.scan(text) for _ in range(4)]
+    assert results[:3] == [None] * 3 and results[3] is not None
+    assert h.visit.recovery_status == "lab_unlock_uncertain"
+    assert h.rollout.slot(2).halted_reason == "gem debit was not proven"
+    assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
 
 
 def test_a_fleet_stage_slot_unlocks_on_a_second_worker(tmp_path, monkeypatch) -> None:
@@ -462,6 +509,44 @@ def test_a_stale_slot_record_corrects_itself_without_a_tap(tmp_path, monkeypatch
     assert h.leave(owned_boxes(gems="500")) == "return_to_battle"
     assert h.finish().slot_status == ((2, "owned"), (3, "locked"))
     assert h.transactions() == 0 and h.rollout.slot(3).dry_runs == ()
+
+
+OWNED_CANARY = "Slot 2 owned without a proven canary unlock"
+
+
+def test_a_canary_slot_owned_with_no_open_unlock_halts_without_a_tap(tmp_path, monkeypatch) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    assert h.leave(owned_boxes(gems="500")) == "return_to_battle"
+    state = h.rollout.slot(2)
+    assert (state.stage, state.halted_reason) == ("halted", OWNED_CANARY)
+    assert [(e.slot, e.reason) for e in h.of(events.LabUnlockHalted)] == [(2, OWNED_CANARY)]
+    assert PRICE_POINT not in h.device.taps and h.transactions() == 0
+
+
+def test_a_refuted_tap_that_had_landed_halts_the_canary_on_the_next_visit(tmp_path, monkeypatch) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    assert h.leave(locked_boxes()) == "unlock_lab_slot_2"
+    h.scan(locked_boxes())
+    h.scan(locked_boxes())  # two late unchanged reads: refuted as not charged
+    assert h.journal.open_transactions() == () and h.rollout.slot(2).stage == "canary"
+    h.leave(locked_boxes())
+    h.finish()
+    h.open()
+    assert h.leave(owned_boxes(gems="50")) == "return_to_battle"
+    assert (h.rollout.slot(2).stage, h.rollout.slot(2).halted_reason) == ("halted", OWNED_CANARY)
+    assert h.device.taps.count(PRICE_POINT) == 1
+
+
+def test_another_workers_owned_canary_slot_is_left_to_that_worker(tmp_path, monkeypatch) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch, "Air_2")
+    promote_canary(h.rollout, "Air_1")
+    h.open()
+    assert h.leave(owned_boxes(gems="500")) == "return_to_battle"
+    assert h.rollout.slot(2).stage == "canary" and not h.of(events.LabUnlockHalted)
 
 
 def test_a_restart_settles_an_open_lab_three_unlock_from_the_next_labs_read(tmp_path, monkeypatch) -> None:

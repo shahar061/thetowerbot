@@ -1489,7 +1489,7 @@ class TowerBot:
             if result.reason != "auto_start_off":
                 self.reroll_progress.note_lab_observation(decision)
         logger.info("Lab 1 visit ended: %s (%s)%s", result.status, result.reason,
-                    "; Lab 2 unlocked" if result.observed_gem_spend == 100 else "")
+                    f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:
         """Record a scan only when its pass returned normally."""

@@ -216,7 +216,10 @@ class LabUnlockRollout:
                            self.path, exc)
         return {}
 
-    def _load(self, *, quarantine: bool) -> dict[int, SlotRollout]:
+    def _load(self, *, quarantine: bool, for_write: bool = False) -> dict[int, SlotRollout]:
+        """The stored slots. A read error other than a missing file reads as all dry run,
+        except `for_write`, where it raises: writing back only the changed slot would
+        erase every other slot's record, a halt included."""
         try:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -224,6 +227,8 @@ class LabUnlockRollout:
         except UnicodeDecodeError as exc:
             return self._corrupt(quarantine, exc)
         except OSError as exc:
+            if for_write:
+                raise
             logger.warning("Lab unlock rollout %s unreadable (%s); every slot is at dry run", self.path, exc)
             return {}
         try:
@@ -257,7 +262,7 @@ class LabUnlockRollout:
     def _update(self, slot: int, change: Callable[[SlotRollout], SlotRollout]) -> RolloutChange:
         _check_slot(slot)
         with self._locked():
-            stored = self._load(quarantine=True)
+            stored = self._load(quarantine=True, for_write=True)
             before = stored.get(slot, SlotRollout())
             after = change(before)
             if after != before:
@@ -311,6 +316,15 @@ class LabUnlockRollout:
             if current.stage == "halted":
                 return replace(current, evidence=kept)
             return replace(current, stage="halted", halted_reason=reason, evidence=kept)
+        return self._update(slot, change)
+
+    def halt_canary(self, slot: int, worker: str, account_id: str | None, reason: str) -> RolloutChange:
+        """Halt `slot` only while it is still `worker`'s canary on `account_id`."""
+        def change(current: SlotRollout) -> SlotRollout:
+            if (current.stage != "canary" or current.canary_worker != worker
+                    or current.canary_account != account_id):
+                return current
+            return replace(current, stage="halted", halted_reason=reason)
         return self._update(slot, change)
 
     def release_canary(self, slot: int, *, expected_worker: str | None = None) -> RolloutChange:
