@@ -699,6 +699,14 @@ BATTLE_MENU_MIN_SESSION_GAP = 180.0
 BATTLE_MENU_STEP_FRAMES = 6
 BATTLE_MENU_WATCH_ADS = False
 
+# The Store's free-gem ▶ button's own red dot, patch relative to the button
+# centre (which itself sits ~138px below the "FREE" caption's centre).
+# Measured on store_free_tiles.png: the dot's red_pixels() count in this
+# patch is 1179 (button derived from the +138 offset) / 1398 (measured
+# button centre) - both far above the 120 menu-icon threshold, so it is
+# reused rather than a new one.
+BATTLE_MENU_FREE_DOT_PATCH = Rect(x=40, y=-70, w=70, h=60)
+
 
 # A tile is a bright bordered rectangle: a half-width upgrade tile, or a
 # full-width unlock tile. Both the workshop and the in-run panel use them.

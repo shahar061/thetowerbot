@@ -78,3 +78,86 @@ def test_unsupported_frame_reads_nothing(templates):
     small = cv2.resize(frame("battle_menu/open_badged"), (540, 1200))
     assert battle_menu.read_menu(small, templates) is None
     assert battle_menu.collapsed(small, templates) is None
+
+
+import ocr
+
+needs_ocr = pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+
+
+def boxes(name):
+    return ocr.read(frame(name))
+
+
+@needs_ocr
+@pytest.mark.parametrize("name,page", [
+    ("battle_menu/event_page", "event"),
+    ("battle_menu/event_info_modal", "event_info"),
+    ("battle_menu/store_top", "store"),
+    ("battle_menu/store_free_tiles", "store"),
+])
+def test_read_page(name, page):
+    reading = battle_menu.read_page(boxes(name))
+    assert reading.page == page
+    assert reading.return_point is not None and reading.return_point[1] > 2100
+
+
+@needs_ocr
+def test_in_run_frame_is_not_a_page():
+    assert battle_menu.read_page(boxes("battle_menu/open_badged")).page == "none"
+
+
+@needs_ocr
+def test_event_modal_close_is_right_of_title():
+    screen = frame("battle_menu/event_info_modal")
+    point = battle_menu.event_modal_close(screen, boxes("battle_menu/event_info_modal"))
+    assert point is not None and 820 < point[0] < 1000 and 400 < point[1] < 580
+
+
+@needs_ocr
+def test_event_page_has_no_ready_claims_and_never_offers_the_boost():
+    assert battle_menu.event_claims(boxes("battle_menu/event_page")) == []
+
+
+def test_event_claims_skip_rows_with_a_price():
+    R = config.Rect
+    fake = (
+        ocr.TextBox("EVENT BOOST + GEMS + RELICS", 0.9, R(30, 900, 700, 60)),
+        ocr.TextBox("Claim", 0.9, R(800, 1150, 120, 50)),       # inside boost card
+        ocr.TextBox("₪49.90", 0.9, R(800, 1130, 200, 60)),
+        ocr.TextBox("Claim", 0.9, R(800, 1800, 120, 50)),       # a mission row
+    )
+    assert battle_menu.event_claims(fake) == [(860, 1825)]
+
+
+@needs_ocr
+def test_free_gem_tile_found_on_scrolled_store():
+    screen = frame("battle_menu/store_free_tiles")
+    point = battle_menu.free_gem_tile(screen, boxes("battle_menu/store_free_tiles"))
+    assert point is not None
+    # Left column, below the FREE caption, never the website tile to its right.
+    assert point[0] < 540
+
+
+@needs_ocr
+def test_free_gem_tile_absent_on_store_top():
+    assert battle_menu.free_gem_tile(frame("battle_menu/store_top"),
+                                     boxes("battle_menu/store_top")) is None
+
+
+def test_free_gem_tile_rejects_offerwall_and_priced_tiles():
+    R = config.Rect
+    screen = frame("battle_menu/store_top")
+    fake = (
+        ocr.TextBox("complete offers for free gems", 0.9, R(60, 1900, 400, 40)),
+        ocr.TextBox("FREE", 0.9, R(280, 900, 100, 50)),
+        ocr.TextBox("₪17.90", 0.9, R(250, 1040, 160, 50)),
+    )
+    assert battle_menu.free_gem_tile(screen, fake) is None
+
+
+@pytest.mark.parametrize("text,price", [
+    ("₪49.90", True), ("$4.99", True), ("17,90", True), ("x 20", False), ("Claim", False),
+])
+def test_is_price(text, price):
+    assert battle_menu.is_price(text) is price
