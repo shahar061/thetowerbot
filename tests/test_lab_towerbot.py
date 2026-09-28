@@ -143,10 +143,26 @@ def test_authorize_requires_the_route_gate_for_other_slots(monkeypatch: pytest.M
     assert b._authorize_lab('lab_start', decision(2, 'labs.attack-speed', 1), 1000.)
 
 
-def test_authorize_refuses_unlock_while_its_route_is_uncalibrated() -> None:
+def test_authorize_unlock_follows_the_rollout(tmp_path: Path) -> None:
+    from lab_unlock_rollout import LabUnlockRollout
     b = bot(None, options=LabVisitOptions(unlock_slots=(2,)))
+    b.account_state.verified_scope = SimpleNamespace(account_id='a')
     b.lab_visit.request(LabVisitOptions(unlock_slots=(2,)))
+    unlock = LabDecision('unlock_slot', price=100, slot=2)
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)  # no rollout record
+    b.lab_visit.rollout, b.lab_visit.worker = LabUnlockRollout(tmp_path), 'Air_1'
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)  # a dry run never taps
+    b.lab_visit.rollout.note_dry_run(2, 'Air_1', 100, 150, 0., account_id='a')
+    b.lab_visit.rollout.note_dry_run(2, 'Air_1', 100, 150, 700., account_id='a')
+    assert b._authorize_lab('lab_unlock', unlock, 1000.)  # the canary
     assert not b._authorize_lab('lab_unlock', None, 1000.)
+    assert not b._authorize_lab('lab_unlock', LabDecision('unlock_slot', price=90, slot=2), 1000.)
+    assert not b._authorize_lab('lab_unlock', LabDecision('unlock_slot', price=400, slot=3), 1000.)
+    b.account_state.verified_scope = SimpleNamespace(account_id='b')
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)  # the canary now plays another account
+    b.account_state.verified_scope = SimpleNamespace(account_id='a')
+    b.lab_visit.worker = 'Air_2'
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)
 
 
 def test_route_runtime_absent_allows_only_the_legacy_route(monkeypatch: pytest.MonkeyPatch) -> None:

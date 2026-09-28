@@ -626,3 +626,14 @@ def test_unprovable_held_cards_purchase_detours_at_most_once_per_hold_interval(
     sut.journal.operator_reconcile(txn.key, verdict="unproven", operator="op", evidence="e",
                                    now=clock[0], worker_stopped=True)
     assert not sut.reconciliation_pending and not sut.reconciliation_retry_due(clock[0])
+
+
+def test_finished_lab_visit_notes_slot_ownership_without_minting_an_unlock(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot.reroll_progress = Mock()
+    bot.lab_state = LabsState(Mock())
+    bot._finish_lab_visit(LabVisitResult("observed", "slot_unlocked", LabDecision("unknown"),
+        slot_status=((2, "owned"), (3, "locked")), gem_balance=50, gems_before=150,
+        observed_gem_spend=100, unlocked_slot=2))
+    bot.reroll_progress.note_lab_slots.assert_called_once_with({2: "owned", 3: "locked"}, 50)
+    assert not [e for e in bot.bus.published if isinstance(e, events.LabSlotUnlocked)]

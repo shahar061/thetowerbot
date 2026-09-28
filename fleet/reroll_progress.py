@@ -36,6 +36,7 @@ from fleet.resource_blocks import (LabFacts, LabPlan, evaluate_lab_plan,
                                    gem_lane_blocks, next_unlock_slot)
 from lab_plan import LabCadence, LabDecision, LabVisitOptions
 import lab_catalog
+from lab_unlock_rollout import LabUnlockRollout
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule, Strategy
 
@@ -180,6 +181,20 @@ class RerollProgress:
             logger.warning("_effective_gems: resolve_route failed for %s (%s); using defaults",
                            self.account_id, exc)
             return GemRoute()
+
+    @property
+    def fleet_root(self) -> Path | None:
+        """<fleet root> for a worker root laid out as <fleet root>/workers/<worker id>."""
+        return self.root.parent.parent if self.root.parent.name == "workers" else None
+
+    @property
+    def worker_id(self) -> str | None:
+        return self.root.name if self.fleet_root is not None else None
+
+    def unlock_rollout(self) -> LabUnlockRollout | None:
+        """The fleet's shared lab-slot rollout record. A solo bot has none, so it never unlocks."""
+        root = self.fleet_root
+        return LabUnlockRollout(root) if root is not None else None
 
     def next_unlock_slot(self) -> int | None:
         """The slot the gem lane unlocks next, from this account's slot record."""

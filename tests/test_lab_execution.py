@@ -115,13 +115,13 @@ def test_picker_has_its_own_bounded_observation_budget(tmp_path: Path, monkeypat
     assert h.journal.open_transactions() == ()
 
 
-def test_unlock_cannot_be_authorized_by_synthetic_post_state() -> None:
+def test_unlock_needs_a_rollout_record_and_a_worker() -> None:
     from fleet.resource_blocks import gem_automated
     visit = LabVisit(vision.TemplateCache(Path('templates')))
-    visit.request(LabVisitOptions(unlock_slots=(2,), keep_gems=50))
+    visit.request(LabVisitOptions(unlock_slots=(2,)))
     home = lab_screen.LabHomeReading(True, 'idle', None, None, gem_balance=150,
-                                    slot2_status='locked', slot2_price=100, slot2_point=(700, 450))
-    assert not visit._unlock_lab_two(home, Device())
+        next_locked=lab_screen.LockedSlot(2, 100, (586, 906), (0, 654, 1080, 396)))
+    assert not visit._unlock_slot(home, frame('menu_labs_slot1_idle'), Device())
     assert not gem_automated({'type': 'unlock_lab_slot', 'slot': 2})
 
 

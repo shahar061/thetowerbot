@@ -502,3 +502,24 @@ def test_only_a_lab_unlock_can_be_refuted_as_unlanded(tmp_path: Path) -> None:
     outcome = journal.refute_unlanded_unlock(txn.key, evidence, now=13.)
     assert outcome.verdict == Verdict.UNPROVEN and outcome.spent is None
     assert journal.open_transactions()[0].key == txn.key
+
+
+def test_production_constructor_wires_the_unlock_rollout(tmp_path: Path) -> None:
+    from tower_bot import TowerBot
+    from shopping import ShoppingSession
+    from tests.conftest import _RecordingBus
+    from fleet.reroll_progress import RerollProgress
+    import digits
+    root = tmp_path / 'workers' / 'Air_1'
+    root.mkdir(parents=True)
+    db.bind_account(root / 'tower_bot.db', 'account-a')
+    account, journal, _ = authority(root)
+    bus = _RecordingBus()
+    templates = vision.TemplateCache(Path('templates'))
+    shopping = ShoppingSession(templates, bus, digits.NumberReader(), journal=journal)
+    bot = TowerBot(Device(), templates, bus, account_state=account, shopping=shopping,
+                   reroll_progress=RerollProgress(root, 'account-a', account),
+                   unknown_dir=root / 'evidence')
+    assert bot.lab_visit.rollout.path == tmp_path / 'lab-unlock-rollout.json'
+    assert bot.lab_visit.worker == 'Air_1'
+    assert bot.lab_visit.evidence_dir == root / 'evidence'

@@ -371,15 +371,3 @@ def test_auto_start_off_looks_but_never_opens_the_picker() -> None:
         visit.advance(frame("menu_labs_slot1_affordable"), (), device, 10)
     assert (540, 450) not in device.taps
     assert visit._outcome is not None and visit._outcome.reason == "auto_start_off"
-
-
-def test_lab_two_unlock_respects_the_switch_and_the_gem_floor() -> None:
-    home = LabHomeReading(True, "researching", None, None, gem_balance=150,
-                          slot2_status="locked", slot2_price=100, slot2_point=(700, 450))
-    for options in (LabVisitOptions(), LabVisitOptions(unlock_slots=(2,), keep_gems=100)):
-        visit = LabVisit(vision.TemplateCache(Path("templates")))
-        visit.request(options)
-        assert visit._unlock_lab_two(home, Device()) is False
-    visit = LabVisit(vision.TemplateCache(Path("templates")))
-    visit.request(LabVisitOptions(unlock_slots=(2,), keep_gems=50))
-    assert visit._unlock_lab_two(home, Device()) is False  # no recorded unlock sequence

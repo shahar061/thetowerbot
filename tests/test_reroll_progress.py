@@ -553,3 +553,14 @@ def test_slot_notes_and_the_next_unlock_slot_are_account_bound(tmp_path: Path) -
     assert progress.lab_cadence.slot_records()[3] == {"status": "locked", "wallet_gems": 120,
                                                       "observed_at": 1000.}
     assert worker(tmp_path / "other", "ACCOUNT-B").lab_cadence.slot_records() == {}
+
+
+def test_the_rollout_lives_at_the_fleet_root_of_a_fleet_worker(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert (progress.fleet_root, progress.worker_id) == (tmp_path, "Tiramisu64_20")
+    assert progress.unlock_rollout().path == tmp_path / "lab-unlock-rollout.json"
+    solo = tmp_path / "solo"
+    solo.mkdir()
+    db.bind_account(solo / "tower_bot.db", "ACCOUNT-A")
+    loose = RerollProgress(solo, "ACCOUNT-A", AccountState())
+    assert loose.fleet_root is None and loose.worker_id is None and loose.unlock_rollout() is None
