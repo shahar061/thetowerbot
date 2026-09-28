@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { isRerollPath } from "./workspace";
+import { isFleetWorkspacePath } from "./workspace";
 import { createContext, useContext, useEffect, useReducer, useState } from "react";
 import { feedReducer } from "./eventReducer";
 import { useAccountSelection } from "./AccountSelection";
@@ -28,7 +28,7 @@ const ConnectedContext = createContext(false);
  */
 export function EventStreamProvider({ children }: { children: React.ReactNode }) {
   const { selected } = useAccountSelection();
-  const reroll = isRerollPath(usePathname());
+  const reroll = isFleetWorkspacePath(usePathname());
   const [events, dispatch] = useReducer(feedReducer, []);
   const [connected, setConnected] = useState(false);
   const key = selected?.key;
