@@ -79,14 +79,17 @@ logic.
   - Connects to `localabstract:scrcpy_<scid hex, 8 chars>` with
     `create_connection`, retrying every 100 ms for up to 5 s while the server
     starts.
-- After the socket connects, the server sends a 12-byte codec header: codec id,
-  width and height as big-endian u32s. `start()` checks that the codec id is
-  `h264`.
-- `packets()` yields `Packet(config: bool, key: bool, pts_us: int, data: bytes)`
-  and parses scrcpy's 12-byte frame header:
-  - 8 bytes: bit 63 is the config flag, bit 62 is the keyframe flag, and the
-    remaining 62 bits are the PTS.
-  - 4 bytes: the payload size.
+- After the socket connects, the server sends a 4-byte codec id. `start()`
+  checks that it is `h264`.
+- `events()` then parses a stream of 12-byte headers. This layout was verified
+  against scrcpy 4.1 on a BlueStacks Air instance:
+  - If the first byte has bit 7 set, it is a **session packet**: u32 flags, u32
+    width, u32 height, and no payload. It yields `SessionInfo(width, height)`.
+  - Otherwise it is a **media packet**: a u64 (bit 62 = config, bit 61 =
+    keyframe, low 61 bits = PTS in µs), then a u32 payload size. It yields
+    `Packet(config, key, pts_us, data)`.
+  - A read timeout between packets yields `None`, so the caller can check its
+    stop conditions on a still screen.
 - `close()` closes the video socket and the shell stream, which ends the server
   on the device. It is idempotent and never blocks longer than 1 s.
 - The exact server option names and header layout are checked against the
