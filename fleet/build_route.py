@@ -267,7 +267,13 @@ class LabRoute:
                    _resource_blocks(raw.get("blocks", []), "labs", mode))
 
 
-LAB_SHARE_MODES = ("when_affordable", "save_pct", "labs_first")
+def is_lab_list(labs: LabRoute) -> bool:
+    return labs.mode == "blocks" and len(labs.blocks) == 1 and labs.blocks[0].get("type") == "lab_list"
+
+
+LAB_SHARE_MODES = ("when_affordable", "save_pct", "labs_first", "just_in_time")
+TIERS = ("S+", "S", "A", "B", "C")
+DEFAULT_WINDOW_HOURS: dict[str, int] = {"S+": 72, "S": 24, "A": 12, "B": 4, "C": 0}
 POOL_SELECTIONS = ("cheapest", "ordered", "shortest")
 IDLE_FILLS = ("leave_idle", "shortest_under_30m")
 
@@ -314,6 +320,43 @@ class CoinRules:
                    _percent(raw.get("workshop_spend_limit_pct", 100), "workshop_spend_limit_pct"))
 
 
+def _hours(value: object, name: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        raise ValueError(f"{name} must be a number from {low} to {high}")
+    return float(value)
+
+
+@dataclass(frozen=True)
+class LabSavingRule:
+    income_margin_pct: int = 75
+    window_hours: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_WINDOW_HOURS))
+
+    @classmethod
+    def from_dict(cls, value: object) -> LabSavingRule:
+        raw = _mapping(value, "saving rules")
+        _keys(raw, {"income_margin_pct", "window_hours"})
+        windows = raw.get("window_hours", DEFAULT_WINDOW_HOURS)
+        if not isinstance(windows, Mapping) or set(windows) != set(TIERS):
+            raise ValueError("window_hours must give hours for S+, S, A, B and C")
+        return cls(_ranged(raw.get("income_margin_pct", 75), "income_margin_pct", 50, 100),
+                   {tier: _ranged(windows[tier], f"window_hours {tier}", 0, 168) for tier in TIERS})
+
+
+@dataclass(frozen=True)
+class LabFillerRule:
+    enabled: bool = True
+    max_price_pct_of_wallet: int = 10
+    min_hours: float = 1.0
+
+    @classmethod
+    def from_dict(cls, value: object) -> LabFillerRule:
+        raw = _mapping(value, "filler rules")
+        _keys(raw, {"enabled", "max_price_pct_of_wallet", "min_hours"})
+        return cls(_flag(raw.get("enabled", True), "filler enabled"),
+                   _ranged(raw.get("max_price_pct_of_wallet", 10), "filler max_price_pct_of_wallet", 1, 100),
+                   _hours(raw.get("min_hours", 1.0), "filler min_hours", 0.25, 24))
+
+
 @dataclass(frozen=True)
 class LabPoolRule:
     selection: str = "ordered"
@@ -341,16 +384,20 @@ class LabRules:
     auto_start: bool = True
     pool: LabPoolRule = field(default_factory=LabPoolRule)
     idle_fill: str = "leave_idle"
+    saving: LabSavingRule = field(default_factory=LabSavingRule)
+    filler: LabFillerRule = field(default_factory=LabFillerRule)
 
     @classmethod
     def from_dict(cls, value: object) -> LabRules:
         raw = _mapping(value, "labs rules")
-        _keys(raw, {"auto_start", "pool", "idle_fill"})
+        _keys(raw, {"auto_start", "pool", "idle_fill", "saving", "filler"})
         idle_fill = raw.get("idle_fill", "leave_idle")
         if idle_fill not in IDLE_FILLS:
             raise ValueError("unknown idle_fill")
         return cls(_flag(raw.get("auto_start", True), "auto_start"),
-                   LabPoolRule.from_dict(raw.get("pool", {})), idle_fill)
+                   LabPoolRule.from_dict(raw.get("pool", {})), idle_fill,
+                   LabSavingRule.from_dict(raw.get("saving", {})),
+                   LabFillerRule.from_dict(raw.get("filler", {})))
 
 
 @dataclass(frozen=True)
@@ -427,6 +474,8 @@ class RouteBaseline:
         gems = GemRoute.from_dict(gems_raw)
         labs = LabRoute.from_dict(raw.get("labs", {}))
         rules = _migrated_rules(raw.get("rules"), workshop_raw, gems_raw, workshop, gems)
+        if rules.coins.lab_share.mode == "just_in_time" and not is_lab_list(labs):
+            raise ValueError("just_in_time saving needs a ranked lab list in the labs lane")
         from fleet.resource_blocks import check_pool_limits
         check_pool_limits(labs.blocks, max_seconds=rules.labs.pool.max_seconds,
                           max_price_pct=rules.labs.pool.max_price_pct_of_wallet)
