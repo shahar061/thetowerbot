@@ -248,11 +248,10 @@ def test_mail_only_visits_for_a_numbered_badge_and_waits_after_attempts() -> Non
                missions_every_hours=8, milestones_on_new_best=False) is None
 
 
-def test_events_dot_alone_rearms_only_every_three_hours() -> None:
-    # The dot was measured staying lit after a visit found nothing to claim.
+def test_events_dot_rearms_on_the_shared_badge_window() -> None:
     assert due(state(last_missions=3500, events_badge=True), now=3600,
                missions_every_hours=8, milestones_on_new_best=False) == 'events'
-    assert due(state(last_missions=3500, events_badge=True, last_events=3600 - 2 * 3600),
+    assert due(state(last_missions=3500, events_badge=True, last_events=3600 - 1800),
                now=3600, missions_every_hours=8, milestones_on_new_best=False) is None
-    assert due(state(last_missions=3500, events_badge=True, last_events=3600 - 3 * 3600),
+    assert due(state(last_missions=3500, events_badge=True, last_events=0),
                now=3600, missions_every_hours=8, milestones_on_new_best=False) == 'events'

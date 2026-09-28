@@ -10,10 +10,14 @@ Recorded on a live Steampunk event (tests/fixtures/menu_events_*.png):
   counter is what says the Missions list is the one on screen - the shop and
   bots tabs have none.
 
-No claimable card has been recorded. Its control is read as an OCR `Claim`
-label inside the list, which is how every other claim control in this game is
-drawn, and the walk proves a tap by the page changing (the label gone or a
-tier counter moved) - never by the tap alone.
+A claimable card replaces its progress bar with a button labelled with the
+medals it pays, `CLAIM 10` (menu_events_claimable). The walk proves a tap by
+the page changing (the label gone or a tier counter moved) - never by the tap
+alone.
+
+The top of the list is the relic strip (`FREE` / `RELICS`) and the boost
+panel; the list keeps its scroll position between visits, so `at_top` is
+what tells the walk it has seen the first card.
 """
 from __future__ import annotations
 
@@ -31,7 +35,9 @@ MIN_CONFIDENCE = .9
 # on its centre line.
 INFO_CLOSE_DX = 84
 _COUNTER = re.compile(r'^(?:new!?\s*)?([0-3])\s*/\s*3$', re.I)
-CLAIM_LABELS = {'claim'}
+# `claim`, optionally followed by the medal amount it pays.
+_CLAIM = re.compile(r'^claim\d*$')
+_TOP_MARKERS = {'free', 'freerelics', 'eventboostgemsrelics'}
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,7 @@ class EventsReading:
     claims: tuple[ControlTarget, ...] = ()
     back: ControlTarget | None = None
     missions_tab: ControlTarget | None = None
+    at_top: bool = False
     # The list's text, so a scroll that moved nothing can be told apart.
     fingerprint: tuple[str, ...] = ()
 
@@ -82,9 +89,10 @@ def parse(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> EventsReading:
                     key=lambda b: (b.rect.y, b.rect.x))
     counters = tuple(m.group(1) for b in listed if (m := _COUNTER.match(b.text.strip())))
     claims = tuple(_target('events_claim', b) for b in listed
-                   if normalise(b.text) in CLAIM_LABELS)
+                   if _CLAIM.match(normalise(b.text)))
     return EventsReading(visible=True, missions=bool(counters), counters=counters,
                          claims=claims, back=back, missions_tab=missions_tab,
+                         at_top=any(normalise(b.text) in _TOP_MARKERS for b in listed),
                          fingerprint=tuple(normalise(b.text) for b in listed))
 
 

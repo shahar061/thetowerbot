@@ -5,10 +5,12 @@ offer or a relic: the one control it presses inside the page is a `Claim`
 label on the Missions list, and a tap counts only once the next frame shows
 the page changed (the label gone, or a tier counter moved).
 
-Armed by the red dot on the Events icon, which is NOT proof of a claim (see
-events_badge). A visit that finds nothing to claim ends `completed` with
-`no_claimable_event_mission`, scrolling the list a bounded number of times
-first because missions accumulate past one screen.
+Armed by the red dot on the Events icon, which the game lights while a
+mission tier is claimable. The list outgrows the screen (two missions a day
+for the first week) and reopens where it was last left, so a claim may be
+above or below what the page opens on: the walk first scrolls up to the top,
+then down to the end, claiming whatever passes. Measured live, a claimable
+card twenty cards down was invisible on the opening frame.
 """
 from __future__ import annotations
 
@@ -24,7 +26,9 @@ from account_collection import CollectionAction, CollectionResult, ControlTaps, 
 from device import Image
 
 TARGET = 'events'
-MAX_SCROLLS = 6
+# Per direction. Measured: a full list of ~20 cards is three downward
+# swipes; the bound leaves room for the second week's longer list.
+MAX_SCROLLS = 12
 MAX_VISIT_FRAMES = 120
 # The info close and the Missions tab each change the page; one that does not
 # after this many taps is not going to, so the visit leaves.
@@ -33,6 +37,10 @@ MAX_PAGE_TAPS = 3
 # return band at 2270. A swipe from 2000 to 1300 stays inside it and never
 # touches the relic strip above; kept as fractions for 1920-tall frames.
 SCROLL_X, SCROLL_FROM, SCROLL_TO = 540, 2000 / 2400, 1300 / 2400
+# A slow drag: a 0.35 s swipe flung the list ~1400 px for 700 px of travel,
+# close to a whole screen. Consecutive frames must overlap or a card can pass
+# unseen between them.
+SCROLL_SECONDS = .8
 
 
 class Step(Enum):
@@ -59,6 +67,9 @@ class EventsClaim(ControlTaps):
         self._page_taps = 0
         self._pending: events_screen.EventsReading | None = None
         self._scroll_from: tuple[str, ...] | None = None
+        # Rewinding to the top before the downward pass; see the docstring.
+        self._rewinding = True
+        self._rewinds = 0
         self._result: CollectionResult | None = None
         self._bus: Any = None
         self._reason = 'claimed'
@@ -80,7 +91,8 @@ class EventsClaim(ControlTaps):
             return False
         self._requested_at = time.time() if now is None else now
         self._result = self._pending = self._scroll_from = None
-        self._frames = self._claimed = self._scrolls = self._page_taps = 0
+        self._frames = self._claimed = self._scrolls = self._page_taps = self._rewinds = 0
+        self._rewinding = True
         self._announced = False
         self._reason = 'claimed'
         self._enter(Step.OPEN)
@@ -148,7 +160,11 @@ class EventsClaim(ControlTaps):
                     return None
                 # A dropped swipe and the end of the list look the same;
                 # neither is worth a second blind swipe.
-                self._end('events_list_end')
+                if self._rewinding:
+                    self._rewinding = False
+                    self._enter(Step.READ)
+                else:
+                    self._end('events_list_end')
             else:
                 self._enter(Step.READ)
         if self._step is Step.READ and (page.info_close is not None or not page.missions):
@@ -168,20 +184,36 @@ class EventsClaim(ControlTaps):
                 return self._tap_target(page.claims[0], device, 'events_claim', Step.VERIFY, moment)
             if page.claims:
                 self._end('events_claim_budget')
-            elif self._scrolls < MAX_SCROLLS:
+                return self._return(page, device, moment)
+            if self._rewinding and (page.at_top or self._rewinds >= MAX_SCROLLS):
+                self._rewinding = False
+            if self._rewinding:
+                self._rewinds += 1
+                return self._scroll(page, screen, device, up=True)
+            if self._scrolls < MAX_SCROLLS:
                 self._scrolls += 1
-                self._scroll_from = page.fingerprint
-                height = screen.shape[0]
-                start, end = int(height * SCROLL_FROM), int(height * SCROLL_TO)
-                device.swipe(SCROLL_X, start, SCROLL_X, end, .35)
-                self._enter(Step.SCROLLED)
-                return CollectionAction('read', 'events_scroll', SCROLL_X, start, 1.,
-                                        (SCROLL_X, end, 1, start - end))
-            else:
-                self._end('events_scroll_budget')
+                return self._scroll(page, screen, device, up=False)
+            self._end('events_scroll_budget')
+        return self._return(page, device, moment)
+
+    def _return(self, page: events_screen.EventsReading, device: Any,
+                moment: float) -> CollectionAction | None:
         if self._step is Step.RETURN:
             return self._tap_target(page.back, device, 'events_return', Step.CONFIRM_HOME, moment)
         return None
+
+    def _scroll(self, page: events_screen.EventsReading, screen: Image, device: Any,
+                *, up: bool) -> CollectionAction:
+        """One slow drag inside the list band; `up` reveals the cards above."""
+        self._scroll_from = page.fingerprint
+        height = screen.shape[0]
+        start, end = int(height * SCROLL_FROM), int(height * SCROLL_TO)
+        if up:
+            start, end = end, start
+        device.swipe(SCROLL_X, start, SCROLL_X, end, SCROLL_SECONDS)
+        self._enter(Step.SCROLLED)
+        return CollectionAction('read', 'events_rewind' if up else 'events_scroll',
+                                SCROLL_X, start, 1., (SCROLL_X, min(start, end), 1, abs(start - end)))
 
     def _end(self, reason: str) -> None:
         if self._claimed == 0:
