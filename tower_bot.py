@@ -21,9 +21,12 @@ from __future__ import annotations
 
 from account_collection import StatsCollection, at_home
 from cards_intro import CardsIntro, popup_visible as cards_popup_visible
+import battle_menu
 import battle_upgrade_info
 import events_badge
 import events_screen
+from battle_menu_state import BattleMenuState
+from battle_menu_visit import BattleMenuVisit, Outcome as BattleMenuOutcome
 import milestones_badge
 import menu_badges
 from notification_state import MissionReceiptBus, NotificationState
@@ -383,6 +386,15 @@ class TowerBot:
         # returns rather than aborting, and at a browser-set MAX_INTERVAL of
         # 3600s that turns Ctrl+C into an hour-long hang.
         self._stopping = threading.Event()
+        # The in-battle menu's badged icons: a visit is opportunistic, not
+        # scheduled, so it owns no strategy field of its own either - see
+        # the gem's comment above for why that pattern repeats here.
+        self.battle_menu = BattleMenuVisit(
+            bus, self.templates,
+            BattleMenuState(self.progress.path.with_name("battle-menu-state.json")
+                            if self.progress is not None else None),
+            sleep=self._stopping.wait,
+        )
 
     @property
     def screen_state(self) -> screens.ScreenState:
@@ -1062,7 +1074,8 @@ class TowerBot:
         return (self.collection.active or self.visit.active
                 or self.claim.active or self.milestones_claim.active
                 or self.cards_intro.active
-                or (self.lab_visit is not None and self.lab_visit.active))
+                or (self.lab_visit is not None and self.lab_visit.active)
+                or self.battle_menu.active)
 
     # -- O4 recovery (scan thread only) -------------------------------------
     def _recovery_active(self) -> bool:
@@ -1236,7 +1249,7 @@ class TowerBot:
     def _cancel_walks(self, reason: str, detail: str) -> None:
         """End whichever walk is armed. Each cancel is idempotent."""
         for walk in (self.collection, self.visit, self.claim,
-                     self.milestones_claim, self.cards_intro):
+                     self.milestones_claim, self.cards_intro, self.battle_menu):
             walk.cancel(reason, detail)
         if self.lab_visit is not None:
             self.lab_visit.cancel(reason)
@@ -1606,6 +1619,16 @@ class TowerBot:
                         observed_screen = "LAB_PICKER"
                     elif lab_screen.read_home(self.screen, boxes).page:
                         observed_screen = "LABS"
+                # The in-battle menu and the pages it opens have no
+                # screens/pages anchor either (they classify UNKNOWN). While a
+                # battle menu visit owns them, name them so the supervisor
+                # can authorize the visit's next tap; a stray open menu with
+                # no visit stays UNKNOWN and is left to ordinary recovery.
+                if self.battle_menu.active and observed_screen == "UNKNOWN":
+                    if battle_menu.close_point(self.screen, self.templates) is not None:
+                        observed_screen = "BATTLE_MENU"
+                    elif battle_menu.read_page(boxes).page != "none":
+                        observed_screen = "BATTLE_MENU_PAGE"
                 # The Free Ticket offer covers the main menu without hiding
                 # its anchors, so it is looked for on MAIN_MENU too; its
                 # reveal shares the milestone reward modal's SKIP + CLAIM
@@ -1782,6 +1805,30 @@ class TowerBot:
                 self.bus.publish(events.Tapped(
                     action="reroll:workshop_tutorial_claim", x=tutorial_claim[0],
                     y=tutorial_claim[1], score=1.0))
+                return True
+        # An active in-battle menu visit owns every frame until it finishes,
+        # even off IN_RUN (a destination page classifies UNKNOWN), so it is
+        # stepped here, ahead of every reader below - but only after the
+        # recovery gate above, like every other multi-frame walk: in worker
+        # mode each tap goes through DeviceSupervisor, which accepts one
+        # input per observed frame, so the frame must be observed (and, off
+        # IN_RUN, named BATTLE_MENU / BATTLE_MENU_PAGE in the preflight)
+        # before the visit may act on it. The stall watchdog therefore
+        # notes these frames like any other; a visit is bounded
+        # (BATTLE_MENU_STEP_FRAMES per step, a capped queue), so it cannot
+        # itself hold the watchdog off indefinitely. A paused bot never
+        # steps it - the visit is cancelled further down, untouched.
+        if not settings.paused and self.battle_menu.active:
+            outcome = self.battle_menu.observe(
+                screen=self.screen, boxes=reads.full, device=self.device,
+                policy=settings.strategy, now=time.time(),
+                in_run=reading.state is screens.ScreenState.IN_RUN)
+            if outcome is not BattleMenuOutcome.IDLE:
+                if self.frames is not None:
+                    self.frames.set_boxes([])
+                self.bus.publish(events.ScanCompleted(
+                    screen=reading.state.value,
+                    duration_ms=(time.monotonic() - started) * 1000, wallet=self.wallet))
                 return True
         if battle_context or reading.state is screens.ScreenState.UNKNOWN:
             try:
@@ -2080,6 +2127,9 @@ class TowerBot:
                 'paused', 'The bot was paused mid-claim; it was not resumed.')
         if self.cards_intro.active and settings.paused:
             self.cards_intro.cancel(
+                'paused', 'The bot was paused mid-visit; it was not resumed.')
+        if self.battle_menu.active and settings.paused:
+            self.battle_menu.cancel(
                 'paused', 'The bot was paused mid-visit; it was not resumed.')
         # An armed transaction owns the frame the same way a panel does, on
         # the menu as well as on the page itself: these are the only
@@ -2412,6 +2462,27 @@ class TowerBot:
                 # A purchase or navigation tap based on the same image would
                 # race it, and the supervisor rightly rejects that second
                 # action until a new frame confirms the first one.
+                if self.frames is not None:
+                    self.frames.set_boxes([])
+                self.bus.publish(events.ScanCompleted(
+                    screen=state.value, duration_ms=(time.monotonic() - started) * 1000,
+                    wallet=self.wallet, wave=self._reported_wave(state),
+                ))
+                return True
+
+            # The in-battle menu's badged hamburger, opportunistic like the
+            # gem above: only when nothing else already owns the tap (a
+            # walk, an active shopping visit, or an open Lab transaction /
+            # Workshop purchase acknowledgement - the same "pending_purchase"
+            # pair the deadline-speed gate above checks).
+            if (not self.gem.active and not self.shopping.active
+                    and not self.shopping.reconciliation_pending
+                    and self.autopilot.pending is None
+                    and not self._any_walk_active()
+                    and self.battle_menu.observe(
+                        screen=self.screen, boxes=reads.full, device=self.device,
+                        policy=settings.strategy, now=time.time(), in_run=True,
+                    ) is BattleMenuOutcome.TAPPED):
                 if self.frames is not None:
                     self.frames.set_boxes([])
                 self.bus.publish(events.ScanCompleted(

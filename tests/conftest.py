@@ -14,6 +14,8 @@ if str(repo_root) not in sys.path:
 import cv2  # noqa: E402 - after the sys.path fix-up above
 import pytest  # noqa: E402 - after the sys.path fix-up above
 
+from battle_menu_state import BattleMenuState  # noqa: E402 - after the fix-up above
+from battle_menu_visit import BattleMenuVisit  # noqa: E402 - after the fix-up above
 import config  # noqa: E402 - after the sys.path fix-up above
 import digits  # noqa: E402 - after the sys.path fix-up above
 import events  # noqa: E402 - after the sys.path fix-up above
@@ -149,9 +151,34 @@ class _RecordingSnapshotWriter:
         return _FIXTURES_DIR / f"fake-unknown-{len(self.written)}.png"
 
 
+class _InertBattleMenuState(BattleMenuState):
+    """A BattleMenuState that never has anything worth opening for.
+
+    TowerBot always builds itself a real, active-by-default battle_menu
+    (BattleMenuState(None) - fresh, so worth_opening() is True the moment a
+    badge shows up), because there is no "off" switch in production: the
+    visit is opportunistic, like the gem claim beside it (see tower_bot.py's
+    constructor comment). Every loop-test bot predates that visit, and most
+    of the committed IN_RUN fixtures happen to carry a badged hamburger -
+    incidental to whatever each of those tests is actually checking. Rather
+    than hunt down an unbadged fixture for every one of them (as the very
+    first pass through this task did, in test_gem_claim_loop.py - see that
+    file's history), `_shopping_bot` swaps in one of these by default so an
+    ordinary loop-test bot never opens the menu no matter what the frame
+    shows, and only `tests/test_battle_menu_loop.py` opts back into the real
+    thing.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(None)
+
+    def worth_opening(self, now: float) -> bool:
+        return False
+
+
 def _shopping_bot(
     frame_name: str, *, state: screens.ScreenState, policy: Shopping, auto_navigate: bool,
-    claims: Claims = Claims(),
+    claims: Claims = Claims(), battle_menu_opt_in: bool = False,
 ) -> TowerBot:
     """One TowerBot, frozen on one frame, with its tracker pre-confirmed.
 
@@ -166,6 +193,12 @@ def _shopping_bot(
     engine to decide whether to disable buying, and these tests are about
     the visit loop, not about whether a wheel imports. A directly-built
     session skips the gate and stays fast.
+
+    `battle_menu_opt_in` defaults False: the built-in `self.battle_menu` is
+    replaced with an inert stand-in (see `_InertBattleMenuState`) so a loop
+    test that has nothing to do with the in-battle menu is never surprised
+    by it opening on a badged fixture. Pass True to keep the real,
+    badge-driven visitor - only `tests/test_battle_menu_loop.py` does.
     """
     device = _FakeDevice()
     bus = _RecordingBus()
@@ -186,6 +219,8 @@ def _shopping_bot(
         shopping=session,
         navigation_cooldown=0.0,
     )
+    if not battle_menu_opt_in:
+        bot.battle_menu = BattleMenuVisit(bus, templates, _InertBattleMenuState())
     image = _frame(frame_name)
     bot._screen = image
     bot.refresh_screen = lambda: bot._screen  # no real device to capture from
@@ -333,3 +368,43 @@ def bot_in_run_fast() -> TowerBot:
         "in_run_fast", state=screens.ScreenState.IN_RUN,
         policy=Shopping(), auto_navigate=False,
     )
+
+
+@pytest.fixture
+def bot_with_frames() -> Callable[..., TowerBot]:
+    """Factory: a bot fed a fixed sequence of fixture frames, one new frame
+    per run_once() call.
+
+    Built on `_shopping_bot` for its usual fixed-up bot (fake device,
+    recording bus, pre-confirmed tracker), but overrides `refresh_screen` to
+    step through `frame_names` instead of freezing on one image - a
+    multi-scan loop test (e.g. the in-battle menu visit, which owns several
+    scans in a row) needs the screen to actually change underneath it. Once
+    the sequence is exhausted, the last frame repeats, so a test can call
+    run_once() more times than it supplied frames without an IndexError.
+
+    `battle_menu_opt_in` is forwarded to `_shopping_bot` and defaults the
+    same way: False, an inert visitor. tests/test_battle_menu_loop.py is
+    expected to pass True explicitly.
+    """
+    def build(frame_names: list[str], *, state: screens.ScreenState = screens.ScreenState.IN_RUN,
+              policy: Shopping = Shopping(), auto_navigate: bool = False,
+              claims: Claims = Claims(), battle_menu_opt_in: bool = False) -> TowerBot:
+        bot = _shopping_bot(
+            frame_names[0], state=state, policy=policy,
+            auto_navigate=auto_navigate, claims=claims,
+            battle_menu_opt_in=battle_menu_opt_in,
+        )
+        images = [_frame(name) for name in frame_names]
+        step = {"i": 0}
+
+        def refresh() -> Image:
+            i = min(step["i"], len(images) - 1)
+            bot._screen = images[i]
+            step["i"] += 1
+            return bot._screen
+
+        bot.refresh_screen = refresh
+        return bot
+
+    return build

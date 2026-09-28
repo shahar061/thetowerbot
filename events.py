@@ -112,6 +112,17 @@ class Skipped(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class BattleMenuOpened(Event):
+    due: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class BattleMenuIconHandled(Event):
+    icon: str
+    outcome: str  # visited | claimed | free_tile_seen | ad_watched | failed
+
+
+@dataclass(frozen=True, kw_only=True)
 class RunStarted(Event):
     run_id: int
     purpose: str = "farm"

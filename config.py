@@ -657,6 +657,57 @@ class Rect(NamedTuple):
     h: int
 
 
+# -- in-battle menu (battle_menu.py) ------------------------------------------
+BATTLE_MENU_TEMPLATES: dict[str, str] = {
+    "hamburger": "battle_menu/hamburger.png",
+    "close": "battle_menu/close.png",
+    "exit_battle": "battle_menu/exit_battle.png",
+    "cart": "battle_menu/cart.png",
+    "missions": "battle_menu/missions.png",
+    "cards": "battle_menu/cards.png",
+    "labs": "battle_menu/labs.png",
+    "event": "battle_menu/event.png",
+}
+# The badge sits on the icon frame's top-left corner, outside the inner crop,
+# and overlaps the crop itself by only a few pixels. Offsets are from the
+# located template's top-left; measured in Task 2 on open_badged.png /
+# collapsed_badged.png (all coordinates are (x, y) offsets from that corner,
+# or absolute pixel bounding boxes as noted):
+#   hamburger red dot: abs x 963-987, y 16-41    -> offset x -27..-3, y -24..-1
+#   cart red "1":       abs x 859-883, y 15-40    -> offset x -25..-1, y -25..0
+#   event blue "1":     abs x 961-993, y 446-479  -> offset x -33..-1, y -24..+9
+#   settings' red dot (must NOT fall in missions' patch): abs x 963-995,
+#     y 226-258, while missions' own box starts at x 884 - clear by 79px.
+# BATTLE_MENU_BADGE_PATCH covers the union of the three badge boxes above
+# with margin: x -38..+6, y -30..+14.
+BATTLE_MENU_BADGE_PATCH = Rect(x=-38, y=-30, w=44, h=44)
+# Measured red_pixels()/blue_pixels() counts on open_badged.png / collapsed_badged.png
+# with the patch above:
+#   hamburger (badged, red): 521   cart (badged, red): 476   event (badged, blue): 828
+#   missions/cards/labs (clear): 0   settings dot leaking into missions patch: 0
+# 120 keeps a wide margin below every badged count and well above the clear ones.
+BATTLE_MENU_BADGE_MIN_PIXELS = 120
+# Lavender count badge (the Event star's "1"); OpenCV hue 0-180.
+BATTLE_MENU_BLUE_HUE = (112, 140)
+BATTLE_MENU_BLUE_MIN_SAT = 70
+BATTLE_MENU_BLUE_MIN_VAL = 150
+BATTLE_MENU_COOLDOWNS: dict[str, float] = {
+    "event": 1800.0, "cart": 1800.0, "missions": 600.0, "cards": 600.0, "labs": 600.0,
+}
+BATTLE_MENU_MAX_BACKOFF = 7200.0
+BATTLE_MENU_MIN_SESSION_GAP = 180.0
+BATTLE_MENU_STEP_FRAMES = 6
+BATTLE_MENU_WATCH_ADS = False
+
+# The Store's free-gem ▶ button's own red dot, patch relative to the button
+# centre (which itself sits ~138px below the "FREE" caption's centre).
+# Measured on store_free_tiles.png: the dot's red_pixels() count in this
+# patch is 1179 (button derived from the +138 offset) / 1398 (measured
+# button centre) - both far above the 120 menu-icon threshold, so it is
+# reused rather than a new one.
+BATTLE_MENU_FREE_DOT_PATCH = Rect(x=40, y=-70, w=70, h=60)
+
+
 # A tile is a bright bordered rectangle: a half-width upgrade tile, or a
 # full-width unlock tile. Both the workshop and the in-run panel use them.
 #
