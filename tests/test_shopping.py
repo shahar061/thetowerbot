@@ -1269,6 +1269,42 @@ def test_restart_without_its_proof_page_stays_pending_after_the_timeout(
     assert transactions.TransactionJournal(path).open_transactions()[0].stage == transactions.Stage.ACTED
     assert session._spent is None
 
+
+def test_the_unproven_timeout_warns_once_per_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_header: dict, caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, page, clock, path = _restart_workshop(tmp_path, monkeypatch, fake_header)
+    off_page = SimpleNamespace(page="main_menu", top_left=None)
+    session._recover_transaction(off_page, frame("menu_cards"))
+    for _ in range(3):
+        clock[0] += shopping_mod.RECOVERY_TIMEOUT_SECONDS
+        session._recover_transaction(off_page, frame("menu_cards"))
+    assert session.reconciliation_pending
+    assert len([r for r in caplog.records if "no proof within" in r.getMessage()]) == 1
+
+
+def test_restart_workshop_observed_with_battle_income_settles_unproven_after_the_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_header: dict,
+) -> None:
+    session, page, clock, path = _restart_workshop(tmp_path, monkeypatch, fake_header)
+    page.rows = (dataclasses.replace(page.rows[0], value=2, price=6),)
+    fake_header["coins"] = 2000  # Battles paid out since the tap; no debit can be priced.
+    device = FakeDevice()
+    policy = _workshop_policy()
+    _step(session, device, policy)
+    clock[0] += 1
+    _step(session, device, policy)
+    assert session.reconciliation_pending
+    clock[0] += shopping_mod.RECOVERY_TIMEOUT_SECONDS
+    _step(session, device, policy)
+    assert device.taps == []
+    assert not session.reconciliation_pending
+    journal = transactions.TransactionJournal(path)
+    assert not journal.open_transactions()
+    assert journal.currencies.committed("coins") == 0
+    assert session._spent is None
+    assert [s.reason for s in session._bus.of_type("PurchaseSkipped")][-1] == "unproven"
+
 def test_restart_card_exact_debit_retains_original_reservation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                          fake_header: dict) -> None:
     path = tmp_path / "bot.db"

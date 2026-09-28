@@ -124,9 +124,14 @@ def _balance_at(screen: Image, region: config.Rect) -> int | None:
     one header row, and a crop that caught both of them is a crop measured
     wrong. Refusing is safe; picking the first would spend against the wrong
     balance.
+
+    A lone "0" - the wallet a purchase just emptied - reads at .87-.92, so
+    it is accepted from .8. Mistaking any other balance for 0 only
+    understates the wallet, and a purchase proven against it still needs
+    its row to change.
     """
     values = [value for box in ocr.read_region(screen, region)
-              if box.confidence >= .9
+              if box.confidence >= (.8 if box.text.strip() == "0" else .9)
               and (value := price_number(box.text)) is not None]
     return values[0] if len(values) == 1 else None
 
@@ -379,6 +384,7 @@ class ShoppingSession:
         # Permanent unlock evidence outlives an individual shopping visit.
         self._completed_unlocks: set[str] = set()
         self._recovery_sample: tuple[str, transactions.RecoveryEvidence] | None = None
+        self._unproven_logged: tuple[str, bool] | None = None
         # When this process first failed to prove the open attempt; survives reset().
         self._recovery_since: tuple[str, float] | None = None
         self._recovered_keys: set[str] = set()
@@ -1487,11 +1493,19 @@ class ShoppingSession:
                 if self.observations is not None:
                     self.observations.decision("blocked", outcome.reason)
                 return True
-            # The commitment stays reserved until a newer wallet read releases it.
+            # A legacy commitment stays reserved until a newer wallet read
+            # releases it; a scoped intent settles only once a check has read
+            # its row (TransactionJournal.close_unproven).
             reason = f"no proof within {RECOVERY_TIMEOUT_SECONDS:.0f}s; closed unproven"
-            logger.warning("%s: %s", txn.item, reason)
             self.journal.close_unproven(txn.key, reason=reason, now=now)
-            if txn.scope is not None:
+            settled = self.journal._require(txn.key).stage == transactions.Stage.RESOLVED
+            if self._unproven_logged != (txn.key, settled):
+                # Once per intent and state: an open one is re-examined every scan.
+                self._unproven_logged = (txn.key, settled)
+                logger.warning("%s: %s", txn.item, reason if settled else
+                               f"no proof within {RECOVERY_TIMEOUT_SECONDS:.0f}s; held until a "
+                               "read-only Workshop check reads its row")
+            if not settled:
                 return True
             self._bus.publish(events.PurchaseSkipped(item=txn.item, reason="unproven", detail=reason))
         elif self.currencies is not None:
