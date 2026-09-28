@@ -2535,8 +2535,11 @@ class TowerBot:
                         )
                     combat = frame_combat(self.autopilot.context.combat(time.time()), observation)
                     wave_value = combat.get('wave')
-                    wave_number = (int(wave_value) if isinstance(wave_value, (int, str))
-                                   and str(wave_value).isdigit() else None)
+                    # frame_combat hands every HUD fact back as a float.
+                    wave_number = (int(wave_value) if isinstance(wave_value, (int, float))
+                                   and not isinstance(wave_value, bool)
+                                   and float(wave_value).is_integer() and wave_value >= 0
+                                   else None)
                     if wave_number is not None:
                         self._scan_wave = wave_number
                     if (self.progress is not None and wave_number is not None
