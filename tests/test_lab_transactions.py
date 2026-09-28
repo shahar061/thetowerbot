@@ -421,3 +421,43 @@ def test_wrong_lab_semantics_or_wallet_retains_shared_reservation(tmp_path: Path
     assert journal.open_transactions()[0].key == txn.key
     with db.reader(journal.path) as conn:
         assert conn.execute('SELECT amount FROM currency_commitments').fetchone()[0] == 300
+
+
+def _unlanded(scope: FactScope, **overrides: object) -> RecoveryEvidence:
+    return RecoveryEvidence(**{"category": "LABS", "currency": "gems", "wallet_after": 613,
+        "effect_changed": False, "observed_at": 13., "frame_digest": "after", "scope": scope,
+        "operation": "lab_unlock", "slot": 2, **overrides})
+
+
+def test_an_unlanded_unlock_tap_is_settled_as_not_charged(tmp_path: Path) -> None:
+    _, journal, scope = authority(tmp_path)
+    txn = prepared(journal, scope, operation='lab_unlock')  # acted at 11
+    outcome = journal.refute_unlanded_unlock(txn.key, _unlanded(scope), now=13.)
+    assert (outcome.verdict, outcome.spent) == (Verdict.REFUTED, 0)
+    assert journal.open_transactions() == ()
+    assert journal.currencies.committed('gems') == 0
+    with db.reader(journal.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+    assert journal.refute_unlanded_unlock(txn.key, _unlanded(scope), now=14.) == outcome
+
+
+@pytest.mark.parametrize("overrides", [
+    {"observed_at": 12.5},     # too soon after the tap
+    {"wallet_after": 513},     # the gems moved
+    {"effect_changed": None},  # the slot was not read
+    {"slot": 3},               # another slot
+    {"frame_digest": ""},      # no frame behind the read
+])
+def test_an_unlanded_unlock_needs_complete_proof(tmp_path: Path, overrides: dict) -> None:
+    _, journal, scope = authority(tmp_path)
+    txn = prepared(journal, scope, operation='lab_unlock')
+    outcome = journal.refute_unlanded_unlock(txn.key, _unlanded(scope, **overrides), now=13.)
+    assert outcome.verdict == Verdict.UNPROVEN and outcome.spent is None
+    assert journal.open_transactions()[0].key == txn.key
+
+
+def test_only_a_lab_unlock_can_be_refuted_as_unlanded(tmp_path: Path) -> None:
+    _, journal, scope = authority(tmp_path)
+    txn = prepared(journal, scope, operation='lab_start')
+    evidence = _unlanded(scope, currency='coins', operation='lab_start', slot=1)
+    assert journal.refute_unlanded_unlock(txn.key, evidence, now=13.).verdict == Verdict.UNPROVEN
