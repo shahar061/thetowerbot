@@ -169,7 +169,7 @@ def test_a_new_config_resets_the_cache_and_reaches_every_viewer() -> None:
 
 def test_a_gop_too_long_to_replay_is_dropped_until_the_next_keyframe() -> None:
     events = opening(key(1), delta(2), delta(3), delta(4))
-    hub, shutdown, opened = hub_over([FakeSession(events)], capacity=3)
+    hub, shutdown, opened = hub_over([FakeSession(events)], gop_limit=3)
     hub.subscribe()
     wait_until(lambda: bool(opened) and opened[0].played.is_set())
     assert drain(hub.subscribe(), 2, timeout=0.3) == [CONFIG_MSG]
@@ -177,7 +177,7 @@ def test_a_gop_too_long_to_replay_is_dropped_until_the_next_keyframe() -> None:
 
 
 def test_a_late_joiner_after_a_gop_overflow_waits_for_the_next_keyframe() -> None:
-    # capacity=3: key(1), delta(2), delta(3) fill the GOP; delta(4) overflows
+    # gop_limit=3: key(1), delta(2), delta(3) fill the GOP; delta(4) overflows
     # it, so the hub drops the cached GOP but stays "keyed" (it keeps
     # broadcasting deltas live). A joiner arriving in that gap has nothing
     # decodable cached, so it must not be handed a bare delta - it has to
@@ -185,13 +185,46 @@ def test_a_late_joiner_after_a_gop_overflow_waits_for_the_next_keyframe() -> Non
     gate = threading.Event()
     events = opening(key(1), delta(2), delta(3), delta(4))
     session = FakeSession(events, gate=gate, after_gate=[delta(5), key(6)])
-    hub, shutdown, opened = hub_over([session], capacity=3)
+    hub, shutdown, opened = hub_over([session], gop_limit=3)
     hub.subscribe()
     wait_until(lambda: bool(opened) and opened[0].played.is_set())
     joiner = hub.subscribe()
     gate.set()
     assert drain(joiner, 2) == [CONFIG_MSG, key_msg(6)]
     shutdown.set()
+
+
+def test_a_late_joiner_replay_exceeding_capacity_is_not_capped() -> None:
+    # capacity=3 would normally skip a viewer to the next keyframe after 3
+    # queued frames, but a replay longer than that (up to gop_limit=10) must
+    # still be delivered whole - the lag cap is for live frames only.
+    events = opening(key(1), delta(2), delta(3), delta(4), delta(5), delta(6), delta(7))
+    hub, shutdown, opened = hub_over([FakeSession(events)], capacity=3, gop_limit=10)
+    hub.subscribe()
+    wait_until(lambda: bool(opened) and opened[0].played.is_set())
+    joiner = hub.subscribe()
+    assert drain(joiner, 8) == [CONFIG_MSG, key_msg(1), delta_msg(2), delta_msg(3), delta_msg(4), delta_msg(5),
+                                 delta_msg(6), delta_msg(7)]
+    shutdown.set()
+
+
+def test_replayed_frames_do_not_count_toward_the_lag_cap() -> None:
+    sub = Subscription(capacity=3, on_close=lambda _: None)
+    sub.put(CONFIG_MSG)
+    replay = [key_msg(1), delta_msg(2), delta_msg(3), delta_msg(4), delta_msg(5), delta_msg(6), delta_msg(7)]
+    for message in replay:
+        sub.put(message, counts=False)
+    assert drain(sub, 8) == [CONFIG_MSG, *replay]
+    assert sub._frames == 0  # noqa: SLF001 - the replay must not have touched the lag counter
+    # Live frames after the replay still respect the cap (capacity=3): three
+    # deltas fill it, and the fourth (non-key) frame would overflow it, so the
+    # next keyframe clears the queue and is what the viewer actually gets.
+    sub.put(delta_msg(8))
+    sub.put(delta_msg(9))
+    sub.put(delta_msg(10))
+    sub.put(key_msg(11))
+    assert drain(sub, 1) == [key_msg(11)]
+    assert sub._frames == 0  # noqa: SLF001 - back to 0 after the clear, never negative
 
 
 def test_a_quick_resubscribe_reuses_the_session_and_linger_then_stops_it() -> None:

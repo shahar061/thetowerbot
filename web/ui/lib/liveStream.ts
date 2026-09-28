@@ -4,6 +4,14 @@ export const FIRST_FRAME_TIMEOUT_MS = 5_000;
 export const LIVE_RETRY_MS = 30_000;
 /** Deltas queued in the decoder beyond this are skipped until the next keyframe. */
 export const MAX_DECODE_QUEUE = 30;
+/**
+ * The MAX_DECODE_QUEUE skip rule only starts applying once a binary message
+ * has arrived while the decoder's queue was at or below this. Until then -
+ * e.g. through a late joiner's replayed backlog - every frame from the first
+ * keyframe on is decoded, so the backlog plays through quickly instead of
+ * being skipped as "fell behind" before the decoder ever had a chance to catch up.
+ */
+export const CAUGHT_UP_DECODE_QUEUE = 2;
 
 export type StreamConfig = { type: "config"; codec: string; width: number; height: number };
 export type StreamFrame = { key: boolean; timestamp: number; data: Uint8Array };

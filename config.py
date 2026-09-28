@@ -633,9 +633,13 @@ STREAM_I_FRAME_INTERVAL_S: int = 2
 # How long the stream outlives its last viewer, so a card scrolled away and
 # back (or a tab flipped) does not restart the encoder.
 STREAM_LINGER_SECONDS: float = 10.0
-# How far a viewer may fall behind (4 s at 15 fps) before it skips to the next
-# keyframe. Also the longest GOP kept for late joiners, so a replay always fits.
+# How far a *live* viewer may fall behind (4 s at 15 fps) before it skips to
+# the next keyframe. A late joiner's replay of the GOP cache is exempt.
 STREAM_SUBSCRIBER_FRAMES: int = 60
+# The GOP cache for late joiners: latest keyframe and every frame since, up to
+# this many. 12 s at 15 fps - covers scrcpy's ~10 s default keyframe spacing
+# (BlueStacks Air ignores the 2 s STREAM_I_FRAME_INTERVAL_S request).
+STREAM_GOP_FRAMES: int = 180
 # How often an open stream re-checks that the selected account still runs here.
 STREAM_ACCOUNT_RECHECK_SECONDS: float = 1.0
 

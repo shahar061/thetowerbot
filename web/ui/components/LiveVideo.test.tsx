@@ -1,6 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe as group, expect, it, vi } from "vitest";
 import { LiveVideo } from "./LiveVideo";
+import { CAUGHT_UP_DECODE_QUEUE } from "@/lib/liveStream";
 import {
   CONFIG_TEXT, MockDecoder, MockSocket, fakeVideoFrame, frameBytes, installLiveStreamMocks, uninstallLiveStreamMocks,
 } from "@/lib/liveStreamTesting";
@@ -82,6 +83,32 @@ group("LiveVideo", () => {
     decoder.decodeQueueSize = 0;
     act(() => { socket.receive(frameBytes(false, 3, [0x41])); socket.receive(frameBytes(true, 4, [0x65])); });
     expect(decoder.chunks.map(chunk => chunk.init.timestamp)).toEqual([1, 4]);
+  });
+
+  it("decodes the catch-up burst even while the decoder queue is already deep", () => {
+    mount();
+    const socket = MockSocket.latest();
+    act(() => socket.receive(CONFIG_TEXT));
+    const decoder = MockDecoder.latest();
+    decoder.decodeQueueSize = 31; // behind before a single frame of this session has been decoded
+    act(() => {
+      socket.receive(frameBytes(true, 1, [0x65]));
+      socket.receive(frameBytes(false, 2, [0x41]));
+      socket.receive(frameBytes(false, 3, [0x41]));
+    });
+    expect(decoder.chunks.map(chunk => chunk.init.timestamp)).toEqual([1, 2, 3]);
+  });
+
+  it("skips the fell-behind delta only after the decoder has caught up at least once", () => {
+    mount();
+    const socket = MockSocket.latest();
+    act(() => { socket.receive(CONFIG_TEXT); socket.receive(frameBytes(true, 1, [0x65])); });
+    const decoder = MockDecoder.latest();
+    decoder.decodeQueueSize = CAUGHT_UP_DECODE_QUEUE; // small: this message marks "caught up"
+    act(() => socket.receive(frameBytes(false, 2, [0x41])));
+    decoder.decodeQueueSize = 31;
+    act(() => socket.receive(frameBytes(false, 3, [0x41])));
+    expect(decoder.chunks.map(chunk => chunk.init.timestamp)).toEqual([1, 2]);
   });
 
   it("closes quietly on unmount", () => {

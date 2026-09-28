@@ -28,12 +28,17 @@ _BACKOFF_MAX_S = 30.0
 
 
 class Subscription:
-    """One viewer's queue. A viewer more than `capacity` frames behind resumes at the next keyframe."""
+    """One viewer's queue. A viewer more than `capacity` *live* frames behind resumes at the next keyframe."""
 
     def __init__(self, *, capacity: int, on_close: Callable[[Subscription], None]) -> None:
         self._capacity = capacity
         self._on_close = on_close
-        self._items: deque[Message] = deque()
+        # Each queued item remembers whether it counts toward `_frames`: the
+        # replayed GOP handed to a joiner in subscribe() does not, so a
+        # replay longer than `capacity` (but within the hub's `gop_limit`)
+        # is never truncated by the live lag cap. Only frames broadcast live
+        # after subscribing count.
+        self._items: deque[tuple[Message, bool]] = deque()
         self._frames = 0
         # A viewer never has a decodable delta until it has seen a keyframe.
         # The replayed GOP (if any) always starts with one, so this only ever
@@ -43,24 +48,26 @@ class Subscription:
         self._cond = threading.Condition()
         self._closed = False
 
-    def put(self, message: Message) -> None:
+    def put(self, message: Message, *, counts: bool = True) -> None:
         with self._cond:
             if isinstance(message, FrameMessage):
                 if message.key:
                     self._skip_to_key = False
                 elif self._skip_to_key:
                     return
-                if self._frames >= self._capacity:
-                    # Too far behind. The queued frames are worthless without
-                    # the ones about to be dropped, so throw them all away
-                    # (config messages stay) and resume at a keyframe.
-                    self._items = deque(item for item in self._items if not isinstance(item, FrameMessage))
-                    self._frames = 0
-                    if not message.key:
-                        self._skip_to_key = True
-                        return
-                self._frames += 1
-            self._items.append(message)
+                if counts:
+                    if self._frames >= self._capacity:
+                        # Too far behind. The queued frames are worthless
+                        # without the ones about to be dropped, so throw them
+                        # all away (config messages stay, counted or not) and
+                        # resume at a keyframe.
+                        self._items = deque(item for item in self._items if not isinstance(item[0], FrameMessage))
+                        self._frames = 0
+                        if not message.key:
+                            self._skip_to_key = True
+                            return
+                    self._frames += 1
+            self._items.append((message, counts))
             self._cond.notify()
 
     def get(self, timeout: float) -> Message | None:
@@ -69,8 +76,8 @@ class Subscription:
                 self._cond.wait(timeout)
             if not self._items:
                 return None
-            message = self._items.popleft()
-            if isinstance(message, FrameMessage):
+            message, counts = self._items.popleft()
+            if isinstance(message, FrameMessage) and counts:
                 self._frames -= 1
             return message
 
@@ -86,12 +93,14 @@ class StreamHub:
     def __init__(self, session_factory: Callable[[], StreamSession], *, shutdown: threading.Event,
                  linger: float = config.STREAM_LINGER_SECONDS,
                  capacity: int = config.STREAM_SUBSCRIBER_FRAMES,
+                 gop_limit: int = config.STREAM_GOP_FRAMES,
                  clock: Callable[[], float] = time.monotonic,
                  wait: Callable[[float], bool] | None = None, label: str = "") -> None:
         self._factory = session_factory
         self._shutdown = shutdown
         self._linger = linger
         self._capacity = capacity
+        self._gop_limit = gop_limit
         self._clock = clock
         # Returns True when shutdown was requested during the wait.
         self._wait = wait if wait is not None else shutdown.wait
@@ -130,7 +139,7 @@ class StreamHub:
             if self._config_msg is not None:
                 sub.put(self._config_msg)
             for frame in self._gop:
-                sub.put(frame)
+                sub.put(frame, counts=False)
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, name=f"live-stream {self._label}".strip(),
                                                 daemon=True)
@@ -266,11 +275,12 @@ class StreamHub:
             elif not self._keyed:
                 return  # nothing decodable has been sent yet
             elif self._gop:
-                if len(self._gop) < self._capacity:
+                if len(self._gop) < self._gop_limit:
                     self._gop.append(frame)
                 else:
-                    # Longer than a viewer's queue: replaying it would overflow.
-                    # Late joiners wait for the next keyframe instead.
+                    # Longer than gop_limit: the encoder is going that long
+                    # without a keyframe. Late joiners wait for the next one
+                    # instead of caching an ever-growing GOP.
                     self._gop = []
             for sub in self._subs:
                 sub.put(frame)

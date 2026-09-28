@@ -120,7 +120,10 @@ control them.
   - **Keyframes** have the stored config bytes put in front of them, so each
     keyframe decodes without the others.
   - **GOP cache:** it holds the current config message, the latest keyframe and
-    every frame since. A new keyframe replaces the cache.
+    every frame since. A new keyframe replaces the cache. It's capped at
+    `STREAM_GOP_FRAMES` frames - sized for scrcpy's observed ~10 s keyframe
+    spacing (BlueStacks Air ignores the 2 s interval request) - and a late
+    joiner's replay of it is exempt from the per-viewer lag cap below.
 - A new subscriber first receives the current config message and the whole GOP
   cache, then live frames. A viewer who joins mid-stream sees the current
   picture within about 100 ms, even on a still screen that sends no new frames.
