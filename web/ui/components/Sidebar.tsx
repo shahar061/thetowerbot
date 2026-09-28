@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, BookOpen, Compass, Contact, ChartLine, FlaskConical, List, Map, Menu, Monitor, Power, Receipt, Settings2, SlidersHorizontal, Swords, TriangleAlert, Wrench, X,
+  Activity, BookOpen, Compass, Contact, ChartLine, FlaskConical, LayoutGrid, List, Map, Menu, Monitor, Power, Receipt, Settings2, SlidersHorizontal, Swords, TriangleAlert, Wrench, X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -12,7 +12,7 @@ import { fetchErrors, fetchStrategies } from "@/lib/api";
 import { useConnected } from "@/lib/useEventStream";
 import { useAccountSelection } from "@/lib/AccountSelection";
 import { cn } from "@/lib/utils";
-import { isRerollPath } from "@/lib/workspace";
+import { isFleetWorkspacePath } from "@/lib/workspace";
 
 type Item = { href: string; label: string; icon: typeof Activity };
 
@@ -45,6 +45,7 @@ const FLEET_GROUPS: { label: string; items: Item[] }[] = [{
   label: "Reroll fleet",
   items: [
     { href: "/fleet/reroll/", label: "Fleet Live", icon: Monitor },
+    { href: "/fleet/state/", label: "Fleet State", icon: LayoutGrid },
     { href: "/fleet/reroll/stats/", label: "Stats", icon: ChartLine },
     { href: "/fleet/reroll/workshop/", label: "Workshop", icon: Wrench },
     { href: "/fleet/reroll/labs/", label: "Labs & Gems", icon: FlaskConical },
@@ -63,7 +64,7 @@ export function Sidebar(): React.JSX.Element {
   const selectedKey = selected?.key;
   const selectedRunning = selected?.running;
   const pathname = usePathname();
-  const reroll = isRerollPath(pathname);
+  const reroll = isFleetWorkspacePath(pathname);
   // Read from the shared stream rather than opening one here: this component
   // is on every page, including the two that already subscribe via
   // useControlSync.

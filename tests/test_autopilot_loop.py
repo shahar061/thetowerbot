@@ -46,6 +46,39 @@ def test_the_autopilot_steps_on_every_upgrade_tab(
     )
 
 
+def test_an_in_run_scan_reports_the_wave_the_autopilot_read(
+    bot_in_run_on: Callable[[str], TowerBot],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import events
+    import tower_bot
+
+    bot = bot_in_run_on("in_run_lit")
+    bot.controls.apply({"autopilot": {"enabled": True}})
+    monkeypatch.setattr(bot.autopilot, "step", lambda *args, **kwargs: False)
+    monkeypatch.setattr(tower_bot, "frame_combat", lambda context, observation: {"wave": 4812})
+
+    bot.run_once()
+
+    scans = [e for e in bot.bus.published if isinstance(e, events.ScanCompleted)]
+    assert scans[-1].wave == 4812
+
+
+def test_a_scan_off_the_run_reports_no_wave(
+    bot_on_main_menu: Callable[..., TowerBot],
+) -> None:
+    import events
+
+    bot = bot_on_main_menu(Shopping())
+    bot._scan_wave = 4812  # left over from the run that just ended
+
+    bot.run_once()
+
+    scans = [e for e in bot.bus.published if isinstance(e, events.ScanCompleted)]
+    assert scans[-1].wave is None
+    assert bot._scan_wave is None
+
+
 def test_the_overlay_shows_what_the_autopilot_read(
     bot_in_run_on: Callable[[str], TowerBot],
 ) -> None:

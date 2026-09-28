@@ -39,6 +39,9 @@ class BotState:
         self.wallet: int | None = None
         self.run_taps: Counter[str] = Counter()
         self.recovery: dict[str, Any] | None = None
+        self.wave: int | None = None
+        self.decision: dict[str, Any] | None = None
+        self.activity: dict[str, Any] | None = None
 
     def reset(self) -> None:
         """Forget the previous bot. Called by BotRunner on every start.
@@ -60,6 +63,9 @@ class BotState:
             self.last_error = None
             self.stalled = None
             self.recovery = None
+            self.wave = None
+            self.decision = None
+            self.activity = None
             self.taps = Counter()
             self.skips = Counter()
             self.tail.clear()
@@ -80,6 +86,12 @@ class BotState:
                     # line in the header for the rest of the session, long
                     # after the thing it was warning about is over.
                     self.last_error = None
+                    # Kept across IN_RUN scans that did not read the HUD, so
+                    # the wave does not flicker to "unknown" between reads.
+                    if event.screen != "IN_RUN":
+                        self.wave = None
+                    elif event.wave is not None:
+                        self.wave = event.wave
                 case events.Tapped():
                     self.taps[event.action] += 1
                     self.run_taps[event.action] += 1
@@ -90,10 +102,14 @@ class BotState:
                     self.run_id = event.run_id
                     self.run_started = event.ts
                     self.run_taps = Counter()
+                    self.wave = None
+                    self.decision = None
                     self.tail.append(render(event))
                 case events.RunEnded():
                     self.run_id = None
                     self.run_started = None
+                    self.wave = None
+                    self.decision = None
                     self.runs_completed += 1
                     self.tail.append(render(event))
                 case events.BotError():
@@ -110,6 +126,20 @@ class BotState:
                     self.recovery = redact(event.status)
                 case events.ControlChanged() if event.changed.get("paused") is False:
                     self.stalled = None
+                    self.tail.append(render(event))
+                case events.AutopilotDecided():
+                    self.decision = {"phase": event.phase, "reason": event.reason,
+                                     "upgrade_id": event.upgrade_id, "at": event.ts}
+                    self.tail.append(render(event))
+                case events.Navigated():
+                    self.activity = {"label": f"Navigating · {event.target}", "at": event.ts}
+                    self.tail.append(render(event))
+                case events.ShoppingStarted():
+                    label = "Shopping · dry run" if event.dry_run else "Shopping"
+                    self.activity = {"label": label, "at": event.ts}
+                    self.tail.append(render(event))
+                case events.ClaimStarted():
+                    self.activity = {"label": f"Claiming · {event.target}", "at": event.ts}
                     self.tail.append(render(event))
                 case _:
                     self.tail.append(render(event))
@@ -146,6 +176,9 @@ class BotState:
                 "last_error": self.last_error,
                 "stalled": self.stalled,
                 "recovery": dict(self.recovery) if self.recovery is not None else None,
+                "wave": self.wave,
+                "decision": dict(self.decision) if self.decision is not None else None,
+                "activity": dict(self.activity) if self.activity is not None else None,
                 "tail": list(self.tail),
             }
 

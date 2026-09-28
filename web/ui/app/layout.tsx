@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Chakra_Petch, Inter, JetBrains_Mono } from "next/font/google";
 import { Sidebar } from "@/components/Sidebar";
 import { EventStreamProvider } from "@/lib/useEventStream";
 import { AccountShell } from "@/components/AccountShell";
@@ -23,6 +23,15 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+// Display labels and big numbers on the Fleet State page. Not a variable
+// font, so its weights are listed; self-hosted at build time like the others.
+const chakraPetch = Chakra_Petch({
+  subsets: ["latin"],
+  weight: ["500", "600", "700"],
+  variable: "--font-chakra-petch",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "The Tower bot",
   description: "Live dashboard for the ADB bot",
@@ -36,7 +45,7 @@ const APPLY_THEME = `try{var t=localStorage.getItem('theme');if(t==='light'||t==
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} ${chakraPetch.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: APPLY_THEME }} />
       </head>

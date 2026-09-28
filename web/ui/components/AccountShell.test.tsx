@@ -102,3 +102,10 @@ test("similar route prefix retains the single-account shell", () => {
   render(<AccountShell><p>content</p></AccountShell>);
   expect(screen.getByRole("combobox", { name: "Game account" })).toBeInTheDocument();
 });
+
+test("the fleet state page gets the fleet shell, not the game account picker", () => {
+  state.pathname = "/fleet/state/";
+  render(<AccountShell><p>fleet columns</p></AccountShell>);
+  expect(screen.getByText("fleet columns")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Game account")).not.toBeInTheDocument();
+});
