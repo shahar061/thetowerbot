@@ -96,8 +96,8 @@ class BattleMenuVisit:
         button = battle_menu.collapsed(screen, self._templates)
         if button is None or not button.badged:
             return Outcome.IDLE
-        self._state.session_started(now)
         self._tap(device, policy, button.point)
+        self._state.session_started(now)
         self._go(Step.OPENING)
         return Outcome.TAPPED
 
@@ -128,8 +128,8 @@ class BattleMenuVisit:
             if battle_menu.free_gem_tile(screen, boxes()) is not None:
                 self._outcome = "free_tile_seen"   # Task 7 turns this into an ad watch
             elif self._scrolls < 2:
-                self._scrolls += 1
                 self._swipe(device, policy)
+                self._scrolls += 1
                 self._waited = 0
                 return Outcome.TAPPED
         self._look(policy)
@@ -156,6 +156,10 @@ class BattleMenuVisit:
 
     # -- helpers ---------------------------------------------------------------
     def _next(self, screen, menu, device, policy, now) -> Outcome:
+        # `read_menu` leaves out an icon it could not locate cleanly on this
+        # frame; one queued from an earlier frame is dropped, not tapped.
+        while self._queue and self._queue[0] not in menu:
+            self._queue.pop(0)
         if not self._queue:
             close = battle_menu.close_point(screen, self._templates)
             if close is None:
@@ -163,11 +167,16 @@ class BattleMenuVisit:
             self._tap(device, policy, close)
             self._go(Step.CLOSING)
             return Outcome.TAPPED
-        self.current = self._queue.pop(0)
-        reading = menu[self.current]
+        # Tap first, then advance: a tap the device refuses (it raises) must
+        # leave the visit exactly where it was, so the next frame retries
+        # this icon instead of finding it popped and half-entered.
+        icon = self._queue[0]
+        reading = menu[icon]
+        self._tap(device, policy, reading.point)
+        self._queue.pop(0)
+        self.current = icon
         self._badge, self._scrolls, self._outcome = reading.badge, 0, "visited"
         self._entered = now
-        self._tap(device, policy, reading.point)
         self._go(Step.IN_PAGE)
         return Outcome.TAPPED
 
@@ -179,17 +188,19 @@ class BattleMenuVisit:
         self.current = None
 
     def _bail(self, screen, boxes, device, policy, now) -> Outcome:
+        reading = battle_menu.read_page(boxes())
+        point = reading.return_point or battle_menu.close_point(screen, self._templates)
+        # The way-out tap goes first: if the device refuses it (raises), the
+        # visit is left as it was and the next frame bails again, rather
+        # than recording the icon failed twice or going idle on an open menu.
+        if point is not None:
+            self._tap(device, policy, point)
         if self.current is not None:
             self._state.failed(self.current, self._badge, self._entered)
             self._bus.publish(events.BattleMenuIconHandled(icon=self.current, outcome="failed"))
             self.current = None
         self._go(Step.IDLE)
-        reading = battle_menu.read_page(boxes())
-        point = reading.return_point or battle_menu.close_point(screen, self._templates)
-        if point is None:
-            return Outcome.IDLE
-        self._tap(device, policy, point)
-        return Outcome.TAPPED
+        return Outcome.IDLE if point is None else Outcome.TAPPED
 
     def _go(self, step: Step) -> None:
         self._step, self._waited = step, 0

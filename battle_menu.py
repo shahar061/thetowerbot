@@ -95,15 +95,21 @@ def close_point(screen: Image, templates: TemplateCache) -> tuple[int, int] | No
 
 
 def read_menu(screen: Image, templates: TemplateCache) -> dict[Icon, IconReading] | None:
-    """Every non-settings icon of the open menu with its badge, or None."""
+    """The open menu's non-settings icons with their badges, or None when the
+    menu is not open (its X and EXIT BATTLE are what prove it is).
+
+    An icon that does not locate cleanly is simply left out: no event is
+    running, or Labs / Cards are still locked on a young account. Missing
+    means "not due", never a tap - an `ambiguous` or `unusable` locate is
+    left out the same way, so only a `located` point can ever be tapped.
+    """
     if close_point(screen, templates) is None:
         return None
     readings: dict[Icon, IconReading] = {}
     for icon in ICONS:
         target = _locate(screen, templates, icon)
-        if target.status != "located":
-            return None
-        readings[icon] = IconReading(icon, target.point, badge_at(screen, target.rect[:2]))
+        if target.status == "located":
+            readings[icon] = IconReading(icon, target.point, badge_at(screen, target.rect[:2]))
     return readings
 
 

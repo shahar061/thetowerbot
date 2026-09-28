@@ -2,9 +2,10 @@
 
 test_battle_menu_visit.py (Task 5) drives the state machine directly. This
 file asserts the only thing that file cannot: that run_once() actually opens
-the menu on a badged hamburger, keeps stepping an active visit ahead of
-supervisor recovery even off an IN_RUN frame, and never starts a visit while
-something else already owns the tap.
+the menu on a badged hamburger, keeps stepping an active visit even off an
+IN_RUN frame (after the supervisor has observed that frame, one tap per
+observed frame in worker mode), and never starts a visit while something
+else already owns the tap.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ def test_in_run_badged_hamburger_is_tapped_and_scan_ends(bot_with_frames):
     assert bot.battle_menu.active
 
 
-def test_active_visit_owns_unknown_page_before_recovery(bot_with_frames):
+def test_active_visit_owns_unknown_page(bot_with_frames):
     bot = bot_with_frames(["battle_menu/collapsed_badged", "battle_menu/open_badged",
                            "battle_menu/event_page"], battle_menu_opt_in=True)
 
@@ -37,8 +38,9 @@ def test_active_visit_owns_unknown_page_before_recovery(bot_with_frames):
     assert bot.battle_menu.current is not None
     # The Event page classifies UNKNOWN; recovery must not have been
     # stepped, and every tap that did land is the visit's own: the
-    # hamburger, then a queued icon, then the Event page's claim button -
-    # not a recovery escape or any other reader guessing at an unread page.
+    # hamburger, then a queued icon, then the page's "Tap To Return To
+    # Game" footer - not a recovery escape or any other reader guessing at
+    # an unread page.
     assert not any(type(e).__name__.startswith("Recovery") for e in bot.bus.published)
     assert len(bot.device.taps) == 3
 
@@ -114,3 +116,62 @@ def test_an_inert_default_bot_never_opens_the_menu(bot_with_frames):
 
     assert bot.device.taps == []
     assert not bot.battle_menu.active
+
+
+class _SupervisedDevice:
+    """The fake hardware behind a real DeviceSupervisor."""
+    serial = "127.0.0.1:5555"
+
+    def __init__(self):
+        self.taps, self.swipes = [], []
+
+    def click(self, x, y):
+        self.taps.append((x, y))
+
+    def swipe(self, *args):
+        self.swipes.append(args)
+
+
+def _supervised(bot, tmp_path):
+    # Worker mode as runner.py builds it: every input goes through
+    # DeviceSupervisor._action, which refuses a second input until a fresh
+    # frame has been observed after the first.
+    import time as _time
+
+    from supervisor import DeviceSupervisor, GuardedDevice
+
+    hardware = _SupervisedDevice()
+    supervisor = DeviceSupervisor(path=tmp_path / "supervisor.json",
+                                  endpoint=hardware.serial, connect=lambda: hardware,
+                                  expected_account="account-a")
+    supervisor.recover()
+    supervisor.verify_account("account-a", observed_at=_time.time())
+    bot.supervisor = supervisor
+    bot.device = GuardedDevice(supervisor)
+    refresh = bot.refresh_screen
+
+    def captured():
+        _time.sleep(.002)   # strictly increasing capture times
+        screen = refresh()
+        bot._screen_captured_at = _time.time()
+        return screen
+    bot.refresh_screen = captured
+    return hardware
+
+
+def test_supervised_visit_is_accepted_one_tap_per_observed_frame(bot_with_frames, tmp_path):
+    bot = bot_with_frames(["battle_menu/collapsed_badged", "battle_menu/open_badged",
+                           "battle_menu/event_page", "battle_menu/open_badged",
+                           "battle_menu/event_page", "battle_menu/open_badged",
+                           "battle_menu/collapsed_badged"],
+                          battle_menu_opt_in=True)
+    hardware = _supervised(bot, tmp_path)
+
+    for _ in range(7):
+        bot.run_once()   # a refused tap would raise RecoveryPreflightBlocked here
+
+    # hamburger, icon, return footer, icon, return footer, close X
+    assert len(hardware.taps) == 6
+    assert not bot.battle_menu.active
+    handled = [e for e in bot.bus.published if isinstance(e, events.BattleMenuIconHandled)]
+    assert [e.outcome for e in handled] == ["visited", "visited"]

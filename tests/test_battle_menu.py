@@ -163,3 +163,19 @@ def test_free_gem_tile_rejects_offerwall_and_priced_tiles():
 ])
 def test_is_price(text, price):
     assert battle_menu.is_price(text) is price
+
+
+def test_open_menu_with_an_icon_missing_reads_the_rest(templates):
+    # No event running (or Labs / Cards still locked): the menu is open and
+    # its other icons are read; the missing one is simply not there.
+    screen = frame("battle_menu/open_badged").copy()
+    x, y, w, h = battle_menu._locate(screen, templates, "event").rect
+    screen[y:y + h, x:x + w] = 0
+    menu = battle_menu.read_menu(screen, templates)
+    assert menu is not None
+    assert set(menu) == {"cart", "missions", "cards", "labs"}
+    assert menu["cart"].badge == battle_menu.Badge("red")
+
+
+def test_read_menu_is_none_when_the_menu_is_closed(templates):
+    assert battle_menu.read_menu(frame("battle_menu/collapsed_badged"), templates) is None
