@@ -298,4 +298,43 @@ def test_researching_slot_targets_its_completion() -> None:
              3: slot("locked"), 4: slot("locked"), 5: slot("locked")}
     plans, savings, _ = evaluate(Route(rules=FILLER_RULES), slots=owned)
     assert plans[0].role == "target" and plans[0].next.level == 5
-    assert savings[0] == SlotSaving(1, plans[0].next, NOW + 7200, False, "S+")
+    assert savings[0] == SlotSaving(1, plans[0].next, NOW + 7200, False, "S+", researching=True)
+
+
+def test_plan_carries_saving_for_filler_target() -> None:
+    result = plan(Route(rules=FILLER_RULES), wallet_coins=20_000, available_coins=20_000)
+    assert result.saving is not None
+    slot1 = next(t for t in result.saving.targets if t.slot == 1)
+    assert slot1.lab_id == "labs.game-speed" and slot1.needed_at == NOW + result.slots[0].next.seconds
+    # Every start happening now (slot 1's filler, slot 2's Labs Speed) is paid before saving.
+    spent = sum(s.next.price for s in result.slots if s.now.state == "idle" and s.covered is True)
+    assert result.saving.wallet == 20_000 - spent
+    # The filler slot's covered describes the filler starting now; its target's lives in the plan.
+    assert result.slots[0].role == "filler" and result.slots[0].covered is True
+    assert slot1.covered is False
+
+
+def test_researching_slot_covered_comes_from_the_saving_plan() -> None:
+    owned = {1: slot("researching", "labs.game-speed", 4, NOW + 7200), 2: slot("idle"),
+             3: slot("locked"), 4: slot("locked"), 5: slot("locked")}
+    # Game Speed L5 (150,000) is due in 2h. Labs Speed L11 (16,710) starts now and leaves
+    # 140,000; 7,500/h of income makes up the last 10,000 in 1.3h.
+    funded = plan(slots=owned, wallet_coins=156_710, available_coins=156_710)
+    assert funded.slots[0].covered is True
+    assert next(t for t in funded.saving.targets if t.slot == 1).covered is True
+    poor = plan(slots=owned, wallet_coins=0, available_coins=0)
+    assert poor.slots[0].covered is False
+
+
+def test_unknown_completion_leaves_researching_slot_uncovered() -> None:
+    owned = {1: slot("researching", "labs.game-speed", 4, None), 2: slot("idle"),
+             3: slot("locked"), 4: slot("locked"), 5: slot("locked")}
+    result = plan(slots=owned)
+    assert result.slots[0].next.lab_id == "labs.game-speed" and result.slots[0].covered is None
+    target = next(t for t in result.saving.targets if t.slot == 1)
+    assert target.covered is None and target.skipped_reason == "completion time unknown"
+
+
+def test_unread_levels_do_not_freeze_workshop() -> None:
+    result = plan_with_unread_levels()
+    assert result.saving.reserve == 0 and result.saving.workshop_budget == 100_000

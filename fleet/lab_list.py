@@ -7,12 +7,12 @@ added below it. Kept apart from resource_blocks.py, which keeps slot tracks.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Mapping
 
 import lab_catalog
 from fleet.build_route import TIERS
-from fleet.lab_saving import income_rate
+from fleet.lab_saving import TOP_TIERS, income_rate, saving_plan
 from fleet.strategy_blocks import MAX_BLOCKS
 
 if TYPE_CHECKING:
@@ -61,9 +61,6 @@ def validate_lab_list(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("the lab list must start with Game Speed pinned to slot 1")
     block["entries"] = entries
     return block
-
-
-TOP_TIERS = ("S+", "S")
 
 
 def _unlock_reason(lab_id: str, facts: LabFacts, known: Mapping[str, int]) -> str | None:
@@ -190,12 +187,17 @@ def _target(slot: int, entries: list[Mapping[str, Any]], facts: LabFacts, ctx: S
 
 @dataclass(frozen=True)
 class SlotSaving:
-    """A slot target the saving plan must fund by `needed_at` (None: completion unread)."""
+    """A slot target the saving plan must fund by `needed_at` (None: completion unread).
+
+    `researching`: the target waits behind a running research, so with income unread
+    nothing is saved ahead for it.
+    """
     slot: int
     target: SlotNext
     needed_at: float | None
     idle_slot: bool
     tier: str
+    researching: bool = False
 
 
 def _filler(slot: int, entries: list[Mapping[str, Any]], facts: LabFacts, ctx: SlotContext,
@@ -288,13 +290,24 @@ def _evaluate_slots(route: Any, facts: LabFacts,
         if starts_now:
             spent_now += next_.price
         if target is not None and entry is not None and not (starts_now and role == "target"):
-            savings.append(SlotSaving(slot, target, needed_at, idle, entry["tier"]))
+            savings.append(SlotSaving(slot, target, needed_at, idle, entry["tier"],
+                                      now.state == "researching"))
     return plans, savings, None if wallet is None else wallet - spent_now
 
 
 def evaluate_lab_list(route: Any, facts: LabFacts, *, ctx: SlotContext, gems: GemPlan) -> LabPlan:
-    """Pure: each owned slot's target or filler. No reads, writes or clocks."""
+    """Pure: each owned slot's target or filler, and the saving plan. No reads, writes or clocks.
+
+    A slot waiting on its target takes `covered` from the saving plan. A filler slot keeps
+    the filler's own `covered` (it starts now); its target's coverage is in `saving.targets`.
+    """
     from fleet.resource_blocks import LabPlan
-    plans, _, _ = _evaluate_slots(route, facts, ctx)
+    plans, savings, left = _evaluate_slots(route, facts, ctx)
+    rules = route.rules
+    saving = saving_plan(savings, wallet=left, rate=income_rate(facts, rules),
+                         spend_limit_pct=rules.coins.workshop_spend_limit_pct, now=facts.now)
+    by_slot = {t.slot: t for t in saving.targets}
+    plans = [replace(p, covered=by_slot[p.slot].covered) if p.role == "target" and p.slot in by_slot else p
+             for p in plans]
     return LabPlan(facts.wallet_coins, facts.jar, tuple(plans), gems,
-                   getattr(route, "revision", 0), facts.account_id, facts.scope, facts.now)
+                   getattr(route, "revision", 0), facts.account_id, facts.scope, facts.now, saving)
