@@ -130,6 +130,7 @@ class FleetSetupService:
         self._reroll_pool: Any | None = None
         self._reroll_supervisor: Any | None = None
         self._worker_monitor: Any | None = None
+        self._auto_assigner: Any | None = None
         self._reroll_start_thread: Any | None = None
         self._reroll_runs: Any | None = None
         self._reroll_operation: dict[str, Any] | None = None
@@ -318,8 +319,14 @@ class FleetSetupService:
         from fleet.strategy_library import StrategyLibrary
         return StrategyLibrary(self.root)
 
+    def visible_workers(self) -> set[str]:
+        """Active pool members the operator can see; only these take assignments."""
+        return ({member["name"] for member in self._manual_pool().members()}
+                - self._runs().hidden_names())
+
     def assign_strategy(self, *, expected_revision: int, strategy_id: str,
-                        strategy_version: int, workers: list[dict[str, str]]) -> Any:
+                        strategy_version: int, workers: list[dict[str, str]],
+                        actor: str = "operator") -> Any:
         """Pin one saved version for verified visible accounts in one publication."""
         from dataclasses import replace
         import db as bot_db
@@ -332,8 +339,7 @@ class FleetSetupService:
         current = store.read()
         if current.revision != expected_revision:
             raise RouteConflict(current)
-        visible = ({member["name"] for member in self._manual_pool().members()}
-                   - self._runs().hidden_names())
+        visible = self.visible_workers()
         names = [worker.get("worker") for worker in workers]
         if not names or len(names) != len(set(names)):
             raise ValueError("assignment requires distinct visible workers")
@@ -354,7 +360,7 @@ class FleetSetupService:
             })
             overrides.pop(name, None)
         published = store.publish(replace(current, assignments=assignments, overrides=overrides),
-                                  expected_revision, "operator")
+                                  expected_revision, actor)
         # The ledger page is the full record; this line is for whoever is
         # reading the coordinator log when a worker's behaviour changes.
         for worker in workers:
@@ -585,8 +591,14 @@ class FleetSetupService:
             from fleet.worker_monitor import WorkerMonitor
             self._worker_monitor = WorkerMonitor(self.root, self._manual_supervisor())
         self._worker_monitor.start()
+        if self._auto_assigner is None:
+            from fleet.auto_assign import AutoAssigner
+            self._auto_assigner = AutoAssigner(self.root, self)
+        self._auto_assigner.start()
 
     def stop_monitor(self) -> None:
+        if self._auto_assigner is not None:
+            self._auto_assigner.stop()
         if self._worker_monitor is not None:
             self._worker_monitor.stop()
 
