@@ -140,6 +140,37 @@ def test_the_battle_is_live_only_in_a_run_and_measured_against_its_tier_best() -
     assert state_view.build_battle(None, 11, {11: 5020}) is None
 
 
+def test_the_best_wave_is_the_highest_across_tiers_and_none_before_any_run() -> None:
+    assert state_view.build_best_wave({11: 5020, 7: 1420}) == {"wave": 5020, "tier": 11}
+    assert state_view.build_best_wave({3: 900, 5: 900}) == {"wave": 900, "tier": 5}
+    assert state_view.build_best_wave({}) is None
+
+
+def test_the_strategy_is_the_assignment_that_still_names_this_account() -> None:
+    assignment = SimpleNamespace(account_id="account-a", strategy_id="s1",
+                                 strategy_name="Coin Rush", strategy_version=3)
+    assert state_view.build_strategy(assignment, "account-a") == {
+        "id": "s1", "name": "Coin Rush", "version": 3}
+    assert state_view.build_strategy(assignment, "account-b") is None
+    assert state_view.build_strategy(None, "account-a") is None
+
+
+def test_the_next_buy_comes_from_this_accounts_plan_with_its_price() -> None:
+    plan = {"account_id": "account-a", "state": "save_coins", "upgrade_id": "damage",
+            "item": "Damage", "category": "Attack", "price": 120000000, "wallet_coins": 80000000,
+            "price_source": "observed", "reason": "Saving", "goal": "Reach T1 W20",
+            "observed_at": 0.0}
+    assert state_view.build_next_buy(plan, "account-a") == {
+        "state": "save_coins", "upgrade_id": "damage", "name": "Damage", "category": "attack",
+        "price": 120000000, "price_source": "observed", "wallet": 80000000, "reason": "Saving",
+        "goal": "Reach T1 W20", "observed_at": "1970-01-01T00:00:00+00:00"}
+    unpriced = state_view.build_next_buy(
+        {"account_id": "account-a", "state": "observe_price", "upgrade_id": "damage"}, "account-a")
+    assert (unpriced["name"], unpriced["category"], unpriced["price"]) == ("Damage", "attack", None)
+    assert state_view.build_next_buy(plan, "account-b") is None
+    assert state_view.build_next_buy(None, "account-a") is None
+
+
 def test_a_new_account_with_zero_runs_has_no_tier_no_best_and_no_upgrades() -> None:
     """Review Focus: a brand-new account has not finished a single run."""
     assert state_view.build_runs([]) == []
@@ -287,6 +318,20 @@ def test_an_online_worker_becomes_a_full_account_column(tmp_path: Path) -> None:
     assert account["run_upgrades"]["scope"] == "current"
     assert [run["wave"] for run in account["runs"]] == [5020]
     assert account["workshop"]["totals"] == {"attack": 0, "defense": 0, "utility": 0}
+    assert account["best_wave"] == {"wave": 5020, "tier": 11}
+    assert account["strategy"] is None and account["next_buy"] is None
+
+
+def test_an_account_column_carries_its_strategy_and_next_buy(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    (root / "reroll-plan.json").write_text(json.dumps({
+        "account_id": "account-a", "state": "buy", "upgrade_id": "damage", "item": "Damage",
+        "category": "attack", "price": 900, "wallet_coins": 1000, "observed_at": 6990.0}))
+    (tmp_path / "build-route.json").write_text("{")  # an unreadable route hides only the strategy
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}], fetch=_fetch({}),
+                                        now=7000.)["accounts"]
+    assert (account["next_buy"]["name"], account["next_buy"]["price"]) == ("Damage", 900)
+    assert account["strategy"] is None and account["error"] is None
 
 
 def test_an_offline_worker_is_built_from_its_database_with_a_stale_age(tmp_path: Path) -> None:
