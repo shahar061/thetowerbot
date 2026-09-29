@@ -17,14 +17,17 @@ from fleet.clone_launch import (complete_first_launch_onboarding,
 class Device:
     serial = "127.0.0.1:5665"
 
-    def __init__(self, packages: list[str]) -> None:
+    def __init__(self, packages: list[str], game_center_pid: str = "") -> None:
         self.packages = iter(packages)
+        self.game_center_pid = game_center_pid
         self.actions: list[object] = []
 
     def app_current(self) -> SimpleNamespace:
         return SimpleNamespace(package=next(self.packages))
 
     def shell(self, command: str) -> str:
+        if command.startswith("pidof "):
+            return self.game_center_pid
         self.actions.append(command)
         return ""
 
@@ -77,6 +80,55 @@ def test_launch_waits_for_game_center_after_boot_overlay() -> None:
         sleep=lambda _: None,
     )
     assert device.actions == ["input keyevent KEYCODE_HOME", (879, 367)]
+
+
+_LAUNCHER = "com.uncube.launcher3"
+_TOWER = "com.TechTreeGames.TheTower"
+
+
+def _launch_with_icon(device: Device) -> None:
+    launch_tower_from_game_center(
+        device, capture=lambda _: np.zeros((2400, 1080, 3), dtype=np.uint8),
+        read_text=lambda _: (TextBox("TheTower", 1., Rect(800, 477, 158, 41)),),
+        sleep=lambda _: None,
+    )
+
+
+def test_launch_taps_the_icon_again_when_the_first_tap_is_ignored() -> None:
+    # A clone still finishing boot can drop the first tap and stay on Home.
+    device = Device([_LAUNCHER] + [_LAUNCHER] * 40 + [_LAUNCHER, _TOWER])
+    _launch_with_icon(device)
+    assert device.actions == [(879, 367), (879, 367)]
+
+
+def test_launch_gives_up_after_three_ignored_taps() -> None:
+    device = Device(([_LAUNCHER] + [_LAUNCHER] * 40) * 3)
+    with pytest.raises(ValueError, match="did not open from verified launcher icon"):
+        _launch_with_icon(device)
+    assert device.actions == [(879, 367)] * 3
+
+
+_CLOSE_GAME_CENTER = "am force-stop com.bluestacks.gamecenter"
+
+
+def test_launch_closes_a_running_game_center_before_tapping() -> None:
+    # A frozen Game Center keeps an input sink that swallows launcher taps.
+    device = Device([_LAUNCHER, _TOWER], game_center_pid="1234")
+    _launch_with_icon(device)
+    assert device.actions == [_CLOSE_GAME_CENTER, (879, 367)]
+
+
+def test_launch_closes_game_center_again_before_each_retry() -> None:
+    device = Device([_LAUNCHER] + [_LAUNCHER] * 40 + [_LAUNCHER, _TOWER], game_center_pid="1234")
+    _launch_with_icon(device)
+    assert device.actions == [_CLOSE_GAME_CENTER, (879, 367), _CLOSE_GAME_CENTER, (879, 367)]
+
+
+def test_launch_does_not_tap_again_after_leaving_the_launcher() -> None:
+    device = Device([_LAUNCHER] + ["com.android.vending"] * 40)
+    with pytest.raises(ValueError, match="did not open from verified launcher icon"):
+        _launch_with_icon(device)
+    assert device.actions == [(879, 367)]
 
 
 def test_launch_tower_from_game_center_refuses_unlabeled_icon() -> None:
