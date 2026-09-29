@@ -98,6 +98,10 @@ class Observation:
     # is not the same as the game running: absence of the banner is evidence
     # only on a frame whose upgrade panel was read.
     paused: bool | None = None
+    # The tab's own message says nothing on it is unlocked yet ("Unlock
+    # utility upgrades in the workshop"): an empty panel that is settled,
+    # not one still waiting to be read.
+    category_locked: bool = False
 
     def status_for(self, upgrade_id: str) -> str:
         """Absence on this frame means unseen, never locked or unavailable."""
@@ -248,8 +252,11 @@ def parse_frame(
                       and b.rect.x < screen.shape[1] * .4 and b.text.strip().startswith("$")]
         if len(cash_boxes) == 1:
             cash = price_number(cash_boxes[0].text)
+    below = {tiles.normalise(b.text) for b in boxes if b.rect.y > heading_y}
+    category_locked = (not rows and f"unlock{category.lower()}upgrades" in below
+                       and "intheworkshop" in below)
     return Observation(category, tuple(rows), combat, cash, now, heading_y,
-                       paused=paused, **evidence)
+                       paused=paused, category_locked=category_locked, **evidence)
 
 
 def _reread_values(screen: Image, observation: Observation) -> tuple[ocr.TextBox, ...]:

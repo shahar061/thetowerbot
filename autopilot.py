@@ -42,6 +42,15 @@ class AutopilotState:
             for row in observation.rows:
                 self._rows[(row.context, row.upgrade_id)] = row.payload()
                 self._origins[(row.context, row.upgrade_id)] = identity
+            if observation.category_locked:
+                for entry in upgrades.CATALOG:
+                    if entry.category == observation.category and not entry.unlock:
+                        key = (observation.context or "battle", entry.id)
+                        self._rows[key] = dict(
+                            upgrade_id=entry.id, name=entry.name, category=entry.category,
+                            context=key[0], status="locked", value=None, price=None,
+                            observed_at=observation.observed_at)
+                        self._origins[key] = identity
             self._view.update(category=observation.category, updated_at=observation.observed_at)
             if not observation.rows or any(r.context == "battle" for r in observation.rows):
                 self._view["combat"] = dict(observation.combat)
@@ -63,7 +72,10 @@ class AutopilotState:
                        for key in self._rows if key[0] == context}
         for upgrade_id, row in result.items():
             changed_run = identity is not None and origins[upgrade_id].differs_from(identity)
-            if changed_run or now - row["observed_at"] > 60:
+            # A Workshop unlock cannot land mid-run, so a locked row read in
+            # this run stays settled; age alone does not reopen it.
+            settled = identity is not None and row["status"] == "locked"
+            if changed_run or (now - row["observed_at"] > 60 and not settled):
                 row.update(status="unknown", value=None, price=None)
         return result
 
@@ -247,6 +259,11 @@ class BattleAutopilot:
             search.tab_attempts += 1
             self._decide("navigating", f"Opening {entry.category.title()}", target)
             return True
+        if observation.category_locked:
+            # The tab says nothing on it is unlocked: no rows will ever load.
+            self.search = None
+            self._decide("discovering", f"{entry.category.title()} upgrades are locked in the Workshop", target)
+            return False
         fingerprint = tuple(r.upgrade_id for r in observation.rows)
         at_end = fingerprint == search.fingerprint or search.scrolls >= policy.max_scrolls
         if at_end:
@@ -397,7 +414,7 @@ class BattleAutopilot:
                 and not self._manual):
             self._decide("waiting", "Waiting for the confirmed purchase counter to refresh")
             return False
-        if not observation.category or not observation.rows:
+        if not observation.category or not (observation.rows or observation.category_locked):
             self._decide("blocked", "Waiting for a readable upgrade panel")
             return False
         if now - self._last_action < max(.75, cooldown):

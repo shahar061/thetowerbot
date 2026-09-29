@@ -335,3 +335,14 @@ def test_a_price_the_frame_read_drops_is_re_read_off_a_crop() -> None:
     x, y = row.tap
     assert 890 <= x <= 1000 and 680 <= y <= 740
     assert rows["health"].price == 55
+
+
+def test_a_tab_locked_in_the_workshop_is_named_as_locked() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "in_run_utility_locked.png"))
+    result = parse_frame(frame, recorded("in_run_utility_locked"), "battle", now=100)
+    assert result.category == "UTILITY" and result.rows == ()
+    assert result.category_locked
+    unlocked = parse_frame(cv2.imread(str(FIXTURES / "in_run_utility.png")), recorded("in_run_utility"),
+                           "battle", now=100)
+    assert unlocked.rows and not unlocked.category_locked
