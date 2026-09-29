@@ -512,7 +512,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if lane == 'battle':
             # A row unread for 60s is unverified, not unaffordable: the bot sat
             # on another tab. Skipping it would hand every later block the win.
-            stale = [uid for uid in dict.fromkeys(ids) if uid not in excluded and not (
+            # A row locked in the Workshop is the exception: it cannot unlock
+            # mid-run, and the autopilot drops it when the run changes.
+            stale = [uid for uid in dict.fromkeys(ids) if uid not in excluded
+                     and facts.upgrade_rows.get(uid, {}).get('status') != 'locked' and not (
                 isinstance(seen := facts.upgrade_rows.get(uid, {}).get('observed_at'), (float, int))
                 and 0 <= facts.now - seen <= 60)]
             return (_Choice(identity, stale[0], 'Observe stale battle rows before later blocks',
@@ -684,7 +687,16 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     choice = evaluate(block['goal'], (items, *ancestors))
                     if choice is not None:
                         return choice
+                before = len(unpriced)
                 pick = top_pick(goal)
+                # An unread price is neither a goal met nor one to pass over:
+                # read the goal items ranked above the pick before any later
+                # block spends the coins this goal is meant to keep.
+                ids = [goal['upgrade_id']] if goal['type'] == 'buy' else list(goal['upgrade_ids'])
+                above = ids[:ids.index(pick[0])] if pick else ids
+                if lane == 'workshop' and (observation := observe_prices(
+                        identity, [uid for uid in unpriced[before:] if uid in above])):
+                    return observation
                 if pick is None:
                     continue
                 uid, price = pick

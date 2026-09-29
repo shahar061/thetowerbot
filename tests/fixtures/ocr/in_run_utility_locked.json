@@ -1,0 +1,152 @@
+[
+ {
+  "text": "$133",
+  "confidence": 0.9998,
+  "rect": [
+   28,
+   35,
+   129,
+   56
+  ]
+ },
+ {
+  "text": "53",
+  "confidence": 0.9999,
+  "rect": [
+   91,
+   117,
+   63,
+   49
+  ]
+ },
+ {
+  "text": "BONUS",
+  "confidence": 0.9907,
+  "rect": [
+   900,
+   135,
+   129,
+   33
+  ]
+ },
+ {
+  "text": "Inactive",
+  "confidence": 0.9948,
+  "rect": [
+   897,
+   172,
+   129,
+   36
+  ]
+ },
+ {
+  "text": "43",
+  "confidence": 1.0,
+  "rect": [
+   89,
+   194,
+   70,
+   52
+  ]
+ },
+ {
+  "text": "x1.5",
+  "confidence": 0.9881,
+  "rect": [
+   767,
+   1397,
+   80,
+   40
+  ]
+ },
+ {
+  "text": "0.00/s",
+  "confidence": 0.9891,
+  "rect": [
+   244,
+   1483,
+   117,
+   39
+  ]
+ },
+ {
+  "text": "x1.00",
+  "confidence": 0.91,
+  "rect": [
+   429,
+   1486,
+   88,
+   35
+  ]
+ },
+ {
+  "text": "1.64",
+  "confidence": 0.9989,
+  "rect": [
+   904,
+   1483,
+   77,
+   38
+  ]
+ },
+ {
+  "text": "Wave3",
+  "confidence": 0.9924,
+  "rect": [
+   572,
+   1519,
+   162,
+   41
+  ]
+ },
+ {
+  "text": "4.39",
+  "confidence": 0.9986,
+  "rect": [
+   902,
+   1529,
+   80,
+   38
+  ]
+ },
+ {
+  "text": "4/5",
+  "confidence": 0.9816,
+  "rect": [
+   225,
+   1550,
+   95,
+   39
+  ]
+ },
+ {
+  "text": "UTILITYUPGRADES",
+  "confidence": 0.9932,
+  "rect": [
+   27,
+   1660,
+   498,
+   40
+  ]
+ },
+ {
+  "text": "Unlock utility upgrades",
+  "confidence": 0.9946,
+  "rect": [
+   236,
+   1889,
+   605,
+   56
+  ]
+ },
+ {
+  "text": "in the workshop",
+  "confidence": 0.9992,
+  "rect": [
+   326,
+   1948,
+   421,
+   54
+  ]
+ }
+]

@@ -670,7 +670,8 @@ def test_the_turtle_program_recovers_from_losing_every_price() -> None:
         purchases={'unlock_defense_upgrades':1,'unlock_thorns':1,'defense_absolute':5,'thorns':4})
     result=blocks.evaluate_program(route(program),sample,None,'workshop')
     assert result.decision.stage == 'strategy_observe'
-    assert 'thorns' in result.trace.observation_ids
+    # The first goal (Minimum attack) is read first rather than skipped for want of a price.
+    assert set(result.trace.observation_ids) == {'damage', 'attack_speed'}
     # An unlock already bought has no tile left to read a price from.
     assert not {'unlock_defense_upgrades','unlock_thorns'} & set(result.trace.observation_ids)
 
@@ -831,3 +832,23 @@ def test_battle_priority_pool_observes_only_stale_rows_ranked_above_its_pick() -
     assert blocks.evaluate_program(route(above, lane='battle'), stale, None, 'battle').trace.observation_ids == ('cash_bonus',)
     below = [{'id': 'p', 'type': 'pool', 'upgrade_ids': ['health', 'cash_bonus'], 'selection': 'priority'}]
     assert blocks.evaluate_program(route(below, lane='battle'), stale, None, 'battle').decision.upgrade_id == 'health'
+
+
+def test_an_unpriced_goal_is_observed_before_a_later_block_can_spend() -> None:
+    # A goal whose price was never read was skipped, so the uncapped pool
+    # below it spent every coin and the goal was never saved for.
+    program = [{'id': 'goal', 'type': 'save_for', 'goal': [
+                   {'id': 'goal.buy', 'type': 'buy', 'upgrade_id': 'unlock_cash_bonuses'}]},
+               {'id': 'rest', 'type': 'pool', 'upgrade_ids': ['damage'], 'selection': 'priority'}]
+    result = blocks.evaluate_program(route(program), facts(), None, 'workshop')
+    assert result.decision.state == 'observe_price'
+    assert result.trace.observation_ids == ('unlock_cash_bonuses',)
+
+
+def test_a_battle_row_locked_this_run_is_not_observed_again() -> None:
+    # Workshop unlocks cannot change mid-run: a locked row stays settled
+    # after 60s instead of sending the bot back to an empty tab.
+    program = [{'id': 'eco', 'type': 'pool', 'upgrade_ids': ['cash_bonus'], 'selection': 'priority'},
+               {'id': 'hp', 'type': 'pool', 'upgrade_ids': ['health'], 'selection': 'priority'}]
+    locked = battle_facts(cash_bonus={'status': 'locked', 'value': None, 'price': None, 'observed_at': 0})
+    assert blocks.evaluate_program(route(program, lane='battle'), locked, None, 'battle').decision.upgrade_id == 'health'

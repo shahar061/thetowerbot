@@ -414,3 +414,33 @@ def test_route_price_limit_is_rechecked_against_live_row() -> None:
     row = next(row for row in observation.rows if row.upgrade_id == 'damage')
     bot.step(frame,device,replace(policy,max_purchase_price=row.price-1),cash=100,observation=observation)
     assert device.actions == []
+
+
+def locked_utility() -> tuple:
+    from perception import parse_frame
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures/in_run_utility_locked.png"))
+    return frame, parse_frame(frame, recorded("in_run_utility_locked"), "battle", now=100)
+
+
+def test_a_tab_locked_in_the_workshop_does_not_hold_the_run() -> None:
+    # A new account opened Utility for Cash Bonus, found only "Unlock utility
+    # upgrades in the workshop" and waited there for the rest of every run.
+    from autopilot import BattleAutopilot
+    from policy import AutopilotPolicy, UpgradeRule
+    frame, observation = locked_utility()
+    bot, device = BattleAutopilot(), Device()
+    policy = AutopilotPolicy(enabled=True, rules=(UpgradeRule("cash_bonus"), UpgradeRule("damage")))
+    bot.step(frame, device, policy, cash=133, observation=observation)
+    rows = bot.state.rows("battle", 100)
+    assert rows["cash_bonus"]["status"] == "locked"
+    assert device.actions and device.actions[-1][:2] == ("tap", 180)  # the Attack tab
+
+
+def test_a_locked_row_outlives_the_sixty_second_expiry_within_its_run() -> None:
+    from autopilot import AutopilotState
+    from combat_context import RunIdentity
+    _, observation = locked_utility()
+    state, run = AutopilotState(), RunIdentity(run_id=7)
+    state.observe(observation, run)
+    assert state.rows("battle", 500, run)["cash_bonus"]["status"] == "locked"
+    assert state.rows("battle", 500, RunIdentity(run_id=8))["cash_bonus"]["status"] == "unknown"
