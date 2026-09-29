@@ -140,7 +140,7 @@ def test_reroll_game_over_only_goes_home_when_the_target_may_be_affordable(
         def initial_workshop_due(self) -> bool:
             return False
 
-        def workshop_worthwhile(self, *, publish_estimate=False):
+        def workshop_worthwhile(self, *, publish_estimate=False, detour=False):
             return worthwhile
 
         def stats_due(self):

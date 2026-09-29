@@ -545,6 +545,21 @@ def test_unaffordable_price_does_not_force_a_ten_run_detour(tmp_path: Path) -> N
     assert not progress.workshop_worthwhile()
 
 
+def test_an_unknown_plan_detours_home_once_per_five_runs(tmp_path: Path) -> None:
+    # A visit that cannot resolve the unknown price or wallet would otherwise
+    # cost a home trip on every death screen: measured, 50s per 35s run.
+    progress = worker(tmp_path)
+    end_run(progress, 1, None)
+    assert progress.workshop_worthwhile(detour=True)
+    assert progress.workshop_worthwhile(detour=True)  # every frame of one death screen agrees
+    for run_id in range(2, 6):
+        end_run(progress, run_id, None)
+        assert not progress.workshop_worthwhile(detour=True)
+        assert progress.workshop_worthwhile()  # already home: shopping may still read it
+    end_run(progress, 6, None)
+    assert progress.workshop_worthwhile(detour=True)
+
+
 def test_slot_notes_and_the_next_unlock_slot_are_account_bound(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     assert progress.next_unlock_slot() == 2

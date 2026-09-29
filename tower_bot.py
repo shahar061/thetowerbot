@@ -2737,7 +2737,8 @@ class TowerBot:
                               and (self.reroll_progress is None
                                    or self.reroll_progress.initial_workshop_due()
                                    or self.reroll_progress.workshop_worthwhile(
-                                       publish_estimate=state is screens.ScreenState.GAME_OVER)))
+                                       publish_estimate=state is screens.ScreenState.GAME_OVER,
+                                       detour=state is screens.ScreenState.GAME_OVER)))
                              or self._claim_owed(settings)
                              # A held purchase re-inspects only on MAIN_MENU; detour
                              # home when its paced retry is due (never spends).

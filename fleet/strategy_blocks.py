@@ -418,6 +418,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             price = row.get('price')
         return price if type(price) is int and price >= 0 else None
 
+    def owned_unlock(uid: str) -> bool:
+        # A bought unlock leaves no tile to price: nothing to read or compare.
+        return lane == 'workshop' and upgrades.by_id(uid).unlock and bool(facts.purchases.get(uid, 0))
+
     # Workshop candidates turned away only for having no known price. If the
     # program then decides nothing, these are observed rather than waited on:
     # waiting cannot end, because only a Workshop visit reads a price.
@@ -468,9 +472,14 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 if item['id'] == current:
                     continue
                 if item['type'] == 'buy':
+                    if owned_unlock(item['upgrade_id']):
+                        continue
                     return item['upgrade_id']
                 if item['type'] == 'pool':
-                    return item['upgrade_ids'][0]
+                    unowned = [uid for uid in item['upgrade_ids'] if not owned_unlock(uid)]
+                    if not unowned:
+                        continue
+                    return unowned[0]
                 if item['type'] == 'native':
                     if lane == 'workshop':
                         decision = native_intents.get(item['policy']) or native_decision(item['policy'], item['phase'])
@@ -489,6 +498,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if lane == 'battle':
             return True
         evidence = facts.price_evidence.get(uid, {})
+        if evidence.get('source') == 'catalog_estimate' and upgrades.by_id(uid).unlock:
+            # An unlock has a single price, so the tracked catalog figure is
+            # exact - no level to infer, nothing a Workshop read would add.
+            return True
         timestamp = evidence.get('observed_at')
         # An observed Workshop quote stays current only while the price memory
         # proves its account, purchase offset and discount signature unchanged.
@@ -510,7 +523,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         needed = []
         for uid in dict.fromkeys(ids):
             gate = gates.get(uid) or builds.prerequisites().get(uid)
-            if uid in excluded or (gate and facts.purchases.get(gate, 0) <= 0):
+            if uid in excluded or owned_unlock(uid) or (gate and facts.purchases.get(gate, 0) <= 0):
                 continue
             if not observed_quote(uid):
                 needed.append(uid)

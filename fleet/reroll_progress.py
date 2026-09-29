@@ -47,6 +47,11 @@ logger = logging.getLogger(__name__)
 CHEAPEST_WORKSHOP_PRICE = min(price for upgrade in CATALOG["upgrades"].values()
                               for price in upgrade.get("next_coins", []) if price > 0)
 
+# Runs between death-screen detours home for a plan whose price or wallet is
+# still unknown. The first detour reads it; if that read fails, going home
+# again after every short early run costs more time than it plays.
+UNKNOWN_PLAN_DETOUR_RUNS = 5
+
 
 class RerollProgress:
     """Read only this registered account and publish a bounded next action."""
@@ -68,6 +73,8 @@ class RerollProgress:
         self._battle_stage: str | None = None
         self._last_stats_attempt = 0.0
         self._last_skip_note: str | None = None
+        # (upgrade_id, run id) of the last detour taken on an unknown plan.
+        self._unknown_detour: tuple[str | None, int] | None = None
         self.lab_cadence = LabCadence(self.root, account_id)
         self.coin_jar = coin_share.LabCoinJar(self.root, account_id, read_only=read_only)
         self.route_runtime: BuildRouteRuntime | None = None
@@ -863,7 +870,7 @@ class RerollProgress:
             return evaluation.trace.reason
         return f"Random draw ({odds:.0%}) · {evaluation.trace.reason}"
 
-    def workshop_worthwhile(self, *, publish_estimate: bool = False) -> bool:
+    def workshop_worthwhile(self, *, publish_estimate: bool = False, detour: bool = False) -> bool:
         """Whether a Workshop visit could buy the planned upgrade now.
 
         `publish_estimate` is for the GAME_OVER caller only. A skipped visit
@@ -871,6 +878,10 @@ class RerollProgress:
         fleet card would keep the last menu balance run after run; publish
         the run-payout estimate instead. The menu caller must not: its plan
         was just published from a fresh balance read.
+
+        `detour` marks the GAME_OVER caller choosing HOME over RETRY. An
+        unknown price or wallet still earns a detour to read it, but the same
+        unknown plan earns another only every UNKNOWN_PLAN_DETOUR_RUNS runs.
         """
         if self.route_error is not None:
             return False
@@ -890,7 +901,12 @@ class RerollProgress:
         worthwhile = (plan.upgrade_id is not None and
                       (plan.wallet_coins is None or plan.wallet_coins > 0) and
                       (plan.price is None or plan.wallet_coins is None or plan.wallet_coins >= plan.price))
-        note = None if worthwhile else f"workshop skipped: {plan.wallet_coins} coins; {plan.item} needs {plan.price}"
+        if detour and worthwhile and (plan.price is None or plan.wallet_coins is None):
+            worthwhile = self._unknown_detour_due(plan.upgrade_id)
+        note = (None if worthwhile else
+                f"workshop skipped: {plan.item} price or balance still unread; next read within "
+                f"{UNKNOWN_PLAN_DETOUR_RUNS} runs" if plan.price is None or plan.wallet_coins is None else
+                f"workshop skipped: {plan.wallet_coins} coins; {plan.item} needs {plan.price}")
         if note is not None and note != self._last_skip_note:
             RerollJournal(self.root.parent.parent).append(
                 instance=self.root.name, level="info", kind="workshop_skip", message=note)
@@ -898,6 +914,23 @@ class RerollProgress:
                 self._publish(plan)
         self._last_skip_note = note
         return worthwhile
+
+    def _unknown_detour_due(self, upgrade_id: str | None) -> bool:
+        # Keyed on the newest run's id, not a finished-run count: the death
+        # screen is decided over many frames while RunEnded is still landing,
+        # and a count that ticks mid-screen would flip HOME to RETRY.
+        path = self.root / "tower_bot.db"
+        if not path.is_file():
+            return True
+        with db.reader(path) as connection:
+            run_id = connection.execute("SELECT MAX(id) FROM runs").fetchone()[0]
+        if run_id is None:
+            return True
+        last = self._unknown_detour
+        if last is not None and last[0] == upgrade_id and 0 < run_id - last[1] < UNKNOWN_PLAN_DETOUR_RUNS:
+            return False
+        self._unknown_detour = (upgrade_id, run_id)
+        return True
 
     def _publish(self, decision: RerollDecision) -> None:
         now = time.time()
