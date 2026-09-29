@@ -82,11 +82,23 @@ class RerollProgress:
         self._route_evaluation: RouteEvaluation | None = None
         self.route_policy_revision: int | None = None
         self._menu_wallet: tuple[int, float] | None = None
+        # The lab jar the last menu route evaluation settled.
+        self._route_jar = 0
 
     def note_menu_wallet(self, wallet_coins: int | None) -> None:
         """Keep a fresh, observed menu balance for the next route decision."""
         if type(wallet_coins) is int and wallet_coins >= 0:
-            self._menu_wallet = (wallet_coins, time.time())
+            now = time.time()
+            self._menu_wallet = (wallet_coins, now)
+            # Also the run-payout replay's anchor: a run closed without a
+            # payout otherwise leaves that replay unknown until the next
+            # Workshop read, however many menu balances are read meanwhile.
+            with db.reader(self.root / "tower_bot.db") as conn:
+                last_run = conn.execute("SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL").fetchone()[0]
+            anchor = self.price_memory.wallet
+            if anchor is None or (anchor["coins"], anchor["run_id"]) != (wallet_coins, last_run):
+                self.price_memory.wallet = {"coins": wallet_coins, "run_id": last_run, "observed_at": now}
+                self.price_memory.save()
 
     def route_changed_since_policy(self) -> bool:
         if self.route_runtime is None or self.route_policy_revision is None:
@@ -520,6 +532,7 @@ class RerollProgress:
                     paused = coin_share.workshop_paused(effective, lab_record, facts.wallet_coins)
                     saving_reason = None
                 facts = replace(facts, lab_coin_jar=jar)
+                self._route_jar = jar
                 route_wallet = facts.wallet_coins
                 self.route_runtime.publish_facts(facts)
                 evaluation = evaluate_workshop(effective, facts, pending)
@@ -883,16 +896,36 @@ class RerollProgress:
         unknown price or wallet still earns a detour to read it, but the same
         unknown plan earns another only every UNKNOWN_PLAN_DETOUR_RUNS runs.
         """
-        if self.route_error is not None:
+        evaluation = self._route_evaluation
+        undecided = evaluation is not None and evaluation.decision is None
+        # An undecided route evaluation records its own reason as the route
+        # error. That is a wait, not a failure, and run payouts can end it.
+        if self.route_error is not None and not (
+                undecided and self.route_error == evaluation.trace.reason):
             return False
-        if self._route_evaluation is not None and self._route_evaluation.decision is not None:
+        if undecided:
+            # Re-ask the route on the run-payout wallet, never the legacy
+            # planner: that one names rows the strategy does not plan.
+            evaluation = self._projected_route_evaluation() or evaluation
+        if evaluation is not None and evaluation.decision is None:
+            waiting = evaluation.status != "unknown"
+            worthwhile = not waiting and (not detour or self._unknown_detour_due(None))
+            note = (None if worthwhile else f"workshop skipped: {evaluation.trace.reason}" if waiting
+                    else f"workshop skipped: {evaluation.trace.reason}; next read within "
+                         f"{UNKNOWN_PLAN_DETOUR_RUNS} runs")
+            if note is not None and note != self._last_skip_note:
+                RerollJournal(self.root.parent.parent).append(
+                    instance=self.root.name, level="info", kind="workshop_skip", message=note)
+            self._last_skip_note = note
+            return worthwhile
+        if evaluation is not None:
             # The route decision was cached at the last menu visit. Asked on
             # GAME_OVER, its wallet would never grow: the worker retries
             # instead of going home, so no menu read ever refreshes it. Carry
             # the choice forward with the run-payout projection instead.
             _, purchases = self._history()
             wallet, _ = self._pricing(purchases)
-            plan = replace(self._route_evaluation.decision, wallet_coins=wallet)
+            plan = replace(evaluation.decision, wallet_coins=wallet)
             if plan.state == "save_coins" and plan.item is not None and plan.price is not None:
                 plan = replace(plan, reason=f"Saving for {plan.item} ({wallet}/{plan.price} coins, "
                                             "estimated from run payouts)")
@@ -914,6 +947,21 @@ class RerollProgress:
                 self._publish(plan)
         self._last_skip_note = note
         return worthwhile
+
+    def _projected_route_evaluation(self) -> RouteEvaluation | None:
+        """The route re-evaluated on the run-payout wallet, publishing nothing.
+
+        For the death screen, where no menu read can refresh the wallet. The
+        jar is the one the last menu evaluation settled, not settled again.
+        """
+        try:
+            route = self.route_runtime.current()
+            facts = replace(self.route_facts(), lab_coin_jar=self._route_jar)
+            pending = self.route_runtime.pending()
+        except (OSError, ValueError, RouteUnavailable):
+            return None
+        return evaluate_workshop(resolve_route(route, self.root.name, self.account_id),
+                                 facts, pending)
 
     def _unknown_detour_due(self, upgrade_id: str | None) -> bool:
         # Keyed on the newest run's id, not a finished-run count: the death

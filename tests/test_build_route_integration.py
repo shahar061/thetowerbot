@@ -224,6 +224,60 @@ def test_run_payouts_reopen_a_workshop_visit_the_cached_route_wallet_refused(tmp
     assert progress.workshop_worthwhile()
 
 
+def test_a_waiting_route_is_reevaluated_on_run_payouts_not_by_the_legacy_planner(tmp_path: Path) -> None:
+    # A blocks program that reaches its wait block decides nothing at the
+    # menu. The death screen then asked the legacy planner instead, which
+    # named a row the strategy never plans (Health) and gated its visit on
+    # that row, so the worker retried past the coins the strategy needed.
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    published = []
+    progress._publish = published.append  # type: ignore[method-assign]
+    progress._utility_spent = lambda: 0  # type: ignore[method-assign]
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["workshop"].update({"mode": "blocks", "blocks": [
+        {"id": "p", "type": "pool", "selection": "priority", "upgrade_ids": ["attack_speed"]},
+        {"id": "w", "type": "wait"}]})
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
+    progress.observe_prices({"attack_speed": 12}, 5)
+    progress.note_menu_wallet(5)
+    progress.shopping_policy(Strategy.from_config().shopping)
+    evaluation = progress._route_evaluation
+    assert evaluation is not None and evaluation.decision is None
+    assert evaluation.trace.reason == "Wait block reached"
+    published.clear()
+
+    assert not progress.workshop_worthwhile(publish_estimate=True, detour=True)
+    assert published == []
+
+    ended_at = time.time() + 1
+    with db.connect(worker_root / "tower_bot.db") as connection:
+        db.finish_run(connection, 1, started_at=ended_at - .5, ended_at=ended_at, wave=5, coins=10,
+                      tier=1, abandoned=False, scan_count=0, tap_count=0)
+
+    assert progress.workshop_worthwhile(publish_estimate=True, detour=True)
+
+
+def test_a_route_that_cannot_read_the_wallet_still_detours_home_to_read_it(tmp_path: Path) -> None:
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    progress._utility_spent = lambda: 0  # type: ignore[method-assign]
+    _published(tmp_path, 0)
+    progress.shopping_policy(Strategy.from_config().shopping)
+    evaluation = progress._route_evaluation
+    assert evaluation is not None and evaluation.status == "unknown"
+
+    for run_id in (1, 2):
+        ended_at = time.time() + run_id
+        with db.connect(worker_root / "tower_bot.db") as connection:
+            db.finish_run(connection, run_id, started_at=ended_at - .5, ended_at=ended_at, wave=5,
+                          coins=None, tier=1, abandoned=False, scan_count=0, tap_count=0)
+        assert progress.workshop_worthwhile(detour=True) is (run_id == 1)
+
+
 def test_a_skipped_visit_republishes_the_plan_with_the_run_payout_wallet(tmp_path: Path) -> None:
     # Retrying from GAME_OVER never reaches the menu that republishes the
     # plan, so the fleet card kept the last menu balance run after run.
