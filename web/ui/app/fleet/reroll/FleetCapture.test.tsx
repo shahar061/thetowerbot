@@ -38,9 +38,28 @@ group("FleetCapture", () => {
     expect(MockSocket.instances).toHaveLength(2);
   });
 
+  it("labels the feed below the screen instead of over the game", () => {
+    const { container } = render(<FleetCapture {...props} />);
+    const badge = container.querySelector("[data-feed]");
+    expect(badge?.textContent).toBe("Snapshots");
+    expect(container.querySelector("img")?.parentElement?.contains(badge ?? null)).toBe(false);
+  });
+
+  it("reports its feed to the live wall instead of labelling it", () => {
+    installLiveStreamMocks();
+    const onFeedChange = vi.fn();
+    const { container, rerender } = render(<FleetCapture {...props} fill onFeedChange={onFeedChange} />);
+    expect(container.querySelector("[data-feed]")).toBeNull();
+    expect(onFeedChange).toHaveBeenLastCalledWith("live");
+    act(() => MockSocket.latest().serverClose(4503));
+    expect(onFeedChange).toHaveBeenLastCalledWith("snapshots");
+    rerender(<FleetCapture {...props} fill onFeedChange={onFeedChange} paused />);
+    expect(onFeedChange).toHaveBeenLastCalledWith(null);
+  });
+
   it("fills its parent without the enlarge button on the live wall", () => {
     const { container, queryByRole } = render(<FleetCapture {...props} fill />);
-    expect(container.firstElementChild?.className).not.toContain("30vh");
+    expect(container.innerHTML).not.toContain("30vh");
     expect(container.firstElementChild?.className).toContain("size-full");
     expect(queryByRole("button", { name: "Enlarge screen of T_59" })).toBeNull();
   });

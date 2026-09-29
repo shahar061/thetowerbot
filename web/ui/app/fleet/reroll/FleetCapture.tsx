@@ -9,12 +9,14 @@ import { usePageVisible } from "@/lib/usePageVisible";
 import { cn } from "@/lib/utils";
 
 /** The worker validates scope on each frame; replacing the identity remounts this view. */
-export function FleetCapture({ dashboardUrl, scope, instance, accountId, fill = false, paused = false }: {
+export function FleetCapture({ dashboardUrl, scope, instance, accountId, fill = false, paused = false, onFeedChange }: {
   dashboardUrl: string; scope: string; instance: string; accountId: string;
   /** Fill the parent (the live wall) instead of the card's fixed-height box. */
   fill?: boolean;
   /** The live wall is showing this screen, so the card's copy lets go of its stream. */
   paused?: boolean;
+  /** With `fill`, the wall labels the feed in its own caption, so this reports it instead. */
+  onFeedChange?: (feed: "live" | "snapshots" | null) => void;
 }): React.JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(true);
@@ -37,7 +39,11 @@ export function FleetCapture({ dashboardUrl, scope, instance, accountId, fill = 
   // Off-screen or hidden cards unmount their feed, which closes the live
   // stream. The worker keeps it for 10 s, so scrolling back is instant.
   const active = visible && foreground && !paused;
-  return <div ref={container} className={cn("relative flex items-center justify-center overflow-hidden bg-well",
+  const feed = active && !failed ? (live ? "live" : "snapshots") : null;
+  const reportFeed = useRef(onFeedChange);
+  reportFeed.current = onFeedChange;
+  useEffect(() => reportFeed.current?.(feed), [feed]);
+  const screen = <div ref={container} className={cn("relative flex items-center justify-center overflow-hidden bg-well",
     fill ? "size-full" : "h-[min(30vh,18rem)] min-h-48 rounded-lg border")}>
     {active && !failed ? <>
       {live
@@ -51,7 +57,6 @@ export function FleetCapture({ dashboardUrl, scope, instance, accountId, fill = 
             onLoad={() => setLoaded(true)} onError={() => { setFailed(true); setLoaded(false); }}
             className="size-full object-contain" />
         </>}
-      <FeedBadge live={live} />
       {!loaded && <span className="pointer-events-none absolute bottom-2 rounded bg-background/90 px-2 py-1 text-[10px] text-muted-foreground">Connecting screen…</span>}
       {!fill && <button type="button" aria-label={`Enlarge screen of ${instance}`} title="Open full screen"
         className="absolute right-2 top-2 rounded-md border bg-background/90 p-1.5 text-muted-foreground hover:text-foreground"
@@ -64,5 +69,10 @@ export function FleetCapture({ dashboardUrl, scope, instance, accountId, fill = 
         : paused ? "Screen paused while the live wall is open." : "Screen paused while out of view."}</span>
       {failed && <button className="rounded-md border px-3 py-1.5 text-foreground" onClick={() => { setFailed(false); setLoaded(false); setAttempt(value => value + 1); }}>Retry screen</button>}
     </div>}
+  </div>;
+  if (fill) return screen;
+  return <div className="flex flex-col gap-1">
+    {screen}
+    <div className="flex h-5 items-center">{feed && <FeedBadge live={live} />}</div>
   </div>;
 }
