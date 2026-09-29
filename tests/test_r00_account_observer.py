@@ -336,6 +336,39 @@ def test_live_observer_saves_private_frame_and_returns_popup(tmp_path: Path,
     assert saved.exists() and saved.stat().st_mode & 0o777 == 0o600
 
 
+def test_live_observer_waits_out_a_brief_foreground_gap(tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    # Closing the Play Games sign-in sheet briefly leaves no app in front.
+    import ocr
+    monkeypatch.setattr(ocr, "read", lambda *_, **__: boxes())
+    packages = iter([None, None, "com.TechTreeGames.TheTower"])
+    naps: list[float] = []
+    device = SimpleNamespace(
+        serial="127.0.0.1:5575",
+        app_current=lambda: SimpleNamespace(package=next(packages)),
+        app_info=lambda _: SimpleNamespace(version_name="29.0.2"),
+        screenshot=lambda **_: PILImage.fromarray(np.zeros((2400, 1080, 3), dtype=np.uint8)),
+    )
+    reading = StagingAccountObserver(tmp_path, endpoint=device.serial,
+                                     allowed_versions=frozenset({"29.0.2"}),
+                                     sleep=naps.append)(device)
+    assert reading.account_id == "AAAAAAAAAAAAAAAA"
+    assert naps == [.5, .5]
+
+
+def test_live_observer_still_refuses_another_app_that_stays_in_front(tmp_path: Path) -> None:
+    naps: list[float] = []
+    device = SimpleNamespace(
+        serial="127.0.0.1:5575",
+        app_current=lambda: SimpleNamespace(package="com.bluestacks.gamecenter"),
+    )
+    observer = StagingAccountObserver(tmp_path, endpoint=device.serial,
+                                      allowed_versions=frozenset({"29.0.2"}), sleep=naps.append)
+    with pytest.raises(ValueError, match="unexpected game package"):
+        observer(device)
+    assert len(naps) == 10
+
+
 def test_live_observer_identifies_battle_without_exposing_controls(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import ocr

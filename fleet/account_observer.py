@@ -396,20 +396,27 @@ class StagingAccountObserver:
     """Read one leased ADB device frame and retain private, exact evidence."""
 
     def __init__(self, evidence_root: Path, *, endpoint: str,
-                 allowed_versions: frozenset[str]) -> None:
+                 allowed_versions: frozenset[str],
+                 sleep: Any = time.sleep) -> None:
         if not endpoint or not allowed_versions:
             raise ValueError("endpoint and approved app versions are required")
         self.evidence_root = Path(evidence_root)
         self.endpoint = endpoint
         self.allowed_versions = allowed_versions
+        self.sleep = sleep
         self.cache = vision.TemplateCache(config.TEMPLATE_DIR)
 
     def __call__(self, device: Any) -> AccountFrame:
         if getattr(device, "serial", None) != self.endpoint:
             raise ValueError("observer endpoint mismatch")
-        current = device.app_current()
-        package = getattr(current, "package", None)
-        if package not in {_TOWER_PACKAGE, _GOOGLE_PLAY_SERVICES_PACKAGE}:
+        # Right after a reboot the Play Games sign-in sheet opens and closes
+        # over Tower, briefly leaving no app in front; wait that gap out.
+        for _ in range(10):
+            package = getattr(device.app_current(), "package", None)
+            if package in {_TOWER_PACKAGE, _GOOGLE_PLAY_SERVICES_PACKAGE}:
+                break
+            self.sleep(.5)
+        else:
             raise ValueError("unexpected game package")
         info = device.app_info(_TOWER_PACKAGE)
         version = getattr(info, "version_name", None)
