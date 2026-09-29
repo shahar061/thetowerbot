@@ -52,6 +52,10 @@ def launch_tower_from_game_center(
                 raise ValueError("ambiguous Tower icon on launcher")
             if len(icons) == 1:
                 label = icons[0].rect
+                # A frozen Game Center keeps an input sink that swallows the
+                # tap even behind Home; Tower never needs Game Center.
+                if device.shell(f"pidof {_GAME_CENTER}").strip():
+                    device.shell(f"am force-stop {_GAME_CENTER}")
                 device.click(label.x + label.w // 2, label.y - 110)
                 taps += 1
                 for _ in range(40):
@@ -59,8 +63,8 @@ def launch_tower_from_game_center(
                     if package == _TOWER:
                         return
                     sleep(.5)
-                # A clone still finishing boot can drop a tap and stay on Home;
-                # the icon is re-verified before each further tap.
+                # A dropped tap leaves Home in front; the icon is re-verified
+                # before each further tap.
                 if taps >= _LAUNCH_TAPS or package != _LAUNCHER:
                     raise ValueError("Tower did not open from verified launcher icon")
                 continue
