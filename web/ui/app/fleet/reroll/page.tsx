@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { LayoutGrid } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Pips } from "@/components/Meter";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import { deletable, failureHint, standingFor } from "@/lib/rerollState";
 import { cn } from "@/lib/utils";
 import { DeviceCard } from "./DeviceCard";
 import { FleetLiveCard, verifiedWorkerAccount } from "./FleetLiveCard";
+import { enterWallFullscreen, LiveWall } from "./LiveWall";
 import { FleetOverviewSummary, FLEET_EVIDENCE_TTL_SECONDS } from "./FleetOverviewSummary";
 import { useFleetLabs } from "./FleetLabsContext";
 import { AccountInspector } from "./AccountInspector";
@@ -46,6 +48,7 @@ function FleetLivePage(): React.JSX.Element {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState<Filter>("all");
   const [confirmingBulk, setConfirmingBulk] = useState(false);
+  const [wallOpen, setWallOpen] = useState(false);
   const [dialog, setDialog] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [freshnessTick, setFreshnessTick] = useState(0);
@@ -163,6 +166,7 @@ function FleetLivePage(): React.JSX.Element {
     bulkTargets.map(member => member.name)));
 
   const accountFor = (member: RerollMember) => accounts.find(account => verifiedWorkerAccount(member, account));
+  const liveScreens = members.filter(member => accountFor(member)).length;
   const inspected = inspection && allMembers.find(member => member.name === inspection.worker
     && (member.account_key ?? "") === inspection.account && (member.account_id ?? "") === inspection.identity);
 
@@ -244,7 +248,9 @@ function FleetLivePage(): React.JSX.Element {
     </RerollCard>
 
 
-    {!!allMembers.length && <RerollCard title="Devices">
+    {!!allMembers.length && <RerollCard title="Devices" action={<Button variant="outline" className="min-h-11"
+      disabled={!liveScreens} title={liveScreens ? "Every running screen side by side, full screen" : "No emulator has a live screen yet"}
+      onClick={() => { enterWallFullscreen(); setWallOpen(true); }}><LayoutGrid aria-hidden="true" />Live wall</Button>}>
       <div className="flex flex-wrap items-center gap-2">{FILTERS.map(option => (
         <button
           key={option.id}
@@ -267,7 +273,7 @@ function FleetLivePage(): React.JSX.Element {
         </Button>
       </div>
       {shown.length ? <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,22rem),1fr))] gap-3">{shown.map(member => (
-        <FleetLiveCard key={`${member.name}:${member.account_key}:${member.account_id}`} member={member} account={accountFor(member)} labsSnapshot={labsError ? null : labsSnapshot} onInspect={() => inspect(member)}
+        <FleetLiveCard key={`${member.name}:${member.account_key}:${member.account_id}`} member={member} account={accountFor(member)} labsSnapshot={labsError ? null : labsSnapshot} onInspect={() => inspect(member)} screenPaused={wallOpen}
           actions={<>
             <Button className="min-h-11" variant="outline" disabled={busy || operating} onClick={() => void act(() => startReroll(member.name))}>Start</Button>
             <Button className="min-h-11" variant="outline" disabled={busy || operating} onClick={() => void act(() => pauseReroll(member.name))}>Pause</Button>
@@ -295,6 +301,7 @@ function FleetLivePage(): React.JSX.Element {
       </AccountInspector>}
       {inspection && !inspected && !loading && <p role="status" className="rounded-lg border border-warn/30 bg-warn-surface p-3 text-sm text-warn">This account attempt is no longer active. Select an emulator to inspect its current account. <button className="underline" onClick={closeInspection}>Dismiss</button></p>}
     </div>
+    {wallOpen && <LiveWall members={members} accounts={accounts} onClose={() => setWallOpen(false)} />}
     <NewRerollDialog open={dialog} onClose={() => setDialog(false)} run={run} members={pool?.members ?? []}
       candidates={pool?.candidates ?? []} busy={busy} error={dialogError} onConfirm={confirmNew} />
   </div>;

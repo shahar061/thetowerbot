@@ -38,6 +38,23 @@ group("FleetCapture", () => {
     expect(MockSocket.instances).toHaveLength(2);
   });
 
+  it("fills its parent without the enlarge button on the live wall", () => {
+    const { container, queryByRole } = render(<FleetCapture {...props} fill />);
+    expect(container.firstElementChild?.className).not.toContain("30vh");
+    expect(container.firstElementChild?.className).toContain("size-full");
+    expect(queryByRole("button", { name: "Enlarge screen of T_59" })).toBeNull();
+  });
+
+  it("closes the stream while paused for the live wall", () => {
+    installLiveStreamMocks();
+    const { container, rerender, getByRole } = render(<FleetCapture {...props} />);
+    const socket = MockSocket.latest();
+    rerender(<FleetCapture {...props} paused />);
+    expect(socket.closed).toBe(true);
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(getByRole("status").textContent).toBe("Screen paused while the live wall is open.");
+  });
+
   it("stops the stream while the tab is hidden", () => {
     installLiveStreamMocks();
     const { container } = render(<FleetCapture {...props} />);

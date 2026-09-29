@@ -10,7 +10,9 @@ import type { FleetOverview, RerollMember, RerollPlan } from "@/lib/fleet";
 const navigation = vi.hoisted(() => ({ search: "" }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(navigation.search) }));
 const choose = vi.fn();
-vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }], choose }) }));
+const DEFAULT_ACCOUNTS = [{ key: "one", account_id: "100", instance: "Air_1", running: true }, { key: "two", account_id: "200", instance: "Air_2", running: true }];
+const selection = vi.hoisted(() => ({ accounts: [] as Record<string, unknown>[] }));
+vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: selection.accounts, choose }) }));
 vi.mock("./FleetLabsContext", () => ({ useFleetLabs: () => ({ snapshot: null, loading: false, error: null, refresh: vi.fn() }) }));
 vi.mock("@/lib/api", () => ({ ApiError: class ApiError extends Error { status = 0; }, fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), hideRerollMembers: vi.fn(), restoreRerollMembers: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn(), fetchRecoverySettings: vi.fn(), saveRecoverySettings: vi.fn() }));
 
@@ -29,6 +31,7 @@ const members: RerollMember[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   navigation.search = "";
+  selection.accounts = DEFAULT_ACCOUNTS;
   window.history.replaceState(null, "", "/fleet/reroll/");
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [] });
   vi.mocked(fetchRerollJournal).mockResolvedValue({ entries: [] });
@@ -169,6 +172,25 @@ test("live claims expire at the evidence deadline despite identical failed fleet
     vi.useRealTimers();
     expect(pendingTimers).toBe(0);
   }
+});
+
+test("the live wall shows every running screen and closes on Escape", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members });
+  selection.accounts = [{ ...DEFAULT_ACCOUNTS[0], dashboard_url: "http://127.0.0.1:10001/" }, DEFAULT_ACCOUNTS[1]];
+  render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "Live wall" }));
+  const wall = screen.getByRole("dialog", { name: "Live wall" });
+  expect(within(wall).getByText("Air_1 · T1 · W42 · Running")).toBeInTheDocument();
+  expect(within(wall).getByRole("img", { name: "Live screen of Air_1" })).toBeInTheDocument();
+  expect(within(wall).getByText("1 not running")).toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Live wall" })).toBeNull();
+});
+
+test("the live wall is unavailable until a screen is live", async () => {
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members });
+  render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
+  expect(await screen.findByRole("button", { name: "Live wall" })).toBeDisabled();
 });
 
 test("fleet filters and primary card actions have phone-sized hit areas", async () => {
