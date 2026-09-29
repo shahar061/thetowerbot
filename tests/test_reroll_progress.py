@@ -39,7 +39,7 @@ def test_lab_checks_wait_for_account_bound_unlock_observation(tmp_path: Path) ->
     progress.note_lab_observation(
         LabDecision("wait_coins", price=300, wallet_coins=122,
                     game_speed_level=1), now=1000.)
-    progress.note_lab_slot2("locked", 65, now=1000.)
+    progress.note_lab_slots({2: "locked"}, 65, now=1000.)
     restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
     assert not restarted.lab_due(now=1100., wallet_coins=122, wallet_gems=65)
     assert restarted.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
@@ -93,7 +93,7 @@ def test_reroll_holds_card_gems_until_second_lab_is_owned(tmp_path: Path) -> Non
     base = Strategy.from_config().shopping
     enabled = replace(base, cards=replace(base.cards, enabled=True, gem_floor=0))
     assert not progress.shopping_policy(enabled).cards.enabled
-    progress.note_lab_slot2("owned", 19, now=1000.)
+    progress.note_lab_slots({2: "owned"}, 19, now=1000.)
     assert progress.shopping_policy(enabled).cards.enabled
 
 
@@ -543,3 +543,24 @@ def test_unaffordable_price_does_not_force_a_ten_run_detour(tmp_path: Path) -> N
     assert not progress.workshop_worthwhile()
     end_run(progress, 10, 1)
     assert not progress.workshop_worthwhile()
+
+
+def test_slot_notes_and_the_next_unlock_slot_are_account_bound(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert progress.next_unlock_slot() == 2
+    progress.note_lab_slots({2: "owned", 3: "locked"}, 120, now=1000.)
+    assert progress.next_unlock_slot() is None  # the default gem path unlocks only Lab 2
+    assert progress.lab_cadence.slot_records()[3] == {"status": "locked", "wallet_gems": 120,
+                                                      "observed_at": 1000.}
+    assert worker(tmp_path / "other", "ACCOUNT-B").lab_cadence.slot_records() == {}
+
+
+def test_the_rollout_lives_at_the_fleet_root_of_a_fleet_worker(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert (progress.fleet_root, progress.worker_id) == (tmp_path, "Tiramisu64_20")
+    assert progress.unlock_rollout().path == tmp_path / "lab-unlock-rollout.json"
+    solo = tmp_path / "solo"
+    solo.mkdir()
+    db.bind_account(solo / "tower_bot.db", "ACCOUNT-A")
+    loose = RerollProgress(solo, "ACCOUNT-A", AccountState())
+    assert loose.fleet_root is None and loose.worker_id is None and loose.unlock_rollout() is None

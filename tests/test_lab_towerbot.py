@@ -43,7 +43,7 @@ class FakeProgress:
     def __init__(self, plan: Any, *, options: LabVisitOptions | None = None) -> None:
         self.route_runtime = SimpleNamespace(current=lambda: SimpleNamespace(revision=REVISION))
         self._plan = plan
-        self._options = options or LabVisitOptions(unlock_slot2=False)
+        self._options = options or LabVisitOptions()
 
     def lab_visit_options(self) -> LabVisitOptions:
         return self._options
@@ -110,13 +110,13 @@ def test_uncalibrated_plan_choices_are_published_once_with_their_reason() -> Non
     assert len(skipped) == 1
     assert skipped[0].action == 'labs' and skipped[0].reason == 'lab_route_calibration_required'
     assert any(line.startswith('Lab 3 labs.coins-wave: Planning only:') for line in b.lab_route_pending)
-    assert any(line.startswith('gems.lab2: Planning only:') for line in b.lab_route_pending)
+    assert not any(line.startswith('gems.lab2:') for line in b.lab_route_pending)
     assert 'Lab 1' not in skipped[0].detail  # the legacy route is executable, not pending
 
 
 def test_authorize_accepts_only_the_matching_gated_plan_action() -> None:
     b = bot(action())
-    b.lab_visit.request(action(), options=LabVisitOptions(unlock_slot2=False))
+    b.lab_visit.request(action(), options=LabVisitOptions())
     assert b._authorize_lab('lab_start', decision(), 1000.)
     assert not b._authorize_lab('lab_start', decision(level=5), 1000.)
 
@@ -130,7 +130,7 @@ def test_authorize_compares_strategy_revision() -> None:
 
 def test_authorize_refuses_drift_from_the_selected_action() -> None:
     b = bot(action())
-    b.lab_visit.request(action(level=3), options=LabVisitOptions(unlock_slot2=False))
+    b.lab_visit.request(action(level=3), options=LabVisitOptions())
     assert not b._authorize_lab('lab_start', decision(), 1000.)
 
 
@@ -143,10 +143,26 @@ def test_authorize_requires_the_route_gate_for_other_slots(monkeypatch: pytest.M
     assert b._authorize_lab('lab_start', decision(2, 'labs.attack-speed', 1), 1000.)
 
 
-def test_authorize_refuses_unlock_while_its_route_is_uncalibrated() -> None:
-    b = bot(None, options=LabVisitOptions(unlock_slot2=True, min_gems=100))
-    b.lab_visit.request(LabVisitOptions(unlock_slot2=True, min_gems=100))
+def test_authorize_unlock_follows_the_rollout(tmp_path: Path) -> None:
+    from lab_unlock_rollout import LabUnlockRollout
+    b = bot(None, options=LabVisitOptions(unlock_slots=(2,)))
+    b.account_state.verified_scope = SimpleNamespace(account_id='a')
+    b.lab_visit.request(LabVisitOptions(unlock_slots=(2,)))
+    unlock = LabDecision('unlock_slot', price=100, slot=2)
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)  # no rollout record
+    b.lab_visit.rollout, b.lab_visit.worker = LabUnlockRollout(tmp_path), 'Air_1'
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)  # a dry run never taps
+    b.lab_visit.rollout.note_dry_run(2, 'Air_1', 100, 150, 0., account_id='a')
+    b.lab_visit.rollout.note_dry_run(2, 'Air_1', 100, 150, 700., account_id='a')
+    assert b._authorize_lab('lab_unlock', unlock, 1000.)  # the canary
     assert not b._authorize_lab('lab_unlock', None, 1000.)
+    assert not b._authorize_lab('lab_unlock', LabDecision('unlock_slot', price=90, slot=2), 1000.)
+    assert not b._authorize_lab('lab_unlock', LabDecision('unlock_slot', price=400, slot=3), 1000.)
+    b.account_state.verified_scope = SimpleNamespace(account_id='b')
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)  # the canary now plays another account
+    b.account_state.verified_scope = SimpleNamespace(account_id='a')
+    b.lab_visit.worker = 'Air_2'
+    assert not b._authorize_lab('lab_unlock', unlock, 1000.)
 
 
 def test_route_runtime_absent_allows_only_the_legacy_route(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,3 +274,28 @@ def test_cancelled_purple_dot_visit_releases_labs_in_flight(tmp_path: Path) -> N
     for n, visible in enumerate((False, False, True, True)):
         state.observe('labs', visible, 10. + n, frame_id=f'g{n}')
     assert state.eligible('labs', 10_000.)
+
+
+class RecordingProgress:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
+    def note_lab_slots(self, slots: dict, gems: int | None) -> None:
+        self.calls.append(('slots', slots))
+
+    def note_lab_observation(self, decision: LabDecision) -> None:
+        self.calls.append(('observation', decision.kind))
+
+
+def test_a_finished_visit_logs_the_slot_it_unlocked(caplog: pytest.LogCaptureFixture) -> None:
+    from lab_visit import LabVisitResult
+    b = bot(None)
+    b._notifications = SimpleNamespace(snapshot=lambda: {'kinds': {'labs': {'in_flight': False}}})
+    b.reroll_progress = RecordingProgress()
+    result = LabVisitResult('observed', 'auto_start_off', LabDecision('inspect'),
+                            slot_status=((2, 'owned'), (3, 'owned'), (4, 'locked')),
+                            gem_balance=100, gems_before=500, observed_gem_spend=400, unlocked_slot=3)
+    with caplog.at_level('INFO', logger='tower_bot'):
+        b._finish_lab_visit(result)
+    assert '; Lab 3 unlocked' in caplog.text and 'Lab 2 unlocked' not in caplog.text
+    assert ('observation', 'inspect') not in b.reroll_progress.calls

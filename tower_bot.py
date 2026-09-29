@@ -41,8 +41,10 @@ from missions_screen import MissionsReadings
 from missions_visit import MissionsVisit
 from lab_plan import LabDecision, LabVisitOptions
 from lab_visit import LabVisit
-from lab_routes import research_gate, unlock_gate
+from lab_routes import research_gate
+import lab_catalog
 import lab_screen
+from lab_unlock_rollout import LabUnlockRollout
 from identity_reverify import IdentityReverifier
 from labs import LabsState
 from local_env import load_local_env
@@ -271,6 +273,14 @@ class TowerBot:
         self.tracker = screens.ScreenTracker(confirmations=screen_confirmations)
         self.stall_dir = unknown_dir if unknown_dir is not None else config.UNKNOWN_DIR
         self.shopping.evidence_dir = self.stall_dir
+        if self.lab_visit is not None:
+            # The rollout and the worker id come from the fleet layout. A solo bot has neither, so it never unlocks.
+            self.lab_visit.evidence_dir = Path(self.stall_dir) if self.stall_dir is not None else None
+            opener = getattr(reroll_progress, 'unlock_rollout', None)
+            rollout = opener() if callable(opener) else None
+            self.lab_visit.rollout = rollout if isinstance(rollout, LabUnlockRollout) else None
+            worker = getattr(reroll_progress, 'worker_id', None)
+            self.lab_visit.worker = worker if isinstance(worker, str) else None
         self.stall_watchdog = stall_watchdog.StallWatchdog(
             time.time, no_effect_limit=config.STALL_NO_EFFECT_LIMIT,
             blocked_limit=config.STALL_BLOCKED_SECONDS)
@@ -1332,8 +1342,15 @@ class TowerBot:
             return False
         options = self.reroll_progress.lab_visit_options()
         if operation == 'lab_unlock':
-            return (unlock_gate(2).enabled and options.unlock_slot2
-                    and options.min_gems == self.lab_visit._options.min_gems)
+            # The rollout decides who may tap: fleet stage, or this worker's own
+            # canary while it still plays the account it was promoted on.
+            visit, scope = self.lab_visit, self.account_state.verified_scope
+            slot = decision.slot if decision is not None else None
+            return (visit is not None and decision is not None and decision.kind == 'unlock_slot'
+                    and slot in options.unlock_slots and decision.price is not None
+                    and decision.price == lab_catalog.lab_slot_gems(slot)
+                    and options.keep_gems == visit._options.keep_gems
+                    and visit.unlock_allowed(slot, scope.account_id if scope is not None else None))
         if not options.start_research or decision is None:
             return False
         slot, research, target = decision.slot, decision.research_id, decision.target_level
@@ -1438,13 +1455,9 @@ class TowerBot:
             self._notifications.finish("labs", time.time(), claimed=False)
         if self.reroll_progress is None:
             return
-        if result.slot2_status in {"locked", "owned"}:
-            self.reroll_progress.note_lab_slot2(result.slot2_status, result.gem_balance)
-        if (result.gems_before is not None and result.observed_gem_spend == 100
-                and result.gem_balance == result.gems_before - 100 and result.unlock_transaction_key is None):
-            self.bus.publish(events.LabSlotUnlocked(
-                slot=2, price=100, gems_before=result.gems_before,
-                gems_after=result.gem_balance))
+        if result.slot_status:
+            # LabSlotUnlocked is the journal's recovery_event, with the real slot and price.
+            self.reroll_progress.note_lab_slots(dict(result.slot_status), result.gem_balance)
         decision = result.decision
         if (result.confirmed_job is not None
                 and result.confirmed_job.completes_at is not None):
@@ -1476,7 +1489,7 @@ class TowerBot:
             if result.reason != "auto_start_off":
                 self.reroll_progress.note_lab_observation(decision)
         logger.info("Lab 1 visit ended: %s (%s)%s", result.status, result.reason,
-                    "; Lab 2 unlocked" if result.observed_gem_spend == 100 else "")
+                    f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:
         """Record a scan only when its pass returned normally."""
@@ -1969,7 +1982,7 @@ class TowerBot:
             self.autopilot.suspend('Pending Lab transaction; read-only inspection')
             if not settings.paused:
                 if not self.lab_visit.active and self.lab_visit.recovery_status != 'lab_reconciliation_route_unavailable':
-                    self.lab_visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))
+                    self.lab_visit.request(LabVisitOptions(start_research=False))
                 try:
                     lab_boxes = reads.full()
                 except Exception:
@@ -2635,7 +2648,7 @@ class TowerBot:
             elif (self.lab_visit is not None
                     and self.maintenance.inspection_navigable(time.time())
                     and self.lab_visit.tab_status(self.screen) == 'unlocked'
-                    and self.lab_visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))):
+                    and self.lab_visit.request(LabVisitOptions(start_research=False))):
                 # Paced: an inspection a visit cannot acknowledge (partial
                 # strip, clock step) never re-arms on every menu pass.
                 self.maintenance.note_inspection_visit(time.time())

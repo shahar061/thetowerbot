@@ -1638,6 +1638,22 @@ def create_app(
             raise HTTPException(status_code=503, detail="fleet_labs_unavailable")
         return fleet.labs_snapshot()
 
+    @app.post("/api/fleet/labs/unlock-rollout/{slot}/reset")
+    def fleet_lab_unlock_reset(slot: int) -> dict[str, Any]:
+        """The owner's one rollout action: put a halted slot back to dry run."""
+        from lab_unlock_rollout import SLOTS, LabUnlockRollout, RolloutError
+        root = _fleet_root()
+        if fleet is None or root is None:
+            raise HTTPException(status_code=503, detail="fleet_labs_unavailable")
+        if slot not in SLOTS:
+            raise HTTPException(status_code=422, detail="lab slot must be 2-5")
+        rollout = LabUnlockRollout(root)
+        try:
+            rollout.reset(slot)
+        except RolloutError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"unlock_rollout": rollout.snapshot()}
+
     @app.get("/api/fleet/state")
     def fleet_state_snapshot() -> dict[str, Any]:
         if fleet is None or not callable(getattr(fleet, "state_snapshot", None)):

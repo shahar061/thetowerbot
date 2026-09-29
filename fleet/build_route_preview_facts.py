@@ -120,7 +120,8 @@ def _reconstructed_resources(worker_root: Path, worker: str,
                              account_id: str) -> PreviewLaneFacts:
     from lab_plan import LabCadence
 
-    lab, slot2 = LabCadence(worker_root, account_id).route_observation()
+    cadence = LabCadence(worker_root, account_id)
+    lab, slot2 = cadence.route_observation()
     evidence_times = [record.get("observed_at") for record in (lab, slot2)
                       if record is not None and isinstance(record.get("observed_at"), (int, float))]
     if not evidence_times:
@@ -133,6 +134,7 @@ def _reconstructed_resources(worker_root: Path, worker: str,
         account_id, worker, "main_menu", observed_at, time.time(),
         wallet_gems=(slot2.get("wallet_gems") if slot2 and type(slot2.get("wallet_gems")) is int else None),
         lab_slot2_owned=(slot2.get("status") == "owned" if slot2 else None),
+        lab_slot_status=cadence.slot_status_map(),
         game_speed_maxed=(lab.get("kind") == "done" if lab else None),
         lab_decision_kind=(lab.get("kind") if lab and isinstance(lab.get("kind"), str) else None),
         lab_price=(lab.get("price") if lab and type(lab.get("price")) is int else None),

@@ -13,6 +13,7 @@ from events import EventBus
 from fleet.labs_view import labs_snapshot
 from fleet.setup import FleetSetupService
 from lab_plan import LabCadence, LabDecision
+from lab_unlock_rollout import LabUnlockRollout
 from sinks.sse import SseSink
 from sinks.state import BotState
 from web.app import create_app
@@ -36,8 +37,7 @@ def test_an_unregistered_worker_is_an_unknown_row(tmp_path: Path) -> None:
     snapshot = labs_snapshot(tmp_path, ["Air_1"], now=1000.)
     (row,) = snapshot["workers"]
     assert (row["worker"], row["state"], row["plan"]) == ("Air_1", "unknown", None)
-    # Only Game Speed on slot 1 is executed; the Lab 2 gems unlock is
-    # gate-controlled (lab_routes.unlock_gate) and stays uncalibrated.
+    # Only Game Speed on slot 1 is a route; lab slot unlocks follow the rollout record.
     assert snapshot["automated"] == [
         {"lane": "labs", "type": "research", "lab_id": "labs.game-speed", "slot": 1}]
     assert len(snapshot["reference"]["game_speed"]) == 7
@@ -62,7 +62,7 @@ def test_a_row_uses_the_menu_wallet_cadence_and_recent_lab_activity(tmp_path: Pa
         "wallet_coins": 20000, "wallet_gems": 60}))
     cadence = LabCadence(root, "account-a")
     cadence.note(LabDecision("wait_coins", price=12000, wallet_coins=5000, game_speed_level=3), now=900.)
-    cadence.note_slot2("locked", 60, 900.)
+    cadence.note_slots({2: "locked"}, 60, 900.)
     with db.connect(root / "tower_bot.db") as conn:
         conn.execute("INSERT INTO ledger(ts,kind,item,category,currency,delta,price,dry_run,detail) "
                      "VALUES(10,'LAB','Game Speed','RESEARCH','coins',-2500,2500,0,'{}')")
@@ -147,7 +147,7 @@ def test_other_account_records_are_not_shown(tmp_path: Path) -> None:
         "wallet_coins": 20000, "wallet_gems": 60}))
     LabCadence(root, "account-b").note(LabDecision("wait_coins", price=12000, wallet_coins=5000,
                                                    game_speed_level=3), now=900.)
-    LabCadence(root, "account-b").note_slot2("owned", 60, 900.)
+    LabCadence(root, "account-b").note_slots({2: "owned"}, 60, 900.)
     (root / "lab-coin-jar.json").write_text(json.dumps({"account_id": "account-b", "amount": 900}))
     (row,) = labs_snapshot(tmp_path, ["Air_38"], now=1000.)["workers"]
     assert [slot["now"]["state"] for slot in row["plan"]["slots"]] == ["unknown"] * 5
@@ -190,3 +190,30 @@ def test_labs_endpoint_lists_visible_workers(tmp_path: Path) -> None:
 def test_labs_endpoint_is_unavailable_without_the_fleet() -> None:
     client = TestClient(create_app(state=BotState(), sse=SseSink(), bus=EventBus(), db_path=None))
     assert client.get("/api/fleet/labs").status_code == 503
+
+
+def test_labs_snapshot_lists_the_unlock_rollout(tmp_path: Path) -> None:
+    _registered(tmp_path, "Air_38", "account-a")
+    LabUnlockRollout(tmp_path).halt(3, "Post-tap screen was not understood", ("x.png",))
+    rows = labs_snapshot(tmp_path, ["Air_38"], now=1000.)["unlock_rollout"]
+    assert [(row["slot"], row["stage"]) for row in rows] == [
+        (2, "dry_run"), (3, "halted"), (4, "dry_run"), (5, "dry_run")]
+    assert rows[1]["evidence"] == ["x.png"] and rows[0]["price"] == 100
+
+
+def test_reset_endpoint_returns_a_halted_slot_to_dry_run(tmp_path: Path) -> None:
+    _registered(tmp_path, "Air_38", "account-a")
+    rollout = LabUnlockRollout(tmp_path)
+    rollout.halt(2, "operator check")
+    response = _client(tmp_path, ("Air_38",)).post("/api/fleet/labs/unlock-rollout/2/reset")
+    assert response.status_code == 200
+    assert response.json()["unlock_rollout"][0]["stage"] == "dry_run"
+    assert rollout.slot(2).stage == "dry_run"
+
+
+def test_reset_endpoint_refuses_a_slot_that_is_not_halted(tmp_path: Path) -> None:
+    _registered(tmp_path, "Air_38", "account-a")
+    client = _client(tmp_path, ("Air_38",))
+    assert client.post("/api/fleet/labs/unlock-rollout/3/reset").status_code == 409
+    assert client.post("/api/fleet/labs/unlock-rollout/7/reset").status_code == 422
+    assert LabUnlockRollout(tmp_path).slot(3).stage == "dry_run"

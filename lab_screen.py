@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
 import math
@@ -17,6 +18,20 @@ import ocr
 _NAME_LEVEL = re.compile(r"^(?P<name>.+?)\s+Lv\.?\s*(?P<level>\d+)$", re.I)
 _DURATION = re.compile(r"(\d+)\s*([dhms])", re.I)
 _MIN_CONFIDENCE = .9
+# "Unlock Nth lab" labels as OCR reads them ("2nd" is sometimes "Znd").
+_ORDINALS = {2: ("2ND", "ZND"), 3: ("3RD",), 4: ("4TH",), 5: ("5TH",)}
+# One Labs card spans about 392 px of a 2400 px frame. It bounds the last
+# visible tile when no header follows it.
+_TILE_PITCH = .165
+
+
+@dataclass(frozen=True)
+class LockedSlot:
+    """The first locked lab tile: its slot, gem price and the price's centre."""
+    slot: int
+    price: int | None
+    point: tuple[int, int] | None
+    tile: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -28,9 +43,7 @@ class LabHomeReading:
     coin_balance: int | None = None
     slots_owned: int | None = None
     gem_balance: int | None = None
-    slot2_status: str = "unknown"
-    slot2_price: int | None = None
-    slot2_point: tuple[int, int] | None = None
+    next_locked: LockedSlot | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +134,25 @@ def _enabled_card_border(screen: Image, name: ocr.TextBox) -> bool:
     return min(blue, green, red) >= 215
 
 
+def _lab_title_and_headers(boxes: Sequence[ocr.TextBox], width: int, height: int
+                           ) -> dict[int, list[ocr.TextBox]] | None:
+    """The per-slot "Lab N" headers below the single page title.
+
+    None means the page title wasn't read exactly once (a wrong page, or an
+    unreadable one). An empty dict means the title read but no slot headers did.
+    """
+    titles = [b for b in boxes if b.text.strip().upper() == "LAB"
+              and b.rect.x < width * .2 and b.rect.y < height * .1]
+    if len(titles) != 1:
+        return None
+    headers: dict[int, list[ocr.TextBox]] = {}
+    for box in boxes:
+        match = re.fullmatch(r"Lab\s+([1-5])", box.text.strip(), re.I)
+        if match and box.rect.x < width * .25 and box.rect.y > titles[0].rect.y:
+            headers.setdefault(int(match[1]), []).append(box)
+    return headers
+
+
 def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                observed_at: float) -> LabsReading:
     """Read owned cards independently; this observer never supplies tap targets.
@@ -141,15 +173,7 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                   and box.rect.w > 0 and box.rect.h > 0
                   and 0 <= box.rect.x < box.rect.x + box.rect.w <= width
                   and 0 <= box.rect.y < box.rect.y + box.rect.h <= height)
-    titles = [b for b in valid if b.text.strip().upper() == "LAB"
-              and b.rect.x < width * .2 and b.rect.y < height * .1]
-    if len(titles) != 1:
-        return empty
-    headers: dict[int, list[ocr.TextBox]] = {}
-    for box in valid:
-        match = re.fullmatch(r"Lab\s+([1-5])", box.text.strip(), re.I)
-        if match and box.rect.x < width * .25 and box.rect.y > titles[0].rect.y:
-            headers.setdefault(int(match[1]), []).append(box)
+    headers = _lab_title_and_headers(valid, width, height)
     if not headers:
         return empty
 
@@ -167,9 +191,8 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
         if len(headings) != 1:
             jobs.append(unknown)
             continue
-        ordinal = {2: ("2ND", "ZND"), 3: ("3RD",), 4: ("4TH",), 5: ("5TH",)}
         locks = [b for b in within if _normalized(b.text) in
-                 {f"UNLOCK{number}LAB" for number in ordinal.get(slot, ())}]
+                 {f"UNLOCK{number}LAB" for number in _ORDINALS.get(slot, ())}]
         offline = [b for b in within if _normalized(b.text) == "LABOFFLINE"]
         names = [b for b in within if _NAME_LEVEL.fullmatch(b.text.strip())]
         if len(locks) == 1 and not offline and not names:
@@ -212,6 +235,46 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                        "observed" if complete else "unreadable", (), tuple(jobs))
 
 
+def read_next_locked(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LockedSlot | None:
+    """The first "Unlock Nth lab" tile (N = 2..5), its gem price and the price's centre.
+
+    Slots unlock in order, so only the first locked tile matters. None means no
+    locked tile was read. With a complete strip read, that means every slot is owned.
+    A tile whose price box is missing or ambiguous keeps its slot but offers no point.
+    """
+    height, width = screen.shape[:2]
+    trusted = [box for box in boxes if _trusted(box)]
+    headers = _lab_title_and_headers(trusted, width, height)
+    if headers is None:
+        return None
+    tops = sorted(h.rect.y for group in headers.values() for h in group)
+    for slot in sorted(set(headers) & set(_ORDINALS)):
+        if len(headers[slot]) != 1:
+            return None
+        heading = headers[slot][0]
+        bottom = min((top for top in tops if top > heading.rect.y),
+                     default=min(height, heading.rect.y + round(height * _TILE_PITCH)))
+        within = [box for box in trusted if heading.rect.y + heading.rect.h <= box.rect.y
+                  and box.rect.y + box.rect.h <= bottom]
+        labels = [box for box in within
+                  if _normalized(box.text) in {f"UNLOCK{word}LAB" for word in _ORDINALS[slot]}]
+        if not labels:
+            continue
+        if len(labels) != 1:
+            return None
+        label = labels[0]
+        tile = (0, heading.rect.y, width, bottom - heading.rect.y)
+        prices = [box for box in within if box.rect.y >= label.rect.y + label.rect.h
+                  and width * .43 < box.rect.x < width * .65
+                  and ocr.parse_number(box.text) is not None]
+        if len(prices) != 1:
+            return LockedSlot(slot, None, None, tile)
+        price = prices[0]
+        return LockedSlot(slot, ocr.parse_number(price.text),
+                          (price.rect.x + price.rect.w // 2, price.rect.y + price.rect.h // 2), tile)
+    return None
+
+
 def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
     """A named slot-1 card is required; other slots never authorize a tap."""
     height, width = screen.shape[:2]
@@ -232,6 +295,7 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
                         for box in boxes)
     slots_owned = 1 if second_locked else None
     gem_balance = _gem_balance(boxes, width, height)
+    next_locked = read_next_locked(screen, boxes)
     lab2_labels = [box for box in boxes if _trusted(box)
                    and _normalized(box.text) == "LAB2"
                    and height * .22 < box.rect.y < height * .34]
@@ -244,21 +308,8 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
     third_unlocks = [box for box in boxes if _trusted(box)
                      and _normalized(box.text) == "UNLOCK3RDLAB"
                      and height * .44 < box.rect.y < height * .57]
-    slot2_status = "unknown"
-    slot2_price = None
-    slot2_point = None
-    if len(lab2_labels) == len(unlock_labels) == 1:
-        slot2_status = "locked"
-        prices = [box for box in boxes if _trusted(box)
-                  and unlock_labels[0].rect.y < box.rect.y < height * .41
-                  and width * .43 < box.rect.x < width * .65
-                  and ocr.parse_number(box.text) is not None]
-        if len(prices) == 1:
-            slot2_price = ocr.parse_number(prices[0].text)
-            slot2_point = (prices[0].rect.x + prices[0].rect.w // 2,
-                           prices[0].rect.y + prices[0].rect.h // 2)
-    elif len(lab2_labels) == len(third_labels) == len(third_unlocks) == 1:
-        slot2_status = "owned"
+    if (not len(lab2_labels) == len(unlock_labels) == 1
+            and len(lab2_labels) == len(third_labels) == len(third_unlocks) == 1):
         slots_owned = 2
 
     next_slot = min((box.rect.y for box in boxes if _trusted(box)
@@ -271,11 +322,11 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
     if len(offline) == 1 and not jobs:
         return LabHomeReading(True, "idle", None,
                               (width // 2, (slot[0].rect.y + next_slot) // 2),
-                              balance, slots_owned, gem_balance, slot2_status,
-                              slot2_price, slot2_point)
+                              balance, slots_owned, gem_balance,
+                              next_locked=next_locked)
     if len(jobs) != 1 or offline:
         return LabHomeReading(True, "unknown", None, None, balance, slots_owned,
-                              gem_balance, slot2_status, slot2_price, slot2_point)
+                              gem_balance, next_locked=next_locked)
 
     match = _NAME_LEVEL.fullmatch(jobs[0].text.strip())
     assert match is not None
@@ -287,12 +338,12 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
     remaining = [value for value in timers if value is not None]
     if len(identities) != 1 or len(remaining) != 1:
         return LabHomeReading(True, "unknown", None, None, balance, slots_owned,
-                              gem_balance, slot2_status, slot2_price, slot2_point)
+                              gem_balance, next_locked=next_locked)
     job = LabJob(1, identities[0], jobs[0].text, time.time() + remaining[0],
                  remaining[0], None, "unknown", "researching", jobs[0].confidence,
                  tuple(jobs[0].rect))
     return LabHomeReading(True, "researching", job, None, balance, slots_owned,
-                          gem_balance, slot2_status, slot2_price, slot2_point)
+                          gem_balance, next_locked=next_locked)
 
 
 def read_selected_home(screen: Image, boxes: tuple[ocr.TextBox, ...], *,

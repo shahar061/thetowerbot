@@ -122,6 +122,12 @@ export function splitEvent(event: BotEvent): EventLine {
         kind: "CLAIM?",
         body: `${event.target} reason=${event.reason}${event.detail ? " " + event.detail : ""}`,
       };
+    case "LabUnlockRehearsed":
+      return { kind: "LAB", body: `rehearsed Lab ${event.slot} unlock: ${event.price} gems, wallet ${event.gems}` };
+    case "LabUnlockPromoted":
+      return { kind: "LAB", body: `Lab ${event.slot} unlock promoted to ${event.stage}` };
+    case "LabUnlockHalted":
+      return { kind: "LAB!", body: `Lab ${event.slot} unlock halted: ${event.reason}` };
     case "PageChanged":
       return {
         kind: "PAGE",

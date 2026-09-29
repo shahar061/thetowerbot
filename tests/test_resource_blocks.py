@@ -482,4 +482,47 @@ def test_uncalibrated_routes_stay_planning_only_with_a_visible_reason() -> None:
         assert slot.next is not None and slot.automated is False
         assert any(line.startswith("Planning only:") for line in slot.why)
     assert plan.gems.automated is False
-    assert any(line.startswith("gems.lab2: Planning only:") for line in plan.gems.why)
+    assert any(line == "gems.lab2: Rehearsing slot 2 · 0/2 dry runs" for line in plan.gems.why)
+
+
+def test_gem_lane_reads_every_slot_from_slot_ownership() -> None:
+    owned = {"status": "owned", "wallet_gems": 500, "observed_at": 900.}
+    locked = {"status": "locked", "wallet_gems": 500, "observed_at": 900.}
+    plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., wallet_gems=500,
+                                                        slot_ownership={2: owned, 3: locked}))
+    assert [step.state for step in plan.gems.steps][:3] == ["done", "current", "next"]
+    assert (plan.gems.next.block_id, plan.gems.next.slot, plan.gems.price) == ("gems.lab3", 3, 400)
+    assert plan.slots[2].now.state == "locked"
+
+
+def test_a_complete_strip_proves_the_lower_slots_owned() -> None:
+    plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., wallet_gems=5, owned_floor=3))
+    assert plan.gems.next.block_id == "gems.lab4"
+
+
+def test_next_unlock_slot_follows_the_gem_lane() -> None:
+    blocks = rb.template_gem_blocks()
+    assert rb.next_unlock_slot(blocks, {}) == 2
+    assert rb.next_unlock_slot(blocks, {2: {"status": "owned"}}) == 3
+    assert rb.next_unlock_slot(blocks, {}, owned_floor=5) is None  # the next step is card slots
+    cards_first = rb.validate_gems([
+        {"id": "lab2", "type": "unlock_lab_slot", "slot": 2},
+        {"id": "cards", "type": "buy_cards", "purpose": "card_missions"},
+        {"id": "lab3", "type": "unlock_lab_slot", "slot": 3}])
+    assert rb.next_unlock_slot(cards_first, {2: {"status": "owned"}}) is None
+    assert rb.next_unlock_slot(rb.legacy_gem_blocks(("unlock_lab_slot_2",)),
+                               {2: {"status": "owned"}}) is None
+
+
+def test_gem_automation_follows_the_rollout_stage() -> None:
+    from lab_unlock_rollout import SlotRollout
+    block = {"type": "unlock_lab_slot", "slot": 2}
+    assert not rb.gem_automated(block)
+    assert not rb.gem_automated(block, {2: SlotRollout()})
+    assert rb.gem_automated(block, {2: SlotRollout(stage="canary", canary_worker="Air_1")})
+    assert rb.gem_automated(block, {2: SlotRollout(stage="fleet")})
+    assert not rb.gem_automated(block, {2: SlotRollout(stage="halted", halted_reason="x")})
+    plan = evaluate_lab_plan(template_route(), LabFacts(
+        now=1000., wallet_gems=160, slot_ownership={2: {"status": "locked"}},
+        rollout={2: SlotRollout(stage="halted", halted_reason="x")}, worker="Air_38"))
+    assert plan.gems.automated is False and "gems.lab2: Halted: x" in plan.gems.why

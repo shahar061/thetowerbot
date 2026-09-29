@@ -7,22 +7,23 @@ import json
 import math
 import os
 from pathlib import Path
+from typing import Mapping
 from uuid import uuid4
 
 import config
 from lab_screen import LabHomeReading, LabPickerReading
 
 
-# The second lab slot costs 100 gems; the reserve for it is a fixed safety rule.
-LAB2_GEMS = 100
+# Per-slot ownership a Labs visit can prove: an owned card or the "Unlock Nth lab" tile.
+SLOT_STATES = frozenset({"locked", "owned"})
 
 
 @dataclass(frozen=True)
 class LabVisitOptions:
-    """What one Labs visit may do. Defaults are today's behavior."""
+    """What one Labs visit may do. Nothing is unlocked unless a slot is named."""
     start_research: bool = True
-    unlock_slot2: bool = True
-    min_gems: int = LAB2_GEMS
+    unlock_slots: tuple[int, ...] = ()
+    keep_gems: int = 0
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,7 @@ class LabCadence:
     def __init__(self, root: Path, account_id: str) -> None:
         self.path = Path(root) / "lab-slot1-cadence.json"
         self.slot2_path = Path(root) / "lab-slot2-cadence.json"
+        self.slots_path = Path(root) / "lab-slots.json"
         self.unlock_path = Path(root) / "lab-unlock.json"
         self.account_id = account_id
 
@@ -167,22 +169,55 @@ class LabCadence:
         next_check = record.get("next_check_at")
         return not isinstance(next_check, (int, float)) or now >= next_check
 
-    def slot2_owned(self) -> bool:
-        record = self._read(self.slot2_path)
-        return record is not None and record.get("status") == "owned"
+    @staticmethod
+    def _slot_entry(raw: object) -> dict[str, object] | None:
+        if not isinstance(raw, dict) or raw.get("status") not in SLOT_STATES:
+            return None
+        gems, observed = raw.get("wallet_gems"), raw.get("observed_at")
+        return {"status": raw["status"],
+                "wallet_gems": gems if type(gems) is int else None,
+                "observed_at": (float(observed) if isinstance(observed, (int, float))
+                                and not isinstance(observed, bool) else None)}
 
-    def route_observation(self) -> tuple[dict[str, object] | None, dict[str, object] | None]:
-        """Account-bound saved Lab decisions for the fleet route display."""
-        return self._record(), self._read(self.slot2_path)
+    def slot_records(self) -> dict[int, dict[str, object]]:
+        """Slots 2-5 this account was seen owning or locked, from lab-slots.json.
 
-    def slot2_due(self, now: float, wallet_gems: int | None = None,
-                  min_gems: int = LAB2_GEMS) -> bool:
-        record = self._read(self.slot2_path)
+        Until that file exists at all, an older lab-slot2-cadence.json stands in for
+        slot 2. Once lab-slots.json exists, the legacy file is never read again - even
+        when the new file turns out to be unreadable or another account's, which must
+        not resurrect stale legacy state.
+        """
+        if not self.slots_path.exists():
+            legacy = self._slot_entry(self._read(self.slot2_path))
+            return {2: legacy} if legacy is not None else {}
+        data = self._read(self.slots_path)
+        if data is None:
+            return {}
+        raw = data.get("slots")
+        records: dict[int, dict[str, object]] = {}
+        for key, value in (raw.items() if isinstance(raw, dict) else ()):
+            entry = self._slot_entry(value)
+            if key in {"2", "3", "4", "5"} and entry is not None:
+                records[int(key)] = entry
+        return records
+
+    def slot_status_map(self) -> dict[str, str]:
+        """Slot 2-5 statuses only, string-keyed to survive a JSON facts snapshot."""
+        return {str(slot): str(record["status"]) for slot, record in self.slot_records().items()}
+
+    def slot_owned(self, slot: int) -> bool:
+        record = self.slot_records().get(slot)
+        return record is not None and record["status"] == "owned"
+
+    def slot_due(self, slot: int, now: float, wallet_gems: int | None = None,
+                 min_gems: int | None = None) -> bool:
+        """Revisit a locked slot once the gems cover it, else hourly. Never an owned slot."""
+        record = self.slot_records().get(slot)
         if record is None:
             return True
-        if record.get("status") == "owned":
+        if record["status"] == "owned":
             return False
-        if type(wallet_gems) is int:
+        if type(wallet_gems) is int and type(min_gems) is int:
             if wallet_gems < min_gems:
                 return False
             previous = record.get("wallet_gems")
@@ -191,12 +226,20 @@ class LabCadence:
         observed = record.get("observed_at")
         return not isinstance(observed, (int, float)) or now >= observed + 3600
 
-    def note_slot2(self, status: str, wallet_gems: int | None, now: float) -> None:
-        if status not in {"locked", "owned"}:
+    def note_slots(self, statuses: Mapping[int, str], wallet_gems: int | None, now: float) -> None:
+        valid = {slot: status for slot, status in statuses.items()
+                 if slot in (2, 3, 4, 5) and status in SLOT_STATES}
+        if not valid:
             return
-        self._write(self.slot2_path, {"account_id": self.account_id,
-                                      "status": status, "wallet_gems": wallet_gems,
-                                      "observed_at": now})
+        records = self.slot_records()
+        for slot, status in valid.items():
+            records[slot] = {"status": status, "wallet_gems": wallet_gems, "observed_at": now}
+        self._write(self.slots_path, {"account_id": self.account_id,
+                                      "slots": {str(slot): records[slot] for slot in sorted(records)}})
+
+    def route_observation(self) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+        """Account-bound saved Lab decisions for the fleet route display."""
+        return self._record(), self.slot_records().get(2)
 
     def speed_target(self) -> float:
         """The fastest readable speed the completed Game Speed research allows.

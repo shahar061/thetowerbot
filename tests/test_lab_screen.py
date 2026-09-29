@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import cv2
+import pytest
 
 import config
 import ocr
@@ -268,3 +269,67 @@ def test_labs_navigation_and_page_anchor_match_recorded_frames() -> None:
     assert 740 < target.center[0] < 890
     assert 2220 < target.center[1] < 2380
     assert pages.classify_page(frame("menu_labs_slot1_idle"), cache).page == "LABS"
+
+
+def _owned_two_locked_three(price: str | None = "400") -> tuple[ocr.TextBox, ...]:
+    """Lab 2 owned and idle, Lab 3 locked: label-parsing coverage until a live capture exists."""
+    base = [box for box in recorded("menu_labs_slot1_idle") if box.text not in {"Unlock Znd lab", "100"}]
+    extra = [ocr.TextBox("Lab Offline", .99, config.Rect(394, 832, 291, 52)),
+             ocr.TextBox("Lab 3", .99, config.Rect(25, 1046, 97, 39)),
+             ocr.TextBox("Unlock 3rd lab", .99, config.Rect(351, 1174, 378, 51))]
+    if price is not None:
+        extra.append(ocr.TextBox(price, .99, config.Rect(536, 1271, 101, 53)))
+    return tuple(base + extra)
+
+
+@pytest.mark.parametrize("name", ["menu_labs_slot1_idle", "menu_labs_slot1_affordable",
+                                  "menu_labs_game_speed_running"])
+def test_new_accounts_read_lab_two_as_the_next_locked_slot(name: str) -> None:
+    from lab_screen import read_home, read_next_locked
+
+    locked = read_next_locked(frame(name), recorded(name))
+    assert locked is not None
+    assert (locked.slot, locked.price, locked.point) == (2, 100, (586, 906))
+    x, y, w, h = locked.tile
+    assert x <= locked.point[0] < x + w and y <= locked.point[1] < y + h
+    assert read_home(frame(name), recorded(name)).next_locked == locked
+
+
+def test_five_owned_slots_have_no_locked_tile() -> None:
+    from lab_screen import read_next_locked, read_slots
+
+    assert read_next_locked(frame("menu_labs_active"), recorded("menu_labs_active")) is None
+    strip = read_slots(frame("menu_labs_active"), recorded("menu_labs_active"), observed_at=1.)
+    assert strip.strip_read() and strip.slots_owned == 5
+
+
+def test_the_first_locked_tile_is_read_for_later_slots() -> None:
+    from lab_screen import read_next_locked, read_slots
+
+    image = frame("menu_labs_slot1_idle")
+    locked = read_next_locked(image, _owned_two_locked_three())
+    assert locked is not None
+    assert (locked.slot, locked.price, locked.point) == (3, 400, (586, 1297))
+    assert read_slots(image, _owned_two_locked_three(), observed_at=1.).slots_owned == 2
+
+
+def test_a_locked_tile_without_one_readable_price_offers_no_point() -> None:
+    from lab_screen import read_next_locked
+
+    image = frame("menu_labs_slot1_idle")
+    missing = read_next_locked(image, _owned_two_locked_three(price=None))
+    assert missing is not None and (missing.slot, missing.price, missing.point) == (3, None, None)
+    doubled = _owned_two_locked_three() + (ocr.TextBox("1400", .99, config.Rect(560, 1330, 120, 50)),)
+    ambiguous = read_next_locked(image, doubled)
+    assert ambiguous is not None and ambiguous.price is None and ambiguous.point is None
+
+
+def test_a_label_under_the_wrong_header_or_without_the_page_title_reads_nothing() -> None:
+    from lab_screen import read_next_locked
+
+    image = frame("menu_labs_slot1_idle")
+    wrong = tuple(ocr.TextBox("Unlock 3rd lab", box.confidence, box.rect) if box.text == "Unlock Znd lab"
+                  else box for box in recorded("menu_labs_slot1_idle"))
+    assert read_next_locked(image, wrong) is None
+    untitled = tuple(box for box in recorded("menu_labs_slot1_idle") if box.text != "LAB")
+    assert read_next_locked(image, untitled) is None

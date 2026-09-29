@@ -41,6 +41,9 @@ export type BotEvent =
    * HUD gem counter actually rose across the tap - an unconfirmed one
    * arrives as ClaimUncertain instead. */
   | (EventBase & { type: "FloatingGemClaimed"; point: [number, number]; gems_before: number; gems_after: number; delta: number; run_id: number | null })
+  | (EventBase & { type: "LabUnlockRehearsed"; slot: number; price: number; gems: number })
+  | (EventBase & { type: "LabUnlockPromoted"; slot: number; stage: string })
+  | (EventBase & { type: "LabUnlockHalted"; slot: number; reason: string })
   | (EventBase & { type: "ClaimUncertain"; target: string; reason: string; detail: string });
 
 /** A row from the `events` table, which carries columns plus a JSON blob. */

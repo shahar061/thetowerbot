@@ -98,7 +98,7 @@ def test_read_only_slot_observer_receives_all_five_slots_with_wall_clock() -> No
     observed = []
     visit = LabVisit(vision.TemplateCache(Path("templates")),
                      slot_observer=observed.append, wall_clock=lambda: 1000.)
-    visit.request(LabVisitOptions(start_research=False, unlock_slot2=False))
+    visit.request(LabVisitOptions(start_research=False))
     visit.advance(frame("menu_labs_active"), boxes("menu_labs_active"), Device(), 10.)
 
     assert len(observed) == 1
@@ -337,8 +337,9 @@ def test_lab_one_is_checked_but_synthetic_slot_two_evidence_does_not_enable_unlo
         ocr.TextBox("Lab 3", .99, config.Rect(25, 1046, 97, 39)),
         ocr.TextBox("Unlock 3rd lab", .99, config.Rect(351, 1174, 378, 51)),
     )
-    assert read_home(image, locked).slot2_price == 100
-    assert read_home(image, owned).slot2_status == "owned"
+    assert read_home(image, locked).next_locked.price == 100
+    owned_home = read_home(image, owned)
+    assert owned_home.next_locked.slot == 3 and owned_home.slots_owned == 2
     visit, device = secured_visit(), Device()
     visit.request()
     picker = frame("menu_labs_game_speed_picker")
@@ -371,15 +372,3 @@ def test_auto_start_off_looks_but_never_opens_the_picker() -> None:
         visit.advance(frame("menu_labs_slot1_affordable"), (), device, 10)
     assert (540, 450) not in device.taps
     assert visit._outcome is not None and visit._outcome.reason == "auto_start_off"
-
-
-def test_lab_two_unlock_respects_the_switch_and_the_gem_floor() -> None:
-    home = LabHomeReading(True, "researching", None, None, gem_balance=150,
-                          slot2_status="locked", slot2_price=100, slot2_point=(700, 450))
-    for options in (LabVisitOptions(unlock_slot2=False), LabVisitOptions(min_gems=200)):
-        visit = LabVisit(vision.TemplateCache(Path("templates")))
-        visit.request(options)
-        assert visit._unlock_lab_two(home, Device()) is False
-    visit = LabVisit(vision.TemplateCache(Path("templates")))
-    visit.request(LabVisitOptions(min_gems=150))
-    assert visit._unlock_lab_two(home, Device()) is False  # no recorded unlock sequence

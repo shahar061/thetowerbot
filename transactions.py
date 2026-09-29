@@ -44,6 +44,9 @@ from currencies import CurrencyRepository, _amount
 _recovery_lock = threading.Lock()
 _recovery_fences: dict[str, dict[str, Any]] = {}
 
+# A lab-slot tap is judged unlanded only on a read at least this long after it.
+UNLANDED_SETTLE_SECONDS = 2.
+
 
 def _recovery_mutation(method: Any) -> Any:
     @functools.wraps(method)
@@ -474,6 +477,49 @@ class TransactionJournal:
                          (Stage.RESOLVED.value, Verdict.REFUTED.value, now, json.dumps(detail), key))
             conn.execute('DELETE FROM currency_commitments WHERE owner=? AND currency=?',
                          (f'purchase:{key}', txn.currency))
+            return Outcome(key=key, verdict=Verdict.REFUTED, spent=0, reason=reason)
+
+    @_recovery_mutation
+    def refute_unlanded_unlock(self, key: str, evidence: RecoveryEvidence, *, now: float) -> Outcome:
+        """Settle a lab-slot tap that provably did nothing as not charged (spent 0).
+
+        Only for an acted, scoped `lab_unlock` whose own visit read the same slot
+        still locked and the gem wallet unchanged, at least UNLANDED_SETTLE_SECONDS
+        after the tap. Anything less returns UNPROVEN and leaves the row open. No
+        ledger line is written, because nothing was spent.
+        """
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM transactions WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                raise KeyError(key)
+            detail = json.loads(row["detail"] or "{}")
+            if row["stage"] == Stage.RESOLVED.value:
+                return Outcome(key=key, verdict=Verdict(row["outcome"]), spent=row["spent"],
+                               reason=detail.get("reason"))
+            txn = _transaction(row)
+            acted = txn.acted_at
+            proven = (
+                txn.operation == 'lab_unlock' and txn.stage == Stage.ACTED and txn.scope is not None
+                and acted is not None and evidence.scope is not None and evidence.scope == txn.scope
+                and self.currencies.scope_matches(evidence.scope, txn.currency, conn)
+                and evidence.operation == 'lab_unlock' and evidence.slot == txn.before.get('slot')
+                and evidence.category == txn.category and txn.currency == evidence.currency == 'gems'
+                and evidence.effect_changed is False and bool(evidence.frame_digest)
+                and evidence.wallet_after is not None and evidence.wallet_after == txn.wallet_before
+                and acted + UNLANDED_SETTLE_SECONDS <= evidence.observed_at <= now
+                and now - evidence.observed_at <= 30)
+            if not proven:
+                return Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None,
+                               reason='unlanded unlock not proven')
+            reason = 'lab unlock tap did not land: slot still locked and gems unchanged'
+            detail.update(reason=reason, reconciliation=asdict(evidence))
+            conn.execute("UPDATE transactions SET stage = ?, outcome = ?, spent = 0, resolved_at = ?, "
+                         "detail = ? WHERE key = ?",
+                         (Stage.RESOLVED.value, Verdict.REFUTED.value, now, json.dumps(detail), key))
+            conn.execute("DELETE FROM currency_commitments WHERE owner=? AND currency=?",
+                         (f'purchase:{key}', txn.currency))
+            conn.execute("DELETE FROM currency_observations WHERE currency=?", (txn.currency,))
             return Outcome(key=key, verdict=Verdict.REFUTED, spent=0, reason=reason)
 
     def open_transactions(self) -> tuple[Transaction, ...]:

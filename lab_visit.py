@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import logging
+from pathlib import Path
 import time
 from typing import Callable
 
@@ -10,19 +12,23 @@ from account_state import AccountState
 from evidence_scope import BalanceInterval, FactScope
 from lab_runtime import LabRuntime, LabScope, _catalog_revision
 import events
+import lab_catalog
 import transactions
 
 from device import AdbDevice, Image, tap
 from lab_plan import LabDecision, LabVisitOptions, decide
 from fleet.resource_blocks import LabAction
-from lab_routes import research_gate, unlock_gate
-from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading,
+from lab_routes import research_gate
+from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading, LockedSlot,
                         read_confirmation, read_home, read_picker, read_slots,
                         read_selected_home, read_selected_picker)
 import ocr
 import pages
 import vision
 from labs import LabJob, LabsReading
+from lab_unlock_rollout import LabUnlockRollout, RolloutChange
+
+logger = logging.getLogger(__name__)
 
 # Body lines unique to the first-visit LABS info popup, whitespace removed.
 _INTRO_LINES = ("LABSGRANTYOU", "GEMRUSHEFFICIENCY")
@@ -36,12 +42,46 @@ class LabVisitResult:
     confirmed_job: LabJob | None = None
     observed_coin_spend: int = 0
     confirmed_readings: tuple[LabsReading, ...] = ()
-    slot2_status: str = "unknown"
+    slot_status: tuple[tuple[int, str], ...] = ()
     gem_balance: int | None = None
     gems_before: int | None = None
     observed_gem_spend: int = 0
     transaction_key: str | None = None
     unlock_transaction_key: str | None = None
+    unlocked_slot: int | None = None
+
+
+# Post-tap reads: an unclassified frame counts toward the limit only after the
+# owned or still-locked forms fail. The scan cap bounds a slow settle.
+_UNLOCK_STRIKES = 3
+_UNLOCK_SCANS = 8
+
+
+def _inside(point: tuple[int, int], tile: tuple[int, int, int, int]) -> bool:
+    x, y, width, height = tile
+    return x <= point[0] < x + width and y <= point[1] < y + height
+
+
+def _debit_mismatch(txn: transactions.Transaction, gems_after: int) -> bool:
+    """The gems moved by an amount the header's rounding cannot make either nothing or the price.
+
+    An unchanged or lagging header is not a mismatch: the debit may still show.
+    """
+    assert txn.wallet_before is not None and txn.price is not None
+    drop = txn.wallet_before - gems_after
+    slack = transactions.reading_tolerance(txn.wallet_before, gems_after)
+    return abs(drop) > slack and abs(drop - txn.price) > slack
+
+
+def _slot_status(home: LabHomeReading | None, reading: LabsReading | None) -> tuple[tuple[int, str], ...]:
+    """Slots 2-5 this visit proved owned or locked. Nothing when the strip was not read."""
+    if home is None or reading is None or not reading.strip_read() or reading.slots_owned is None:
+        return ()
+    owned = reading.slots_owned
+    status = [(slot, "owned") for slot in range(2, owned + 1)]
+    if home.next_locked is not None and home.next_locked.slot == owned + 1:
+        status.append((owned + 1, "locked"))
+    return tuple(status)
 
 
 class LabVisit:
@@ -61,6 +101,9 @@ class LabVisit:
         runtime: LabRuntime | None = None,
         authorize: Callable[[str, LabDecision | None, float], bool] | None = None,
         event_sink: Callable[[events.Event], object] | None = None,
+        rollout: LabUnlockRollout | None = None,
+        worker: str | None = None,
+        evidence_dir: Path | None = None,
     ) -> None:
         self.templates = templates
         self.home_reader = home_reader
@@ -70,6 +113,7 @@ class LabVisit:
         self.wall_clock = wall_clock
         self.journal, self.account_state, self.runtime = journal, account_state, runtime
         self.authorize, self.event_sink = authorize, event_sink
+        self.rollout, self.worker, self.evidence_dir = rollout, worker, evidence_dir
         self._capture_at = 0.
         self._capture_scope: FactScope | None = None
         self._reading: LabsReading | None = None
@@ -86,10 +130,17 @@ class LabVisit:
         self._slot: LabHomeReading | None = None
         self._purchase: LabDecision | None = None
         self._outcome: LabVisitResult | None = None
-        self._slot2_home: LabHomeReading | None = None
-        self._slot2_signature: tuple[int, int, tuple[int, int]] | None = None
-        self._slot2_reads = 0
-        self._slot2_tapped = False
+        self._home_seen: tuple[LabHomeReading, LabsReading | None] | None = None
+        self._unlock_signature: tuple[LockedSlot, int] | None = None
+        self._unlock_reads = 0
+        self._unlock_done = False
+        self._owned_canary_checked = False
+        self._unlock_tap: tuple[str, int] | None = None
+        self._unlock_frames: list[Image] = []
+        self._unlock_scans = 0
+        self._unlock_strikes = 0
+        self._debit_strike = False
+        self._unlanded_signature: tuple[int, LockedSlot, int] | None = None
         self._options = LabVisitOptions()
         self.selected_action: LabAction | None = None
         self.pending_action: LabAction | None = None
@@ -119,7 +170,7 @@ class LabVisit:
                 self.recovery_status = 'lab_route_calibration_required'
                 return False
         self.selected_action = action
-        self._options = options or LabVisitOptions(unlock_slot2=action is None)
+        self._options = options or LabVisitOptions()
         self._stage_name, self._stage_scans, self._stage_started = 'idle', 0, 0.
         self._state = "open"
         self._started_at = 0.
@@ -132,10 +183,16 @@ class LabVisit:
         self._slot = None
         self._purchase = None
         self._outcome = None
-        self._slot2_home = None
-        self._slot2_signature = None
-        self._slot2_reads = 0
-        self._slot2_tapped = False
+        self._home_seen = None
+        self._unlock_signature = None
+        self._unlock_reads = 0
+        self._unlock_done = False
+        self._owned_canary_checked = False
+        self._unlock_tap = None
+        self._unlock_frames = []
+        self._unlock_scans = 0
+        self._unlock_strikes = 0
+        self._unlanded_signature = None
         self.last_tap = None
         self.recovery_status = None
         return True
@@ -164,7 +221,21 @@ class LabVisit:
             return None
         return scope
 
-    def _prepare(self, operation: str, wallet: int, price: int) -> transactions.Transaction | None:
+    def unlock_allowed(self, slot: int | None, account_id: str | None) -> bool:
+        """The rollout lets this worker tap `slot` while it plays `account_id`.
+
+        Fleet stage, or this worker's own canary on the account it was promoted
+        on. A canary since reassigned to another account never taps.
+        """
+        if (self.rollout is None or self.worker is None or account_id is None
+                or lab_catalog.lab_slot_gems(slot) is None):
+            return False
+        state = self.rollout.slot(slot)
+        return state.stage == 'fleet' or (state.stage == 'canary' and state.canary_worker == self.worker
+                                          and state.canary_account == account_id)
+
+    def _prepare(self, operation: str, wallet: int, price: int, *,
+                 unlock_slot: int | None = None) -> transactions.Transaction | None:
         scope = self._scope()
         now = self.wall_clock()
         if (scope is None or self.journal is None or self._reading is None
@@ -181,28 +252,33 @@ class LabVisit:
             if (type(target) is not int or target < 1 or not slot.confirmed or slot.state != 'idle'
                     or slot.observed_at is None or not 0 <= now-slot.observed_at <= 30):
                 return None
-        elif (not unlock_gate(2).enabled or not self._reading.strip_read() or self._reading.slots_owned != 1
-                or self.runtime.snapshot().slots_owned != 1):
+        elif (unlock_slot is None or unlock_slot not in self._options.unlock_slots
+                or price != lab_catalog.lab_slot_gems(unlock_slot)
+                or not self.unlock_allowed(unlock_slot, scope.account_id)
+                or not self._reading.strip_read() or self._reading.slots_owned != unlock_slot - 1
+                or self.runtime.snapshot().slots_owned != unlock_slot - 1):
             return None
         currency = 'coins' if operation == 'lab_start' else 'gems'
         balance = BalanceInterval.from_reading(currency, wallet, scope, self._capture_at,
                                                self._reading.frame_digest)
         self.account_state.observe_balance(balance)
-        if self.authorize is not None and not self.authorize(operation, self._purchase, now):
+        unlock = operation == 'lab_unlock'
+        decision = LabDecision('unlock_slot', price=price, slot=unlock_slot) if unlock else self._purchase
+        if self.authorize is not None and not self.authorize(operation, decision, now):
             return None
         from concepts import REGISTRY
-        intent = transactions.Intent(item=REGISTRY.by_id(research_id).name if operation == 'lab_start' else 'Lab 2',
+        intent = transactions.Intent(item=f'Lab {unlock_slot}' if unlock else REGISTRY.by_id(research_id).name,
             category='LABS', currency=currency, price=price, wallet_before=wallet,
             ts=now, operation=operation, before={
-                'slot': selected_slot if operation == 'lab_start' else 2,
-                'research_id': research_id if operation == 'lab_start' else None,
-                'source_level': target-1 if operation == 'lab_start' else None,
-                'target_level': target if operation == 'lab_start' else None,
+                'slot': unlock_slot if unlock else selected_slot,
+                'research_id': None if unlock else research_id,
+                'source_level': None if unlock else target-1,
+                'target_level': None if unlock else target,
                 'evidence_digest': self._reading.frame_digest, 'catalog_revision': _catalog_revision()})
         balance = replace(balance, catalog_revision=_catalog_revision())
         try:
             txn = self.journal.prepare(intent, scope=scope, balance=balance,
-                reserve=max(0, self._options.min_gems-price) if currency == 'gems' else 0)
+                reserve=self._options.keep_gems if currency == 'gems' else 0)
         except transactions.TransactionInFlight:
             return None
         if txn is None or txn.stage != transactions.Stage.INTENDED:
@@ -254,7 +330,7 @@ class LabVisit:
                 elif record.state == 'idle':
                     effect = False
             if txn.operation == 'lab_unlock' and current and self.runtime.snapshot().slots_owned is not None:
-                if home.slot2_status == 'owned' and self.runtime.snapshot().slots_owned >= 2:
+                if self.runtime.snapshot().slots_owned >= txn.before['slot']:
                     effect = True
             proof = transactions.RecoveryEvidence(category='LABS', currency=txn.currency,
                 wallet_after=home.coin_balance if txn.currency == 'coins' else home.gem_balance,
@@ -278,8 +354,12 @@ class LabVisit:
                     self._return(LabVisitResult('started', reason, self._purchase,
                         confirmed_job=job, observed_coin_spend=outcome.spent, transaction_key=txn.key))
                 else:
-                    self._return(replace(self._outcome or LabVisitResult('observed', 'slot_unlocked', LabDecision('unknown')),
-                        slot2_status='owned', gem_balance=home.gem_balance, gems_before=txn.wallet_before,
+                    # A canary's tap settled on a later visit (the tapping one was
+                    # cancelled or restarted) still promotes the slot.
+                    self._note_unlock(txn, 'bought')
+                    self._return(self._unlock_outcome('observed', 'slot_unlocked',
+                        slot_status=_slot_status(home, self._reading), unlocked_slot=txn.before['slot'],
+                        gem_balance=home.gem_balance, gems_before=txn.wallet_before,
                         observed_gem_spend=outcome.spent, unlock_transaction_key=txn.key))
                 self.recovery_status = 'settled'
             elif outcome.verdict == transactions.Verdict.REFUTED:
@@ -346,35 +426,276 @@ class LabVisit:
         return outcome
 
     def _return(self, outcome: LabVisitResult) -> None:
-        if self._slot2_home is not None and outcome.observed_gem_spend == 0:
-            outcome = replace(outcome, slot2_status=self._slot2_home.slot2_status,
-                              gem_balance=self._slot2_home.gem_balance)
+        if self._home_seen is not None:
+            home, reading = self._home_seen
+            if not outcome.slot_status:
+                outcome = replace(outcome, slot_status=_slot_status(home, reading))
+            if outcome.observed_gem_spend == 0 and outcome.gem_balance is None:
+                outcome = replace(outcome, gem_balance=home.gem_balance)
         self._outcome = outcome
         self._state = "return"
 
-    def _unlock_lab_two(self, home: LabHomeReading, device: AdbDevice) -> bool:
-        """On the way out, buy Lab 2 once from two matching affordable reads."""
-        if (not unlock_gate(2).enabled or not self._options.unlock_slot2 or self._slot2_tapped
-                or home.slot2_status != "locked" or home.slot2_price != 100
-                or home.gem_balance is None or home.gem_balance < self._options.min_gems
-                or home.slot2_point is None):
+    def _emit(self, event: events.Event) -> None:
+        if self.event_sink is not None:
+            self.event_sink(event)
+
+    def _publish_change(self, change: RolloutChange) -> None:
+        if change.promoted:
+            self._emit(events.LabUnlockPromoted(slot=change.slot, stage=change.promoted))
+        if change.halted:
+            self._emit(events.LabUnlockHalted(slot=change.slot, reason=change.after.halted_reason or ""))
+
+    def _skip(self, slot: int, reason: str) -> None:
+        self._emit(events.Skipped(action='lab_unlock', reason=reason, detail=f'Lab {slot}'))
+
+    def _unlock_slot(self, home: LabHomeReading, screen: Image, device: AdbDevice) -> bool:
+        """On the way out, rehearse or unlock the gem lane's next slot once per visit.
+
+        True keeps the visit on Labs this scan: a first read, or a tap that needs
+        its post-tap reads. The rollout record decides between rehearsal, tap and skip.
+        Only the first locked tile on screen is acted on, and only when the gem
+        lane names that same slot; a stale slot record never moves the target.
+        """
+        locked, scope = home.next_locked, self._scope()
+        if self._unlock_done or self.rollout is None or self.worker is None or scope is None:
             return False
-        self._slot2_home = home
-        signature = (home.slot2_price, home.gem_balance, home.slot2_point)
-        if signature != self._slot2_signature:
-            self._slot2_signature = signature
-            self._slot2_reads = 1
+        self._halt_owned_canary(scope)
+        if locked is None or locked.slot not in self._options.unlock_slots:
+            return False
+        catalog = lab_catalog.lab_slot_gems(locked.slot)
+        if catalog is None:
+            self._unlock_done = True
+            self._skip(locked.slot, 'price_unknown')
+            return False
+        reading, gems = self._reading, home.gem_balance
+        # An abbreviated header ("1.4K") may stand for less than it reads, so
+        # only the least balance it can mean pays for the price and the reserve.
+        if (locked.price is None or locked.point is None or locked.tile is None
+                or not _inside(locked.point, locked.tile) or gems is None
+                or gems - transactions.abbreviation_slack(gems) < catalog + self._options.keep_gems
+                or reading is None or not reading.strip_read()
+                or reading.slots_owned != locked.slot - 1):
+            return False
+        signature = (locked, gems)
+        if signature != self._unlock_signature:
+            self._unlock_signature, self._unlock_reads = signature, 1
             return True
-        self._slot2_reads += 1
-        if self._slot2_reads < 2:
+        self._unlock_reads += 1
+        if self._unlock_reads < 2:
             return True
-        if self._prepare('lab_unlock', home.gem_balance, home.slot2_price) is None:
+        self._unlock_done = True
+        slot, price = locked.slot, locked.price
+        state = self.rollout.slot(slot)
+        if state.stage == 'canary' and state.canary_worker != self.worker:
+            state = self.rollout.release_absent_canary(slot).after
+        elif state.stage == 'canary' and state.canary_account != scope.account_id:
+            # This worker was promoted on another account: back to dry run, no tap.
+            state = self.rollout.release_canary(slot, expected_worker=self.worker).after
+        if state.stage == 'halted':
+            self._skip(slot, 'slot_halted')
+            return False
+        if price != catalog:
+            self._publish_change(
+                self.rollout.note_dry_run(slot, self.worker, price, gems, self.wall_clock(),
+                                          account_id=scope.account_id)
+                if state.stage == 'dry_run' else
+                self.rollout.halt(slot, f"Slot {slot} read {price} gems; the catalog says {catalog}"))
+            return False
+        if self.unlock_allowed(slot, scope.account_id):
+            return self._tap_unlock(locked, gems, screen, device)
+        if state.stage == 'dry_run':
+            change = self.rollout.note_dry_run(slot, self.worker, price, gems, self.wall_clock(),
+                                               account_id=scope.account_id)
+            if change.before.stage == 'dry_run' and not change.halted:
+                self._emit(events.LabUnlockRehearsed(slot=slot, price=price, gems=gems))
+            self._publish_change(change)
+            return False
+        self._skip(slot, 'waiting_for_canary')
+        return False
+
+    def _halt_owned_canary(self, scope: FactScope) -> None:
+        """Halt this worker's canary slot that is already owned with no unlock left to settle.
+
+        Once per visit, on a confirmed strip read. The canary's unlock can only be
+        proven through its own open transaction; with none open, a slot this
+        account owns was bought some other way (a landed tap judged not charged,
+        a lost rollout write, an owner's reconciliation), and nothing would ever
+        move the slot on again. The owner sees the halt and can Reset it.
+        """
+        reading = self._reading
+        if self._owned_canary_checked or reading is None or not reading.strip_read():
+            return
+        snapshot = self.runtime.snapshot()
+        if (not snapshot.strip_complete or snapshot.observed_at != self._capture_at
+                or snapshot.slots_owned != reading.slots_owned or reading.slots_owned < 2):
+            return
+        self._owned_canary_checked = True
+        if self.pending_transaction is not None:
+            return
+        for slot, state in self.rollout.slots().items():
+            if (slot <= reading.slots_owned and state.stage == 'canary'
+                    and state.canary_worker == self.worker and state.canary_account == scope.account_id):
+                self._publish_change(self.rollout.halt_canary(
+                    slot, self.worker, scope.account_id, f"Slot {slot} owned without a proven canary unlock"))
+
+    def _tap_unlock(self, locked: LockedSlot, gems: int, screen: Image, device: AdbDevice) -> bool:
+        assert locked.price is not None and locked.point is not None
+        txn = self._prepare('lab_unlock', gems, locked.price, unlock_slot=locked.slot)
+        if txn is None:
             self.recovery_status = 'lab_preparation_refused'
             return False
-        self._tap(device, home.slot2_point, "unlock_lab_two")
-        self._slot2_tapped = True
-        self._state = "confirm_slot2"
+        self._unlock_tap = (txn.key, locked.slot)
+        self._unlock_frames = [screen]
+        self._unlock_scans = self._unlock_strikes = 0
+        self._debit_strike = False
+        self._unlanded_signature = None
+        self._tap(device, locked.point, f"unlock_lab_slot_{locked.slot}")
+        self._state = "confirm_slot"
         return True
+
+    def _unlock_evidence(self, txn: transactions.Transaction, home: LabHomeReading,
+                         scope: FactScope, changed: bool) -> transactions.RecoveryEvidence:
+        assert self._reading is not None
+        return transactions.RecoveryEvidence(category='LABS', currency='gems',
+            wallet_after=home.gem_balance, effect_changed=changed, observed_at=self._capture_at,
+            frame_digest=self._reading.frame_digest, scope=scope, operation='lab_unlock',
+            slot=txn.before['slot'])
+
+    def _settle_own_unlock(self, txn: transactions.Transaction, home: LabHomeReading,
+                           screen: Image) -> LabVisitResult | None:
+        """Sort this visit's own unlock tap into bought, not landed, or uncertain.
+
+        Bought: slot N confirmed owned since the tap and the gems down by the price.
+        Not landed: two matching Labs home reads, taken after the tap, with slot N
+        still the first locked tile at its price and the gems unchanged. A debit
+        that provably is not the price is uncertain at once. Anything else is a
+        strike, including a confirmed owned slot whose gem header is unreadable or
+        not yet down; three strikes, or eight post-tap scans, is uncertain.
+        """
+        assert self._unlock_tap is not None
+        key, slot = self._unlock_tap
+        if len(self._unlock_frames) < _UNLOCK_SCANS + 1:
+            self._unlock_frames.append(screen)
+        self._unlock_scans += 1
+        scope, reading = self._scope(), self._reading
+        strip = (scope is not None and reading is not None and home.page and reading.strip_read())
+        locked = home.next_locked
+        if strip and reading.slots_owned >= slot:
+            snapshot = self.runtime.snapshot()
+            record = snapshot.slots[slot - 1]
+            current = (record.confirmed and record.observed_at == self._capture_at
+                       and record.started_observed_at is not None and txn.acted_at is not None
+                       and record.started_observed_at > txn.acted_at
+                       and snapshot.slots_owned is not None and snapshot.slots_owned >= slot)
+            if current and home.gem_balance is not None:
+                outcome = self.journal.reconcile(key, self._unlock_evidence(txn, home, scope, True),
+                                                 now=self.wall_clock())
+                if outcome.verdict == transactions.Verdict.BOUGHT and outcome.spent == txn.price:
+                    return self._unlock_bought(txn, home, outcome)
+                if _debit_mismatch(txn, home.gem_balance):
+                    return self._unlock_uncertain(txn, slot, 'gem debit did not match the price')
+            if current:
+                # Owned, but the header is unreadable or has not caught up with the
+                # debit yet: an unclassified read, and the transaction stays open.
+                self._unlock_strikes += 1
+                self._debit_strike = True
+            # Owned but not yet confirmed: it breaks any run of still-locked reads.
+            self._unlanded_signature = None
+        elif (strip and reading.slots_owned == slot - 1 and locked is not None
+              and locked.slot == slot and locked.price == txn.price
+              and home.gem_balance is not None and home.gem_balance == txn.wallet_before):
+            signature = (reading.slots_owned, locked, home.gem_balance)
+            if signature == self._unlanded_signature:
+                outcome = self.journal.refute_unlanded_unlock(
+                    key, self._unlock_evidence(txn, home, scope, False), now=self.wall_clock())
+                if outcome.verdict == transactions.Verdict.REFUTED:
+                    return self._unlock_missed(txn, home)
+            self._unlanded_signature = signature
+        else:
+            self._unlock_strikes += 1
+            self._debit_strike = False
+            self._unlanded_signature = None
+        if self._unlock_strikes >= _UNLOCK_STRIKES or self._unlock_scans >= _UNLOCK_SCANS:
+            return self._unlock_uncertain(txn, slot, 'gem debit was not proven' if self._debit_strike
+                                          else 'post-tap screen was not understood')
+        return None
+
+    def _note_unlock(self, txn: transactions.Transaction, outcome: str) -> None:
+        """Report a settled canary tap to the rollout; a no-op for any other worker or stage."""
+        if self.rollout is not None and self.worker is not None:
+            self._publish_change(self.rollout.note_unlock(txn.before['slot'], self.worker, txn.key,
+                                                          outcome, at=self.wall_clock()))
+
+    def _unlock_outcome(self, status: str, reason: str, **fields: object) -> LabVisitResult:
+        """The unlock's result, keeping what this visit already learned about research.
+
+        A research start confirmed earlier in the visit keeps its status and
+        reason, and so does an auto-start-off read, which TowerBot uses to keep
+        the saved Game Speed evidence; any other earlier outcome keeps its job
+        and decision. The unlock's own verdict is in its fields and recovery_status.
+        """
+        prior = self._outcome
+        if prior is None:
+            return LabVisitResult(status, reason, LabDecision('unknown'), **fields)
+        if prior.status == 'started' or prior.reason == 'auto_start_off':
+            return replace(prior, **fields)
+        return replace(prior, status=status, reason=reason, **fields)
+
+    def _unlock_bought(self, txn: transactions.Transaction, home: LabHomeReading,
+                       outcome: transactions.Outcome) -> None:
+        slot = txn.before['slot']
+        self._restore_receipts()  # publishes LabSlotUnlocked with the journal's values
+        self._note_unlock(txn, 'bought')
+        self._unlock_tap = None
+        self.recovery_status = 'settled'
+        self._return(self._unlock_outcome('observed', 'slot_unlocked',
+            slot_status=_slot_status(home, self._reading), gem_balance=home.gem_balance,
+            gems_before=txn.wallet_before, observed_gem_spend=outcome.spent,
+            unlock_transaction_key=txn.key, unlocked_slot=slot))
+        return None
+
+    def _unlock_missed(self, txn: transactions.Transaction, home: LabHomeReading) -> None:
+        self._restore_receipts()
+        self._note_unlock(txn, 'not_charged')
+        self._unlock_tap = None
+        self._return(self._unlock_outcome('observed', 'unlock_not_landed',
+            slot_status=_slot_status(home, self._reading), gem_balance=home.gem_balance))
+        return None
+
+    def _save_unlock_evidence(self, slot: int, txn: transactions.Transaction) -> tuple[str, ...]:
+        """The frames from the tap onward, as evidence/lab-unlock-slot<N>-<ts>-<k>.png.
+
+        Best effort: a frame that cannot be written is logged and left out, and
+        the halt goes ahead with whatever was saved.
+        """
+        if self.evidence_dir is None:
+            return ()
+        import cv2
+        stamp = int(txn.acted_at if txn.acted_at is not None else self.wall_clock())
+        saved = []
+        try:
+            self.evidence_dir.mkdir(parents=True, exist_ok=True)
+            for index, image in enumerate(self._unlock_frames):
+                path = self.evidence_dir / f"lab-unlock-slot{slot}-{stamp}-{index}.png"
+                if cv2.imwrite(str(path), image):
+                    saved.append(str(path))
+        except (OSError, cv2.error) as exc:
+            logger.warning("Lab unlock evidence for slot %s not fully saved to %s (%s)",
+                           slot, self.evidence_dir, exc)
+        return tuple(saved)
+
+    def _unlock_uncertain(self, txn: transactions.Transaction, slot: int,
+                          reason: str) -> LabVisitResult:
+        """Keep the transaction open (the worker's read-only hold) and halt a canary's slot."""
+        evidence = self._save_unlock_evidence(slot, txn)
+        state = self.rollout.slot(slot)
+        if state.stage == 'canary' and state.canary_worker == self.worker:
+            self._publish_change(self.rollout.halt(slot, reason, evidence))
+        self._unlock_tap = None
+        self.recovery_status = 'lab_unlock_uncertain'
+        # The tap may have landed: record no slot status from before it.
+        return self._finish(self._unlock_outcome('failed', 'lab_unlock_uncertain', slot_status=(),
+                                                 gems_before=txn.wallet_before))
 
     def advance(
         self, screen: Image, boxes: tuple[ocr.TextBox, ...],
@@ -392,6 +713,8 @@ class LabVisit:
             self._started_at = now
         self._scans += 1
         if self._scans > 48 or now - self._started_at > 90:
+            # An unsettled unlock tap keeps its hold without halting the slot; the
+            # next visit's recovery settles it (and promotes a canary's slot).
             if self.pending_transaction is not None:
                 self.recovery_status = 'lab_reconciliation_route_unavailable'
             return self._finish(self._outcome or LabVisitResult(
@@ -425,8 +748,12 @@ class LabVisit:
                   if selected is not None and selected.research != 'labs.game-speed'
                   else self.picker_reader(screen, boxes))
         confirmation = self.confirmation_reader(screen, boxes)
+        if home.page:
+            self._home_seen = (home, self._reading)
         pending = self.pending_transaction
         if pending is not None:
+            if self._unlock_tap is not None and pending.key == self._unlock_tap[0]:
+                return self._settle_own_unlock(pending, home, screen)
             self._recover(pending, home, picker, confirmation, screen, device)
             return None
         if self._stage_name != self._state:
@@ -455,7 +782,6 @@ class LabVisit:
         if self._state == "home":
             if not home.page:
                 return None
-            self._slot2_home = home
             decision = decide(home, None)
             if not self._options.start_research and self.runtime is not None:
                 snapshot = self.runtime.snapshot()
@@ -539,7 +865,7 @@ class LabVisit:
             self._state = "confirm"
             return None
 
-        if self._state in {"confirm", "confirm_slot2"}:
+        if self._state in {"confirm", "confirm_slot"}:
             return self._finish(LabVisitResult('failed', 'transaction_receipt_unavailable', LabDecision('unknown')))
 
         if self._state == "return":
@@ -553,7 +879,7 @@ class LabVisit:
                     self._tap(device, point, "close_picker")
                 return None
             if home.page:
-                if self._unlock_lab_two(home, device):
+                if self._unlock_slot(home, screen, device):
                     return None
                 point = self._match(screen, "nav/tab_battle.png")
                 if point is not None:

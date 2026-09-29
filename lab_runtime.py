@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import config
 import lab_catalog
+from lab_plan import LabCadence
 from labs import ACCELERATION_STATES, LAB_CONCEPT_IDS, LabJob, LabsReading
 
 
@@ -308,33 +309,36 @@ class LabRuntime:
     def _legacy(self) -> None:
         """Old cadence is historical, including when current scope is bound."""
         slots = list(self._snapshot.slots)
-        owned: int | None = None
-        for slot in (1, 2):
-            try:
-                record = json.loads((self.root / f"lab-slot{slot}-cadence.json").read_text())
-                if (record.get("account_id") != self.scope.account_id
-                        or not _finite(record.get("observed_at"))):
-                    continue
+        try:
+            record = json.loads((self.root / "lab-slot1-cadence.json").read_text())
+            if (record.get("account_id") == self.scope.account_id
+                    and _finite(record.get("observed_at"))):
                 observed = record["observed_at"]
-                if slot == 1:
-                    kind = record.get("kind")
-                    state = {"wait_running": "researching", "wait_coins": "idle",
-                             "done": "idle", "wait_unlock": "locked"}.get(kind, "unknown")
-                    level, finish = record.get("game_speed_level"), record.get("job_completes_at")
-                    if state == "researching" and not _finite(finish):
-                        state = "unknown"
-                    target = level if type(level) is int and level >= 1 and state == "researching" else None
-                    slots[0] = LabJobRecord(self.scope, 1, state=state,
-                        research_id=lab_catalog.GAME_SPEED if state == "researching" else None,
-                        source_level=target - 1 if target is not None else None, target_level=target,
-                        expected_finish=finish if state == "researching" else None,
-                        observed_at=observed, evidence_status="historical")
-                else:
-                    state = {"owned": "owned_unread", "locked": "locked"}.get(record.get("status"), "unknown")
-                    slots[1] = LabJobRecord(self.scope, 2, state=state,
-                        observed_at=observed, evidence_status="historical")
-                    if state == "locked":
-                        owned = 1
-            except (OSError, ValueError, TypeError, AttributeError):
+                kind = record.get("kind")
+                state = {"wait_running": "researching", "wait_coins": "idle",
+                         "done": "idle", "wait_unlock": "locked"}.get(kind, "unknown")
+                level, finish = record.get("game_speed_level"), record.get("job_completes_at")
+                if state == "researching" and not _finite(finish):
+                    state = "unknown"
+                target = level if type(level) is int and level >= 1 and state == "researching" else None
+                slots[0] = LabJobRecord(self.scope, 1, state=state,
+                    research_id=lab_catalog.GAME_SPEED if state == "researching" else None,
+                    source_level=target - 1 if target is not None else None, target_level=target,
+                    expected_finish=finish if state == "researching" else None,
+                    observed_at=observed, evidence_status="historical")
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+        records = LabCadence(self.root, self.scope.account_id).slot_records()
+        locked: list[int] = []
+        for slot, record in records.items():
+            observed = record.get("observed_at")
+            if not _finite(observed):
                 continue
+            state = "owned_unread" if record["status"] == "owned" else "locked"
+            slots[slot - 1] = LabJobRecord(self.scope, slot, state=state, observed_at=observed,
+                                           evidence_status="historical")
+            if state == "locked":
+                locked.append(slot)
+        owned = min(locked) - 1 if locked else None
         self._snapshot = replace(self._snapshot, slots=tuple(slots), slots_owned=owned)

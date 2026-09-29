@@ -44,9 +44,12 @@ def research_automated(lab_id: str, slot: int) -> bool:
     return research_gate(slot, lab_id).enabled
 
 
-def gem_automated(block: Mapping[str, Any]) -> bool:
-    from lab_routes import unlock_gate
-    return block.get("type") == "unlock_lab_slot" and unlock_gate(block.get("slot")).enabled
+def gem_automated(block: Mapping[str, Any], rollout: Mapping[int, Any] | None = None) -> bool:
+    """A slot unlock is automated once its rollout reached canary or fleet."""
+    if block.get("type") != "unlock_lab_slot" or lab_catalog.lab_slot_gems(block.get("slot")) is None:
+        return False
+    state = (rollout or {}).get(block.get("slot"))
+    return state is not None and state.stage in ("canary", "fleet")
 
 
 class _Ids:
@@ -444,6 +447,13 @@ class LabFacts:
     scope: LabScope | None = None
     best_waves: Mapping[int, int] | None = None
     coins_per_hour: float | None = None
+    # Slots 2-5 from lab-slots.json; None falls back to the legacy `slot2` record.
+    slot_ownership: Mapping[int, Mapping[str, Any]] | None = None
+    # A complete strip read proves every slot up to here owned.
+    owned_floor: int | None = None
+    # The fleet's lab-unlock rollout per slot, and this worker's id, for the gem lane.
+    rollout: Mapping[int, Any] | None = None
+    worker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -491,6 +501,7 @@ class GemStep:
     state: str
     price: int | None
     automated: bool
+    slot: int | None = None
 
 
 @dataclass(frozen=True)
@@ -558,7 +569,7 @@ def _slot1_now(record: Mapping[str, Any] | None, now: float) -> SlotNow:
     return SlotNow("unknown", read_at=read_at, stale=stale)
 
 
-def _slot2_now(record: Mapping[str, Any] | None, now: float) -> SlotNow:
+def _ownership_now(record: Mapping[str, Any] | None, now: float) -> SlotNow:
     if record is None:
         return SlotNow("unknown")
     read_at = _number(record.get("observed_at"))
@@ -762,14 +773,47 @@ def _gem_label(block: Mapping[str, Any]) -> str:
     return "Wait"
 
 
-def _gem_met(block: Mapping[str, Any], slot2: Mapping[str, Any] | None) -> bool | None:
-    """True/False when read; None when we cannot know (never a guess)."""
+def _ownership(facts: LabFacts) -> dict[int, Mapping[str, Any]]:
+    """Per-slot ownership (slots 2-5). Without it, the legacy slot-2 record."""
+    if facts.slot_ownership is not None:
+        return {slot: record for slot, record in facts.slot_ownership.items()
+                if slot in (2, 3, 4, 5) and isinstance(record, Mapping)}
+    return {2: facts.slot2} if isinstance(facts.slot2, Mapping) else {}
+
+
+def _gem_met(block: Mapping[str, Any], ownership: Mapping[int, Mapping[str, Any]],
+             owned_floor: int | None = None) -> bool | None:
+    """True or False when read. None when we cannot know, which is never a guess.
+
+    Slots unlock in order: an owned higher slot proves this one owned, and a
+    locked lower slot proves this one locked.
+    """
     if block["type"] != "unlock_lab_slot":
         return False
-    status = slot2.get("status") if slot2 else None
-    if block["slot"] == 2:
-        return {"owned": True, "locked": False}.get(status)
-    return False if status == "locked" else None
+    slot = block["slot"]
+    if type(owned_floor) is int and slot <= owned_floor:
+        return True
+    status = {number: record.get("status") for number, record in ownership.items()}
+    if status.get(slot) == "owned" or any(status.get(n) == "owned" for n in range(slot + 1, 6)):
+        return True
+    if status.get(slot) == "locked" or any(status.get(n) == "locked" for n in range(2, slot)):
+        return False
+    return None
+
+
+def gem_lane_blocks(gems: Any) -> tuple[dict[str, Any], ...]:
+    """The gem lane as blocks, whether the route stores blocks or legacy steps."""
+    return gems.blocks if gems.mode == "blocks" else legacy_gem_blocks(gems.steps)
+
+
+def next_unlock_slot(blocks: Sequence[Mapping[str, Any]], ownership: Mapping[int, Mapping[str, Any]],
+                     owned_floor: int | None = None) -> int | None:
+    """The slot the gem lane unlocks next, or None when its next step is not a slot unlock."""
+    for block in blocks:
+        if _gem_met(block, ownership, owned_floor) is True:
+            continue
+        return block["slot"] if block["type"] == "unlock_lab_slot" else None
+    return None
 
 
 def _gem_price(block: Mapping[str, Any]) -> int | None:
@@ -780,16 +824,24 @@ def _gem_price(block: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _unlock_line(block: Mapping[str, Any], facts: LabFacts) -> str:
+    from lab_unlock_rollout import SlotRollout, rollout_status
+    slot = block["slot"]
+    if lab_catalog.lab_slot_gems(slot) is None:
+        return f"Slot {slot} price unknown"
+    return rollout_status((facts.rollout or {}).get(slot) or SlotRollout(), slot, facts.worker)
+
+
 def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) -> GemPlan:
     steps: list[GemStep] = []
     why: list[str] = []
     current: GemStep | None = None
+    ownership = _ownership(facts)
     for block in blocks:
-        met = _gem_met(block, facts.slot2)
-        automated = gem_automated(block) and rules.gems.auto_unlock_lab_slots
-        if block["type"] == "unlock_lab_slot" and not gem_automated(block):
-            from lab_routes import unlock_gate
-            why.append(f"{block['id']}: {unlock_gate(block['slot']).reason}")
+        met = _gem_met(block, ownership, facts.owned_floor)
+        automated = gem_automated(block, facts.rollout) and rules.gems.auto_unlock_lab_slots
+        if block["type"] == "unlock_lab_slot" and not gem_automated(block, facts.rollout):
+            why.append(f"{block['id']}: {_unlock_line(block, facts)}")
         if block["type"] == "buy_cards":
             why.append(f"{block['id']}: unavailable; independent card reward/inventory evidence is not calibrated")
         if current is None and met is True:
@@ -798,12 +850,13 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
         elif current is None:
             state = "current"
             why.append(f"{block['id']}: {'ownership unread' if met is None else 'next'}")
-            if gem_automated(block) and not rules.gems.auto_unlock_lab_slots:
+            if gem_automated(block, facts.rollout) and not rules.gems.auto_unlock_lab_slots:
                 why.append("Auto-unlock off")
         else:
             state = "next"
         step = GemStep(block["id"], block["type"], block.get("label") or _gem_label(block),
-                       state, _gem_price(block), automated)
+                       state, _gem_price(block), automated,
+                       block["slot"] if block["type"] == "unlock_lab_slot" else None)
         if state == "current":
             current = step
         steps.append(step)
@@ -841,9 +894,9 @@ def _slot_context(facts: LabFacts) -> SlotContext:
                 known[lab_id] = max(known.get(lab_id, 0), target - 1)
     if facts.slot1 and facts.slot1.get("kind") == "wait_running":
         unavailable.add(GAME_SPEED)
-    later = SlotNow("unknown")
-    nows = {1: _slot1_now(facts.slot1, facts.now), 2: _slot2_now(facts.slot2, facts.now),
-            3: later, 4: later, 5: later}
+    ownership = _ownership(facts)
+    nows = {1: _slot1_now(facts.slot1, facts.now),
+            **{slot: _ownership_now(ownership.get(slot), facts.now) for slot in (2, 3, 4, 5)}}
     for slot, record in (facts.slots or {}).items():
         if slot in LAB_SLOTS and isinstance(record, Mapping):
             nows[slot] = _observed_now(record, facts.now)
@@ -869,8 +922,7 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
     rules = route.rules
     lab_blocks = (route.labs.blocks if route.labs.mode == "blocks"
                   else legacy_lab_blocks(route.labs.steps))
-    gem_blocks = (route.gems.blocks if route.gems.mode == "blocks"
-                  else legacy_gem_blocks(route.gems.steps))
+    gem_blocks = gem_lane_blocks(route.gems)
     ctx = _slot_context(facts)
     if is_lab_list(route.labs):
         return evaluate_lab_list(route, facts, ctx=ctx, gems=_gem_plan(gem_blocks, facts, rules))

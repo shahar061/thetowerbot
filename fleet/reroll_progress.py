@@ -25,15 +25,18 @@ from fleet.reroll_variants import read_variant
 from fleet.workshop_prices import CATALOG, WorkshopPrices, PriceQuote, catalog_price
 from fleet.reroll_survival import prioritize_survival
 from fleet.build_route_runtime import BuildRouteRuntime
-from fleet.build_route import RouteRules, resolve_route
+from fleet.build_route import GemRoute, RouteRules, resolve_route
 from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle,
                                     evaluate_resources, evaluate_workshop,
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
 from fleet import coin_share
 from fleet.lab_facts import best_waves, coins_per_hour, just_in_time_hold
-from fleet.resource_blocks import LabFacts, LabPlan, evaluate_lab_plan
-from lab_plan import LAB2_GEMS, LabCadence, LabDecision, LabVisitOptions
+from fleet.resource_blocks import (LabFacts, LabPlan, evaluate_lab_plan,
+                                   gem_lane_blocks, next_unlock_slot)
+from lab_plan import LabCadence, LabDecision, LabVisitOptions
+import lab_catalog
+from lab_unlock_rollout import LabUnlockRollout
 from policy import AutopilotPolicy, UpgradeRule
 from strategy import Shopping, ShoppingRule, Strategy
 
@@ -109,16 +112,21 @@ class RerollProgress:
         if not self.lab_unlocked():
             return False
         rules = self.resource_rules()
-        slot2 = (rules.gems.auto_unlock_lab_slots and self.lab_cadence.slot2_due(
-            moment, wallet_gems, min_gems=LAB2_GEMS + rules.gems.keep))
-        slot1 = rules.labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
-        return slot2 or slot1
+        unlock = False
+        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
+        price = lab_catalog.lab_slot_gems(slot) if slot is not None else None
+        if price is not None:
+            unlock = self.lab_cadence.slot_due(slot, moment, wallet_gems,
+                                               min_gems=price + rules.gems.keep)
+        research = rules.labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
+        return unlock or research
 
     def lab_visit_options(self) -> LabVisitOptions:
         rules = self.resource_rules()
+        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
         return LabVisitOptions(start_research=rules.labs.auto_start,
-                               unlock_slot2=rules.gems.auto_unlock_lab_slots,
-                               min_gems=LAB2_GEMS + rules.gems.keep)
+                               unlock_slots=(slot,) if slot is not None else (),
+                               keep_gems=rules.gems.keep)
 
     def note_lab_coin_debit(self, now: float | None = None) -> None:
         """A confirmed lab coin debit spent the savings: empty the jar."""
@@ -150,10 +158,42 @@ class RerollProgress:
             return False
         return not purchases
 
-    def note_lab_slot2(self, status: str, wallet_gems: int | None,
+    def note_lab_slots(self, statuses: Mapping[int, str], wallet_gems: int | None,
                        now: float | None = None) -> None:
-        self.lab_cadence.note_slot2(status, wallet_gems,
-                                    time.time() if now is None else now)
+        self.lab_cadence.note_slots(statuses, wallet_gems, time.time() if now is None else now)
+
+    def _effective_gems(self) -> GemRoute:
+        """This account's gem lane; today's default when no route applies."""
+        if self.route_runtime is None:
+            return GemRoute()
+        try:
+            route = self.route_runtime.current()
+        except RouteUnavailable:
+            return GemRoute()
+        try:
+            return resolve_route(route, self.root.name, self.account_id).gems
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("_effective_gems: resolve_route failed for %s (%s); using defaults",
+                           self.account_id, exc)
+            return GemRoute()
+
+    @property
+    def fleet_root(self) -> Path | None:
+        """<fleet root> for a worker root laid out as <fleet root>/workers/<worker id>."""
+        return self.root.parent.parent if self.root.parent.name == "workers" else None
+
+    @property
+    def worker_id(self) -> str | None:
+        return self.root.name if self.fleet_root is not None else None
+
+    def unlock_rollout(self) -> LabUnlockRollout | None:
+        """The fleet's shared lab-slot rollout record. A solo bot has none, so it never unlocks."""
+        root = self.fleet_root
+        return LabUnlockRollout(root) if root is not None else None
+
+    def next_unlock_slot(self) -> int | None:
+        """The slot the gem lane unlocks next, from this account's slot record."""
+        return next_unlock_slot(gem_lane_blocks(self._effective_gems()), self.lab_cadence.slot_records())
 
     def speed_target(self) -> float:
         return self.lab_cadence.speed_target()
@@ -178,11 +218,17 @@ class RerollProgress:
         if wallet_gems is not None:
             gems = (min(gems, wallet_gems) if type(gems) is int and type(wallet_gems) is int
                     and wallet_gems >= 0 else None)
+        rollout = self.unlock_rollout()
+        rollout_slots = rollout.slots() if rollout is not None else None
         facts = replace(facts, available_coins=available, wallet_coins=available,
                         wallet_gems=gems,
                         jar=self.coin_jar.amount(quiet=True),
                         coins_per_hour=coins_per_hour(self.root, self.account_id),
-                        best_waves=best_waves(self.root / "tower_bot.db") or None)
+                        best_waves=best_waves(self.root / "tower_bot.db") or None,
+                        slot_ownership=self.lab_cadence.slot_records(),
+                        owned_floor=(getattr(runtime, "slots_owned", None)
+                                     if type(getattr(runtime, "slots_owned", None)) is int else None),
+                        rollout=rollout_slots, worker=self.worker_id)
         route = self.route_runtime.current()
         return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
 
@@ -203,12 +249,15 @@ class RerollProgress:
                 self.account_id, self.root.name, "main_menu", time.time(), time.time(),
                 wallet_coins=wallet_coins, wallet_gems=wallet_gems,
                 lab_slot2_owned=(slot2.get("status") == "owned" if slot2 else None),
+                lab_slot_status=self.lab_cadence.slot_status_map(),
                 game_speed_maxed=(lab.get("kind") == "done" if lab else None),
                 lab_decision_kind=(str(lab["kind"]) if lab and isinstance(lab.get("kind"), str) else None),
                 lab_price=(lab.get("price") if lab and type(lab.get("price")) is int else None),
             )
+            rollout = self.unlock_rollout()
             self.route_runtime.publish_resources(
-                evaluate_resources(resolve_route(route, self.root.name, self.account_id), facts), facts)
+                evaluate_resources(resolve_route(route, self.root.name, self.account_id), facts,
+                                   rollout.slots() if rollout is not None else None), facts)
         except (OSError, ValueError, RouteUnavailable) as exc:
             self.route_error = str(exc)
 
@@ -418,7 +467,7 @@ class RerollProgress:
             self.route_error = None
         # Reserve the first 100 gems for the second lab even when a custom
         # reroll policy enables card spending.
-        if not self.lab_cadence.slot2_owned():
+        if not self.lab_cadence.slot_owned(2):
             base = replace(base, cards=replace(base.cards, enabled=False))
         rules = (resolve_route(route, self.root.name, self.account_id).rules
                  if route is not None else RouteRules())

@@ -14,6 +14,8 @@ from fleet.build_route_eval import RouteFacts
 from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route_store import BuildRouteStore
 from fleet.reroll_progress import RerollProgress
+from fleet.resource_blocks import template_gem_blocks
+from lab_unlock_rollout import LabUnlockRollout
 from strategy import Strategy
 from policy import AutopilotPolicy
 
@@ -380,7 +382,7 @@ def test_labs_first_pauses_workshop_after_the_tutorial_grant(tmp_path: Path) -> 
     progress = _progress(tmp_path)
     _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
     _game_speed_waits(progress)
-    progress.note_lab_slot2("owned", 200)
+    progress.note_lab_slots({2: "owned"}, 200)
     progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
     base = Strategy.from_config().shopping
     base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
@@ -403,7 +405,7 @@ def test_paused_workshop_publishes_a_paused_plan_not_the_unrunnable_buy(tmp_path
     progress._publish = lambda decision: published.append(decision)  # type: ignore[method-assign]
     _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
     _game_speed_waits(progress)
-    progress.note_lab_slot2("owned", 200)
+    progress.note_lab_slots({2: "owned"}, 200)
     progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
     base = Strategy.from_config().shopping
     base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
@@ -438,7 +440,7 @@ def test_resource_rules_falls_back_to_defaults_when_resolve_route_breaks(
 def test_gems_keep_raises_the_card_gem_floor(tmp_path: Path) -> None:
     progress = _progress(tmp_path)
     _rules_route(tmp_path, {"gems": {"keep": 60}})
-    progress.note_lab_slot2("owned", 200, now=1000.)
+    progress.note_lab_slots({2: "owned"}, 200, now=1000.)
     progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
     base = Strategy.from_config().shopping
     base = replace(base, cards=replace(base.cards, enabled=True, gem_floor=0))
@@ -450,15 +452,32 @@ def test_auto_start_and_auto_unlock_switches_gate_the_lab_visit(tmp_path: Path) 
     progress.note_lab_unlocked("labs_tab", now=999.)
     progress.note_lab_observation(LabDecision("wait_coins", price=300, wallet_coins=100,
                                               game_speed_level=1), now=1000.)
-    progress.note_lab_slot2("locked", 65, now=1000.)
-    assert progress.lab_visit_options() == LabVisitOptions()
+    progress.note_lab_slots({2: "locked"}, 65, now=1000.)
+    assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(2,))
     _rules_route(tmp_path, {"labs": {"auto_start": False}, "gems": {"auto_unlock_lab_slots": False}})
     assert not progress.lab_due(now=1100., wallet_coins=5000, wallet_gems=500)
-    assert progress.lab_visit_options() == LabVisitOptions(start_research=False, unlock_slot2=False)
+    assert progress.lab_visit_options() == LabVisitOptions(start_research=False)
     _rules_route(tmp_path, {"gems": {"keep": 50}}, expected=1)
     assert not progress.lab_due(now=1100., wallet_coins=100, wallet_gems=120)
     assert progress.lab_due(now=1100., wallet_coins=100, wallet_gems=150)
-    assert progress.lab_visit_options().min_gems == 150
+    assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(2,), keep_gems=50)
+
+
+def _gem_blocks_route(root: Path, expected: int = 0) -> RouteDocument:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))
+    return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
+
+
+def test_lab_three_is_the_visit_unlock_once_lab_two_is_owned(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _gem_blocks_route(tmp_path)
+    progress.note_lab_unlocked("labs_tab", now=999.)
+    _game_speed_waits(progress)
+    progress.note_lab_slots({2: "owned", 3: "locked"}, 120, now=1000.)
+    assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(3,), keep_gems=0)
+    assert not progress.lab_due(now=1100., wallet_coins=100, wallet_gems=399)
+    assert progress.lab_due(now=1100., wallet_coins=100, wallet_gems=400)
 
 
 def _jit_route(root: Path, expected: int = 0) -> RouteDocument:
@@ -506,3 +525,17 @@ def test_just_in_time_pauses_workshop_when_the_reserve_takes_the_wallet(tmp_path
     assert [(d.state, d.reason) for d in published] == [(
         "save_coins", "Workshop paused: saving coins for labs · "
                       "Reserve 1k; Workshop may spend 0")]
+
+
+def test_published_gem_step_names_the_canary(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {})
+    progress.note_lab_slots({2: "locked"}, 150, now=time.time())
+    rollout = LabUnlockRollout(tmp_path)
+    rollout.note_dry_run(2, "Air_38", 100, 150, 0., account_id="account-a")
+    rollout.note_dry_run(2, "Air_38", 100, 150, 700., account_id="account-a")
+    progress.resource_evaluation(500, 150)
+    published = json.loads((tmp_path / "workers" / "Air_38" / "build-route-resources.json").read_text())
+    assert published["gem_step"]["reason"] == "Canary: Air_38 unlocks slot 2 next visit"
+    facts = json.loads((tmp_path / "workers" / "Air_38" / "build-route-resource-facts.json").read_text())
+    assert facts["lab_slot_status"] == {"2": "locked"}
