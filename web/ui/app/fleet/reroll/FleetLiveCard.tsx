@@ -55,9 +55,11 @@ function value(number: number | null | undefined, suffix = ""): string {
 const healthLabels = { progressing: "Progressing", waiting: "Expected wait", recovering: "Recovering",
   attention: "Needs attention", stopped: "Stopped", unknown: "Health unknown" } as const;
 
-export function FleetLiveCard({ member, account, labsSnapshot = null, onInspect, actions }: {
+export function FleetLiveCard({ member, account, labsSnapshot = null, onInspect, actions, screenPaused = false }: {
   member: RerollMember; account?: AccountChoice; labsSnapshot?: LabsSnapshot | null;
   onInspect: () => void; actions?: React.ReactNode;
+  /** The live wall is open and showing this screen. */
+  screenPaused?: boolean;
 }): React.JSX.Element {
   const [screenOpen, setScreenOpen] = useState(false);
   const { overview: observedOverview, labs, appliedLabPlan, workshop, battle, resource } = overviewEvidence(member, labsSnapshot);
@@ -216,7 +218,7 @@ export function FleetLiveCard({ member, account, labsSnapshot = null, onInspect,
       <section className="border-t pt-3"><button type="button" aria-expanded={screenOpen} aria-label={`${screenOpen ? "Hide" : "Show"} screen of ${member.name}`}
         onClick={() => setScreenOpen(open => !open)} className="min-h-11 rounded-md px-2 text-sm font-medium text-primary hover:underline">{screenOpen ? "Hide" : "Show"} device screen</button>
         {screenOpen && (verifiedWorkerAccount(member, account)
-          ? <FleetCapture key={`${account.key}:${account.account_id}:${account.dashboard_url}:${member.lease_id}`} dashboardUrl={account.dashboard_url!} scope={account.key} instance={member.name} accountId={member.account_id!} />
+          ? <FleetCapture key={`${account.key}:${account.account_id}:${account.dashboard_url}:${member.lease_id}`} dashboardUrl={account.dashboard_url!} scope={account.key} instance={member.name} accountId={member.account_id!} paused={screenPaused} />
           : <div role="status" className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-lg border bg-well p-5 text-center text-sm text-muted-foreground"><MonitorOff className="size-6" aria-hidden="true" />Verified live account unavailable</div>)}
       </section>
       <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t pt-3">
