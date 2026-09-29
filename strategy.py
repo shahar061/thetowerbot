@@ -542,6 +542,53 @@ class Claims:
         return cls(**raw)
 
 
+@dataclass(frozen=True)
+class TierPromotion:
+    """When to leave a tier: the best wave it must reach first, per tier.
+
+    A tier with no entry is never left, so the empty default keeps the bot on
+    whatever tier it is playing - a profile written before this existed loads
+    and behaves as it did once the arrow stopped being tapped on sight.
+
+    Stored as (tier, wave) pairs rather than a dict so the Strategy stays an
+    immutable value; the JSON shape is the mapping `{"1": 250}`, keyed by a
+    string because JSON object keys are.
+    """
+
+    waves: tuple[tuple[int, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "waves", tuple(sorted(self.waves)))
+        tiers = [tier for tier, _ in self.waves]
+        if len(set(tiers)) != len(tiers):
+            raise ControlError("tier_promotion", "each tier may have one threshold")
+        for tier, wave in self.waves:
+            if not _has_type(tier, (int,)) or tier < 1:
+                raise ControlError("tier_promotion", f"tier must be a whole number >= 1, not {tier!r}")
+            if not _has_type(wave, (int,)) or wave < 1:
+                raise ControlError(
+                    "tier_promotion", f"tier {tier}'s wave must be a whole number >= 1, not {wave!r}")
+
+    def wave_for(self, tier: int) -> int | None:
+        """The best wave `tier` must reach before moving up, or None to stay."""
+        return dict(self.waves).get(tier)
+
+    def to_dict(self) -> dict[str, int]:
+        return {str(tier): wave for tier, wave in self.waves}
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> TierPromotion:
+        if not isinstance(raw, Mapping):
+            raise ControlError(
+                "tier_promotion", f"tier_promotion must be a mapping, not {type(raw).__name__!r}")
+        waves = []
+        for key, wave in raw.items():
+            if not (isinstance(key, str) and key.isdigit()):
+                raise ControlError("tier_promotion", f"tier must be a whole number, not {key!r}")
+            waves.append((int(key), wave))
+        return cls(tuple(waves))
+
+
 def _parse_shopping_rows(raw: Any) -> tuple[ShoppingRule, ...]:
     if not isinstance(raw, (list, tuple)):
         raise ControlError(
@@ -568,6 +615,7 @@ def _parse_shopping_rows(raw: Any) -> tuple[ShoppingRule, ...]:
 _STRATEGY_TYPES["shopping"] = (Shopping,)
 _STRATEGY_TYPES["autopilot"] = (AutopilotPolicy,)
 _STRATEGY_TYPES["claims"] = (Claims,)
+_STRATEGY_TYPES["tier_promotion"] = (TierPromotion,)
 
 
 @dataclass(frozen=True)
@@ -620,6 +668,9 @@ class Strategy:
     # Free-reward claim cadence. Off by default, so a profile written before
     # this existed loads and behaves identically.
     claims: Claims = Claims()
+    # Per-tier best wave that moves the bot up a tier. Empty by default, so
+    # a profile that has not set one stays on the tier it plays.
+    tier_promotion: TierPromotion = TierPromotion()
 
     # Which committed recipe in knowledge/builds.v1.json ranks the next
     # purchase, or None to name no build at all. None rather than a default
@@ -750,6 +801,7 @@ class Strategy:
             "shopping": self.shopping.to_dict(),
             "autopilot": self.autopilot.to_dict(),
             "claims": self.claims.to_dict(),
+            "tier_promotion": self.tier_promotion.to_dict(),
         }
 
     @classmethod
@@ -781,11 +833,16 @@ class Strategy:
         except PolicyError as exc:
             raise ControlError(exc.field, str(exc)) from None
         claims = Claims.from_dict(raw["claims"]) if "claims" in raw else Claims()
+        tier_promotion = (
+            TierPromotion.from_dict(raw["tier_promotion"])
+            if "tier_promotion" in raw
+            else TierPromotion()
+        )
 
         values = {
             k: raw[k]
             for k in raw
-            if k not in ("actions", "shopping", "autopilot", "claims")
+            if k not in ("actions", "shopping", "autopilot", "claims", "tier_promotion")
         }
         try:
             return cls(
@@ -793,6 +850,7 @@ class Strategy:
                 shopping=shopping,
                 autopilot=autopilot,
                 claims=claims,
+                tier_promotion=tier_promotion,
                 **values,
             )
         except ControlError:

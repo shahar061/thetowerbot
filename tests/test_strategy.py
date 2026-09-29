@@ -501,3 +501,44 @@ def test_a_string_cadence_is_refused_before_it_is_range_checked() -> None:
             "actions": [{"name": "Damage", "template": "upgrade_damage.png"}],
             "claims": {"missions_every_hours": "8"},
         })
+
+
+# -- Tier promotion --------------------------------------------------------
+def _with_promotion(promotion: object) -> Strategy:
+    return Strategy.from_dict({
+        "name": "x",
+        "actions": [{"name": "Damage", "template": "upgrade_damage.png"}],
+        "tier_promotion": promotion,
+    })
+
+
+def test_a_profile_without_a_promotion_block_never_leaves_its_tier() -> None:
+    """An existing strategy file must load and stay on the tier it plays."""
+    parsed = Strategy.from_dict({"name": "x", "actions": [
+        {"name": "Damage", "template": "upgrade_damage.png"}]})
+    assert parsed.tier_promotion.wave_for(1) is None
+    assert parsed.to_dict()["tier_promotion"] == {}
+
+
+def test_promotion_thresholds_round_trip_keyed_by_tier() -> None:
+    parsed = _with_promotion({"1": 250, "2": 180})
+    assert parsed.tier_promotion.wave_for(1) == 250
+    assert parsed.tier_promotion.wave_for(2) == 180
+    assert parsed.tier_promotion.wave_for(3) is None
+    assert parsed.to_dict()["tier_promotion"] == {"1": 250, "2": 180}
+    assert Strategy.from_dict(parsed.to_dict()) == parsed
+
+
+@pytest.mark.parametrize("promotion", [
+    {"0": 100},        # there is no tier 0
+    {"one": 100},      # a tier is a number
+    {"1": 0},          # wave 0 is every run
+    {"1": "100"},      # a wave is a number
+    {"1": True},       # bool is not an int here
+    {"1": 1.5},        # waves are whole
+    [[1, 100]],        # a mapping, not rows
+])
+def test_a_malformed_promotion_is_refused_by_name(promotion: object) -> None:
+    with pytest.raises(ControlError) as caught:
+        _with_promotion(promotion)
+    assert caught.value.field == "tier_promotion"

@@ -594,6 +594,24 @@ def test_best_wave_carries_across_a_restart(runner_parts) -> None:
         runner.stop()
 
 
+def test_tier_best_waves_reach_the_bot_and_carry_max_forward(runner_parts) -> None:
+    """Tier promotion reads the played tier's best wave, so a restarted bot
+    must not forget a tier's best - and must not lower one it already had."""
+    runner, made, _, _, _ = runner_parts
+    runner._tier_best_waves = {1: 126, 2: 40}  # what prepare_store() would have seeded
+
+    runner.start()
+    assert made[0].kwargs["tier_best_waves"] == {1: 126, 2: 40}
+    made[0]._tier_best_wave = {1: 100, 2: 55, 3: 10}
+    runner.stop()
+
+    runner.start()
+    try:
+        assert made[1].kwargs["tier_best_waves"] == {1: 126, 2: 55, 3: 10}
+    finally:
+        runner.stop()
+
+
 def test_best_wave_harvest_never_lowers_or_clears_what_is_already_known(
     runner_parts,
 ) -> None:

@@ -65,6 +65,7 @@ import time
 import traceback
 from pathlib import Path
 from types import FrameType
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable
 
 from adbutils import AdbDevice
@@ -166,6 +167,7 @@ class TowerBot:
         shopping: ShoppingSession | None = None,
         first_run_id: int = 1,
         best_wave: int | None = None,
+        tier_best_waves: Mapping[int, int] | None = None,
         frames: FrameBuffer | None = None,
         screen_confirmations: int = config.SCREEN_CONFIRMATIONS,
         navigation_cooldown: float = config.NAVIGATION_COOLDOWN_SECONDS,
@@ -356,7 +358,9 @@ class TowerBot:
         # overall. Keyed by the tier the death modal read; None is "no run
         # with a read tier has ended yet", which falls back to `_best_wave`.
         self._ladder_tier: int | None = None
-        self._tier_best_wave: dict[int, int] = {}
+        # Seeded from the database at startup (prepare_store) so tier
+        # promotion sees each tier's historical best, not just this session's.
+        self._tier_best_wave: dict[int, int] = dict(tier_best_waves or {})
         self._claimed_wave: dict[int | None, int] = {}
         # Claim accounting is provisional until the menu walk finishes. A
         # failed lookup must restore the prior wave and badge, then retry
@@ -372,6 +376,9 @@ class TowerBot:
         # When the tier arrow was last tapped: the panel redraws after a tap,
         # so the next read waits out the same cooldown navigation does.
         self._tier_tap_at = float('-inf')
+        # runs.completed when the arrow was last tapped. The played tier is
+        # only learned when a run ends, so one step up waits for that run.
+        self._promoted_at_run: int | None = None
         self._last_menu_badge_check_at: float | None = None
         self._notifications = NotificationState()
         self._notification_scope: dict[str, Any] | None = None
@@ -972,7 +979,7 @@ class TowerBot:
         return self.cards_intro.request()
 
     def _advance_tier(self, settings: Any) -> bool:
-        """Tap the lit right tier arrow, so BATTLE always starts the highest tier.
+        """Tap the lit right tier arrow once the strategy's promotion rule is met.
 
         True holds BATTLE for this frame: after a tap, until the panel has
         redrawn and been read again. Only a plain BATTLE menu is touched - a
@@ -981,6 +988,8 @@ class TowerBot:
         now = time.monotonic()
         if now - self._tier_tap_at < config.NAVIGATION_COOLDOWN_SECONDS:
             return True
+        if not self._promotion_due(settings):
+            return False
         battle = config.NAV_BUTTONS["MAIN_MENU"][0][1]
         if vision.locate_template(self.screen, self.templates.get(battle), .8) is None:
             return False
@@ -991,10 +1000,25 @@ class TowerBot:
         jitter.pause(settings.strategy.tap_delay, settings.strategy.timing_jitter)
         tap(self.device, x, y)
         self._tier_tap_at = now
-        logger.info("A higher tier is available; tapped the tier arrow at %s.", arrow.point)
+        self._promoted_at_run = self.runs.completed
+        logger.info("Tier %s reached wave %s; tapped the tier arrow at %s.",
+                    self._ladder_tier, self._tier_best_wave.get(self._ladder_tier), arrow.point)
         self.bus.publish(events.Tapped(action='tier_next', x=x, y=y, score=arrow.score))
         self.bus.publish(events.TierAdvanced(point=arrow.point))
         return True
+
+    def _promotion_due(self, settings: Any) -> bool:
+        """True once the played tier's best wave meets its promotion threshold.
+
+        The played tier is the one the last finished run read, so nothing is
+        due before a run has ended, and at most one step per finished run.
+        """
+        tier = self._ladder_tier
+        if tier is None or self._promoted_at_run == self.runs.completed:
+            return False
+        threshold = settings.strategy.tier_promotion.wave_for(tier)
+        best = self._tier_best_wave.get(tier)
+        return threshold is not None and best is not None and best >= threshold
 
     def _menu_tab_unlocked(self, tab: str) -> bool:
         """Check the unlocked icon before a reroll visit navigates to a tab."""
@@ -3309,10 +3333,10 @@ def install_signal_handlers(bot: TowerBot) -> None:
 
 def prepare_store(
     path: Path, retention_days: int = config.EVENT_RETENTION_DAYS
-) -> tuple[int, int, int | None]:
+) -> tuple[int, int, int | None, dict[int, int]]:
     """Create the database, prune it, and report what to seed the counters to.
 
-    Returns `(max_seq, max_run_id, best_wave)`. All three are in-process
+    Returns `(max_seq, max_run_id, best_wave, tier_best_waves)`. All four are in-process
     values that would otherwise restart from scratch on every launch: seq
     would collide with stored rows on the events primary key and break SSE
     resume across a restart, run ids would overwrite the previous session's
@@ -3345,6 +3369,7 @@ def prepare_store(
         seed_seq = db.max_seq(conn)
         last_run = db.max_run_id(conn)
         seed_best_wave = db.best_wave(conn)
+        seed_tier_best = db.tier_best_waves(conn)
         abandoned = db.close_abandoned_runs(conn)
         if abandoned:
             logger.info("Closed %d run(s) left live by a killed process", abandoned)
@@ -3357,7 +3382,7 @@ def prepare_store(
         removed = db.prune_events(conn, retention_days)
         if removed:
             logger.info("Pruned %d events older than %d days", removed, retention_days)
-        return seed_seq, last_run, seed_best_wave
+        return seed_seq, last_run, seed_best_wave, seed_tier_best
     finally:
         conn.close()
 
@@ -3699,8 +3724,8 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
         except ValueError as exc:
             logger.error("identity incident: %s", exc)
             return 1
-    seed_seq, last_run, seed_best_wave = (
-        prepare_store(db_path) if args.store else (0, 0, None)
+    seed_seq, last_run, seed_best_wave, seed_tier_best = (
+        prepare_store(db_path) if args.store else (0, 0, None, {})
     )
 
     account_state = AccountState(AccountRepository(db_path) if args.store else None)
@@ -3864,6 +3889,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 shopping=shopping_session,
                 first_run_id=last_run + 1,
                 best_wave=seed_best_wave,
+                tier_best_waves=seed_tier_best,
                 account_state=account_state,
                 reroll_progress=reroll_progress,
                 frames=frames,
@@ -3888,6 +3914,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 frames=frames,
                 first_run_id=last_run + 1,
                 best_wave=seed_best_wave,
+                tier_best_waves=seed_tier_best,
                 account_state=account_state,
                 reroll_progress=reroll_progress,
                 runtime_records_path=(runtime.root / "runtime-records.json")
@@ -3959,6 +3986,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 shopping=shopping_session,
                 first_run_id=last_run + 1,
                 best_wave=seed_best_wave,
+                tier_best_waves=seed_tier_best,
                 account_state=account_state,
                 reroll_progress=reroll_progress,
                 frames=frames,

@@ -349,6 +349,9 @@ export interface Strategy {
   /** Optional for the same reason `autopilot` is: a profile served by a
    * backend older than the claim scheduler carries no such key. */
   claims?: Claims;
+  /** Best wave per tier (keyed "1", "2", ...) that moves the bot up a tier.
+   * Optional: an older backend sends no key, which means never advance. */
+  tier_promotion?: Record<string, number>;
 }
 
 export interface ControlPayload {

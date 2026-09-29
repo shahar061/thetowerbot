@@ -346,4 +346,46 @@ describe("StrategyEditor", () => {
     render(<StrategyEditor value={claiming} onChange={vi.fn()} />);
     expect(screen.queryByText(/cannot run on this machine/i)).toBeNull();
   });
+
+  // -- tier promotion -------------------------------------------------------
+
+  it("says the bot stays on its tier when no threshold is set", () => {
+    render(<StrategyEditor value={strategy} onChange={vi.fn()} />);
+    expect(screen.getByText(/stays on the tier it is playing/)).toBeTruthy();
+  });
+
+  it("renders each tier's threshold the profile carries", () => {
+    render(
+      <StrategyEditor value={{ ...strategy, tier_promotion: { "1": 250, "2": 180 } }} onChange={vi.fn()} />,
+    );
+    expect((screen.getByLabelText("Leave tier 1 at wave") as HTMLInputElement).value).toBe("250");
+    expect((screen.getByLabelText("Leave tier 2 at wave") as HTMLInputElement).value).toBe("180");
+  });
+
+  it("adds the next tier after the highest one set", () => {
+    const onChange = vi.fn();
+    render(<StrategyEditor value={{ ...strategy, tier_promotion: { "1": 250 } }} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add tier" }));
+    expect(onChange.mock.calls[0][0].tier_promotion).toEqual({ "1": 250, "2": 100 });
+  });
+
+  it("committing a threshold reports it as a number, keeping the other tiers", () => {
+    const onChange = vi.fn();
+    render(
+      <StrategyEditor value={{ ...strategy, tier_promotion: { "1": 250, "2": 180 } }} onChange={onChange} />,
+    );
+    const input = screen.getByLabelText("Leave tier 1 at wave");
+    fireEvent.change(input, { target: { value: "300" } });
+    fireEvent.blur(input);
+    expect(onChange.mock.calls[0][0].tier_promotion).toEqual({ "1": 300, "2": 180 });
+  });
+
+  it("removing a tier drops only that tier", () => {
+    const onChange = vi.fn();
+    render(
+      <StrategyEditor value={{ ...strategy, tier_promotion: { "1": 250, "2": 180 } }} onChange={onChange} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove tier 1" }));
+    expect(onChange.mock.calls[0][0].tier_promotion).toEqual({ "2": 180 });
+  });
 });
