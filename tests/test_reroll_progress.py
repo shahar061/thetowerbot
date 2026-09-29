@@ -502,6 +502,24 @@ def test_unaffordable_target_skips_visits_until_run_coins_cover_it(tmp_path: Pat
     assert progress.shopping_policy(base).workshop
 
 
+def test_a_menu_balance_reanchors_the_wallet_after_a_lost_run_payout(tmp_path: Path) -> None:
+    # A run a killed process never finished is closed with no payout. Replayed
+    # as an unknown delta, it left the wallet unknown until the next Workshop
+    # read, so the death screen detoured home only once per five runs while
+    # the coins for the planned row piled up.
+    progress = worker_without_verified_utility_debits(tmp_path)
+    progress.observe_price("damage", 4, 120)
+    end_run(progress, 1, None)
+    progress.note_menu_wallet(9)
+    end_run(progress, 2, 20)
+    end_run(progress, 3, 101)
+
+    assert progress.decision().wallet_coins == 130
+    restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
+    restarted._utility_spent = lambda: None
+    assert restarted.decision().wallet_coins == 130
+
+
 def test_cached_target_survives_a_restart(tmp_path: Path) -> None:
     progress = worker_without_verified_utility_debits(tmp_path)
     progress.observe_price("damage", 80, 120)
