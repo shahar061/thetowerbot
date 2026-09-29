@@ -683,6 +683,43 @@ def test_a_banned_goal_is_not_observed() -> None:
     assert result.decision is None or result.decision.stage != 'strategy_observe'
 
 
+def owns_coin_unlock(**prices: int) -> RouteFacts:
+    sample = facts()
+    return replace(sample, purchases={**sample.purchases, 'unlock_cash_bonuses': 1, 'unlock_coin_bonuses': 1},
+        prices={**sample.prices, **prices},
+        price_evidence={**sample.price_evidence, **{uid: {'source': 'observed', 'observed_at': 99} for uid in prices}})
+
+
+def test_an_owned_unlock_is_never_the_priority_reference() -> None:
+    # An owned unlock has no tile left to price. As the reference it asked
+    # for an unreadable price forever and sent the worker home every run.
+    program = [{'id': 'econ', 'type': 'pool', 'upgrade_ids': ['unlock_coin_bonuses', 'coins_per_kill_bonus'],
+                'selection': 'priority'}, pool(discount_pct=20, reference_upgrade_id='priority')]
+    sample = replace(owns_coin_unlock(coins_per_kill_bonus=100), wallet_coins=90)
+    result = blocks.evaluate_program(route(program), sample, None, 'workshop')
+    assert result.decision.state == 'buy' and result.decision.upgrade_id == 'damage'
+
+
+def test_an_owned_unlock_reference_is_not_observed() -> None:
+    program = [pool(discount_pct=20, reference_upgrade_id='unlock_coin_bonuses')]
+    result = blocks.evaluate_program(route(program), owns_coin_unlock(), None, 'workshop')
+    assert result.decision is None or result.decision.stage != 'strategy_observe'
+    assert 'unlock_coin_bonuses' not in result.trace.observation_ids
+
+
+def test_a_single_level_unlock_catalog_price_is_trusted() -> None:
+    # An unlock has one price, so the tracked catalog price is exact; it needs
+    # no Workshop read before a cheap pool can compare against it.
+    sample = facts()
+    estimate = replace(sample, purchases={**sample.purchases, 'unlock_cash_bonuses': 1},
+        prices={**sample.prices, 'unlock_coin_bonuses': 100},
+        price_evidence={**sample.price_evidence, 'unlock_coin_bonuses': {'source': 'catalog_estimate',
+                                                                          'observed_at': None}})
+    program = [pool(discount_pct=20, reference_upgrade_id='unlock_coin_bonuses')]
+    result = blocks.evaluate_program(route(program), estimate, None, 'workshop')
+    assert result.decision.state == 'buy' and result.decision.upgrade_id == 'damage'
+
+
 def relative_condition(**relative: int) -> dict[str, Any]:
     return {'id': 'econ', 'type': 'condition', 'field': 'wave', 'op': 'lte',
             'relative': {'pct': 50, 'floor': 5, 'cap': 30, **relative},
