@@ -13,6 +13,7 @@ from geometry import supported_frame
 _GAME_CENTER = "com.bluestacks.gamecenter"
 _LAUNCHER = "com.uncube.launcher3"
 _TOWER = "com.TechTreeGames.TheTower"
+_LAUNCH_TAPS = 3
 
 
 def launch_tower_from_game_center(
@@ -28,6 +29,7 @@ def launch_tower_from_game_center(
     the icon's current native frame position.
     """
     last_home = -10
+    taps = 0
     for tick in range(240):
         package = getattr(device.app_current(), "package", None)
         if package == _TOWER:
@@ -51,11 +53,17 @@ def launch_tower_from_game_center(
             if len(icons) == 1:
                 label = icons[0].rect
                 device.click(label.x + label.w // 2, label.y - 110)
-                for _ in range(120):
-                    if getattr(device.app_current(), "package", None) == _TOWER:
+                taps += 1
+                for _ in range(40):
+                    package = getattr(device.app_current(), "package", None)
+                    if package == _TOWER:
                         return
                     sleep(.5)
-                raise ValueError("Tower did not open from verified launcher icon")
+                # A clone still finishing boot can drop a tap and stay on Home;
+                # the icon is re-verified before each further tap.
+                if taps >= _LAUNCH_TAPS or package != _LAUNCHER:
+                    raise ValueError("Tower did not open from verified launcher icon")
+                continue
         sleep(.5)
     raise ValueError("verified BlueStacks Home and Tower icon unavailable")
 
