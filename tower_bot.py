@@ -653,16 +653,19 @@ class TowerBot:
         that pushes them down 49px while the modal's top edge rises as it
         re-centres. Those two are found by their own caption instead.
         """
-        killed_by, ad_coins = self._read_modal_extras()
+        killed_by, ad_coins, ocr_coins = self._read_modal_extras()
+        coins = self.reader.read_at_caption(
+            self.screen, config.MODAL_COINS_CAPTION, config.MODAL_COINS_REGION,
+            "modal",
+        )
         return dataclasses.replace(
             ended,
             wave=self.reader.read(
                 self.screen, config.MODAL_WAVE_REGION, anchor, "modal"
             ),
-            coins=self.reader.read_at_caption(
-                self.screen, config.MODAL_COINS_CAPTION, config.MODAL_COINS_REGION,
-                "modal",
-            ),
+            # The modal atlas has no "." or "K" glyph, so "1.21K" refuses
+            # there; the OCR'd count is what keeps a 1000+ run's coins.
+            coins=coins if coins is not None else ocr_coins,
             tier=self.reader.read_at_caption(
                 self.screen, config.MODAL_TIER_CAPTION, config.MODAL_TIER_REGION,
                 "modal",
@@ -671,8 +674,9 @@ class TowerBot:
             ad_coins=ad_coins,
         )
 
-    def _read_modal_extras(self) -> tuple[str | None, int | None]:
-        """Killed By and ad coins by OCR on the confirmed game-over frame.
+    def _read_modal_extras(self) -> tuple[str | None, int | None, int | None]:
+        """Killed By, ad coins and coins earned by OCR on the confirmed
+        game-over frame.
 
         Best effort by design: the glyph-read wave/coins/tier stay the run's
         authority, and nothing here may stop the run from ending.
@@ -681,7 +685,7 @@ class TowerBot:
             return game_over.run_extras(game_over.parse_frame(self.screen, ocr.read(self.screen)))
         except Exception:
             logger.exception("Game-over OCR failed; killed_by and ad_coins left empty")
-            return None, None
+            return None, None, None
 
     # -- main loop ---------------------------------------------------------
     def run_cap_reached(

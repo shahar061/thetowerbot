@@ -231,13 +231,20 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                            hashlib.sha256(screen.tobytes()).hexdigest(), fields)
 
 
-def run_extras(reading: GameOverReading | None) -> tuple[str | None, int | None]:
-    """Killed By and ad coins for the run record, or None for each field that
-    was not positively observed. Absent and unreadable are both None: the
-    runs table stores what was read, never a guess."""
+def run_extras(reading: GameOverReading | None) -> tuple[str | None, int | None, int | None]:
+    """Killed By, ad coins and coins earned for the run record, or None for
+    each field that was not positively observed. Absent and unreadable are
+    both None: the runs table stores what was read, never a guess.
+
+    Coins earned is only the fallback for the glyph-read count: the modal
+    atlas has no "." or "K" glyph, so any run past 999 coins ("1.21K") is
+    refused there and only survives through this OCR read."""
     if reading is None:
-        return None, None
+        return None, None, None
     observed = {f.key: f.raw_value for f in reading.fields if f.status == "observed" and f.raw_value}
     killed = observed.get("killed_by")
     ad = observed.get("ad_coins_earned")
-    return (killed.strip() or None) if killed else None, ocr.parse_number(ad) if ad else None
+    earned = observed.get("coins_earned")
+    return ((killed.strip() or None) if killed else None,
+            ocr.parse_number(ad) if ad else None,
+            ocr.parse_number(earned) if earned else None)
