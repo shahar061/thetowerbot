@@ -26,6 +26,8 @@ group("LiveWall", () => {
       accounts={[account("bs-2"), account("bs-4")]} onClose={vi.fn()} />);
     expect(screen.getByText("bs-2 · T8 · W1432 · Running")).toBeTruthy();
     expect(screen.getByText("bs-4 · Running")).toBeTruthy();
+    const caption = screen.getByRole("heading", { name: /^bs-2/ });
+    expect(caption.querySelector("[data-feed]")?.textContent).toBe("Snapshots");
   });
 
   it("says so when no emulator has a live screen", () => {

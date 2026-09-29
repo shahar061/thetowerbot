@@ -27,6 +27,6 @@ export function RemoteDeviceView({ dashboardUrl, scope, instance }: {
       : /* eslint-disable-next-line @next/next/no-img-element */
       <img key={url.href} src={url.href} alt={label}
         onError={() => setFailed(true)} className="block aspect-[9/16] w-full object-contain" />}
-    {!failed && foreground && <FeedBadge live={live} />}
+    <div className="flex h-7 items-center border-t px-3">{!failed && foreground && <FeedBadge live={live} />}</div>
   </div>;
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { FeedBadge } from "@/components/FeedBadge";
 import { MonitorOff, X } from "lucide-react";
 import type { AccountChoice } from "@/lib/api";
 import type { RerollMember } from "@/lib/fleet";
@@ -12,6 +13,20 @@ import { SCREEN_ASPECT, wallLayout } from "./wallLayout";
 function tileLabel(member: RerollMember): string {
   return [member.name, member.tier != null && `T${member.tier}`, member.wave != null && `W${member.wave}`,
     standingFor(member.state, member.error).label].filter(Boolean).join(" · ");
+}
+
+function WallTile({ member, account }: { member: RerollMember; account: AccountChoice }): React.JSX.Element {
+  const [feed, setFeed] = useState<"live" | "snapshots" | null>(null);
+  return <section aria-label={`${member.name} live screen`} className="flex flex-col">
+    <h3 className="flex h-7 items-center gap-2 text-xs text-white/80">
+      <span className="min-w-0 flex-1 truncate">{tileLabel(member)}</span>
+      {feed && <FeedBadge live={feed === "live"} />}
+    </h3>
+    <div style={{ aspectRatio: SCREEN_ASPECT }} className="overflow-hidden rounded-md">
+      <FleetCapture key={`${account.key}:${account.account_id}:${account.dashboard_url}:${member.lease_id}`} fill onFeedChange={setFeed}
+        dashboardUrl={account.dashboard_url!} scope={account.key} instance={member.name} accountId={member.account_id!} />
+    </div>
+  </section>;
 }
 
 /** Tracks the wall's content box; jsdom and old browsers fall back to the window. */
@@ -81,13 +96,7 @@ export function LiveWall({ members, accounts, onClose }: {
     <div ref={area} className="grid min-h-0 flex-1 content-center justify-center gap-2 p-2"
       style={tiles.length ? { gridTemplateColumns: `repeat(${columns}, ${width}px)` } : undefined}>
       {tiles.length ? tiles.map(({ member, account }) => (
-        <section key={`${member.name}:${account.key}:${account.account_id}`} aria-label={`${member.name} live screen`} className="flex flex-col">
-          <h3 className="h-7 truncate text-xs leading-7 text-white/80">{tileLabel(member)}</h3>
-          <div style={{ aspectRatio: SCREEN_ASPECT }} className="overflow-hidden rounded-md">
-            <FleetCapture key={`${account.key}:${account.account_id}:${account.dashboard_url}:${member.lease_id}`} fill
-              dashboardUrl={account.dashboard_url!} scope={account.key} instance={member.name} accountId={member.account_id!} />
-          </div>
-        </section>
+        <WallTile key={`${member.name}:${account.key}:${account.account_id}`} member={member} account={account} />
       )) : <p role="status" className="flex flex-col items-center gap-3 text-sm text-white/70">
         <MonitorOff className="size-6" aria-hidden="true" />No emulator has a live screen right now.
       </p>}

@@ -144,14 +144,13 @@ export function DeviceView({
             Waiting for the first frame…
           </p>
         )}
-        {(shown === "live" || size) && <FeedBadge live={shown === "live"} />}
         {supported && <SourceToggle shown={shown} onChoose={choose} />}
       </div>
 
       {/* The strongest match, spelled out. The overlay says where; this says
           what and how confidently, without hovering anything. */}
-      <div className="truncate border-t px-3 py-2 font-mono text-[11px] text-muted-foreground">
-        {best ? (
+      <div className="flex items-center gap-2 border-t px-3 py-2 font-mono text-[11px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate">{best ? (
           <>
             {best.name} {best.score.toFixed(3)}{" "}
             <span className="text-faint-foreground">
@@ -160,7 +159,8 @@ export function DeviceView({
           </>
         ) : (
           <span className="text-faint-foreground">no matches this scan</span>
-        )}
+        )}</span>
+        {(shown === "live" || size) && <FeedBadge live={shown === "live"} />}
       </div>
     </div>
   );
