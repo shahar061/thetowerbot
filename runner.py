@@ -37,6 +37,7 @@ import re
 import threading
 import time
 import traceback
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
@@ -104,6 +105,7 @@ class BotRunner:
         frames: FrameBuffer | None = None,
         first_run_id: int = 1,
         best_wave: int | None = None,
+        tier_best_waves: Mapping[int, int] | None = None,
         bot_factory: Callable[..., Any] = _default_bot_factory,
         shopping: Any | None = None,
         account_state: AccountState | None = None,
@@ -202,6 +204,8 @@ class BotRunner:
         # regress what an earlier bot in this same runner already learned -
         # see _harvest_locked().
         self._best_wave: int | None = best_wave
+        # Per tier, for tier promotion; seeded and carried forward the same way.
+        self._tier_best_waves: dict[int, int] = dict(tier_best_waves or {})
 
     # -- reporting ---------------------------------------------------------
     def _running_locked(self) -> bool:
@@ -792,6 +796,7 @@ class BotRunner:
                 frames=self._frames,
                 first_run_id=self._next_run_id,
                 best_wave=self._best_wave,
+                tier_best_waves=dict(self._tier_best_waves),
                 screen_confirmations=strategy.screen_confirmations,
                 navigation_cooldown=strategy.navigation_cooldown,
                 autopilot_state=self.autopilot_state,
@@ -943,6 +948,13 @@ class BotRunner:
             self._best_wave is None or harvested > self._best_wave
         ):
             self._best_wave = harvested
+        try:
+            harvested_tiers = dict(bot._tier_best_wave)
+        except (AttributeError, TypeError):
+            harvested_tiers = {}
+        for tier, wave in harvested_tiers.items():
+            if wave > self._tier_best_waves.get(tier, 0):
+                self._tier_best_waves[tier] = wave
 
     def _reap_locked(self) -> None:
         if self._thread is not None and not self._thread.is_alive():

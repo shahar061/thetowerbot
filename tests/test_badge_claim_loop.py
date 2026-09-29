@@ -1,4 +1,5 @@
 """Badge offers share the existing claim transaction and do not block battle."""
+import dataclasses
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ import events
 import screens
 import tier_select
 from evidence_scope import FactScope
-from strategy import Claims, Shopping
+from strategy import Claims, Shopping, TierPromotion
 from tests.conftest import _shopping_bot
 from tower_bot import TowerBot
 
@@ -166,10 +167,41 @@ def test_events_dot_arms_the_shared_transaction_without_tapping() -> None:
     assert bot.device.taps == []
 
 
-def test_lit_tier_arrow_is_tapped_and_holds_battle_until_the_panel_redraws() -> None:
+def promoting_bot(thresholds: dict[int, int], *, tier: int | None = 1,
+                  best: int | None = 126) -> TowerBot:
+    """A bot on the lit-arrow Tier 1 menu, whose strategy promotes at `thresholds`."""
     bot = bot_with_claims()
-    fixtures = Path(__file__).parent / 'fixtures'
-    bot._screen = cv2.imread(str(fixtures / 'menu_main_events_badge_tier_next.png'))
+    bot.controls.replace(dataclasses.replace(
+        bot.controls.snapshot().strategy,
+        tier_promotion=TierPromotion(tuple(thresholds.items()))))
+    bot._screen = cv2.imread(str(Path(__file__).parent / 'fixtures' /
+                                 'menu_main_events_badge_tier_next.png'))
+    bot._ladder_tier = tier
+    if tier is not None and best is not None:
+        bot._tier_best_wave[tier] = best
+    return bot
+
+
+def test_lit_tier_arrow_is_left_alone_without_a_promotion_threshold() -> None:
+    bot = promoting_bot({})
+    assert not bot._advance_tier(bot.controls.snapshot())
+    assert bot.device.taps == []
+
+
+def test_lit_tier_arrow_is_left_alone_below_the_tiers_threshold() -> None:
+    bot = promoting_bot({1: 127})
+    assert not bot._advance_tier(bot.controls.snapshot())
+    assert bot.device.taps == []
+
+
+def test_lit_tier_arrow_is_left_alone_before_the_played_tier_is_known() -> None:
+    bot = promoting_bot({1: 100}, tier=None)
+    assert not bot._advance_tier(bot.controls.snapshot())
+    assert bot.device.taps == []
+
+
+def test_reaching_the_threshold_taps_once_and_holds_battle_until_the_panel_redraws() -> None:
+    bot = promoting_bot({1: 126})
     settings = bot.controls.snapshot()
     assert bot._advance_tier(settings)
     assert len(bot.device.taps) == 1
@@ -178,17 +210,33 @@ def test_lit_tier_arrow_is_tapped_and_holds_battle_until_the_panel_redraws() -> 
     assert bot._advance_tier(settings)
     assert len(bot.device.taps) == 1
     bot._tier_tap_at = float('-inf')
-    bot._screen = cv2.imread(str(fixtures / 'menu_main_events_badge_tier2_top.png'))
+    bot._screen = cv2.imread(str(Path(__file__).parent / 'fixtures' /
+                                 'menu_main_events_badge_tier2_top.png'))
     assert not bot._advance_tier(settings)
     assert len(bot.device.taps) == 1
 
 
+def test_one_tier_step_per_finished_run() -> None:
+    """The played tier is only learned when a run ends, so a still-lit arrow
+    after one tap must wait for that run rather than climb a second tier."""
+    bot = promoting_bot({1: 100})
+    settings = bot.controls.snapshot()
+    assert bot._advance_tier(settings)
+    bot._tier_tap_at = float('-inf')
+    assert not bot._advance_tier(settings)
+    assert len(bot.device.taps) == 1
+    bot.runs.completed += 1
+    assert bot._advance_tier(settings)
+    assert len(bot.device.taps) == 2
+
+
 def test_resume_battle_menu_keeps_its_tier() -> None:
-    bot = bot_with_claims()
-    # A lit arrow pasted over the resume frame's dim one: the arrow alone
-    # must not move a suspended run's tier.
+    bot = promoting_bot({1: 100})
+    # A lit arrow pasted over the resume frame's dim one: neither the arrow
+    # nor a met threshold may move a suspended run's tier.
     fixtures = Path(__file__).parent / 'fixtures'
-    lit = cv2.imread(str(fixtures / 'menu_main_events_badge_tier_next.png'))
+    lit = bot._screen
+    bot._screen = cv2.imread(str(fixtures / 'main_menu_resume.png'))
     bot._screen[1278:1362, 652:726] = lit[1278:1362, 652:726]
     assert tier_select.read_next(bot._screen, bot.templates).available
     assert not bot._advance_tier(bot.controls.snapshot())

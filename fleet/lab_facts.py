@@ -24,12 +24,9 @@ from lab_plan import LabCadence
 def best_waves(db_path: Path) -> dict[int, int]:
     try:
         with db.reader(db_path) as connection:
-            rows = connection.execute(
-                "SELECT tier, MAX(wave) FROM runs WHERE ended_at IS NOT NULL AND tier IS NOT NULL "
-                "AND wave IS NOT NULL GROUP BY tier").fetchall()
+            return db.tier_best_waves(connection)
     except (OSError, sqlite3.Error):
         return {}
-    return {int(tier): int(wave) for tier, wave in rows}
 
 
 def coins_per_hour(worker_root: Path, account_id: str) -> float | None:

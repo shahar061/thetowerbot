@@ -107,6 +107,18 @@ def test_best_wave_is_the_highest_wave_any_run_reached(tmp_path: Path) -> None:
     assert db.best_wave(conn) == 137
 
 
+def test_tier_best_waves_are_the_highest_finished_wave_per_tier(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    for run_id, wave, tier in ((1, 80, 1), (2, 126, 1), (3, 40, 2), (4, 999, None)):
+        db.finish_run(
+            conn, run_id, started_at=0.0, ended_at=10.0, wave=wave, coins=1,
+            tier=tier, abandoned=False, scan_count=1, tap_count=0,
+        )
+    db.start_run(conn, 5, started_at=20.0)
+
+    assert db.tier_best_waves(conn) == {1: 126, 2: 40}
+
+
 def test_finishing_a_run_keeps_the_start_it_was_opened_with(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     db.start_run(conn, 1, started_at=100.0)

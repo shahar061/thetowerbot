@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ChevronUp, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronUp, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NumberField } from "@/components/ui/number-field";
@@ -18,6 +18,9 @@ const CLAIM_DEFAULTS: Claims = {
   missions_every_hours: 8,
   milestones_on_new_best: true,
 };
+
+/** The wave a newly added tier starts at - a placeholder to edit, not advice. */
+const NEW_TIER_WAVE = 100;
 
 /** strategy.py's MIN_CLAIM_HOURS/MAX_CLAIM_HOURS. */
 const MIN_CLAIM_HOURS = 0.1;
@@ -121,6 +124,15 @@ export function StrategyEditor({
   // Always the whole block, never a lone field: the page saves with PUT, so
   // a partial claims object would reset whatever it left out.
   const setClaims = (patch: Partial<Claims>) => set("claims", { ...claims, ...patch });
+
+  const promotion = value.tier_promotion ?? {};
+  const promotionTiers = Object.keys(promotion).map(Number).sort((a, b) => a - b);
+  const setPromotion = (tier: number, wave: number | null) => {
+    const next = { ...promotion };
+    if (wave === null) delete next[String(tier)];
+    else next[String(tier)] = wave;
+    set("tier_promotion", next);
+  };
 
   const setRow = (index: number, patch: Partial<ActionRule>) =>
     set(
@@ -418,6 +430,42 @@ export function StrategyEditor({
             onCheckedChange={(next) => setClaims({ milestones_on_new_best: next })}
           />
         </div>
+      </SectionCard>
+
+      <SectionCard id="tier-promotion" title="Tier promotion" contentClassName="flex flex-col gap-3">
+        <p className="text-xs text-muted-foreground">
+          {promotionTiers.length === 0
+            ? "No thresholds set, so the bot stays on the tier it is playing."
+            : "Once a tier's best wave reaches its threshold, the bot taps up to the next tier - one step per finished run. Tiers without a threshold are never left."}
+        </p>
+        {promotionTiers.map((tier) => (
+          <div key={tier} className="flex items-center gap-2">
+            <div className="flex-1">
+              <NumberField
+                label={`Tier ${tier}`} ariaLabel={`Leave tier ${tier} at wave`}
+                value={promotion[String(tier)]}
+                disabled={disabled}
+                min={1} step={1}
+                note="Best wave to reach before moving up."
+                onCommit={(n) => setPromotion(tier, n)}
+              />
+            </div>
+            <Button
+              type="button" variant="ghost" size="icon-sm" aria-label={`Remove tier ${tier}`}
+              disabled={disabled}
+              onClick={() => setPromotion(tier, null)}
+            >
+              <X aria-hidden="true" />
+            </Button>
+          </div>
+        ))}
+        <Button
+          type="button" variant="outline" size="sm" className="self-start"
+          disabled={disabled}
+          onClick={() => setPromotion((promotionTiers.at(-1) ?? 0) + 1, NEW_TIER_WAVE)}
+        >
+          Add tier
+        </Button>
       </SectionCard>
     </div>
   );

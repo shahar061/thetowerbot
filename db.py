@@ -254,6 +254,14 @@ def best_wave(conn: sqlite3.Connection) -> int | None:
     return int(value) if value is not None else None
 
 
+def tier_best_waves(conn: sqlite3.Connection) -> dict[int, int]:
+    """The best finished wave on each tier; a tier with no read wave is absent."""
+    rows = conn.execute(
+        "SELECT tier, MAX(wave) FROM runs WHERE ended_at IS NOT NULL AND tier IS NOT NULL "
+        "AND wave IS NOT NULL GROUP BY tier").fetchall()
+    return {int(tier): int(wave) for tier, wave in rows}
+
+
 def insert_event(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO events
