@@ -16,7 +16,7 @@ from labs import LabEntry, LabJob, LabsReading
 import ocr
 
 
-_NAME_LEVEL = re.compile(r"^(?P<name>.+?)\s+Lv\.?\s*(?P<level>\d+)$", re.I)
+_NAME_LEVEL = re.compile(r"^(?P<name>.+?)\s*Lv\.?\s*(?P<level>\d+)$", re.I)
 _DURATION = re.compile(r"(\d+)\s*([dhms])", re.I)
 _MIN_CONFIDENCE = .9
 # "Unlock Nth lab" labels as OCR reads them ("2nd" is sometimes "Znd").

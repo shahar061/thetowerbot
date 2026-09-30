@@ -21,9 +21,12 @@ def test_every_visible_card_is_read_with_its_price_and_border() -> None:
 
 
 def test_a_card_cut_off_by_the_panel_bottom_is_not_fully_visible() -> None:
+    # OCR merges the clipped card's text to "DefenseAbsoluteLv.1" with no spaces at
+    # all; it must still resolve to its registry id and be read as not fully visible.
     result = page()
-    defense = [card for card in result.cards if card.raw_name.startswith("Defense Absolute")]
-    assert defense and not defense[0].fully_visible
+    defense = result.card("labs.defense-absolute")
+    assert defense is not None and defense.raw_name == "DefenseAbsoluteLv.1"
+    assert not defense.fully_visible
 
 
 def test_selection_is_a_lookup_on_the_page_and_needs_a_white_border() -> None:
