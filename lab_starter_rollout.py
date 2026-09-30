@@ -150,13 +150,24 @@ class RehearsedLab:
     def from_dict(cls, raw: object) -> RehearsedLab:
         if not isinstance(raw, dict) or raw.get("status") not in LAB_STATUSES:
             raise ValueError("bad rehearsed lab")
+        worker, account_id, slot = raw.get("worker"), raw.get("account_id"), raw.get("slot")
+        at, level, price = raw.get("at"), raw.get("level"), raw.get("price")
+        seconds, catalog_price = raw.get("seconds"), raw.get("catalog_price")
+        if (worker is not None and not isinstance(worker, str)
+                or account_id is not None and not isinstance(account_id, str)
+                or slot is not None and (type(slot) is not int or not 1 <= slot <= 5)
+                or at is not None and not _finite(at)
+                or level is not None and type(level) is not int
+                or price is not None and type(price) is not int
+                or seconds is not None and not _finite(seconds)
+                or catalog_price is not None and type(catalog_price) is not int):
+            raise ValueError("bad rehearsed lab field")
         misses, evidence = raw.get("misses") or [], raw.get("evidence") or []
-        if (not isinstance(misses, list) or not all(_finite(at) for at in misses)
+        if (not isinstance(misses, list) or not all(_finite(m) for m in misses)
                 or not isinstance(evidence, list) or not all(isinstance(p, str) for p in evidence)):
             raise ValueError("bad misses or evidence")
-        return cls(raw["status"], raw.get("worker"), raw.get("account_id"), raw.get("slot"),
-                   raw.get("at"), raw.get("level"), raw.get("price"), raw.get("seconds"),
-                   raw.get("catalog_price"), tuple(float(at) for at in misses), tuple(evidence))
+        return cls(raw["status"], worker, account_id, slot, at, level, price, seconds,
+                   catalog_price, tuple(float(m) for m in misses), tuple(evidence))
 
 
 @dataclass(frozen=True)

@@ -146,6 +146,15 @@ def test_a_corrupt_file_reads_as_dry_run_and_is_quarantined(tmp_path: Path) -> N
     assert len(list(tmp_path.glob("lab-starter-rollout.json.corrupt-*"))) == 1
 
 
+def test_a_bad_field_type_in_a_rehearsed_lab_is_quarantined(tmp_path: Path) -> None:
+    document = {"schema_version": 1, "rollouts": {},
+                "rehearsed": {ATTACK: {"status": "rehearsed", "level": "one"}}}
+    (tmp_path / "lab-starter-rollout.json").write_text(json.dumps(document))
+    state = LabStarterRollout(tmp_path).state()
+    assert state == StarterState({}, {})
+    assert len(list(tmp_path.glob("lab-starter-rollout.json.corrupt-*"))) == 1
+
+
 def test_rows_for_the_dashboard(tmp_path: Path) -> None:
     rollout = LabStarterRollout(tmp_path)
     canary(rollout)
