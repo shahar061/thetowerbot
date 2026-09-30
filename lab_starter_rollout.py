@@ -360,6 +360,19 @@ class LabStarterRollout:
                                                               misses=misses, evidence=kept))
         return self._edit(None, change)[1].lab(lab_id)
 
+    def attach_miss_evidence(self, lab_id: str, at: float, evidence: tuple[str, ...]) -> None:
+        """Add frames to the miss recorded at `at`; nothing when that miss was not recorded."""
+        if not evidence:
+            return
+
+        def change(state: StarterState) -> StarterState:
+            current = state.lab(lab_id)
+            if current is None or not current.misses or current.misses[-1] != float(at):
+                return state
+            return self._with_lab(state, lab_id, replace(
+                current, evidence=(*current.evidence, *evidence)[-MAX_EVIDENCE:]))
+        self._edit(None, change)
+
     def note_start(self, slot: int, worker: str, account_id: str | None, transaction_key: str,
                    outcome: str, *, at: float) -> StarterChange:
         """The canary's settled start. Bought promotes to fleet; a second miss halts."""

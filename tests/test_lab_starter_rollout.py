@@ -212,3 +212,11 @@ def test_the_dashboard_flags_only_a_price_beyond_its_abbreviation() -> None:
     })
     assert {row["lab_id"]: row["mismatch"] for row in rehearsed_rows(state)} == {
         ATTACK: False, "labs.damage": True, "labs.health": True}
+
+
+def test_miss_evidence_attaches_only_to_the_miss_recorded_at_that_time(tmp_path: Path) -> None:
+    rollout = LabStarterRollout(tmp_path)
+    rollout.note_research_miss(ATTACK, "Air_1", "acct-a", 1000.)
+    rollout.attach_miss_evidence(ATTACK, 1050., ("/e/late.png",))    # that miss was not recorded
+    rollout.attach_miss_evidence(ATTACK, 1000., ("/e/a.png", "/e/b.png"))
+    assert rollout.state().lab(ATTACK).evidence == ("/e/a.png", "/e/b.png")

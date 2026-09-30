@@ -59,6 +59,8 @@ _UNLOCK_SCANS = 8
 # A start tap that has neither proven nor refuted itself after this many scans
 # is uncertain: the hold stays and a canary halts its slot.
 _START_SCANS = 8
+# Picker-search frames kept as a miss's evidence: the first and the last three.
+_SEARCH_FRAMES_KEPT = 4
 
 
 def _squash(name: str | None) -> str | None:
@@ -845,10 +847,14 @@ class LabVisit:
         self._return(LabVisitResult('observed', 'research_rehearsed', purchase))
 
     def _note_miss(self, research: str) -> None:
+        """Record the miss first; frames are written only for a miss the rollout kept."""
         if self.starter is None or self.worker is None:
             return
+        lab = self.starter.note_research_miss(research, self.worker, self._account(), self._capture_at)
+        if lab is None or not lab.misses or lab.misses[-1] != float(self._capture_at):
+            return  # spaced too closely, or the lab is already rehearsed or blocked
         evidence = self._save_evidence(f"lab-search-{research}", self._capture_at, self._search_frames)
-        self.starter.note_research_miss(research, self.worker, self._account(), self._capture_at, evidence)
+        self.starter.attach_miss_evidence(research, self._capture_at, evidence)
 
     def _note_start(self, txn: transactions.Transaction, outcome: str) -> None:
         """Report a settled start to the starter rollout; Game Speed in slot 1 is not in it."""
@@ -1045,7 +1051,10 @@ class LabVisit:
                     self._search = PickerSearch(selected.research, screen.shape[1])
                 step = self._search.step(read_picker_page(screen, boxes))
                 if step.kind != 'found':
+                    # Evidence of a miss: the first page and the last three.
                     self._search_frames.append(screen)
+                    if len(self._search_frames) > _SEARCH_FRAMES_KEPT:
+                        del self._search_frames[1]
                 if step.kind == 'swipe' and step.swipe is not None:
                     device.swipe(*step.swipe, SWIPE_SECONDS)
                     self._picker_signature, self._picker_reads = None, 0

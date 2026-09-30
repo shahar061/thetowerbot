@@ -368,3 +368,42 @@ def test_the_planner_sweep_releases_an_absent_canary_at_most_once_a_minute(
     assert h.starter.state().rollout("start:3").stage == "canary"
     h.visit.sweep_stale_canaries(1061.)
     assert h.starter.state().rollout("start:3").stage == "dry_run"
+
+
+def test_a_long_search_keeps_four_frames_and_writes_them_only_for_a_recorded_miss(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch, stage="dry_run")
+    monkeypatch.setattr(lab_visit, 'read_selected_picker',
+                        lambda image, text, *, research_id: lab_screen.LabPickerReading(True, None, 613, None))
+    from lab_picker import SearchStep
+
+    class LongSearch:
+        """Ten pages of picker, then the end of the list without the lab."""
+        def __init__(self, research: str, width: int) -> None:
+            self.pages = 0
+
+        def step(self, page: object) -> SearchStep:
+            self.pages += 1
+            return (SearchStep('swipe', swipe=(540, 1800, 540, 900)) if self.pages <= 10
+                    else SearchStep('not_found'))
+
+    monkeypatch.setattr(lab_visit, 'PickerSearch', LongSearch)
+    kept: list[int] = []
+
+    def search() -> None:
+        h.visit.cancel("new request")
+        assert h.visit.request(LabAction(2, "labs.labs-speed", 1, "rehearse", 7, "route next"))
+        for name in ('menu_labs_active', 'menu_labs_active') + ('menu_labs_game_speed_picker',) * 12:
+            h.scan(name)
+            kept.append(len(h.visit._search_frames))
+        assert h.visit._outcome.reason == "research_not_found"
+
+    search()
+    assert max(kept) == 4 and len(h.swipes) == 10   # more pages than frames kept
+    lab = h.starter.state().lab("labs.labs-speed")
+    written = sorted((tmp_path / "evidence").glob("lab-search-*.png"))
+    assert len(lab.misses) == 1 and 1 <= len(lab.evidence) <= 4
+    assert sorted(lab.evidence) == [str(path) for path in written]
+    search()                                        # within two minutes: not a recorded miss
+    assert len(h.starter.state().lab("labs.labs-speed").misses) == 1
+    assert sorted((tmp_path / "evidence").glob("lab-search-*.png")) == written
