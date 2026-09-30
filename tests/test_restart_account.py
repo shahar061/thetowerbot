@@ -232,6 +232,20 @@ def test_link_account_prompt_over_home_is_closed_mid_transition() -> None:
     assert device.taps == [(7, 8), (881, 770), (1, 2), (3, 4), (940, 585), (910, 490)]
 
 
+def test_a_free_ticket_over_home_is_claimed_before_settings() -> None:
+    device = Device()
+    clock = SteppingClock()
+    verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
+        expected_account="ACCOUNT-A", clock=clock, sleep=clock.sleep,
+        observe=observer([
+            frame("free_ticket_offer", controls={"claim": (540, 1475)}),
+            frame("free_ticket_reward", controls={"claim": (539, 1891)}),
+            frame("home", controls={"settings": (1, 2)}),
+            *account_rows(),
+        ]))
+    assert device.taps == [(540, 1475), (539, 1891), (1, 2), (3, 4), (940, 585), (910, 490)]
+
+
 def test_ignored_settings_tap_is_retried_from_a_fresh_frame() -> None:
     device = Device()
     clock = SteppingClock()
