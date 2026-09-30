@@ -115,6 +115,30 @@ class LabUnlockHalted(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class LabStartRehearsed(Event):
+    """A clean lab-start rehearsal: confirmation read twice, then Cancel. Nothing spent."""
+    slot: int
+    research_id: str
+    level: int
+    price: int
+    seconds: float | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class LabStarterPromoted(Event):
+    """A slot's start rollout moved forward, to canary or fleet."""
+    key: str
+    stage: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class LabStarterHalted(Event):
+    """Nobody starts research through this rollout until the owner resets it."""
+    key: str
+    reason: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class AutopilotDecided(Event):
     """The battle autopilot changed what it is doing, and why.
 
