@@ -361,7 +361,60 @@ def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
             result.append(block["upgrade_id"])
         for children in child_lists(block):
             result.extend(program_upgrade_ids(tuple(children)))
+    if KILL_BONUS in result:
+        result.append(PER_WAVE)  # its stand-in while the best wave is low
     return tuple(dict.fromkeys(result))
+
+
+KILL_BONUS, PER_WAVE = 'coins_per_kill_bonus', 'coins_per_wave'
+# A Coins / Kill target is a multiplier (x1.25) and means nothing on a
+# coins-per-wave value, so the stand-in takes the templates' own goal.
+PER_WAVE_STAND_IN_TARGET = 10
+
+
+def kill_bonus_hold(route: Any, best_tier_1_wave: int | None) -> int | None:
+    """The best wave Coins / Kill Bonus waits for, or None once it may be bought."""
+    rules = getattr(route, 'rules', None)
+    threshold = rules.coins.kill_bonus_min_best_wave if rules is not None else 0
+    if threshold <= 0 or (best_tier_1_wave is not None and best_tier_1_wave >= threshold):
+        return None
+    return threshold
+
+
+def _swap_ids(ids: list[str]) -> list[str]:
+    """Coins / Wave in Coins / Kill's place, listed once at the higher rank."""
+    return list(dict.fromkeys(PER_WAVE if uid == KILL_BONUS else uid for uid in ids))
+
+
+def swap_kill_bonus(program: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+    """The program with Coins / Wave bought wherever Coins / Kill Bonus would be.
+
+    A pool already listing Coins / Wave keeps that entry's own settings; otherwise
+    Coins / Wave inherits Coins / Kill's weight and level cap, and a target
+    becomes PER_WAVE_STAND_IN_TARGET. Conditions still read the real value.
+    """
+    result = []
+    for block in program:
+        block = dict(block)
+        if block['type'] == 'pool' and KILL_BONUS in block['upgrade_ids']:
+            listed = PER_WAVE in block['upgrade_ids']
+            block['upgrade_ids'] = _swap_ids(block['upgrade_ids'])
+            for key in ('weights', 'level_caps', 'targets'):
+                if key not in block:
+                    continue
+                settings = dict(block[key])
+                own = settings.pop(KILL_BONUS, None)
+                if own is not None and not listed:
+                    settings[PER_WAVE] = PER_WAVE_STAND_IN_TARGET if key == 'targets' else own
+                block[key] = settings
+        for key in ('upgrade_id', 'reference_upgrade_id'):
+            if block.get(key) == KILL_BONUS and block['type'] != 'condition':
+                block[key] = PER_WAVE
+        for key in ('then', 'else', 'blocks', 'goal'):
+            if isinstance(block.get(key), (list, tuple)):
+                block[key] = list(swap_kill_bonus(tuple(block[key])))
+        result.append(block)
+    return tuple(result)
 
 
 @dataclass
@@ -398,12 +451,21 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     if lane == 'battle' and (facts.run_id is None or facts.wave is None or facts.wave < 1):
         return RouteEvaluation.unknown('Live run and wave are unverified', facts)
     program = route.workshop.blocks if lane == 'workshop' else route.battle.blocks
+    kill_bonus_wave = kill_bonus_hold(route, facts.best_tier_1_wave)
+    if kill_bonus_wave is not None:
+        program = swap_kill_bonus(program)
     from fleet.coin_share import spendable_wallet, workshop_ceiling, workshop_limit_pct
     jar = getattr(facts, 'lab_coin_jar', 0) if lane == 'workshop' else 0
     ceiling = workshop_ceiling(route, wallet, jar) if lane == 'workshop' else wallet
     excluded = _ban_closure(route.workshop.banned_upgrade_ids)
     counts = facts.confirmed_purchases if lane == 'workshop' else facts.run_purchases
     rejected: list[str] = []
+    native_bans = route.workshop.banned_upgrade_ids
+    if kill_bonus_wave is not None:
+        native_bans = native_bans | {KILL_BONUS}
+        best = 'unknown' if facts.best_tier_1_wave is None else facts.best_tier_1_wave
+        rejected.append(f'Coins / Wave replaces Coins / Kill Bonus until best Tier 1 wave '
+                        f'{kill_bonus_wave} (best {best})')
 
     def price_for(uid: str, *, reference: bool = False) -> int | None:
         if lane == 'workshop':
@@ -428,6 +490,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     unpriced: list[str] = []
 
     def eligible(uid: str, *, ignore_funds: bool = False) -> bool:
+        if uid == KILL_BONUS and kill_bonus_wave is not None:
+            rejected.append(f'{uid}: held until best Tier 1 wave {kill_bonus_wave}')
+            return False
         if uid in excluded:
             rejected.append(f'{uid}: blocked by Never Buy')
             return False
@@ -463,7 +528,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
 
     def native_decision(policy: str, phase: str) -> Any:
         return choose_native_phase(native_facts(policy), phase,
-            banned_upgrade_ids=route.workshop.banned_upgrade_ids,
+            banned_upgrade_ids=native_bans,
             reference=native_intents.get(policy))
 
     def priority_reference(scopes: tuple[Any, ...], current: str) -> str | None:
@@ -543,6 +608,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                  UpgradeRule('cash_bonus', target=1.25), UpgradeRule('defense_absolute'),
                  UpgradeRule('thorns', target=51), UpgradeRule('health'),
                  UpgradeRule('coins_per_wave', target=10), UpgradeRule('damage'), UpgradeRule('attack_speed'))
+        if kill_bonus_wave is not None:
+            order = _swap_ids([rule.upgrade_id for rule in rules])
+            by_id = {rule.upgrade_id: rule for rule in rules}
+            rules = tuple(by_id[uid] for uid in order)
         remaining = []
         for rule in prioritize_survival(rules, facts.upgrade_rows):
             uid = rule.upgrade_id
@@ -749,7 +818,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         continue
                     decision = native_decision(policy, phase)
                     progress, progress_reason = native_phase_progress(native_facts(policy), phase,
-                        policy, decision, banned_upgrade_ids=route.workshop.banned_upgrade_ids)
+                        policy, decision, banned_upgrade_ids=native_bans)
                     next_phase = next((candidate for candidate in items[index + 1:]
                         if candidate['type'] == 'native'), None)
                     if decision is None:

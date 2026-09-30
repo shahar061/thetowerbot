@@ -65,6 +65,9 @@ export function StrategyRules({ rules, locked, rows, labList, onChange }: {
         <label className={field}><span>Workshop spend limit (% of coins after the jar)<Tag live /></span>
           <input aria-label="Workshop spend limit (%)" type="number" min={10} max={100} value={coins.workshop_spend_limit_pct} className={input}
             onChange={event => set({ ...rules, coins: { ...coins, workshop_spend_limit_pct: Number(event.target.value) } })} /></label>
+        <label className={field}><span>Coins / Wave instead of Coins / Kill below best Tier 1 wave (0 = off)<Tag live /></span>
+          <input aria-label="Coins / Kill minimum best wave" type="number" min={0} max={10000} value={coins.kill_bonus_min_best_wave ?? 60} className={input}
+            onChange={event => set({ ...rules, coins: { ...coins, kill_bonus_min_best_wave: Number(event.target.value) } })} /></label>
       </fieldset>
       <fieldset aria-label="Labs" disabled={locked} className="min-w-0 space-y-2 rounded-xl border border-border p-3">
         <legend className="px-1 text-sm font-semibold">Labs</legend>

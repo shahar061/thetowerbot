@@ -309,15 +309,19 @@ class LabShareRule:
 class CoinRules:
     lab_share: LabShareRule = field(default_factory=LabShareRule)
     workshop_spend_limit_pct: int = 100
+    # Below this best Tier 1 wave, Coins / Wave takes Coins / Kill Bonus's
+    # place in both lanes: too few kills per run to repay the bonus. 0 is off.
+    kill_bonus_min_best_wave: int = 60
 
     @classmethod
     def from_dict(cls, value: object) -> CoinRules:
         raw = _mapping(value, "coins rules")
-        _keys(raw, {"lab_share", "workshop_spend_limit_pct"})
+        _keys(raw, {"lab_share", "workshop_spend_limit_pct", "kill_bonus_min_best_wave"})
         # The rule inherits the moved field's 0-100 range so every existing
         # route stays loadable; the Studio control offers 10-100.
         return cls(LabShareRule.from_dict(raw.get("lab_share", {})),
-                   _percent(raw.get("workshop_spend_limit_pct", 100), "workshop_spend_limit_pct"))
+                   _percent(raw.get("workshop_spend_limit_pct", 100), "workshop_spend_limit_pct"),
+                   _ranged(raw.get("kill_bonus_min_best_wave", 60), "kill_bonus_min_best_wave", 0, 10_000))
 
 
 def _hours(value: object, name: str, low: float, high: float) -> float:
