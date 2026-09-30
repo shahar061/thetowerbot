@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import math
 import re
@@ -79,6 +79,41 @@ class LabConfirmationReading:
         return int(match['level']) if match else None
 
 
+@dataclass(frozen=True)
+class PickerCard:
+    lab_id: str | None
+    raw_name: str
+    level: int
+    price: int | None
+    seconds: float | None
+    maxed: bool
+    rect: tuple[int, int, int, int]
+    name_box: ocr.TextBox
+    fully_visible: bool
+    border: str
+
+
+@dataclass(frozen=True)
+class PickerPage:
+    open: bool
+    balance: int | None
+    viewport: tuple[int, int] | None
+    cards: tuple[PickerCard, ...] = ()
+
+    def card(self, lab_id: str) -> PickerCard | None:
+        found = [card for card in self.cards if card.lab_id == lab_id]
+        return found[0] if len(found) == 1 else None
+
+    def signature(self) -> tuple[tuple[str, int], ...]:
+        """What the list shows and where: equal on two frames means it did not move."""
+        return tuple((card.raw_name, card.rect[1]) for card in self.cards)
+
+
+def replace_card_y(card: PickerCard, dy: int) -> PickerCard:
+    x, y, w, h = card.rect
+    return replace(card, rect=(x, y + dy, w, h))
+
+
 def _research_identity(name: str | None) -> str | None:
     from concepts import REGISTRY
     match = _NAME_LEVEL.fullmatch(name.strip()) if name else None
@@ -138,15 +173,22 @@ def _gem_balance(screen: Image, boxes: tuple[ocr.TextBox, ...], width: int, heig
     return values[0] if len(values) == 1 else None
 
 
-def _enabled_card_border(screen: Image, name: ocr.TextBox) -> bool:
-    # On the recorded picker, a disabled Game Speed card has a pink border
-    # (BGR 138,138,255); an affordable card has a bright white border.
-    # Refuse unmeasured colors instead of treating "not pink" as enabled.
+def _card_border(screen: Image, name: ocr.TextBox) -> str:
+    """The frame colour just above-left of a card's name: white, red, or unknown.
+
+    Measured on the recorded picker: an unaffordable card has a pink-red frame
+    (BGR about 138,138,255), an affordable one a bright white frame. Anything
+    else is unknown and never read as affordable.
+    """
     x, y = name.rect.x - 26, name.rect.y - 30
     if not (0 <= x < screen.shape[1] and 0 <= y < screen.shape[0]):
-        return False
+        return "unknown"
     blue, green, red = (int(channel) for channel in screen[y, x])
-    return min(blue, green, red) >= 215
+    if min(blue, green, red) >= 215:
+        return "white"
+    if red >= 200 and red - max(blue, green) >= 80:
+        return "red"
+    return "unknown"
 
 
 def _lab_title_and_headers(boxes: Sequence[ocr.TextBox], width: int, height: int
@@ -380,6 +422,55 @@ def read_selected_home(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                    slot_point=point, slots_owned=reading.slots_owned)
 
 
+# Card geometry on the portrait picker: a card is half the width, and its price,
+# duration and MAX label sit 0.04-0.085 h below its name; the card's frame spans
+# about 0.03 h above the name to 0.095 h below it.
+_CARD_ABOVE, _CARD_BELOW = .03, .095
+_ROW_TOP, _ROW_BOTTOM = .04, .085
+
+
+def read_picker_page(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> PickerPage:
+    """Every "Name Lv.N" card on the SELECT RESEARCH panel, with what can be read of it."""
+    height, width = screen.shape[:2]
+    titles = [box for box in boxes if _trusted(box)
+              and _normalized(box.text) == "SELECTRESEARCH" and box.rect.y < height * .12]
+    if len(titles) != 1:
+        return PickerPage(False, None, None)
+    balance = _coin_balance(boxes, width, height)
+    # The list scrolls between the History / Hide Completed row and the panel's bottom edge.
+    controls = [box for box in boxes if _trusted(box)
+                and _normalized(box.text) in ("HISTORY", "HIDECOMPLETED")]
+    top = (max(box.rect.y + box.rect.h for box in controls) if controls
+           else int(height * .18)) + int(height * .01)
+    bottom = int(height * .905)
+    cards = []
+    for name in boxes:
+        match = _NAME_LEVEL.fullmatch(name.text.strip()) if _trusted(name) else None
+        if match is None or not top <= name.rect.y <= bottom:
+            continue
+        left = 0 if name.rect.x < width / 2 else width // 2
+        right = left + width / 2
+
+        def row(box: ocr.TextBox) -> bool:
+            return (_trusted(box) and left < box.rect.x < right
+                    and name.rect.y + height * _ROW_TOP < box.rect.y < name.rect.y + height * _ROW_BOTTOM)
+
+        prices = [value for value in (ocr.parse_number(box.text) for box in boxes if row(box))
+                  if value is not None]
+        seconds = [value for value in (_duration_seconds(box.text) for box in boxes if row(box))
+                   if value is not None]
+        maxed = any(row(box) and _normalized(box.text) in ("MAX", "MAXED") for box in boxes)
+        rect = (int(left), int(name.rect.y - height * _CARD_ABOVE), int(width / 2),
+                int(height * (_CARD_ABOVE + _CARD_BELOW)))
+        cards.append(PickerCard(
+            _research_identity(name.text), name.text, int(match["level"]),
+            prices[0] if len(prices) == 1 and not maxed else None,
+            seconds[0] if len(seconds) == 1 else None, maxed, rect, name,
+            rect[1] >= top - height * _CARD_ABOVE and rect[1] + rect[3] <= bottom,
+            _card_border(screen, name)))
+    return PickerPage(True, balance, (top, bottom), tuple(sorted(cards, key=lambda c: (c.rect[1], c.rect[0]))))
+
+
 def read_picker(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabPickerReading:
     """Legacy Game Speed selection; general callers name a research explicitly."""
     return read_selected_picker(screen, boxes, research_id='labs.game-speed')
@@ -389,52 +480,26 @@ def read_selected_picker(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                          research_id: str) -> LabPickerReading:
     """Read one named research row. Its geometry does not enable its route."""
     height, width = screen.shape[:2]
-    titles = [box for box in boxes if _trusted(box)
-              and _normalized(box.text) == "SELECTRESEARCH"
-              and box.rect.y < height * .12]
-    if len(titles) != 1:
+    page = read_picker_page(screen, boxes)
+    if not page.open:
         return LabPickerReading(False, None, None, None)
-    balance = _coin_balance(boxes, width, height)
-    names = [box for box in boxes if _trusted(box)
-             and _research_identity(box.text) == research_id]
-    if len(names) != 1:
-        return LabPickerReading(True, None, balance, None)
-    name = names[0]
-    level_match = _NAME_LEVEL.fullmatch(name.text.strip())
-    assert level_match is not None
-    # Both columns contain prices. A price belongs to this row only within
-    # the same half-width card, below its name and above the card's bottom.
-    left = 0 if name.rect.x < width / 2 else width / 2
-    right = left + width / 2
-    prices = [ocr.parse_number(box.text) for box in boxes if _trusted(box)
-              and left < box.rect.x < right and name.rect.y + height * .04
-              < box.rect.y < name.rect.y + height * .085]
-    amounts = [value for value in prices if value is not None]
-    max_labels = [box for box in boxes if _trusted(box)
-                  and _normalized(box.text) in ("MAX", "MAXED")
-                  and left < box.rect.x < right
-                  and name.rect.y + height * .04 < box.rect.y
-                  < name.rect.y + height * .085]
-    if len(max_labels) == 1 and not amounts:
-        level = int(level_match.group("level"))
+    card = page.card(research_id)
+    if card is None:
+        return LabPickerReading(True, None, page.balance, None)
+    name = card.name_box
+    if card.maxed:
         return LabPickerReading(True, LabEntry(
-            research_id, name.text, level, level, None, None,
-            "maxed", name.confidence, tuple(name.rect)), balance, None)
-    if len(amounts) != 1:
-        return LabPickerReading(True, None, balance, None)
-    price = amounts[0]
-    durations = [_duration_seconds(box.text) for box in boxes
-                 if _trusted(box) and left < box.rect.x < right
-                 and name.rect.y + height * .04 < box.rect.y
-                 < name.rect.y + height * .085]
-    seconds = [value for value in durations if value is not None]
-    affordable = balance is not None and balance >= price and _enabled_card_border(screen, name)
-    entry = LabEntry(research_id, name.text, int(level_match.group("level")),
-                     None, float(price), seconds[0] if len(seconds) == 1 else None,
-                     "available" if affordable else "unavailable", name.confidence,
-                     tuple(name.rect))
+            research_id, name.text, card.level, card.level, None, None,
+            "maxed", name.confidence, tuple(name.rect)), page.balance, None)
+    if card.price is None:
+        return LabPickerReading(True, None, page.balance, None)
+    affordable = (page.balance is not None and page.balance >= card.price
+                  and card.border == "white" and card.fully_visible)
+    entry = LabEntry(research_id, name.text, card.level, None, float(card.price), card.seconds,
+                     "available" if affordable else "unavailable", name.confidence, tuple(name.rect))
+    left = 0 if name.rect.x < width / 2 else width / 2
     point = (int(left + width * .27), int(name.rect.y + height * .04)) if affordable else None
-    return LabPickerReading(True, entry, balance, point)
+    return LabPickerReading(True, entry, page.balance, point)
 
 
 def read_confirmation(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabConfirmationReading:
