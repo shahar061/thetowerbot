@@ -209,6 +209,32 @@ def test_known_research_price_waits_for_coins_without_reopening_labs(tmp_path: P
     assert cadence.due(5000.)  # Infrequent recovery check for unreadable wallets.
 
 
+def test_a_failed_visit_keeps_the_saved_wait_and_only_backs_off(tmp_path: Path) -> None:
+    from lab_plan import LabCadence, decide
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    cadence.note(decide(idle(), row(balance=122, status="unavailable", point=None)), 1000.)
+    saved = cadence.route_observation()[0]
+    cadence.note_failed(2000.)
+    kept = cadence.route_observation()[0]
+    # The wait_coins record (and the coin hold it drives) survives a visit that read nothing.
+    assert {k: v for k, v in kept.items() if k != "retry_at"} == saved
+    assert cadence.backing_off(2299.) and not cadence.backing_off(2300.)
+    # The next real observation replaces the record and its backoff.
+    cadence.note(decide(idle(), row(balance=122, status="unavailable", point=None)), 2400.)
+    assert "retry_at" not in cadence.route_observation()[0]
+
+
+def test_a_failed_first_visit_records_unknown_with_a_backoff(tmp_path: Path) -> None:
+    from lab_plan import LabCadence
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    cadence.note_failed(1000.)
+    assert cadence.route_observation()[0]["kind"] == "unknown"
+    assert not cadence.due(1299.) and cadence.due(1300.)
+    assert cadence.backing_off(1299.) and not cadence.backing_off(1300.)
+
+
 def test_slot_two_record_is_account_bound(tmp_path: Path) -> None:
     from lab_plan import LabCadence
 

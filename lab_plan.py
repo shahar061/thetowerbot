@@ -281,6 +281,24 @@ class LabCadence:
                                         if decision.kind == "wait_running" else None)}
         self._write(self.path, payload)
 
+    def backing_off(self, now: float) -> bool:
+        """A failed visit holds every Labs check, research and slot unlock alike."""
+        record = self._record()
+        retry_at = record.get("retry_at") if record is not None else None
+        return isinstance(retry_at, (int, float)) and now < retry_at
+
+    def note_failed(self, now: float) -> None:
+        """A visit that ended without reading slot 1 keeps the saved observation.
+
+        The wait_coins price and Game Speed level still drive the lab coin hold;
+        overwriting them with "unknown" would release it. Only the retry backs off.
+        """
+        if self._record() is None:
+            self.note(LabDecision("unknown"), now)
+        record = self._record()
+        if record is not None:
+            self._write(self.path, {**record, "retry_at": now + 300.})
+
     @staticmethod
     def _write(path: Path, payload: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

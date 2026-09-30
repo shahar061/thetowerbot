@@ -144,7 +144,7 @@ class RerollProgress:
                 wallet_coins: int | None = None,
                 wallet_gems: int | None = None) -> bool:
         moment = time.time() if now is None else now
-        if not self.lab_unlocked():
+        if not self.lab_unlocked() or self.lab_cadence.backing_off(moment):
             return False
         rules = self.resource_rules()
         unlock = False
@@ -235,6 +235,9 @@ class RerollProgress:
 
     def note_lab_observation(self, decision: LabDecision, now: float | None = None) -> None:
         self.lab_cadence.note(decision, time.time() if now is None else now)
+
+    def note_lab_failure(self, now: float | None = None) -> None:
+        self.lab_cadence.note_failed(time.time() if now is None else now)
 
     def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None,
                           wallet_gems: int | None = None, now: float | None = None) -> LabPlan | None:
