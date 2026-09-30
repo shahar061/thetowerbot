@@ -28,7 +28,7 @@ def differences(state: StarterState) -> list[dict[str, Any]]:
         if level is None or lab.price != level.coins:
             rows.append({"lab_id": lab_id, "level": lab.level, "field": "coins", "observed": lab.price,
                          "catalog": level.coins if level is not None else None})
-        if level is not None and lab.seconds is not None and abs(lab.seconds - level.seconds) > 20:
+        if level is not None and lab.seconds is not None and abs(lab.seconds - level.seconds) > 1:
             rows.append({"lab_id": lab_id, "level": lab.level, "field": "seconds",
                          "observed": lab.seconds, "catalog": level.seconds})
     return rows
