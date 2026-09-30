@@ -35,6 +35,9 @@ HEADER_CASES: dict[str, tuple[str, int, int]] = {
     "menu_workshop_utility": ("WORKSHOP", 1770, 40),
     # Spending the whole wallet leaves a lone "0", which reads below .9.
     "menu_workshop_zero_coins": ("WORKSHOP", 0, 54),
+    # Exactly 1000 is drawn with a thousands separator, "1,000", not "1.00K".
+    # Header strip of a live capture.
+    "workshop_header_coins_1000": ("WORKSHOP", 1000, 89),
     "menu_cards": ("CARDS", 78, 40),
 }
 

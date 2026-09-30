@@ -9,6 +9,7 @@ import math
 import re
 import time
 
+from config import Rect
 from device import Image
 from geometry import supported_frame
 from labs import LabEntry, LabJob, LabsReading
@@ -115,10 +116,24 @@ def _coin_balance(boxes: tuple[ocr.TextBox, ...], width: int, height: int) -> in
     return values[0] if len(values) == 1 else None
 
 
-def _gem_balance(boxes: tuple[ocr.TextBox, ...], width: int, height: int) -> int | None:
-    candidates = [ocr.parse_number(box.text) for box in boxes
-                  if _trusted(box) and width * .35 < box.rect.x < width * .55
-                  and box.rect.y < height * .043]
+def _gem_balance(screen: Image, boxes: tuple[ocr.TextBox, ...], width: int, height: int) -> int | None:
+    """The gem header, or None unless exactly one number is read there.
+
+    The whole-frame read drops a short isolated balance outright: the "7"
+    left by a 100-gem unlock produced no box at all, so the unlock could
+    never be proven. With nothing in the band, the band is read off its own
+    crop (see shopping.header_numbers), where a lone digit reads at .89-.92
+    and is accepted below .9, like the lone "0" there. A misread digit only
+    changes a balance too small to buy anything, and a debit proven against
+    it must still equal the price.
+    """
+    band = [box for box in boxes if _trusted(box) and width * .35 < box.rect.x < width * .55
+            and box.rect.y < height * .043]
+    if not band:
+        region = Rect(int(width * .35), 0, int(width * .2), int(height * .043))
+        band = [box for box in ocr.read_region(screen, region)
+                if box.confidence >= (.8 if len(box.text.strip()) == 1 else _MIN_CONFIDENCE)]
+    candidates = [ocr.parse_number(box.text) for box in band]
     values = [value for value in candidates if value is not None]
     return values[0] if len(values) == 1 else None
 
@@ -294,7 +309,7 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
                         and _normalized(box.text) in ("UNLOCK2NDLAB", "UNLOCKZNDLAB")
                         for box in boxes)
     slots_owned = 1 if second_locked else None
-    gem_balance = _gem_balance(boxes, width, height)
+    gem_balance = _gem_balance(screen, boxes, width, height)
     next_locked = read_next_locked(screen, boxes)
     lab2_labels = [box for box in boxes if _trusted(box)
                    and _normalized(box.text) == "LAB2"
