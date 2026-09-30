@@ -119,7 +119,8 @@ def test_battle_policy_observes_but_does_not_buy_without_route_decision(tmp_path
     BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
     progress = RerollProgress(worker_root, "account-a", AccountState())
     progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
-    progress._history = lambda: (1, {})  # type: ignore[method-assign]
+    progress._history = lambda: (1, {"unlock_cash_bonuses": 1,  # type: ignore[method-assign]
+                                     "unlock_defense_upgrades": 1})
     policy = progress.battle_policy(AutopilotPolicy(enabled=True), {},
                                     run_id=7, wave=5, cash=100)
     assert policy.enabled and policy.observe_only
@@ -157,7 +158,7 @@ def test_battle_blocks_send_autopilot_to_the_stale_priority_row(tmp_path: Path) 
     BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
     progress = RerollProgress(worker_root, "account-a", AccountState())
     progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
-    progress._history = lambda: (1, {})  # type: ignore[method-assign]
+    progress._history = lambda: (1, {"unlock_cash_bonuses": 1})  # type: ignore[method-assign]
     now = time.time()
     rows = {"cash_bonus": {"status": "unknown", "value": None, "price": None, "observed_at": now - 90},
             "health": {"status": "available", "value": 1, "price": 5, "observed_at": now}}
@@ -165,6 +166,48 @@ def test_battle_blocks_send_autopilot_to_the_stale_priority_row(tmp_path: Path) 
                                     run_id=7, wave=5, cash=100)
     assert policy.observe_only
     assert [rule.upgrade_id for rule in policy.rules] == ["cash_bonus"]
+
+
+def _battle_blocks(tmp_path: Path, blocks: list[dict]) -> RerollProgress:
+    worker_root = _registered(tmp_path, "Air_38", "account-a")
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["battle"] = {"mode": "blocks", "blocks": blocks}
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
+    progress = RerollProgress(worker_root, "account-a", AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    progress._history = lambda: (1, {})  # type: ignore[method-assign]
+    return progress
+
+
+def test_battle_blocks_skip_rows_still_locked_in_the_workshop(tmp_path: Path) -> None:
+    # Defense Absolute and Defense % are only drawn in battle once Unlock
+    # Defense Upgrades is bought. Asking for them sent the autopilot scrolling
+    # for rows that never appear, and the coverage condition paused the whole
+    # program on their missing values, so the run bought nothing at all.
+    progress = _battle_blocks(tmp_path, [
+        {"id": "emerg", "type": "condition", "field": "def_abs_coverage", "op": "lt", "value": 1.2,
+         "then": [{"id": "emerg.buy", "type": "pool", "selection": "priority",
+                   "upgrade_ids": ["defense_absolute"]}], "else": []},
+        {"id": "core", "type": "pool", "selection": "priority",
+         "upgrade_ids": ["defense_absolute", "damage"]}])
+    now = time.time()
+    rows = {"damage": {"status": "available", "value": 1, "price": 5, "observed_at": now},
+            "defense_absolute": {"status": "unknown", "value": None, "price": None, "observed_at": now}}
+    policy = progress.battle_policy(AutopilotPolicy(enabled=True), rows, run_id=7, wave=5, cash=100)
+    assert not policy.observe_only
+    assert [rule.upgrade_id for rule in policy.rules] == ["damage"]
+
+
+def test_battle_blocks_never_observe_rows_still_locked_in_the_workshop(tmp_path: Path) -> None:
+    progress = _battle_blocks(tmp_path, [
+        {"id": "thorns", "type": "pool", "selection": "priority", "upgrade_ids": ["thorns", "health"]},
+        {"id": "end", "type": "wait"}])
+    policy = progress.battle_policy(AutopilotPolicy(enabled=True), {}, run_id=7, wave=5, cash=100)
+    assert policy.observe_only
+    assert [rule.upgrade_id for rule in policy.rules] == ["health"]
+    progress._history = lambda: (1, {"unlock_thorns": 1})  # type: ignore[method-assign]
+    policy = progress.battle_policy(AutopilotPolicy(enabled=True), {}, run_id=7, wave=5, cash=100)
+    assert [rule.upgrade_id for rule in policy.rules] == ["thorns", "health"]
 
 
 def test_worker_projection_respects_published_never_buy(tmp_path: Path) -> None:

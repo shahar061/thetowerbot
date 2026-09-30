@@ -53,6 +53,19 @@ CHEAPEST_WORKSHOP_PRICE = min(price for upgrade in CATALOG["upgrades"].values()
 UNKNOWN_PLAN_DETOUR_RUNS = 5
 
 
+def workshop_locked(purchases: Mapping[str, int],
+                    observations: Mapping[str, Mapping[str, Any]] | None = None) -> frozenset[str]:
+    """Battle upgrades whose Workshop unlock tile this account has not confirmed.
+
+    A row the battle tab has drawn is unlocked whatever the ledger says.
+    """
+    drawn = {uid for uid, row in (observations or {}).items()
+             if row.get("status") not in (None, "unknown", "locked")}
+    return frozenset(child for entry in upgrades.CATALOG
+                     if entry.unlock and purchases.get(entry.id, 0) <= 0
+                     for child in entry.unlocks if child not in drawn)
+
+
 class RerollProgress:
     """Read only this registered account and publish a bounded next action."""
 
@@ -646,7 +659,15 @@ class RerollProgress:
                 self.route_error = "worker account binding changed"
                 return replace(base, enabled=False, rules=())
             moment = time.time()
-            best, _ = self._history()
+            best, purchases = self._history()
+            # A row still locked in the Workshop is never drawn in battle, so
+            # it is recorded as locked rather than left unknown: unknown sends
+            # the autopilot scrolling for it and pauses any condition that
+            # reads it, and neither can end before the Workshop unlock.
+            locked = workshop_locked(purchases, observations or {})
+            rows = {**(observations or {}), **{
+                uid: dict(upgrade_id=uid, status="locked", value=None, price=None, observed_at=moment)
+                for uid in locked}}
             counts = self.route_runtime.purchase_counts("battle", run_id)
             facts = RouteFacts(
                 self.account_id, self.root.name, "battle", moment, moment,
@@ -654,7 +675,7 @@ class RerollProgress:
                 battle_health=(combat or {}).get("health"),
                 battle_max_health=(combat or {}).get("max_health"),
                 enemy_damage=(combat or {}).get("enemy_damage"),
-                upgrade_rows=observations or {},
+                upgrade_rows=rows,
                 visit_id=(f"battle:{run_id}" if effective.battle.mode == "blocks" else
                           f"battle:{run_id}:{wave}") if run_id is not None and wave is not None else None,
                 run_purchases=counts, decision_sequence=sum((counts or {}).values()),
@@ -672,7 +693,8 @@ class RerollProgress:
                 from fleet.strategy_blocks import program_upgrade_ids
                 self.route_runtime.acknowledge(route.revision, self.account_id)
                 observe_only = evaluation.status != "observed" or evaluation.decision is None
-                ids = (evaluation.trace.observation_ids or program_upgrade_ids(effective.battle.blocks)
+                ids = (tuple(uid for uid in evaluation.trace.observation_ids
+                             or program_upgrade_ids(effective.battle.blocks) if uid not in locked)
                        if observe_only else (evaluation.decision.upgrade_id,))
                 return replace(base, enabled=True, preset="manual", purpose="milestone",
                     rules=tuple(UpgradeRule(uid, target=(evaluation.decision.target if not observe_only else None))
@@ -685,7 +707,7 @@ class RerollProgress:
                 return replace(base, enabled=False, rules=())
             self.route_runtime.acknowledge(route.revision, self.account_id)
             observe_only = evaluation.status != "observed" or evaluation.decision is None
-            ids = (list(phase.priority_ids) if observe_only else
+            ids = ([uid for uid in phase.priority_ids if uid not in locked] if observe_only else
                    [evaluation.decision.upgrade_id])
             return replace(base, enabled=True, preset="manual", purpose="milestone",
                            rules=tuple(UpgradeRule(uid) for uid in ids),
@@ -713,16 +735,12 @@ class RerollProgress:
             UpgradeRule("damage"), UpgradeRule("attack_speed"),
         )
         _, purchases = self._history()
-        confirmed_unlocks = {entry.id for entry in upgrades.CATALOG
-                             if entry.unlock and purchases.get(entry.id, 0) > 0}
-        utility_open = any(upgrades.by_id(unlock_id).category == "UTILITY"
-                           for unlock_id in confirmed_unlocks)
-        locked_children = {child: entry.id for entry in upgrades.CATALOG
-                           if entry.unlock for child in entry.unlocks}
+        utility_open = any(entry.unlock and entry.category == "UTILITY" and purchases.get(entry.id, 0) > 0
+                           for entry in upgrades.CATALOG)
+        locked = workshop_locked(purchases)
         available = tuple(rule for rule in candidates
                           if (utility_open or upgrades.by_id(rule.upgrade_id).category != "UTILITY")
-                          and locked_children.get(rule.upgrade_id) in
-                          (None, *confirmed_unlocks))
+                          and rule.upgrade_id not in locked)
         return replace(base, preset="manual", purpose="milestone",
                        rules=prioritize_survival(available, observations or {}))
 
