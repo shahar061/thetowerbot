@@ -217,3 +217,13 @@ def test_reset_endpoint_refuses_a_slot_that_is_not_halted(tmp_path: Path) -> Non
     assert client.post("/api/fleet/labs/unlock-rollout/3/reset").status_code == 409
     assert client.post("/api/fleet/labs/unlock-rollout/7/reset").status_code == 422
     assert LabUnlockRollout(tmp_path).slot(3).stage == "dry_run"
+
+
+def test_labs_snapshot_carries_the_starter_rollout(tmp_path: Path) -> None:
+    from fleet.labs_view import labs_snapshot
+    from lab_starter_rollout import LabStarterRollout
+    LabStarterRollout(tmp_path).note_start_dry_run(2, "Air_1", "a", "labs.attack-speed", 1,
+        __import__("lab_catalog").level("labs.attack-speed", 1).coins, 15., 1.)
+    snapshot = labs_snapshot(tmp_path, [])
+    assert [row["key"] for row in snapshot["starter_rollout"]][:2] == ["start:1", "start:2"]
+    assert snapshot["rehearsed_labs"][0]["lab_id"] == "labs.attack-speed"

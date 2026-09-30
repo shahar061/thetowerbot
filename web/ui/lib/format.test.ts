@@ -168,3 +168,15 @@ group("lab unlock rollout events", () => {
       .toContain("Lab 3 unlock halted: price 120");
   });
 });
+
+group("lab starter rollout events", () => {
+  it("reads the rehearsal, promotion and halt", () => {
+    expect(describe({ type: "LabStartRehearsed", seq: 1, ts: 0, slot: 2, research_id: "labs.attack-speed",
+      level: 1, price: 30, seconds: 15 }))
+      .toContain("rehearsed Lab 2 labs.attack-speed Lv.1: 30 coins");
+    expect(describe({ type: "LabStarterPromoted", seq: 2, ts: 0, key: "start:2", stage: "canary" }))
+      .toContain("start:2 starts promoted to canary");
+    expect(describe({ type: "LabStarterHalted", seq: 3, ts: 0, key: "start:3", reason: "Start was not proven" }))
+      .toContain("start:3 starts halted: Start was not proven");
+  });
+});

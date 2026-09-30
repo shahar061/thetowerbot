@@ -1654,6 +1654,39 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"unlock_rollout": rollout.snapshot()}
 
+    def _starter() -> Any:
+        from lab_starter_rollout import LabStarterRollout
+        root = _fleet_root()
+        if fleet is None or root is None:
+            raise HTTPException(status_code=503, detail="fleet_labs_unavailable")
+        return LabStarterRollout(root)
+
+    @app.post("/api/fleet/labs/starter-rollout/{key}/reset")
+    def fleet_lab_starter_reset(key: str) -> dict[str, Any]:
+        """Put a halted slot's start rollout back to dry run."""
+        from lab_starter_rollout import START_KEYS, RolloutError
+        if key not in START_KEYS:
+            raise HTTPException(status_code=422, detail="key must be start:1-start:5")
+        starter = _starter()
+        try:
+            starter.reset(key)
+        except RolloutError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return starter.snapshot()
+
+    @app.post("/api/fleet/labs/rehearsed/{lab_id}/{action}")
+    def fleet_lab_rehearsed_action(lab_id: str, action: str) -> dict[str, Any]:
+        """Forget an unfindable lab (reset), or accept an uncatalogued lab's price (accept)."""
+        from lab_starter_rollout import RolloutError
+        if action not in ("reset", "accept") or not lab_id.startswith("labs."):
+            raise HTTPException(status_code=422, detail="unknown lab action")
+        starter = _starter()
+        try:
+            (starter.reset_lab if action == "reset" else starter.accept_lab)(lab_id)
+        except RolloutError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return starter.snapshot()
+
     @app.get("/api/fleet/state")
     def fleet_state_snapshot() -> dict[str, Any]:
         if fleet is None or not callable(getattr(fleet, "state_snapshot", None)):

@@ -17,7 +17,7 @@ from fleet.build_route_store import BuildRouteStore, RouteUnavailable
 from fleet.coin_share import jit_hold
 from fleet.lab_facts import persisted_lab_facts
 from fleet.resource_blocks import automated_list, evaluate_lab_plan
-from lab_starter_rollout import LabStarterRollout
+from lab_starter_rollout import LabStarterRollout, rehearsed_rows, starter_rows
 from lab_unlock_rollout import LabUnlockRollout, rollout_rows
 
 logger = logging.getLogger(__name__)
@@ -148,4 +148,5 @@ def labs_snapshot(root: Path, workers: Iterable[str], now: float | None = None) 
             logger.exception("Labs view unavailable for %s", worker)
             rows.append(_unknown(worker, None, "Lab evidence unavailable"))
     return {"workers": rows, "automated": automated_list(), "reference": lab_catalog.reference(),
-            "unlock_rollout": rollout_rows(rollout)}
+            "unlock_rollout": rollout_rows(rollout),
+            "starter_rollout": starter_rows(starter), "rehearsed_labs": rehearsed_rows(starter)}
