@@ -39,9 +39,15 @@ def automated_list() -> list[dict[str, Any]]:
             for lane, kind, lab_id, slot in sorted(AUTOMATED)]
 
 
-def research_automated(lab_id: str, slot: int) -> bool:
-    from lab_routes import research_gate
-    return research_gate(slot, lab_id).enabled
+def research_gate_for(facts: "LabFacts | None", lab_id: str, slot: int):
+    """The starter gate for this worker and account; legacy Game Speed only without facts."""
+    from lab_starter_rollout import starter_gate
+    return starter_gate(getattr(facts, "starter", None), slot, lab_id,
+                        getattr(facts, "worker", None), getattr(facts, "account_id", None))
+
+
+def research_automated(lab_id: str, slot: int, facts: "LabFacts | None" = None) -> bool:
+    return research_gate_for(facts, lab_id, slot).enabled
 
 
 def gem_automated(block: Mapping[str, Any], rollout: Mapping[int, Any] | None = None) -> bool:
@@ -454,6 +460,8 @@ class LabFacts:
     # The fleet's lab-unlock rollout per slot, and this worker's id, for the gem lane.
     rollout: Mapping[int, Any] | None = None
     worker: str | None = None
+    # The fleet's lab-starter rollout (lab_starter_rollout.StarterState); None on a solo bot.
+    starter: Any = None
 
 
 @dataclass(frozen=True)
@@ -491,6 +499,7 @@ class SlotPlan:
     capabilities: Mapping[str, bool] | None = None
     role: str = "target"
     saving_for: SlotNext | None = None
+    rehearse: bool = False
 
 
 @dataclass(frozen=True)
@@ -904,13 +913,13 @@ def _slot_context(facts: LabFacts) -> SlotContext:
 
 
 def _capabilities(slot: int, automated: bool, now: SlotNow, facts: LabFacts,
-                  planned: bool) -> dict[str, bool]:
+                  planned: bool, rehearse: bool = False) -> dict[str, bool]:
     observed = (facts.slots or {}).get(slot)
-    capabilities = {"observe": True, "plan": planned,
-                    "execute": automated and now.state == "idle" and not now.stale
-                    and now.evidence_status == "current"
-                    and observed is not None and observed.get("confirmed") is True
-                    and observed.get("preview_only") is not True}
+    ready = (now.state == "idle" and not now.stale and now.evidence_status == "current"
+             and observed is not None and observed.get("confirmed") is True
+             and observed.get("preview_only") is not True)
+    capabilities = {"observe": True, "plan": planned, "execute": automated and ready,
+                    "rehearse": rehearse and not automated and ready}
     if facts.capabilities and slot in facts.capabilities:
         capabilities = {key: capabilities[key] and facts.capabilities[slot].get(key, False)
                         for key in capabilities}
@@ -943,7 +952,8 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
                 outcome, chosen, kind = "wait", None, None
                 why.append("Slot paused by strategy")
             else:
-                competing = unavailable.copy()
+                competing = (unavailable.copy()
+                            | (facts.starter.blocked_labs() if facts.starter else frozenset()))
                 if nows[slot].state == "researching":
                     current = (facts.slots or {}).get(slot, {}).get("research_id")
                     if current is None and slot == 1 and facts.slot1:
@@ -955,19 +965,21 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
                                                GAME_SPEED if slot == 1 else None)
             if outcome == "done":
                 why.append("Track complete")
-        automated = chosen is not None and kind == "research" and research_automated(chosen.lab_id, slot)
-        if chosen is not None and not research_automated(chosen.lab_id, slot):
-            from lab_routes import research_gate
-            why.append(research_gate(slot, chosen.lab_id).reason)
-        if automated and not rules.labs.auto_start:
-            automated, note = False, "Auto-start off"
+        gate = research_gate_for(facts, chosen.lab_id, slot) if chosen is not None else None
+        automated = gate is not None and kind == "research" and gate.enabled
+        rehearse = gate is not None and kind == "research" and gate.mode == "rehearse"
+        if gate is not None and not gate.enabled:
+            why.append(gate.reason)
+        if (automated or rehearse) and not rules.labs.auto_start:
+            automated, rehearse, note = False, False, "Auto-start off"
         if chosen is None and outcome in {"wait", "done"} and rules.labs.idle_fill == "shortest_under_30m":
             note = "Idle fill: shortest lab under 30m (planned)"
         covered = (remaining_coins >= chosen.price
                    if chosen is not None and chosen.price is not None and remaining_coins is not None
                    else None)
         plans.append(SlotPlan(slot, nows[slot], chosen, covered, automated, tuple(why), note,
-                              _capabilities(slot, automated, nows[slot], facts, track is not None)))
+                              _capabilities(slot, automated, nows[slot], facts, track is not None, rehearse),
+                              rehearse=rehearse))
         if chosen is not None and nows[slot].state == "idle":
             unavailable.add(chosen.lab_id)
             if remaining_coins is not None and chosen.price is not None and covered:
@@ -991,9 +1003,11 @@ def choose_lab_action(plan: LabPlan, runtime: Any, *, available_coins: int | Non
     for slot in plan.slots:
         next_research = slot.next
         record = observed.get(slot.slot)
+        caps = slot.capabilities or {}
+        start = slot.automated and caps.get("execute") is True
+        rehearse = not start and slot.rehearse and caps.get("rehearse") is True
         if (next_research is None or next_research.price is None or next_research.level is None
-                or not slot.automated or slot.covered is not True
-                or slot.capabilities is None or slot.capabilities.get("execute") is not True
+                or not (start or rehearse) or slot.covered is not True
                 or slot.now.state != "idle" or slot.now.stale or next_research.lab_id in busy
                 or record is None or record.state != "idle" or not record.confirmed
                 or record.scope != scope or record.transaction_id is not None
@@ -1002,6 +1016,7 @@ def choose_lab_action(plan: LabPlan, runtime: Any, *, available_coins: int | Non
                 or record.observed_at != slot.now.read_at
                 or available_coins < next_research.price):
             continue
-        return LabAction(slot.slot, next_research.lab_id, next_research.level, "start",
-                         plan.strategy_revision, "Confirmed idle slot and affordable research")
+        return LabAction(slot.slot, next_research.lab_id, next_research.level,
+                         "start" if start else "rehearse", plan.strategy_revision,
+                         "Confirmed idle slot and affordable research")
     return None

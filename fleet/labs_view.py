@@ -17,6 +17,7 @@ from fleet.build_route_store import BuildRouteStore, RouteUnavailable
 from fleet.coin_share import jit_hold
 from fleet.lab_facts import persisted_lab_facts
 from fleet.resource_blocks import automated_list, evaluate_lab_plan
+from lab_starter_rollout import LabStarterRollout
 from lab_unlock_rollout import LabUnlockRollout, rollout_rows
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ def _history(db_path: Path) -> list[dict[str, Any]]:
 
 
 def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
-         now: float, rollout: dict[int, Any]) -> dict[str, Any]:
+         now: float, rollout: dict[int, Any], starter: Any = None) -> dict[str, Any]:
     from web.account_catalog import registered_worker
 
     worker_root = root / "workers" / worker
@@ -95,7 +96,8 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
     coins, gems, read_at = _menu_wallet(worker_root, worker, account_id)
     recent = _history(registration.db_path)
     facts = replace(persisted_lab_facts(worker_root, account_id, now=now, coins=coins, gems=gems,
-                                        db_path=registration.db_path), rollout=rollout, worker=worker)
+                                        db_path=registration.db_path), rollout=rollout, worker=worker,
+                    starter=starter)
     effective = resolve_route(route, worker, account_id)
     plan = evaluate_lab_plan(effective, facts)
     plan_row = asdict(plan)
@@ -137,10 +139,11 @@ def labs_snapshot(root: Path, workers: Iterable[str], now: float | None = None) 
         route = RouteDocument.compatibility()
         route_error = f"Route unavailable ({exc.reason}); showing default rules"
     rollout = LabUnlockRollout(root).slots(quarantine=False)
+    starter = LabStarterRollout(root).state(quarantine=False)
     rows = []
     for worker in workers:
         try:
-            rows.append(_row(root, worker, route, route_error, moment, rollout))
+            rows.append(_row(root, worker, route, route_error, moment, rollout, starter))
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             logger.exception("Labs view unavailable for %s", worker)
             rows.append(_unknown(worker, None, "Lab evidence unavailable"))

@@ -56,7 +56,7 @@ def test_gem_step_follows_the_rollout_stage() -> None:
 def test_owned_slots_wait_for_the_lab_starter() -> None:
     step = evaluate_resources(_route(), replace(_facts(), lab_slot_status={"2": "owned"})).gem_step
     assert (step.action, step.status, step.reason) == (
-        "lab_slot_2_owned", "supported", "Slot 2 owned · waiting for lab starter")
+        "lab_slot_2_owned", "supported", "Slot 2 owned")
     three = evaluate_resources(_route(["unlock_lab_slot_2", "unlock_lab_slot_3"]),
         replace(_facts(), wallet_gems=500, lab_slot_status={"2": "owned", "3": "locked"})).gem_step
     assert (three.action, three.reason) == ("unlock_lab_slot_3", "Rehearsing slot 3 · 0/2 dry runs")
