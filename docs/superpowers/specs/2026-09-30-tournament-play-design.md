@@ -41,8 +41,11 @@ Captured on a fleet account (best tier-1 wave 100) on 2026-09-30; frames are in
 | `tournament_run_start.png`, `tournament_run_midway.png` | Tournament run | `screens.classify` returns `IN_RUN`. The HUD wave panel shows a trophy icon and `Tier 1+` instead of `Tier 1`. |
 | `tournament_stats.png` | `TOURNAMENT STATS` modal at death | League, `Wave 8`, `Killed By Basic`, `currently at rank: 30`, coins earned, ad coins earned, `OK`. `screens.classify` still returns `IN_RUN` here. |
 | `tournament_leaderboard_ticket_0.png` | Tournament page after the run | Ticket counter `0`, leaderboard, current and next prize, `Tournament ID: …`, `BATTLE` still drawn, `Tap To Return To Game`. |
+| _(not captured yet)_ | `Buy Ticket` modal over the tournament page | Seen when the page is opened after the free ticket was spent: ticket counter `0` behind it. Title `Buy Ticket`, "Get another ticket to try again and improve your rank", `Cancel` on the left, and an ad button (video icon, no text) on the right. `Cancel` closes it and leaves the page. |
 
-Not yet observed: the prize-claim screen shown after the tournament closes.
+Not yet observed: the prize-claim screen shown after the tournament closes. The
+`Buy Ticket` modal has only been seen in a BlueStacks window screenshot; its
+device frame still has to be captured for the reader's fixture.
 
 ## Components
 
@@ -54,6 +57,9 @@ Each reader takes a frame and its OCR boxes and returns a frozen reading or
 - `read_menu_entry` → trophy centre and `OPEN` label.
 - `read_page` → `tickets: int | None`, `league`, `battle` centre,
   `join_time_left_s`, `tournament_id | None`, `return_to_game` centre.
+- `read_buy_ticket` → `Cancel` centre, keyed on the `Buy Ticket` title and the
+  `Cancel` text. It is checked before `read_page`, because the dimmed page
+  (header, ticket counter) can still be read through the modal.
 - `read_username_prompt` → field centre, `Save` centre, `X` centre, field text.
 - `read_profile_popup` → `X` centre.
 - `read_stats_modal` → `league`, `wave`, `rank`, `coins`, `ad_coins`, `killed_by`,
@@ -76,10 +82,13 @@ It has the same public surface as the other walks: `request()`, `advance(...)`,
    2. Require the field text to equal the name exactly, then tap `Save`.
    3. Close the profile popup.
 3. **READ** — read the page.
+   - `Buy Ticket` modal showing: the free ticket is already spent. Tap `Cancel`
+     once, require the modal gone on a later frame, then go to RETURN and
+     finish with `no_free_entry`.
    - `tickets == 0` or `None`: go to RETURN and finish with `no_free_entry` or
      `tickets_unknown`.
-4. **ENTER** — tap `BATTLE` once. This requires `tickets >= 1` read on the same
-   frame the tap targets.
+4. **ENTER** — tap `BATTLE` once. This requires `tickets >= 1` and no
+   `Buy Ticket` modal, both read on the same frame the tap targets.
    - Proof is `IN_RUN` plus the HUD tournament marker within the frame budget.
    - On proof: emit `TournamentEntered` and arm tournament mode on the bot.
    - With no proof: never tap again, and finish with `entry_unconfirmed`.
@@ -87,9 +96,13 @@ It has the same public surface as the other walks: `request()`, `advance(...)`,
    confirm the main menu.
 
 Scheduling:
-- A visit is due when tournaments are enabled for the account, the menu entry is
-  visible, and no visit ran in the last 30 minutes after a `no_free_entry` or
-  `tickets_unknown` result.
+- A visit is due when tournaments are enabled for the account and the menu entry
+  is visible. The menu keeps showing `OPEN` after the ticket is spent, so `OPEN`
+  alone does not make a visit due:
+  - After a confirmed entry or a `no_free_entry` result, no visit is due until
+    the `Time left to join` read on that visit has run out.
+  - After a `tickets_unknown` result, or when no join time was read, no visit
+    is due for 30 minutes.
 - A visit is not due while tournament mode is armed.
 
 ### `tower_bot.py` wiring
@@ -230,6 +243,8 @@ Tournament runs are excluded from:
   - `BATTLE` on the tournament page is tapped only from ENTER, with a same-frame
     reading of `tickets >= 1`, and at most once per visit.
   - An unreadable ticket count never leads to entry.
+  - The `Buy Ticket` ad button is never tapped. If `Cancel` does not close the
+    modal, the visit finishes `uncertain` and leaves through Android back.
 - **Unconfirmed entry**: no retry tap, nothing armed and no ledger line. Normal
   navigation takes over.
 - **Name step**:
@@ -256,9 +271,13 @@ Only the new and changed test files are run.
     - A normal `GAME STATS` modal is not a tournament stats modal.
     - The normal in-run HUD has no marker.
     - The ticket-0 page reports `tickets == 0`.
+    - The ticket-0 page without the modal is not a `Buy Ticket` modal.
 - `tests/test_tournament_visit.py`, with a fake device:
   - Happy path.
   - Tickets 0.
+  - `Buy Ticket` modal on arrival: `Cancel` tapped once, the ad button never,
+    `BATTLE` never, result `no_free_entry`.
+  - No visit due again until the join time read on the last visit runs out.
   - Tickets unreadable.
   - Name prompt, success and failure.
   - Unconfirmed entry.
