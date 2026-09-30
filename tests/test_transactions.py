@@ -104,6 +104,30 @@ def test_existing_ledger_writer_refreshes_even_if_recovery_notification_is_lost(
     conn.close()
 
 
+def test_a_recovered_purchase_does_not_rewind_a_later_payout(tmp_path) -> None:
+    """Tap at 190 coins, a run pays 156, then recovery reads 346 and settles
+    the tap. The pre-tap wallet is not a reading of the balance now; taken as
+    one, the ledger booked the payout as 156 coins gone."""
+    path = tmp_path / "bot.db"
+    journal = transactions.TransactionJournal(path)
+    conn = db.connect(path)
+    writer = ledger.LedgerWriter(conn)
+
+    def write(event: events.Event) -> list[str]:
+        lines = writer.lines_for(event)
+        for line in lines:
+            db.insert_ledger(conn, dataclasses.replace(line, seq=None).as_row())
+        return [line.kind for line in lines]
+
+    write(events.PurchaseSkipped(item="Cash Bonus", reason="test", coins_before=190))
+    write(events.RunEnded(run_id=1, duration=1., wave=20, coins=156, tier=1))
+    txn = journal.open(_intent(item="Cash Bonus", category="UTILITY", price=190, wallet_before=190))
+    read = dataclasses.replace(txn, reconciliation={"wallet_after": 346})
+    unproven = transactions.Outcome(key=txn.key, verdict=transactions.Verdict.UNPROVEN, spent=None)
+    assert "UNEXPLAINED" not in write(journal.recovery_event(read, unproven))
+    conn.close()
+
+
 def _intent(**overrides) -> transactions.Intent:
     """A readable, affordable workshop row - the uninteresting case."""
     fields = {

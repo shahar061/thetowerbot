@@ -726,6 +726,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         for index, block in enumerate(items):
             kind, identity = block['type'], block['id']
             if kind == 'wait':
+                # Items passed over only for an unread price may have come
+                # first; holding on missing evidence never reads it.
+                if unpriced and (observation := observe_prices(identity, unpriced)):
+                    return observation
                 return _Choice(identity, reason='Wait block reached', wait=True)
             if kind == 'condition':
                 value = condition_value(block)
