@@ -92,6 +92,9 @@ class RerollProgress:
         self.coin_jar = coin_share.LabCoinJar(self.root, account_id, read_only=read_only)
         self.route_runtime: BuildRouteRuntime | None = None
         self.route_error: str | None = None
+        # Why the last shopping_policy() gave Workshop nothing to buy, for the
+        # visit's ShoppingEnded. None when it returned something to buy.
+        self.stop_reason: str | None = None
         self._route_evaluation: RouteEvaluation | None = None
         self.route_policy_revision: int | None = None
         self._menu_wallet: tuple[int, float] | None = None
@@ -488,6 +491,14 @@ class RerollProgress:
         )
 
     def shopping_policy(self, base: Shopping) -> Shopping:
+        jar = 0
+
+        def stop(policy: Shopping, reason: str) -> Shopping:
+            held = f" · lab jar holds {jar} coins" if jar > 0 else ""
+            self.stop_reason = f"{reason}{held}"
+            return policy
+
+        self.stop_reason = None
         route = None
         if self.route_runtime is not None:
             try:
@@ -495,7 +506,7 @@ class RerollProgress:
             except RouteUnavailable as exc:
                 self.route_error = exc.reason
                 self._route_evaluation = None
-                return replace(base, enabled=False, workshop=())
+                return stop(replace(base, enabled=False, workshop=()), f"Route unavailable: {exc.reason}")
             self.route_error = None
         # Reserve the first 100 gems for the second lab even when a custom
         # reroll policy enables card spending.
@@ -509,7 +520,6 @@ class RerollProgress:
         # The reroll planner selects one item; a visit-wide percentage cap
         # otherwise rejects an affordable unlock after the planner selects it.
         self._spend_fraction = None
-        jar = 0
         paused = False
         saving_reason: str | None = None
         route_wallet: int | None = None
@@ -520,7 +530,7 @@ class RerollProgress:
                     or db.bound_account(registration.db_path) != self.account_id):
                 self.route_error = "worker account binding changed"
                 self._route_evaluation = None
-                return replace(base, enabled=False, workshop=())
+                return stop(replace(base, enabled=False, workshop=()), "Worker account binding changed")
             try:
                 self.route_runtime.sync_confirmed()
                 pending = self.route_runtime.pending()
@@ -558,7 +568,8 @@ class RerollProgress:
                 self._route_evaluation = evaluation
                 if evaluation.status == "unknown" or evaluation.decision is None:
                     self.route_error = evaluation.trace.reason
-                    return replace(base, enabled=False, workshop=())
+                    return stop(replace(base, enabled=False, workshop=()),
+                                f"{evaluation.trace.reason} ({evaluation.trace.matched_rule_id})")
                 if evaluation.pending is not None and self.route_runtime.pending() is None:
                     self.route_runtime.remember_pending(evaluation.pending)
                 self.route_runtime.acknowledge(route.revision, self.account_id)
@@ -567,7 +578,7 @@ class RerollProgress:
             except (OSError, ValueError, RouteUnavailable) as exc:
                 self.route_error = str(exc)
                 self._route_evaluation = None
-                return replace(base, enabled=False, workshop=())
+                return stop(replace(base, enabled=False, workshop=()), f"Strategy unavailable: {exc}")
         else:
             self._route_evaluation = None
             self.route_policy_revision = route.revision if route is not None else None
@@ -596,6 +607,7 @@ class RerollProgress:
                            f"({coin_share.waiting_lab_price(effective, lab_record)} coins).")
             self._publish(replace(plan, state="save_coins", upgrade_id=None, item=None, category=None,
                                   price=None, reason=reason))
+            self.stop_reason = reason
             return replace(base, workshop=())
         self._publish(plan)
         if plan.stage == "strategy_observe":
@@ -605,9 +617,11 @@ class RerollProgress:
             return replace(base, workshop=rows, allow_unlocks=False, coin_budget=0, coin_budget_pct=None,
                            cards=replace(base.cards, enabled=False))
         if plan.item is None or plan.category is None:
-            return replace(base, enabled=False, workshop=())
+            return stop(replace(base, enabled=False, workshop=()), plan.reason)
         if not self.workshop_worthwhile():
-            return replace(base, enabled=False)
+            return stop(replace(base, enabled=False),
+                        plan.reason if plan.state == "save_coins" else
+                        f"Next buy {plan.item} not affordable yet ({plan.wallet_coins}/{plan.price} coins)")
         budget = base.coin_budget
         if route is not None and route.revision > 0 and route_wallet is not None:
             effective = resolve_route(route, self.root.name, self.account_id)

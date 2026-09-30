@@ -315,6 +315,10 @@ class ShoppingSession:
         # Asked after each verified purchase for the strategy's next choice;
         # returns a Shopping to continue the visit with, or None to finish.
         self.reroll_replan: Any | None = None
+        # Asked why the strategy gave nothing more to buy, when a replan ends
+        # the visit; the answer becomes ShoppingEnded's reason.
+        self.reroll_stop_reason: Any | None = None
+        self._stop_reason: str | None = None
         # Asked, by upgrade id, why a verified purchase was chosen.
         self.reroll_purchase_reason: Any | None = None
         # Where an inconclusive purchase acknowledgement keeps its frames.
@@ -517,6 +521,7 @@ class ShoppingSession:
         self._last_run_count = run_count
         self._replan_due = False
         self._replanned = None
+        self._stop_reason = None
         self._step = Step.OPEN_WORKSHOP if categories else Step.OPEN_CARDS
 
         self._bus.publish(events.ShoppingStarted(
@@ -584,7 +589,9 @@ class ShoppingSession:
                 # Step.IDLE` so it gets the same recovery tap and the same
                 # honest ShoppingEnded any other abort gets, instead of
                 # leaving the bot silently stranded on a menu page.
-                self._abort(device, shopping, screen, "shopping disabled")
+                # A replan that found nothing more to buy says why; only a
+                # switch-off with no such answer is "shopping disabled".
+                self._abort(device, shopping, screen, self._stop_reason or "shopping disabled")
                 return
             # A replanned policy lives only for this visit, and never outranks
             # the caller switching shopping off above.
@@ -877,7 +884,7 @@ class ShoppingSession:
 
     def _return(self, reading, screen: Image, device: Any, shopping: Shopping) -> bool:
         if reading.page == "MAIN_MENU":
-            self._end_visit(device, shopping, screen, aborted=False)
+            self._end_visit(device, shopping, screen, aborted=False, reason=self._stop_reason or "")
             return False
         match = vision.locate_template(
             screen, self._templates.get(config.NAV_TARGETS["BATTLE_TAB"]), self._threshold
@@ -1067,6 +1074,8 @@ class ShoppingSession:
             return shopping
         policy = self.reroll_replan()
         if policy is None or not policy.enabled or not policy.workshop:
+            if self.reroll_stop_reason is not None:
+                self._stop_reason = self.reroll_stop_reason()
             return shopping
         self._replanned = policy
         self._coin_spent = 0

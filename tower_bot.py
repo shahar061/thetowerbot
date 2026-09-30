@@ -263,6 +263,7 @@ class TowerBot:
             self.shopping.reroll_observe_price = reroll_progress.observe_price
             self.shopping.reroll_observe_prices = getattr(reroll_progress, "observe_prices", None)
             self.shopping.reroll_replan = self._replan_reroll_shopping
+            self.shopping.reroll_stop_reason = lambda: getattr(self.reroll_progress, 'stop_reason', None)
             self.shopping.reroll_purchase_reason = getattr(reroll_progress, "purchase_reason", None)
             self.shopping.price_quotes = getattr(reroll_progress, 'price_quotes', None)
             self.shopping.inspection_resolved = getattr(reroll_progress, 'inspection_resolved', None)
