@@ -1514,8 +1514,12 @@ class TowerBot:
                     self.reroll_progress.note_lab_coin_debit()
         else:
             # With auto-start off the visit only looked; keep the saved Game
-            # Speed evidence rather than overwriting it with "inspect".
-            if result.reason != "auto_start_off":
+            # Speed evidence rather than overwriting it with "inspect". A visit
+            # that failed without reading keeps it too (and the coin hold it
+            # drives); only the next check backs off.
+            if result.status in ("failed", "cancelled") and decision.kind == "unknown":
+                self.reroll_progress.note_lab_failure()
+            elif result.reason != "auto_start_off":
                 self.reroll_progress.note_lab_observation(decision)
         logger.info("Lab 1 visit ended: %s (%s)%s", result.status, result.reason,
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")

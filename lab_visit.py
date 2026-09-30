@@ -119,6 +119,8 @@ class LabVisit:
         self._reading: LabsReading | None = None
         self._emitted: set[str] = set()
         self.recovery_status: str | None = None
+        # Why the last _prepare returned None; one short code per refusal path.
+        self.preparation_refusal: str | None = None
         self._state = "idle"
         self._started_at = 0.
         self._scans = 0
@@ -195,6 +197,7 @@ class LabVisit:
         self._unlanded_signature = None
         self.last_tap = None
         self.recovery_status = None
+        self.preparation_refusal = None
         return True
 
     @property
@@ -213,13 +216,23 @@ class LabVisit:
             for txn, _ in self.journal.recovered_visit(operations={'lab_start', 'lab_unlock'})))
 
     def _scope(self) -> FactScope | None:
+        return self._scope_check()[0]
+
+    def _scope_check(self) -> tuple[FactScope | None, str | None]:
+        """The verified scope of the current capture, or why there is none."""
         scope = self.account_state.verified_scope if self.account_state else None
-        if (scope is None or scope != self._capture_scope or self.runtime is None
-                or self.runtime.scope != LabScope(scope.account_id, scope.lease_id, scope.generation, scope.epoch)
-                or not self.account_state.accepts_capture(scope, self._capture_at)
-                or not 0 <= self.wall_clock()-self._capture_at <= 30):
-            return None
-        return scope
+        if scope is None:
+            return None, 'scope_unverified'
+        if scope != self._capture_scope:
+            return None, 'capture_scope_mismatch'
+        if (self.runtime is None or self.runtime.scope
+                != LabScope(scope.account_id, scope.lease_id, scope.generation, scope.epoch)):
+            return None, 'runtime_scope_mismatch'
+        if not self.account_state.accepts_capture(scope, self._capture_at):
+            return None, 'capture_rejected'
+        if not 0 <= self.wall_clock()-self._capture_at <= 30:
+            return None, 'capture_stale'
+        return scope, None
 
     def unlock_allowed(self, slot: int | None, account_id: str | None) -> bool:
         """The rollout lets this worker tap `slot` while it plays `account_id`.
@@ -234,30 +247,53 @@ class LabVisit:
         return state.stage == 'fleet' or (state.stage == 'canary' and state.canary_worker == self.worker
                                           and state.canary_account == account_id)
 
+    def _refuse(self, operation: str, reason: str, detail: str = '') -> None:
+        self.preparation_refusal = reason
+        logger.warning("%s preparation refused: %s%s", operation, reason, f" ({detail})" if detail else "")
+
     def _prepare(self, operation: str, wallet: int, price: int, *,
                  unlock_slot: int | None = None) -> transactions.Transaction | None:
-        scope = self._scope()
+        self.preparation_refusal = None
+        scope, problem = self._scope_check()
         now = self.wall_clock()
-        if (scope is None or self.journal is None or self._reading is None
-                or self.account_state.safety_path != self.journal.path):
-            return None
+        if scope is None:
+            return self._refuse(operation, problem or 'scope_unverified',
+                                f"capture {now - self._capture_at:.1f}s old")
+        if self.journal is None:
+            return self._refuse(operation, 'journal_unavailable')
+        if self._reading is None:
+            return self._refuse(operation, 'slots_unread')
+        if self.account_state.safety_path != self.journal.path:
+            return self._refuse(operation, 'safety_path_mismatch')
         purchase = self._purchase
         target = purchase.target_level if purchase is not None else None
         selected_slot = purchase.slot if purchase is not None else 1
         research_id = purchase.research_id if purchase is not None else 'labs.game-speed'
         if operation == 'lab_start':
             if not research_gate(selected_slot, research_id).enabled:
-                return None
+                return self._refuse(operation, 'research_gate_disabled', f"Lab {selected_slot} {research_id}")
             slot = self.runtime.snapshot().slots[selected_slot-1]
-            if (type(target) is not int or target < 1 or not slot.confirmed or slot.state != 'idle'
-                    or slot.observed_at is None or not 0 <= now-slot.observed_at <= 30):
-                return None
-        elif (unlock_slot is None or unlock_slot not in self._options.unlock_slots
-                or price != lab_catalog.lab_slot_gems(unlock_slot)
-                or not self.unlock_allowed(unlock_slot, scope.account_id)
-                or not self._reading.strip_read() or self._reading.slots_owned != unlock_slot - 1
+            if type(target) is not int or target < 1:
+                return self._refuse(operation, 'target_level_invalid', f"target {target!r}")
+            if not slot.confirmed:
+                return self._refuse(operation, 'slot_unconfirmed', f"Lab {selected_slot}")
+            if slot.state != 'idle':
+                return self._refuse(operation, 'slot_not_idle', f"Lab {selected_slot} {slot.state}")
+            if slot.observed_at is None or not 0 <= now-slot.observed_at <= 30:
+                return self._refuse(operation, 'slot_snapshot_stale', f"Lab {selected_slot} read "
+                    + ("never" if slot.observed_at is None else f"{now - slot.observed_at:.1f}s ago"))
+        elif unlock_slot is None or unlock_slot not in self._options.unlock_slots:
+            return self._refuse(operation, 'unlock_slot_not_requested', f"Lab {unlock_slot}")
+        elif price != lab_catalog.lab_slot_gems(unlock_slot):
+            return self._refuse(operation, 'unlock_price_mismatch', f"Lab {unlock_slot} {price} gems")
+        elif not self.unlock_allowed(unlock_slot, scope.account_id):
+            return self._refuse(operation, 'unlock_not_allowed', f"Lab {unlock_slot}")
+        elif not self._reading.strip_read():
+            return self._refuse(operation, 'slot_strip_unread')
+        elif (self._reading.slots_owned != unlock_slot - 1
                 or self.runtime.snapshot().slots_owned != unlock_slot - 1):
-            return None
+            return self._refuse(operation, 'slots_owned_mismatch', f"read {self._reading.slots_owned}, "
+                                f"runtime {self.runtime.snapshot().slots_owned}, Lab {unlock_slot}")
         currency = 'coins' if operation == 'lab_start' else 'gems'
         balance = BalanceInterval.from_reading(currency, wallet, scope, self._capture_at,
                                                self._reading.frame_digest)
@@ -265,7 +301,7 @@ class LabVisit:
         unlock = operation == 'lab_unlock'
         decision = LabDecision('unlock_slot', price=price, slot=unlock_slot) if unlock else self._purchase
         if self.authorize is not None and not self.authorize(operation, decision, now):
-            return None
+            return self._refuse(operation, 'authorize_refused')
         from concepts import REGISTRY
         intent = transactions.Intent(item=f'Lab {unlock_slot}' if unlock else REGISTRY.by_id(research_id).name,
             category='LABS', currency=currency, price=price, wallet_before=wallet,
@@ -280,9 +316,11 @@ class LabVisit:
             txn = self.journal.prepare(intent, scope=scope, balance=balance,
                 reserve=self._options.keep_gems if currency == 'gems' else 0)
         except transactions.TransactionInFlight:
-            return None
-        if txn is None or txn.stage != transactions.Stage.INTENDED:
-            return None
+            return self._refuse(operation, 'transaction_in_flight')
+        if txn is None:
+            return self._refuse(operation, 'journal_refused')
+        if txn.stage != transactions.Stage.INTENDED:
+            return self._refuse(operation, 'transaction_not_intended', str(txn.stage))
         return self.journal.record_action(txn.key, at=now)
 
     def _restore_receipts(self) -> None:
@@ -542,7 +580,7 @@ class LabVisit:
         assert locked.price is not None and locked.point is not None
         txn = self._prepare('lab_unlock', gems, locked.price, unlock_slot=locked.slot)
         if txn is None:
-            self.recovery_status = 'lab_preparation_refused'
+            self.recovery_status = f'lab_preparation_refused:{self.preparation_refusal}'
             return False
         self._unlock_tap = (txn.key, locked.slot)
         self._unlock_frames = [screen]
@@ -794,7 +832,11 @@ class LabVisit:
                 self._return(LabVisitResult("observed", "auto_start_off", decision,
                                              confirmed_job=home.job))
             elif decision.kind == "inspect" and home.slot_point is not None:
-                if self.runtime is not None and not self.runtime.snapshot().slots[(selected.slot if selected else 1)-1].confirmed:
+                # A slot confirmed on an earlier visit stays confirmed; the spend
+                # boundary needs its idle proof from this visit's own strip read.
+                record = (self.runtime.snapshot().slots[(selected.slot if selected else 1)-1]
+                          if self.runtime is not None else None)
+                if record is not None and not (record.confirmed and record.observed_at == capture_at):
                     return None
                 self._slot = home
                 self._tap(device, home.slot_point, "open_lab_one" if selected is None or selected.slot == 1 else f"open_lab_{selected.slot}")
@@ -859,7 +901,8 @@ class LabVisit:
             if self._dialog_reads < 2:
                 return None
             if self._prepare('lab_start', confirmation.coin_balance, confirmation.price) is None:
-                self._return(LabVisitResult('failed', 'lab_preparation_refused', LabDecision('unknown')))
+                self._return(LabVisitResult('failed', f'lab_preparation_refused:{self.preparation_refusal}',
+                                            LabDecision('unknown')))
                 return None
             self._tap(device, confirmation.research_point, "confirm_game_speed" if purchase.research_id == "labs.game-speed" else "confirm_research")
             self._state = "confirm"

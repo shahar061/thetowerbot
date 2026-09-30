@@ -563,6 +563,22 @@ def test_auto_start_and_auto_unlock_switches_gate_the_lab_visit(tmp_path: Path) 
     assert progress.lab_visit_options() == LabVisitOptions(unlock_slots=(2,), keep_gems=50)
 
 
+def test_a_failed_lab_visit_holds_a_standing_slot_unlock_check(tmp_path: Path) -> None:
+    """Gems crossed the unlock price since the saved 84-gem read, so the unlock
+    check stays due until a visit rereads the strip. A visit that failed without
+    reading must not re-arm on every menu pass."""
+    progress = _progress(tmp_path)
+    progress.note_lab_unlocked("labs_tab", now=999.)
+    progress.note_lab_observation(LabDecision("wait_coins", price=2500, wallet_coins=2610,
+                                              game_speed_level=3), now=1000.)
+    progress.note_lab_slots({2: "locked"}, 84, now=1000.)
+    assert progress.lab_due(now=1100., wallet_coins=100, wallet_gems=100)
+    progress.note_lab_failure(now=1100.)
+    assert not progress.lab_due(now=1103., wallet_coins=100, wallet_gems=100)
+    assert not progress.lab_due(now=1399., wallet_coins=5000, wallet_gems=100)
+    assert progress.lab_due(now=1400., wallet_coins=100, wallet_gems=100)
+
+
 def _gem_blocks_route(root: Path, expected: int = 0) -> RouteDocument:
     raw = RouteDocument.compatibility().to_dict()
     raw["baseline"]["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))

@@ -372,3 +372,48 @@ def test_auto_start_off_looks_but_never_opens_the_picker() -> None:
         visit.advance(frame("menu_labs_slot1_affordable"), (), device, 10)
     assert (540, 450) not in device.taps
     assert visit._outcome is not None and visit._outcome.reason == "auto_start_off"
+
+
+def _walk_to_confirmation(visit: LabVisit, device: Device, times: tuple[int, ...]):
+    screens_ = ("menu_labs_slot1_affordable", "menu_labs_game_speed_affordable",
+                "menu_labs_game_speed_affordable", "menu_labs_game_speed_confirmation",
+                "menu_labs_game_speed_confirmation")
+    with patch("lab_visit.tap", side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        for name, now in zip(screens_, times):
+            visit.advance(frame(name), boxes(name), device, now)
+
+
+@pytest.mark.parametrize(("authorize", "times", "reason"), [
+    (lambda *_: False, (10, 11, 12, 13, 14), "authorize_refused"),
+    # The confirmation reads 40s after the strip: the idle-slot proof aged out.
+    (None, (10, 11, 12, 50, 51), "slot_snapshot_stale"),
+])
+def test_refused_preparation_names_its_reason(secured_visit, caplog, authorize, times, reason) -> None:
+    visit = secured_visit(authorize=authorize)
+    device = Device()
+    visit.request()
+    with caplog.at_level("WARNING", logger="lab_visit"):
+        _walk_to_confirmation(visit, device, times)
+    assert len(device.taps) == 2  # Lab 1 and the research row; never the confirm button
+    assert visit._outcome.reason == f"lab_preparation_refused:{reason}"
+    assert visit.preparation_refusal == reason
+    assert f"lab_start preparation refused: {reason}" in caplog.text
+
+
+def test_start_rereads_a_long_confirmed_idle_slot_before_opening_it(secured_visit) -> None:
+    """A slot confirmed minutes ago is still `confirmed`; the visit must read it again
+    before opening the picker, or the spend boundary refuses the stale idle proof."""
+    visit = secured_visit()
+    device = Device()
+    visit.request()
+    home = ("menu_labs_slot1_affordable",) * 2
+    picker = ("menu_labs_game_speed_affordable",) * 2
+    dialog = ("menu_labs_game_speed_confirmation",) * 2
+    with patch("lab_visit.tap", side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        # The fixture's idle proof is from t=9; this visit starts ten minutes later.
+        visit.advance(frame(home[0]), boxes(home[0]), device, 600)
+        assert device.taps == []  # one home frame cannot refresh the slot record
+        for now, name in zip(range(601, 606), home[1:] + picker + dialog):
+            visit.advance(frame(name), boxes(name), device, now)
+    assert visit.preparation_refusal is None
+    assert len(device.taps) == 3  # Lab 1, the research row, and the confirm button

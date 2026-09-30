@@ -261,6 +261,20 @@ def test_failed_lab_start_does_not_record_a_spend(bot_on_main_menu) -> None:
                 if isinstance(event, events.LabResearchStarted)]
 
 
+def test_failed_lab_visit_keeps_the_saved_lab_observation(bot_on_main_menu) -> None:
+    bot = bot_on_main_menu(a_policy())
+    bot.reroll_progress = Mock()
+    bot.lab_state = LabsState(Mock())
+    bot._finish_lab_visit(LabVisitResult(
+        "failed", "lab_preparation_refused:slot_snapshot_stale", LabDecision("unknown")))
+    bot.reroll_progress.note_lab_observation.assert_not_called()
+    bot.reroll_progress.note_lab_failure.assert_called_once_with()
+    # A failure that did read the picker still records what it read.
+    bot._finish_lab_visit(LabVisitResult(
+        "failed", "selected_research_mismatch", LabDecision("start", price=300, wallet_coins=400)))
+    bot.reroll_progress.note_lab_observation.assert_called_once()
+
+
 def test_pause_cancels_a_live_lab_visit_without_a_tap(bot_on_main_menu) -> None:
     bot = bot_on_main_menu(a_policy())
     bot.reroll_progress = Mock()
