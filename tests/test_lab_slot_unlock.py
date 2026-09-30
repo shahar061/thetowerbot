@@ -387,6 +387,8 @@ def test_a_gem_header_that_never_shows_the_debit_halts_after_three_strikes(tmp_p
     h.open()
     h.leave(locked_boxes())
     text = tuple(box for box in owned_boxes() if box.text != "50") if gems is None else owned_boxes(gems=gems)
+    if gems is None:  # The header's own crop reads nothing either.
+        monkeypatch.setattr(ocr, "read_region", lambda *_args, **_kwargs: ())
     results = [h.scan(text) for _ in range(4)]
     assert results[:3] == [None] * 3 and results[3] is not None
     assert h.visit.recovery_status == "lab_unlock_uncertain"

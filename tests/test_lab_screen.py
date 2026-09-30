@@ -333,3 +333,13 @@ def test_a_label_under_the_wrong_header_or_without_the_page_title_reads_nothing(
     assert read_next_locked(image, wrong) is None
     untitled = tuple(box for box in recorded("menu_labs_slot1_idle") if box.text != "LAB")
     assert read_next_locked(image, untitled) is None
+
+
+def test_a_lone_single_digit_gem_balance_is_read_off_its_own_crop() -> None:
+    """107 gems less a 100-gem Lab unlock leaves a lone "7" that the
+    whole-frame read drops outright; without it the unlock is never proven.
+    Header strip of the post-tap capture, read against a full frame's size."""
+    import lab_screen
+
+    strip = frame("labs_header_gems_7")
+    assert lab_screen._gem_balance(strip, (), 1080, 2400) == 7
