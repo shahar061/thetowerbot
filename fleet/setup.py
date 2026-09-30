@@ -858,7 +858,7 @@ class FleetSetupService:
         from fleet.dashboard import FleetController
         from fleet.first_launch_account import create_first_launch_account, tower_is_unopened
         from fleet.identity import Attempt
-        from fleet.runtime import WorkerRuntime
+        from fleet.runtime import WorkerRuntime, worker_dashboard_port
 
         settings = self.store.settings()
         if settings is None:
@@ -915,7 +915,7 @@ class FleetSetupService:
                          resume_verified: bool = False) -> dict[str, Any]:
             # Keep the attempt alive across the consent audit and restart proof.
             number = int(staged.name.rsplit("_", 1)[-1])
-            runtime = WorkerRuntime.for_worker(self.root / "workers", staged.name, 10000 + number)
+            runtime = WorkerRuntime.for_worker(self.root / "workers", staged.name, worker_dashboard_port(number))
             runtime.ensure_directories()
             if resume_after_consent or resume_verified:
                 journal = runtime.checkpoint_root / ".first-launch-account.json"
@@ -953,7 +953,7 @@ class FleetSetupService:
         def register(staged: Any, proof: dict[str, Any], job_id: str) -> dict[str, Any]:
             runtime = WorkerRuntime.for_worker(
                 self.root / "workers", staged.name,
-                10000 + int(staged.name.rsplit("_", 1)[-1]))
+                worker_dashboard_port(int(staged.name.rsplit("_", 1)[-1])))
             bindings = list(runtime.checkpoint_root.glob("[0-9a-f]" * 32 + ".json"))
             if len(bindings) != 1:
                 raise ValueError("worker_identity_binding_missing_or_ambiguous")

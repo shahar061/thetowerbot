@@ -13,6 +13,29 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 
+# Browsers reject these ports before contacting the HTTP/WebSocket server.
+# https://fetch.spec.whatwg.org/#port-blocking
+BROWSER_BLOCKED_PORTS = frozenset({
+    0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77,
+    79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135,
+    137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531,
+    532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720,
+    1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667,
+    6668, 6669, 6679, 6697, 10080,
+})
+# The only blocked port in the 10000+ worker range gets a reserved port below
+# that range. Shifting later workers would collide with their existing ports.
+WORKER_PORT_REPLACEMENTS = {10080: 9999}
+
+
+def worker_dashboard_port(number: int) -> int:
+    """Stable browser-safe dashboard port, preserving all safe legacy assignments."""
+    if isinstance(number, bool) or not isinstance(number, int) or not 0 <= number <= 55_535:
+        raise ValueError("worker number is out of range")
+    legacy = 10_000 + number
+    return WORKER_PORT_REPLACEMENTS.get(legacy, legacy)
+
+
 class RuntimeIsolationError(ValueError):
     """Another live worker owns the requested root or web port."""
 
@@ -55,6 +78,8 @@ class WorkerRuntime:
             raise ValueError("worker id must be a simple path component")
         if not 1 <= web_port <= 65535:
             raise ValueError("web port is out of range")
+        if web_port in BROWSER_BLOCKED_PORTS:
+            raise ValueError(f"web port {web_port} is blocked by browsers")
         root = (Path(fleet_root).resolve() / worker_id).resolve()
         return cls(
             worker_id, root, root / "tower_bot.db", root / "strategies",

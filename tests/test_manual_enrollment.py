@@ -40,13 +40,14 @@ def test_endpoint_change_rejected_before_any_host_access(tmp_path: Path) -> None
     assert not runtime.root.exists()
 
 
+@pytest.mark.parametrize("number,port", [(20, 10020), (80, 9999)])
 def test_verified_first_launch_persists_exact_worker_registration(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, number: int, port: int) -> None:
     import fleet.manual_enrollment as module
 
-    member = {"name": "Tiramisu64_20", "endpoint": "127.0.0.1:5755", "lease_id": "lease"}
+    member = {"name": f"Tiramisu64_{number}", "endpoint": "127.0.0.1:5755", "lease_id": "lease"}
     attempt = Attempt.new(member["name"], member["endpoint"], member["lease_id"], "job")
-    runtime = WorkerRuntime.for_worker(tmp_path / "workers", member["name"], 10020)
+    runtime = WorkerRuntime.for_worker(tmp_path / "workers", member["name"], port)
     row = HostInstance(member["name"], member["endpoint"], member["lease_id"],
                        "running", f"manual:{member['lease_id']}")
     monkeypatch.setattr(module, "ManualAirWorker", lambda *args, **kwargs:

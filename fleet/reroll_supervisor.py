@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from fleet.identity import Attempt
 from fleet.input_lease import InputLease
-from fleet.runtime import WorkerRuntime
+from fleet.runtime import WorkerRuntime, WORKER_PORT_REPLACEMENTS, worker_dashboard_port
 from fleet.runtime import RuntimeIsolationError, reserve_endpoint
 from runtime_identity import PROCESS_IDENTITY
 from runtime_records import PROCESS_BOOT_ID
@@ -420,12 +420,17 @@ class RerollSupervisor:
             output.flush()
             os.fsync(output.fileno())
         updated = {**registration, "binding": str(fresh_path)}
+        self._save_registration(runtime, updated)
+        return updated
+
+    @staticmethod
+    def _save_registration(runtime: WorkerRuntime, registration: Status) -> None:
         path = runtime.root / "fleet-registration.json"
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                json.dump(updated, output, sort_keys=True)
+                json.dump(registration, output, sort_keys=True)
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())
@@ -437,7 +442,6 @@ class RerollSupervisor:
                 os.close(directory)
         finally:
             temporary.unlink(missing_ok=True)
-        return updated
 
     def start(self, name: str, *, recovery: bool = False,
               expected: Status | None = None,
@@ -467,7 +471,11 @@ class RerollSupervisor:
                 if member["state"] not in {"ready", "start_required", "tower_already_opened"}:
                     return {"name": name, "state": "failed", "error": member["state"]}
                 number = int(name.rsplit("_", 1)[-1])
-                runtime = WorkerRuntime.for_worker(self.root / "workers", name, 10000 + number)
+                runtime = WorkerRuntime.for_worker(self.root / "workers", name, worker_dashboard_port(number))
+                allowed_ports = {runtime.web_port}
+                legacy_port = 10_000 + number
+                if WORKER_PORT_REPLACEMENTS.get(legacy_port) == runtime.web_port:
+                    allowed_ports.add(legacy_port)
                 attempt = Attempt.new(name, member["endpoint"], member["lease_id"], uuid4().hex)
                 # Coordinator evidence is a pending launch, never the child's
                 # runtime identity. The child writes its own hash and PID.
@@ -509,7 +517,7 @@ class RerollSupervisor:
                         binding = json.loads(binding_path.read_text(encoding="utf-8"))
                         if (registration.get("state") != "registered"
                                 or registration.get("instance") != name
-                                or registration.get("web_port") != runtime.web_port
+                                or registration.get("web_port") not in allowed_ports
                                 or binding.get("worker_id") != name
                                 or binding.get("attempt_id") != registration.get("job_id")
                                 or binding.get("account_id") != registration.get("account_id")
@@ -528,11 +536,16 @@ class RerollSupervisor:
                         or registration.get("instance") != name
                         or registration.get("endpoint") != member["endpoint"]
                         or registration.get("lease_id") != member["lease_id"]
-                        or registration.get("web_port") != runtime.web_port
+                        or registration.get("web_port") not in allowed_ports
                         or not registration.get("account_id") or not registration.get("binding")):
                     raise ValueError("worker_registration_unverified")
                 if not isinstance(registration.get("job_id"), str) or not registration["job_id"]:
                     raise ValueError("worker_registration_attempt_missing")
+                if registration["web_port"] != runtime.web_port:
+                    # Only a stopped, fully verified legacy worker reaches here.
+                    # Account, emulator endpoint, and saved binding stay intact.
+                    registration = {**registration, "web_port": runtime.web_port}
+                    self._save_registration(runtime, registration)
                 restart = isinstance(old, dict) and isinstance(old.get("pid"), int)
                 if restart and not old.get("input_generation"):
                     raise ValueError("restart_generation_unavailable")

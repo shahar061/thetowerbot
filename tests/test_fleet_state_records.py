@@ -102,6 +102,20 @@ def test_a_revision_stamped_with_another_account_is_ignored(tmp_path: Path) -> N
     assert read_records(path, "account-a", None).revision is None
 
 
+def test_foreign_facts_inside_an_account_revision_do_not_supply_workshop_evidence(tmp_path: Path) -> None:
+    path = _database(tmp_path)
+    with db.connect(path) as conn:
+        conn.execute("INSERT INTO account_revisions(detail) VALUES (?)", (json.dumps({
+            "account_id": "account-a", "workshop_stats": [{
+                "concept_id": "stats.thorns", "value": 6, "status": "verified",
+                "scope": {"account_id": "account-old"}, "evidence": {"observed_at": 5., "raw_value": "6%"}}],
+            "unlocks": [{"concept_id": "unlocks.thorns", "value": True, "status": "verified",
+                         "scope": {"account_id": "account-old"}}]}),))
+    records = read_records(path, "account-a", None)
+    assert records.revision["workshop_stats"] == records.revision["unlocks"] == []
+    assert records.workshop_evidence.actions.level_purchases == {}
+
+
 def test_a_corrupt_revision_detail_is_ignored_not_raised(tmp_path: Path) -> None:
     """Review Focus: a bad JSON blob in account_revisions must not blank the account."""
     path = _database(tmp_path)
@@ -149,6 +163,10 @@ def test_a_null_live_run_purchase_detail_leaves_run_upgrades_empty(tmp_path: Pat
 def test_a_huge_ledger_is_summed_and_bounded_by_sql(tmp_path: Path) -> None:
     """Review Focus: years of ledger rows must not be loaded into Python."""
     path = _database(tmp_path)
+    from fleet.workshop_prices import WorkshopPrices
+    memory = WorkshopPrices(tmp_path, "account-a")
+    memory.observe("damage", 30, 20_000, now=20_000.)
+    memory.save()
     with db.connect(path) as conn:
         conn.executemany(
             "INSERT INTO ledger(ts,kind,item,category,currency,delta,price,dry_run,detail) "
@@ -164,6 +182,9 @@ def test_a_huge_ledger_is_summed_and_bounded_by_sql(tmp_path: Path) -> None:
     records = read_records(path, "account-a", None)
     assert time.monotonic() - started < 2
     assert records.workshop_spent == [("Damage", "ATTACK", 500_000)]
+    assert records.workshop_evidence.actions.price_purchases == {"damage": 29_999}
+    assert records.workshop_evidence.actions.invalidated == {"damage": 60_001.}
+    assert "damage" not in records.workshop_evidence.quotes
     assert len(records.workshop_recent) == RECENT_LIMIT
     assert records.workshop_recent[0] == {"ts": 49_999., "item": "Damage", "category": "ATTACK",
                                           "price": 10}

@@ -439,8 +439,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     """Evaluate one bounded program. No writes, devices, clocks or random state."""
     from fleet.build_route_eval import (BattleDecision, DecisionTrace, PendingDecision,
                                         RouteEvaluation)
-    from fleet.reroll_planner import (RerollDecision, RerollFacts, _ban_closure,
+    from fleet.reroll_planner import (RerollDecision, RerollFacts, _ban_closure, _owned_groups,
                                       choose_native_phase, native_phase_progress)
+    from workshop_unlocks import available
     wallet = facts.wallet_coins if lane == 'workshop' else facts.battle_cash
     if (not facts.account_id or not facts.worker or type(wallet) is not int or wallet < 0
             or facts.observed_at is None or facts.now is None):
@@ -458,6 +459,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     jar = getattr(facts, 'lab_coin_jar', 0) if lane == 'workshop' else 0
     ceiling = workshop_ceiling(route, wallet, jar) if lane == 'workshop' else wallet
     excluded = _ban_closure(route.workshop.banned_upgrade_ids)
+    workshop_owned = _owned_groups(facts.purchases, facts.values)
     counts = facts.confirmed_purchases if lane == 'workshop' else facts.run_purchases
     rejected: list[str] = []
     native_bans = route.workshop.banned_upgrade_ids
@@ -482,7 +484,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
 
     def owned_unlock(uid: str) -> bool:
         # A bought unlock leaves no tile to price: nothing to read or compare.
-        return lane == 'workshop' and upgrades.by_id(uid).unlock and bool(facts.purchases.get(uid, 0))
+        return lane == 'workshop' and upgrades.by_id(uid).unlock and uid in workshop_owned
 
     # Workshop candidates turned away only for having no known price. If the
     # program then decides nothing, these are observed rather than waited on:
@@ -496,9 +498,11 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if uid in excluded:
             rejected.append(f'{uid}: blocked by Never Buy')
             return False
+        if lane == 'workshop' and not available(uid, workshop_owned):
+            rejected.append(f'{uid}: Workshop upgrade is not unlocked or the next unlock')
+            return False
         price = price_for(uid, reference=ignore_funds)
-        if (price is None and lane == 'workshop'
-                and not (upgrades.by_id(uid).unlock and facts.purchases.get(uid, 0))):
+        if price is None and lane == 'workshop' and not owned_unlock(uid):
             unpriced.append(uid)
         if price is None or (not ignore_funds and price > ceiling):
             return False
@@ -506,12 +510,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             rejected.append(f'{uid}: exceeds budget ceiling')
             return False
         if lane == 'workshop':
-            upgrade = upgrades.by_id(uid)
-            if upgrade.unlock and facts.purchases.get(uid, 0):
-                return False
-            gates = {child: item.id for item in upgrades.CATALOG if item.unlock for child in item.unlocks}
-            gate = gates.get(uid) or builds.prerequisites().get(uid)
-            if gate and facts.purchases.get(gate, 0) <= 0:
+            gate = builds.prerequisites().get(uid)
+            if gate and gate not in workshop_owned and facts.purchases.get(gate, 0) <= 0:
                 return False
         return True
 
@@ -587,11 +587,11 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             observation_ids=tuple(stale)) if stale else None)
         if lane != 'workshop':
             return None
-        gates = {child: item.id for item in upgrades.CATALOG if item.unlock for child in item.unlocks}
         needed = []
         for uid in dict.fromkeys(ids):
-            gate = gates.get(uid) or builds.prerequisites().get(uid)
-            if uid in excluded or owned_unlock(uid) or (gate and facts.purchases.get(gate, 0) <= 0):
+            gate = builds.prerequisites().get(uid)
+            if (uid in excluded or not available(uid, workshop_owned)
+                    or (gate and gate not in workshop_owned and facts.purchases.get(gate, 0) <= 0)):
                 continue
             if not observed_quote(uid):
                 needed.append(uid)

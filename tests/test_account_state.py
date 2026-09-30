@@ -57,6 +57,30 @@ def test_bad_reads_break_confirmation_and_preserve_verified(tmp_path: Path) -> N
         state.observe_account(reading(context='battle'))
 
 
+def test_unchanged_workshop_confirmation_refreshes_evidence_at_most_once_a_minute(tmp_path: Path) -> None:
+    from account_state import AccountRepository, AccountState
+    path = tmp_path / 'state.db'
+    state = AccountState(AccountRepository(path))
+    state.observe_account(reading(now=1.))
+    state.observe_account(reading(now=2.))
+    original = state.snapshot()['revision']
+    state.observe_account(reading(now=30.))
+    state.observe_account(reading(now=31.))
+    assert state.snapshot()['revision'] == original
+    # A gap alone cannot confirm a frame. Two agreeing fresh frames can
+    # refresh the same value, so a failed purchase does not stale it forever.
+    state.observe_account(reading(now=63.))
+    assert state.snapshot()['revision'] == original
+    state.observe_account(reading(now=64.))
+    refreshed = state.snapshot()['revision']
+    assert refreshed['workshop_stats'][0]['evidence']['observed_at'] == 64.
+    assert refreshed['workshop_stats'][0]['value'] == 100.
+    state.observe_account(reading(now=65.))
+    assert state.snapshot()['revision'] == refreshed
+    with sqlite3.connect(path) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM account_revisions').fetchone()[0] == 2
+
+
 def test_failed_write_does_not_advance_and_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from account_state import AccountRepository, AccountState
     repo = AccountRepository(tmp_path / 'state.db')
@@ -285,7 +309,8 @@ def test_lab_adapter_rejects_old_scopes_and_never_infers_completion_from_timer(t
     assert state.lab_facts(runtime,now=11.) is None
 
 
-def test_worker_lab_plan_uses_current_adapter_not_persisted_cadence(tmp_path, monkeypatch):
+def test_worker_lab_plan_uses_current_adapter_not_persisted_cadence(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from account_state import AccountRepository, AccountState
     from evidence_scope import FactScope, BalanceInterval
     from fleet.identity import IdentityEvidence
@@ -302,7 +327,9 @@ def test_worker_lab_plan_uses_current_adapter_not_persisted_cadence(tmp_path, mo
     progress.root,progress.account_id,progress.account_state = tmp_path,'acct',state
     progress.route_runtime = SimpleNamespace(current=lambda: object())
     progress.coin_jar = SimpleNamespace(amount=lambda **kwargs: 20)
-    progress.lab_cadence = SimpleNamespace(route_observation=lambda: pytest.fail('historical cadence is not execution evidence'))
+    progress.lab_cadence = SimpleNamespace(
+        slot_records=lambda: {},
+        route_observation=lambda: pytest.fail('historical cadence is not execution evidence'))
     monkeypatch.setattr(module,'resolve_route',lambda route,*args: route)
     monkeypatch.setattr(module,'evaluate_lab_plan',lambda route,facts: facts)
     runtime = LabRuntimeSnapshot(LabScope('acct','lease','generation',0),())

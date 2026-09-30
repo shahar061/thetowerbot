@@ -23,12 +23,13 @@ import cards
 import lab_catalog
 import upgrades
 import workshop_levels
+import workshop_unlocks
 from account_state import completed_lab_level
 from concepts import REGISTRY
 from currencies import currency_overview
-from fleet import workshop_prices
 from fleet.reroll_lifetime import read_lifetime
 from fleet.state_records import ForeignDatabase, read_records
+from fleet.workshop_replay import WorkshopEvidence
 from runtime_records import RuntimeRecords, RuntimeRecordsError
 
 logger = logging.getLogger(__name__)
@@ -99,26 +100,22 @@ def owned_unlocks(revision: Mapping[str, Any] | None, rows_by_id: Mapping[str, M
     Owned when the revision records it, when the bot bought it, or when any
     row it grants has been read - a granted row is only drawn once unlocked.
     """
-    facts = {fact.get("concept_id"): fact.get("value")
-             for fact in (revision or {}).get("unlocks") or ()}
-    owned: set[str] = set()
-    for upgrade in upgrades.CATALOG:
-        if not upgrade.unlock:
-            continue
-        if (facts.get(upgrade.concept_id) or upgrade.id in bought
-                or any(rows_by_id.get(granted, {}).get("status", "unseen") != "unseen"
-                       for granted in upgrade.unlocks)):
-            owned.add(upgrade.id)
-    return owned
+    explicit = {"unlock_" + fact["concept_id"].removeprefix("unlocks.")
+                for fact in (revision or {}).get("unlocks") or ()
+                if isinstance(fact, Mapping) and isinstance(fact.get("concept_id"), str)
+                and fact["concept_id"].startswith("unlocks.")
+                and fact.get("status") == "verified" and fact.get("value") is True}
+    return workshop_unlocks.owned_groups(
+        visible_ids=(uid for uid, row in rows_by_id.items()
+                     if row.get("status") in ("exact", "ambiguous", "maxed", "unmatched")),
+        purchased_ids=bought, explicit_unlocks=explicit)
 
 
 def next_unlock(category: str, owned: set[str]) -> dict[str, Any] | None:
     """The first unowned unlock tile of a tab, in the game's order; None when all are owned."""
-    for upgrade in upgrades.CATALOG:
-        if upgrade.unlock and upgrade.category.lower() == category and upgrade.id not in owned:
-            return {"id": upgrade.id, "name": upgrade.name,
-                    "cost": workshop_prices.catalog_price(upgrade.id, 0)}
-    return None
+    group = workshop_unlocks.next_group(category, owned)
+    return ({"id": group.id, "name": group.name, "cost": group.cost,
+             "upgrade_ids": list(group.upgrade_ids)} if group else None)
 
 
 def workshop_recent(rows: Iterable[Mapping[str, Any]], limit: int = RECENT_LIMIT) -> list[dict[str, Any]]:
@@ -141,7 +138,8 @@ def workshop_recent(rows: Iterable[Mapping[str, Any]], limit: int = RECENT_LIMIT
 
 def build_workshop(revision: Mapping[str, Any] | None,
                    spent_rows: Iterable[tuple[Any, Any, Any]],
-                   recent_rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+                   recent_rows: Iterable[Mapping[str, Any]],
+                   evidence: WorkshopEvidence | None = None) -> dict[str, Any]:
     """The Workshop section: per-tab totals, skills, next unlock and recent buys."""
     spent_rows = list(spent_rows)
     rows = workshop_levels.workshop_state((revision or {}).get("workshop_stats"))
@@ -150,25 +148,56 @@ def build_workshop(revision: Mapping[str, Any] | None,
     bought = {upgrade.id for item, category, _ in spent_rows
               if (upgrade := _resolve(item, category)) is not None}
     owned = owned_unlocks(revision, rows_by_id, bought)
-    gate = {granted: upgrade.id for upgrade in upgrades.CATALOG if upgrade.unlock
-            for granted in upgrade.unlocks}
+    level_sources: dict[str, str | None] = {}
+    for row in rows:
+        uid = row["id"]
+        level_sources[uid] = "observed" if row["level_min"] is not None else None
+        if evidence is None:
+            continue
+        if evidence.actions.stale(uid, row["observed_at"]):
+            row.update(status="unknown", level_min=None, level_max=None, next_coins=None)
+            level_sources[uid] = None
+        elif row["level_min"] is not None and (count := evidence.actions.level_purchases.get(uid, 0)):
+            lower, upper = row["level_min"] + count, min(row["level_max"] + count, row["max_level"])
+            if lower > upper:
+                row.update(status="unknown", level_min=None, level_max=None, next_coins=None)
+                level_sources[uid] = None
+            else:
+                row.update(level_min=lower, level_max=upper,
+                           status="maxed" if lower == row["max_level"] else
+                               "exact" if lower == upper else "ambiguous",
+                           next_coins=workshop_levels.ladders()[uid].next_coins[lower])
+                level_sources[uid] = "confirmed_actions"
     categories: dict[str, Any] = {}
     for category in CATEGORIES:
+        upcoming = next_unlock(category, owned)
         skills = []
         for row in rows:
             if row["category"].lower() != category:
                 continue
-            gated_by = gate.get(row["id"])
+            uid = row["id"]
+            gate = workshop_unlocks.gate_for(uid)
+            locked = gate is not None and gate.id not in owned
+            quote = evidence.quotes.get(uid) if evidence else None
+            cost = quote.price if quote else row["next_coins"]
+            cost_source = quote.source if quote else "stat_ladder" if cost is not None else None
+            # A missing replayed quote may be invalidated or use a changed
+            # modifier. An older OCR stat must not resurrect its base price.
+            if locked or (evidence and uid in evidence.quote_ids and quote is None):
+                cost, cost_source = None, None
             skills.append({
-                "id": row["id"], "name": row["name"], "level": row["level_min"],
-                "invested": invested_coins(row["id"], row["level_min"]),
-                "bot_spent": spent.get(row["id"], 0),
-                "next_cost": row["next_coins"], "status": row["status"],
-                "locked": gated_by is not None and gated_by not in owned,
+                "id": uid, "name": row["name"], "level": row["level_min"],
+                "level_min": row["level_min"], "level_max": row["level_max"],
+                "max_level": row["max_level"], "level_source": level_sources[uid],
+                "invested": invested_coins(uid, row["level_min"]),
+                "bot_spent": spent.get(uid, 0),
+                "next_cost": cost, "next_cost_source": cost_source, "status": row["status"],
+                "locked": locked, "unlock_id": gate.id if gate else None,
+                "next_unlock": bool(locked and upcoming and uid in upcoming["upgrade_ids"]),
             })
         categories[category] = {"unlocked": sum(not skill["locked"] for skill in skills),
                                 "total": len(skills), "skills": skills,
-                                "next_unlock": next_unlock(category, owned)}
+                                "next_unlock": upcoming}
     return {"totals": category_totals(rows), "categories": categories,
             "recent": workshop_recent(recent_rows)}
 
@@ -498,7 +527,7 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
                           registration.account_id),
         next_buy=_section("next_buy", build_next_buy, _plan(worker_root), registration.account_id))
     try:
-        records = read_records(registration.db_path, registration.account_id, _live_run_id(status))
+        records = read_records(registration.db_path, registration.account_id, _live_run_id(status), now=now)
     except ForeignDatabase:
         return {**account, "error": "Worker database belongs to another account"}
     except FileNotFoundError:
@@ -521,7 +550,7 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
                         read_lifetime(worker_root, registration.account_id),
                         records.gems_claimed),
         workshop=_section("workshop", build_workshop, records.revision,
-                          records.workshop_spent, records.workshop_recent),
+                          records.workshop_spent, records.workshop_recent, records.workshop_evidence),
         cards=_section("cards", build_cards, records.revision, records.card_gems,
                        records.card_recent),
         labs=_section("labs", build_labs, records.revision, records.lab_recent, now),

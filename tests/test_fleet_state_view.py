@@ -79,16 +79,19 @@ def test_the_workshop_section_carries_levels_invested_bot_spent_and_next_cost() 
                                    "price": 1100}]
 
 
-def test_next_unlock_is_the_first_unowned_tile_with_its_catalog_price_or_none() -> None:
+def test_next_unlock_is_the_first_unowned_group_with_its_display_price() -> None:
     workshop = state_view.build_workshop({"workshop_stats": STATS}, [], [])
-    # Range was read, so Unlock Range Upgrades is owned; Multishot has no catalog price.
+    # Range was read, so the next group contains both Multishot skills.
     assert workshop["categories"]["attack"]["next_unlock"] == {
-        "id": "unlock_multishot", "name": "Unlock Multishot", "cost": None}
+        "id": "unlock_multishot", "name": "Unlock Multishot", "cost": 400,
+        "upgrade_ids": ["multishot_chance", "multishot_targets"]}
     assert workshop["categories"]["defense"]["next_unlock"] == {
-        "id": "unlock_defense_upgrades", "name": "Unlock Defense Upgrades", "cost": 75}
+        "id": "unlock_defense_upgrades", "name": "Unlock Defense Upgrades", "cost": 75,
+        "upgrade_ids": ["defense_percent", "defense_absolute"]}
     owned = state_view.build_workshop(
         {"workshop_stats": STATS,
-         "unlocks": [{"concept_id": "unlocks.defense_upgrades", "value": True}]}, [], [])
+         "unlocks": [{"concept_id": "unlocks.defense_upgrades", "value": True,
+                      "status": "verified"}]}, [], [])
     assert owned["categories"]["defense"]["next_unlock"]["id"] == "unlock_thorns"
     assert owned["categories"]["defense"]["next_unlock"]["cost"] == 500
 
@@ -117,6 +120,30 @@ def test_recent_workshop_buys_are_capped() -> None:
     rows = [{"ts": float(i), "item": "Damage", "category": "ATTACK", "price": i}
             for i in range(50)]
     assert len(state_view.workshop_recent(rows)) == state_view.RECENT_LIMIT == 30
+
+
+def test_workshop_defense_shows_four_owned_skills_and_only_thorns_as_next() -> None:
+    workshop = state_view.build_workshop(
+        {"workshop_stats": [_fact("health", "14", 14.),
+                            _fact("defense_percent", "0%", 0.)]}, [], [])
+    defense = workshop["categories"]["defense"]
+    assert (defense["unlocked"], defense["total"]) == (4, 18)
+    assert defense["next_unlock"]["upgrade_ids"] == ["thorns"]
+    assert _skill(workshop, "defense", "thorns")["next_unlock"] is True
+    for uid in ("shockwave_size", "land_mine_chance", "death_defy", "wall_health"):
+        skill = _skill(workshop, "defense", uid)
+        assert skill["locked"] is True and skill["next_unlock"] is False
+        assert skill["unlock_id"]
+
+
+def test_unseen_or_negative_workshop_facts_do_not_prove_unlock_ownership() -> None:
+    unseen = {**_fact("thorns", "1%", 1.), "status": "unseen"}
+    negative = _fact("shockwave_size", "-1.0", -1.)
+    workshop = state_view.build_workshop({"workshop_stats": [unseen, negative],
+        "unlocks": [{"concept_id": "unlocks.thorns", "value": True, "status": "unseen"}]}, [], [])
+    assert _skill(workshop, "defense", "thorns")["locked"] is True
+    assert _skill(workshop, "defense", "shockwave_size")["locked"] is True
+    assert _skill(workshop, "defense", "shockwave_size")["level"] is None
 
 
 def test_bot_and_decision_come_from_the_worker_status() -> None:
@@ -301,6 +328,109 @@ def _fetch(statuses: dict[int, Any]) -> Callable[..., Any]:
             value = value()
         return io.BytesIO(json.dumps(value).encode())
     return fetch
+
+
+def _state_workshop(root: Path) -> dict[str, Any]:
+    (account,) = state_view.fleet_state(root, [{"name": "Air_1"}], fetch=_fetch({}), now=7000.)["accounts"]
+    assert account["error"] is None
+    return account["workshop"]
+
+
+def _price_anchor(root: Path, account: str = "account-a") -> None:
+    from fleet.workshop_prices import WorkshopPrices
+    memory = WorkshopPrices(root, account)
+    memory.observe("damage", 30, 99, now=100.)
+    memory.wallet = {"coins": 100, "run_id": 0, "observed_at": 100.}
+    memory.save()
+
+
+def _workshop_receipt(root: Path, ts: float, verdict: str = "bought", *,
+                      item: str = "Damage", price: int = 30) -> None:
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO ledger(ts,kind,item,category,currency,delta,price,dry_run,detail) "
+                     "VALUES(?,'WORKSHOP_BUY',?,'ATTACK','coins',?,?,0,?)",
+                     (ts, item, -price if verdict == "bought" else None, price,
+                      json.dumps({"verdict": verdict})))
+
+
+def test_fleet_workshop_advances_an_anchored_quote_from_confirmed_actions_only(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    _price_anchor(root)
+    _workshop_receipt(root, 99.)  # A delayed receipt already included in the observation.
+    _workshop_receipt(root, 101.)
+    damage = _skill(_state_workshop(tmp_path), "attack", "damage")
+    assert damage["next_cost"] == 55
+    assert damage["next_cost_source"] == "catalog_estimate"
+    assert damage["level"] is None and damage["level_source"] is None
+    assert damage["max_level"] == workshop_levels.ladders()["damage"].max_level
+
+
+def test_fleet_workshop_advances_a_stat_anchor_without_using_lifetime_purchase_counts(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO account_revisions(detail) VALUES (?)",
+                     (json.dumps({"account_id": "account-a", "workshop_stats": [
+                         _fact("critical_factor", "x1.20", 1.2)]}),))
+    _workshop_receipt(root, 99., item="Critical Factor", price=50)
+    _workshop_receipt(root, 101., item="Critical Factor", price=50)
+    skill = _skill(_state_workshop(tmp_path), "attack", "critical_factor")
+    assert skill["level"] == skill["level_min"] == skill["level_max"] == 1
+    assert skill["level_source"] == "confirmed_actions"
+    assert skill["next_cost"] == 75
+    assert skill["next_cost_source"] == "stat_ladder"
+
+
+@pytest.mark.parametrize("kind", ["unproven", "unconfirmed", "unexplained", "discount"])
+def test_uncertainty_does_not_fall_back_to_a_stale_stat_price(tmp_path: Path, kind: str) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    _price_anchor(root)
+    revision = {"account_id": "account-a", "workshop_stats": [_fact("damage", "3", 3.)]}
+    with db.connect(root / "tower_bot.db") as conn:
+        if kind == "discount":
+            revision["lab_levels"] = [{"concept_id": "labs.workshop-attack-discount",
+                                       "status": "verified", "value": 1}]
+        elif kind == "unconfirmed":
+            conn.execute("INSERT INTO ledger(ts,kind,item,category,reason,dry_run) "
+                         "VALUES(101,'BUY_SKIPPED','Damage','ATTACK','unconfirmed',0)")
+        elif kind == "unexplained":
+            conn.execute("INSERT INTO ledger(ts,kind,currency,delta,dry_run) "
+                         "VALUES(101,'UNEXPLAINED','coins',-30,0)")
+        conn.execute("INSERT INTO account_revisions(detail) VALUES (?)", (json.dumps(revision),))
+    if kind == "unproven":
+        _workshop_receipt(root, 101., "unproven")
+    skill = _skill(_state_workshop(tmp_path), "attack", "damage")
+    assert skill["next_cost"] is None and skill["next_cost_source"] is None
+    if kind != "discount":
+        assert skill["level"] is None and skill["level_source"] is None
+
+
+def test_foreign_price_memory_never_supplies_state(tmp_path: Path) -> None:
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    _price_anchor(root, account="account-old")
+    _workshop_receipt(root, 101.)
+    damage = _skill(_state_workshop(tmp_path), "attack", "damage")
+    assert damage["next_cost"] is None and damage["level"] is None
+
+
+def test_unchanged_stat_reobservation_restores_a_level_after_an_uncertain_attempt(tmp_path: Path) -> None:
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope, IdentityEvidence
+    from tests.test_account_state import reading
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    state = AccountState(AccountRepository(root / "tower_bot.db"))
+    state.bind_scope(FactScope("account-a", "lease", "generation", 0),
+                     identity=IdentityEvidence("account-a", .5, "identity"))
+    state.observe_account(reading(value=10., now=1.))
+    state.observe_account(reading(value=10., now=2.))
+    with db.connect(root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO ledger(ts,kind,item,category,reason,dry_run) "
+                     "VALUES(3,'BUY_SKIPPED','Health','DEFENSE','unconfirmed',0)")
+    assert _skill(_state_workshop(tmp_path), "defense", "health")["level"] is None
+    state.observe_account(reading(value=10., now=63.))
+    state.observe_account(reading(value=10., now=64.))
+    health = _skill(_state_workshop(tmp_path), "defense", "health")
+    assert health["level"] == 1 and health["level_source"] == "observed"
+    assert health["next_cost"] == 55
 
 
 LIVE = {"screen": "IN_RUN", "scans": 18442, "wallet": 8420000000, "wave": 4812,

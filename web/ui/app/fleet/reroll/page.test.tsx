@@ -182,15 +182,17 @@ test("the live wall shows every running screen and closes on Escape", async () =
   const wall = screen.getByRole("dialog", { name: "Live wall" });
   expect(within(wall).getByText("Air_1 · T1 · W42 · Running")).toBeInTheDocument();
   expect(within(wall).getByRole("img", { name: "Live screen of Air_1" })).toBeInTheDocument();
-  expect(within(wall).getByText("1 not running")).toBeInTheDocument();
+  expect(within(wall).getByRole("region", { name: "Air_2 live screen" })).toHaveTextContent("not verified");
   fireEvent.keyDown(window, { key: "Escape" });
   expect(screen.queryByRole("dialog", { name: "Live wall" })).toBeNull();
 });
 
-test("the live wall is unavailable until a screen is live", async () => {
+test("the live wall stays accessible while worker feeds are unverified", async () => {
   vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members });
   render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
-  expect(await screen.findByRole("button", { name: "Live wall" })).toBeDisabled();
+  fireEvent.click(await screen.findByRole("button", { name: "Live wall" }));
+  expect(screen.getByRole("dialog", { name: "Live wall" })).toBeInTheDocument();
+  expect(screen.queryAllByRole("region", { name: /live screen$/ })).toHaveLength(2);
 });
 
 test("fleet filters and primary card actions have phone-sized hit areas", async () => {

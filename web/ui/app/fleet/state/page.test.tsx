@@ -62,3 +62,22 @@ test("a failed first request says the state is unavailable and shows the pill", 
   await waitFor(() => expect(screen.getByText("connection lost")).toBeInTheDocument());
   expect(screen.getByText(/Fleet state unavailable/)).toBeInTheDocument();
 });
+
+test("Workshop switches between bars and table and remembers the view after remount", async () => {
+  const category = { unlocked: 0, total: 0, skills: [], next_unlock: null };
+  fetchState.mockResolvedValue(makePayload([makeAccount({ ...live, workshop: {
+    totals: { attack: 0, defense: 0, utility: 0 }, recent: [],
+    categories: { attack: category, defense: category, utility: category },
+  } })]));
+  const view = render(<FleetStatePage />);
+  expect(await screen.findByRole("button", { name: "Bars" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("region", { name: "Attack workshop levels" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Table" }));
+  expect(screen.queryByRole("region", { name: "Attack workshop levels" })).toBeNull();
+  expect(screen.getByRole("region", { name: "Attack workshop" })).toBeInTheDocument();
+  view.unmount();
+  render(<FleetStatePage />);
+  expect(await screen.findByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(screen.getByRole("button", { name: "Bars" }));
+  expect(screen.getByRole("region", { name: "Attack workshop levels" })).toBeInTheDocument();
+});

@@ -61,6 +61,23 @@ def test_weighted_candidates_exclude_descendants_of_banned_unlocks() -> None:
     assert "defense_absolute" not in result.trace.eligible_odds
 
 
+def test_late_locked_skill_never_enters_weighted_odds_from_price_alone() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["workshop"].update({
+        "mode": "priorities", "priority_ids": ["wall_health", "damage"],
+        "draw_chance_pct": 100,
+    })
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+    candidate_facts = replace(_facts(), prices={"wall_health": 5, "damage": 10})
+    result = evaluate_workshop(route, candidate_facts, None)
+    assert result.decision is not None
+    assert result.decision.upgrade_id == "damage"
+    assert "wall_health" not in result.trace.eligible_odds
+
+    observed = evaluate_workshop(route, replace(candidate_facts, values={"wall_rebuild": 0.}), None)
+    assert "wall_health" in observed.trace.eligible_odds
+
+
 def test_rescan_keeps_pending_selection_even_when_wallet_changes() -> None:
     route = _route(100)
     first = evaluate_workshop(route, _facts(), None)

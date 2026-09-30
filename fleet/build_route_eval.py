@@ -9,10 +9,11 @@ from typing import Any, Mapping
 from fleet.build_route import BattleBranch, BattlePhase, EffectiveRoute, is_lab_list
 from fleet.coin_share import spendable_wallet, workshop_ceiling, workshop_limit_pct
 from fleet.reroll_planner import (DRAW_SHARPNESS, RerollDecision, RerollFacts,
-                                  _ban_closure, choose_next)
+                                  _ban_closure, _owned_groups, choose_next)
 import builds
 import lab_catalog
 import upgrades
+from workshop_unlocks import available
 
 
 EVIDENCE_MAX_AGE_SECONDS = 120
@@ -433,8 +434,7 @@ def _weighted_candidates(route: EffectiveRoute, facts: RouteFacts,
     """Only observed, affordable, unlocked, uncapped priority rows enter odds."""
     excluded = _ban_closure(route.workshop.banned_upgrade_ids)
     owned = {uid for uid, count in facts.purchases.items() if count > 0}
-    gates = {child: upgrade.id for upgrade in upgrades.CATALOG if upgrade.unlock
-             for child in upgrade.unlocks}
+    groups = _owned_groups(facts.purchases, facts.values)
     prerequisites = builds.prerequisites()
     stage = "turtle" if (facts.best_tier_1_wave or 0) >= 20 else "opening"
     build = builds.by_id(stage)
@@ -444,8 +444,10 @@ def _weighted_candidates(route: EffectiveRoute, facts: RouteFacts,
     for uid in route.workshop.priority_ids:
         if uid in excluded:
             continue
-        gate = gates.get(uid) or prerequisites.get(uid)
-        if gate is not None and gate not in owned:
+        if not available(uid, groups):
+            continue
+        gate = prerequisites.get(uid)
+        if gate is not None and gate not in owned and gate not in groups:
             continue
         upgrade = upgrades.by_id(uid)
         if upgrade is None or (upgrade.unlock and uid in owned):

@@ -113,6 +113,7 @@ read by `fleet/reroll_progress.py`, not here.
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -129,6 +130,7 @@ from account_state import AccountRevision, Evidence, Fact
 from progression import CurrencyRates
 from strategy import Strategy
 from workshop_objectives import ID_PREFIX
+from workshop_unlocks import GROUPS, available, owned_groups
 
 
 # The draw: instead of always taking the top-ranked ready upgrade, pick one
@@ -241,16 +243,9 @@ STARTER_MAX_PRICE = 75
 STARTER_UPGRADES = ("damage", "attack_speed", "health",
                     "unlock_defense_upgrades", "defense_absolute")
 
-# Which unlock tile gates each row, read off the catalog's own `unlocks`
-# lists rather than off `builds.prerequisites()`. The two agree today, but
-# they answer different questions: the pack's map is the planning graph a
-# build walks, while this one is the game fact "this row is not on the tab
-# yet", which is what decides whether a reading could exist at all.
-_GATED_BY: Mapping[str, str] = {
-    child: upgrade.id
-    for upgrade in upgrades.CATALOG if upgrade.unlock
-    for child in upgrade.unlocks
-}
+# Availability includes later groups that have no executable unlock tile.
+# The build's prerequisite graph still determines its progression preference.
+_GATED_BY: Mapping[str, str] = {child: group.id for group in GROUPS for child in group.upgrade_ids}
 
 # `director.plan` ranks on payoff-per-hour where a price, a balance and an
 # income RATE are all known. A reroll worker measures no income - RerollFacts
@@ -282,6 +277,14 @@ _LEDGER_EVIDENCE = Evidence(
     frame_digest="reroll-ledger")
 
 
+def _owned_groups(purchases: Mapping[str, int], values: Mapping[str, float]) -> set[str]:
+    """Verified value reads and confirmed purchases establish group ownership."""
+    return owned_groups(
+        purchased_ids=(uid for uid, count in purchases.items() if type(count) is int and count > 0),
+        visible_ids=(uid for uid, value in values.items()
+                     if type(value) in (int, float) and math.isfinite(value) and value >= 0))
+
+
 def _readable_rows(facts: RerollFacts) -> tuple[str, ...]:
     """Every non-unlock upgrade whose row the account can currently see.
 
@@ -297,7 +300,7 @@ def _readable_rows(facts: RerollFacts) -> tuple[str, ...]:
     `workshop_stats` holds `stats.*`, and no reader in this repository ever
     writes an `unlocks.*` fact - a tile shows a price, not a value.
     """
-    owned = {upgrade_id for upgrade_id, count in facts.purchases.items() if count > 0}
+    owned = _owned_groups(facts.purchases, facts.values)
     return tuple(
         upgrade.id for upgrade in upgrades.CATALOG
         if not upgrade.unlock and _GATED_BY.get(upgrade.id, None) in (None, *owned))
@@ -456,7 +459,7 @@ def _economy_build(build: builds.Build, facts: RerollFacts) -> builds.Build:
     remaining = UTILITY_CEILING_COINS - spent
     affordable_ids = {upgrade_id for upgrade_id, _ in _ECONOMY_WEIGHTS
                       if facts.prices.get(upgrade_id, 0) <= remaining}
-    owned = {upgrade_id for upgrade_id, count in facts.purchases.items() if count > 0}
+    owned = _owned_groups(facts.purchases, facts.values)
     prerequisite = builds.prerequisites()
     weights = tuple((upgrade_id, weight) for upgrade_id, weight in _ECONOMY_WEIGHTS
                     if upgrade_id in affordable_ids and
@@ -496,7 +499,7 @@ def _cheap_filler(facts: RerollFacts, main: RerollDecision,
                 filler=True)
     if facts.utility_spent_coins is None:
         return main
-    owned = {upgrade_id for upgrade_id, count in facts.purchases.items() if count > 0}
+    owned = _owned_groups(facts.purchases, facts.values)
     ceiling = int(wallet * FILLER_SHARE)
     for upgrade_id, cap in _FILLER_CAPS.items():
         if (upgrade_id in excluded or upgrade_id == main.upgrade_id
@@ -532,7 +535,7 @@ def _survival_starter(facts: RerollFacts,
         if facts.purchases.get(uid, 0) > 0:
             continue
         gate = _GATED_BY.get(uid)
-        if gate and facts.purchases.get(gate, 0) == 0:
+        if gate and gate not in _owned_groups(facts.purchases, facts.values):
             continue
         price = facts.prices.get(uid)
         if (price is not None and (price > STARTER_MAX_PRICE
@@ -637,6 +640,8 @@ def choose_next(facts: RerollFacts, *,
     if facts.draw_sharpness is not None and facts.draw_sharpness <= 0:
         raise ValueError(f"draw sharpness must be > 0, got {facts.draw_sharpness}")
     excluded = _ban_closure(banned_upgrade_ids)
+    owned = _owned_groups(facts.purchases, facts.values)
+    priority_ids = tuple(uid for uid in priority_ids if available(uid, owned))
     spend_ceiling = (int(facts.wallet_coins * facts.spend_fraction)
                      if facts.spend_fraction is not None and facts.wallet_coins is not None
                      else None)
@@ -755,7 +760,7 @@ def native_phase_progress(facts: RerollFacts, phase: str, policy: str,
             if uid in excluded or facts.purchases.get(uid, 0) > 0:
                 continue
             gate = _GATED_BY.get(uid)
-            if gate and facts.purchases.get(gate, 0) == 0:
+            if gate and gate not in _owned_groups(facts.purchases, facts.values):
                 continue
             price = facts.prices.get(uid)
             if price is None:

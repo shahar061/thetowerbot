@@ -15,7 +15,7 @@ function tileLabel(member: RerollMember): string {
     standingFor(member.state, member.error).label].filter(Boolean).join(" · ");
 }
 
-function WallTile({ member, account }: { member: RerollMember; account: AccountChoice }): React.JSX.Element {
+function WallTile({ member, account }: { member: RerollMember; account?: AccountChoice }): React.JSX.Element {
   const [feed, setFeed] = useState<"live" | "snapshots" | null>(null);
   return <section aria-label={`${member.name} live screen`} className="flex flex-col">
     <h3 className="flex h-7 items-center gap-2 text-xs text-white/80">
@@ -23,8 +23,13 @@ function WallTile({ member, account }: { member: RerollMember; account: AccountC
       {feed && <FeedBadge live={feed === "live"} />}
     </h3>
     <div style={{ aspectRatio: SCREEN_ASPECT }} className="overflow-hidden rounded-md">
-      <FleetCapture key={`${account.key}:${account.account_id}:${account.dashboard_url}:${member.lease_id}`} fill onFeedChange={setFeed}
+      {account ? <FleetCapture fill onFeedChange={setFeed}
         dashboardUrl={account.dashboard_url!} scope={account.key} instance={member.name} accountId={member.account_id!} />
+        : <div role="status" className="flex size-full flex-col items-center justify-center gap-3 bg-well p-4 text-center text-xs text-white/70">
+          <MonitorOff className="size-6" aria-hidden="true" />
+          <span>{["stopped", "paused", "ready", "start_required"].includes(member.state)
+            ? "Worker not running. Live account not verified." : "Reconnecting… Live account not verified."}</span>
+        </div>}
     </div>
   </section>;
 }
@@ -48,7 +53,11 @@ function useAreaSize(area: React.RefObject<HTMLDivElement | null>): { width: num
  *  before the wall mounts. The wall is a fixed overlay, so the whole page going
  *  full screen shows just the wall. */
 export function enterWallFullscreen(): void {
-  if (!document.fullscreenElement) void document.documentElement.requestFullscreen?.().catch(() => {});
+  try {
+    if (!document.fullscreenElement) void document.documentElement.requestFullscreen?.()?.catch(() => {});
+  } catch {
+    // Embedded browsers may throw synchronously; the overlay still works.
+  }
 }
 
 /** Every running emulator's screen side by side, full screen, for watching the whole fleet at once. */
@@ -59,17 +68,21 @@ export function LiveWall({ members, accounts, onClose }: {
   const close = useRef(onClose);
   close.current = onClose;
   const size = useAreaSize(area);
-  const tiles = members.flatMap(member => {
+  const tiles = members.map(member => {
     const account = accounts.find(choice => verifiedWorkerAccount(member, choice));
-    return account ? [{ member, account }] : [];
+    return { member, account };
   }).sort((a, b) => a.member.name.localeCompare(b.member.name));
-  const notRunning = members.length - tiles.length;
+  const unverified = tiles.filter(tile => !tile.account).length;
   const { columns, tileWidth } = wallLayout(tiles.length, size.width, size.height);
   const width = Math.floor(tileWidth);
 
   useEffect(() => {
     // Esc while in browser full screen only leaves full screen, so that closes the wall too.
-    const onFullscreenChange = () => { if (!document.fullscreenElement) close.current(); };
+    let enteredFullscreen = document.fullscreenElement === document.documentElement;
+    const onFullscreenChange = () => {
+      if (document.fullscreenElement === document.documentElement) enteredFullscreen = true;
+      else if (enteredFullscreen && !document.fullscreenElement) close.current();
+    };
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") close.current(); };
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -87,7 +100,7 @@ export function LiveWall({ members, accounts, onClose }: {
     <div className="flex h-9 shrink-0 items-center gap-3 px-3 text-xs text-white/70">
       <span className="font-semibold text-white">Live wall</span>
       <span>{tiles.length} {tiles.length === 1 ? "screen" : "screens"}</span>
-      {notRunning > 0 && <span>{notRunning} not running</span>}
+      {unverified > 0 && <span>{unverified} not verified</span>}
       <button type="button" aria-label="Close live wall" title="Close (Esc)" onClick={() => close.current()}
         className="ml-auto rounded-md p-1.5 text-white/70 hover:bg-white/10 hover:text-white">
         <X className="size-4" aria-hidden="true" />
@@ -96,7 +109,7 @@ export function LiveWall({ members, accounts, onClose }: {
     <div ref={area} className="grid min-h-0 flex-1 content-center justify-center gap-2 p-2"
       style={tiles.length ? { gridTemplateColumns: `repeat(${columns}, ${width}px)` } : undefined}>
       {tiles.length ? tiles.map(({ member, account }) => (
-        <WallTile key={`${member.name}:${account.key}:${account.account_id}`} member={member} account={account} />
+        <WallTile key={`${member.name}:${member.account_id}:${member.lease_id}:${account?.key}:${account?.account_id}:${account?.dashboard_url}`} member={member} account={account} />
       )) : <p role="status" className="flex flex-col items-center gap-3 text-sm text-white/70">
         <MonitorOff className="size-6" aria-hidden="true" />No emulator has a live screen right now.
       </p>}

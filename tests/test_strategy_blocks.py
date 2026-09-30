@@ -51,6 +51,27 @@ def test_cheap_pool_inclusive_threshold_and_unknown_reference() -> None:
     assert blocks.evaluate_program(route(program), unknown, None, 'workshop').decision.state == 'observe_price'
 
 
+@pytest.mark.parametrize('prices', [{'wall_health': 1}, {}])
+def test_late_locked_workshop_skill_is_neither_bought_nor_requested_for_observation(prices: dict[str, int]) -> None:
+    program = [pool(upgrade_ids=['wall_health'])]
+    result = blocks.evaluate_program(route(program), replace(facts(), prices=prices), None, 'workshop')
+    assert result.decision is None
+    assert 'wall_health' not in result.trace.observation_ids
+
+
+def test_late_group_purchase_proof_enables_sibling_in_workshop_block() -> None:
+    program = [pool(upgrade_ids=['wall_health'])]
+    sample = replace(facts(), prices={'wall_health': 1}, purchases={'wall_rebuild': 1})
+    result = blocks.evaluate_program(route(program), sample, None, 'workshop')
+    assert result.decision.upgrade_id == 'wall_health'
+
+
+def test_a_future_unlock_block_cannot_seek_past_the_next_unlock_group() -> None:
+    program = [pool(upgrade_ids=['unlock_orbs'])]
+    result = blocks.evaluate_program(route(program), replace(facts(), prices={'unlock_orbs': 1}), None, 'workshop')
+    assert result.decision is None
+
+
 def test_caps_and_decay_use_confirmed_purchases_and_keep_pending() -> None:
     program = [pool(selection='weighted', weights={'damage':8,'attack_speed':4},
                     decay_pct=50, weight_floor=1, max_purchases=3)]
@@ -173,11 +194,14 @@ def test_block_workshop_price_bounds_live_shopping_policy(tmp_path: Path) -> Non
     from fleet.reroll_progress import RerollProgress
     from strategy import Strategy
     from tests.test_build_route_integration import _registered
+    from tests.test_reroll_progress import complete_starter
     root = _registered(tmp_path,'Air_38','account')
     raw = RouteDocument.compatibility().to_dict()
     raw['baseline']['workshop'].update(mode='blocks',blocks=[pool(discount_pct=20,reference_upgrade_id='thorns')])
     BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw),0,'operator')
     progress = RerollProgress(root,'account',AccountState())
+    complete_starter(progress)
+    assert not progress.initial_workshop_due()
     progress.route_runtime = BuildRouteRuntime(tmp_path,'Air_38','account')
     progress._publish = lambda decision: None
     moment=time.time()

@@ -95,6 +95,50 @@ def test_worker_launch_suppresses_telegram(tmp_path: Path) -> None:
     assert "--no-telegram" in spawned[0]
 
 
+def test_worker_80_launches_on_a_browser_safe_port(tmp_path: Path) -> None:
+    make, spawned, _, _ = _harness(tmp_path)
+    supervisor = make()
+    member = supervisor.pool_snapshot()["members"][0]
+    member["name"] = "Tiramisu64_80"
+    assert supervisor.start(member["name"])["state"] == "running"
+    assert spawned[0][spawned[0].index("--web-port") + 1] == "9999"
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_stopped_legacy_port_migration_keeps_identity_checks(tmp_path: Path, corrupt: bool) -> None:
+    from fleet.identity import Attempt
+
+    make, spawned, _, _ = _harness(tmp_path)
+    supervisor = make()
+    member = supervisor.pool_snapshot()["members"][0]
+    member["name"] = "Tiramisu64_80"
+    member["state"] = "tower_already_opened"
+    root = tmp_path / "workers" / member["name"]
+    checkpoint = root / "checkpoints"
+    checkpoint.mkdir(parents=True)
+    attempt = Attempt.new(member["name"], member["endpoint"], member["lease_id"], "saved-job")
+    binding = checkpoint / f"{attempt.generation}.json"
+    attempt.persist(binding, IdentityEvidence("account80", attempt.created_at + 1, "saved-proof"))
+    registration = {"state": "registered", "instance": member["name"],
+                    "endpoint": member["endpoint"], "lease_id": member["lease_id"],
+                    "account_id": "wrong-account" if corrupt else "account80", "job_id": "saved-job",
+                    "binding": str(binding), "web_port": 10080}
+    path = root / "fleet-registration.json"
+    path.write_text(json.dumps(registration))
+    supervisor.enroll = lambda *_: pytest.fail("must not enroll an existing account")
+    supervisor.start_instance = lambda *_: pytest.fail("must not restart the emulator")
+    result = supervisor.start(member["name"])
+    saved = json.loads(path.read_text())
+    if corrupt:
+        assert result["state"] == "failed"
+        assert saved == registration
+        assert spawned == []
+    else:
+        assert result["state"] == "running"
+        assert saved == {**registration, "web_port": 9999}
+        assert spawned[0][spawned[0].index("--web-port") + 1] == "9999"
+
+
 def test_start_requires_released_endpoint_lock(tmp_path: Path) -> None:
     make, spawned, _, _ = _harness(tmp_path)
     with reserve_endpoint("127.0.0.1:5755"):

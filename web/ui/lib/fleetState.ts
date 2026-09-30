@@ -37,8 +37,12 @@ export interface FleetStateNextBuy {
 export interface WorkshopSkill {
   id: string; name: string; level: number | null; invested: number | null; bot_spent: number;
   next_cost: number | null; status: string; locked: boolean;
+  max_level?: number; level_min?: number | null; level_max?: number | null;
+  level_source?: "observed" | "confirmed_actions" | null;
+  next_cost_source?: "observed" | "catalog_estimate" | "stat_ladder" | null;
+  unlock_id?: string | null; next_unlock?: boolean;
 }
-export interface UnlockTarget { id: string; name: string; cost: number | null }
+export interface UnlockTarget { id: string; name: string; cost: number | null; upgrade_ids?: string[] }
 export interface WorkshopCategory {
   unlocked: number; total: number; skills: WorkshopSkill[]; next_unlock: UnlockTarget | null;
 }
