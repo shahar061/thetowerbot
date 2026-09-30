@@ -164,6 +164,11 @@ def test_resolves_the_unlock_spellings_the_workshop_actually_prints() -> None:
     assert upgrades.resolve("Unlock Thorn Upgrades", "DEFENSE").id == "unlock_thorns"
     assert upgrades.resolve("Unlock Multishot Upgrades", "ATTACK").id == "unlock_multishot"
     assert upgrades.resolve("Unlock Upgrade Chances", "UTILITY").id == "unlock_free_upgrades"
+    # Read off live Defense frames; the bot sat for hours unable to price it.
+    assert upgrades.resolve("Unlock Lifesteal Upgrades", "DEFENSE").id == "unlock_lifesteal"
+    assert upgrades.resolve("Unlock Knockback Upgrades", "DEFENSE").id == "unlock_knockback"
+    assert upgrades.resolve("Unlock Orbs Upgrades", "DEFENSE").id == "unlock_orbs"
+    assert upgrades.resolve("Unlock Rapid Fire Upgrades", "ATTACK").id == "unlock_rapid_fire"
 
 
 def test_the_range_row_the_workshop_prints_resolves_to_the_range_identity() -> None:
