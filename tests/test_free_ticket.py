@@ -125,3 +125,31 @@ def test_a_paused_bot_leaves_the_offer_alone() -> None:
     bot.controls.apply({'paused': True})
     bot.run_once()
     assert bot.device.taps == []
+
+
+@pytest.mark.parametrize(('image', 'boxes', 'screen', 'claim'), [
+    (OFFER_FRAME, OFFER_BOXES, 'free_ticket_offer', (540, 1475)),
+    (REWARD_FRAME, REWARD_BOXES, 'free_ticket_reward', (539, 1891)),
+])
+def test_the_restart_account_check_reads_the_ticket_rather_than_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image: Any, boxes: Any, screen: str,
+    claim: tuple[int, int],
+) -> None:
+    """The dimmed menu around the offer still reads as home, and the Settings
+    tap the restart check aims there lands on the dialog and does nothing."""
+    from types import SimpleNamespace
+
+    import numpy as np
+    from PIL import Image as PILImage
+
+    from fleet.account_observer import StagingAccountObserver
+    monkeypatch.setattr(ocr, 'read', lambda *_, **__: boxes)
+    device = SimpleNamespace(
+        serial='127.0.0.1:5575',
+        app_current=lambda: SimpleNamespace(package='com.TechTreeGames.TheTower'),
+        app_info=lambda _: SimpleNamespace(version_name='29.0.2'),
+        screenshot=lambda **_: PILImage.fromarray(np.ascontiguousarray(image[:, :, ::-1])),
+    )
+    reading = StagingAccountObserver(tmp_path, endpoint=device.serial,
+                                     allowed_versions=frozenset({'29.0.2'}))(device)
+    assert (reading.screen, reading.controls) == (screen, {'claim': claim})

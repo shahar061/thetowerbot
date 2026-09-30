@@ -15,6 +15,7 @@ from uuid import uuid4
 import account_collection
 import cv2
 import events_screen
+import free_ticket
 import config
 import ocr
 import pages
@@ -463,6 +464,14 @@ class StagingAccountObserver:
             return AccountFrame("workshop_tutorial_claim", None, version,
                                 hashlib.sha256(frame.tobytes()).hexdigest(),
                                 observed_at, evidence_ref, {"claim": tutorial_claim})
+        # The dimmed main menu around it still reads as home, so this comes
+        # first: a Settings tap there lands on the dialog and does nothing.
+        ticket = free_ticket.read(frame, boxes)
+        if ticket is not None:
+            return AccountFrame("free_ticket_offer" if ticket.screen == free_ticket.OFFER
+                                else "free_ticket_reward", None, version,
+                                hashlib.sha256(frame.tobytes()).hexdigest(),
+                                observed_at, evidence_ref, {"claim": ticket.claim})
         warning = parse_new_account_warning(frame, boxes, observed_at=observed_at,
                                             app_version=version, evidence_ref=evidence_ref)
         if warning is not None:

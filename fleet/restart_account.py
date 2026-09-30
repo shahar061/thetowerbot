@@ -24,6 +24,8 @@ _CONTROLS = {
     "workshop_tutorial_claim": "claim",
     "workshop": "battle_tab",
     "link_account_prompt": "close",
+    "free_ticket_offer": "claim",
+    "free_ticket_reward": "claim",
 }
 _NEXT_SCREEN = {
     "inbox": "home",
@@ -38,9 +40,11 @@ _NEXT_SCREEN = {
     "workshop_tutorial_claim": "workshop",
     "workshop": "home",
     "link_account_prompt": "home",
+    "free_ticket_offer": "free_ticket_reward",
+    "free_ticket_reward": "home",
 }
 # Prompts the game may raise over any screen, including mid-transition.
-_INTERRUPTIONS = {"link_account_prompt"}
+_INTERRUPTIONS = {"link_account_prompt", "free_ticket_offer"}
 # A tap the game ignored (e.g. one that landed while a prompt was opening)
 # leaves the screen unchanged; re-tap from a fresh frame after this long.
 _RETAP_AFTER_SECONDS = 2.
