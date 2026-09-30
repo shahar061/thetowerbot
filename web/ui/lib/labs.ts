@@ -24,7 +24,8 @@ export type ResourceBlock = LabBlock | GemBlock;
 
 export type LabShareMode = "when_affordable" | "save_pct" | "labs_first" | "just_in_time";
 export type RouteRules = {
-  coins: { lab_share: { mode: LabShareMode; pct: number }; workshop_spend_limit_pct: number };
+  coins: { lab_share: { mode: LabShareMode; pct: number }; workshop_spend_limit_pct: number;
+    kill_bonus_min_best_wave: number };
   labs: { auto_start: boolean; idle_fill: "leave_idle" | "shortest_under_30m";
     pool: { selection: "cheapest" | "ordered" | "shortest"; max_price_pct_of_wallet: number | null; max_seconds: number | null };
     saving: { income_margin_pct: number; window_hours: Record<LabTier, number> };
@@ -33,7 +34,7 @@ export type RouteRules = {
 };
 /** Mirrors RouteRules() in fleet/build_route.py: today's behavior. */
 export const DEFAULT_RULES: RouteRules = {
-  coins: { lab_share: { mode: "when_affordable", pct: 25 }, workshop_spend_limit_pct: 100 },
+  coins: { lab_share: { mode: "when_affordable", pct: 25 }, workshop_spend_limit_pct: 100, kill_bonus_min_best_wave: 60 },
   labs: { auto_start: true, idle_fill: "leave_idle", pool: { selection: "ordered", max_price_pct_of_wallet: null, max_seconds: null },
     saving: { income_margin_pct: 75, window_hours: { "S+": 72, S: 24, A: 12, B: 4, C: 0 } },
     filler: { enabled: true, max_price_pct_of_wallet: 10, min_hours: 1 } },

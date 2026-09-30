@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import pytest
 
+from fleet.build_route import CoinRules, RouteRules
 from fleet.build_route_eval import RouteFacts
 from fleet import strategy_blocks as blocks
 
@@ -852,3 +853,71 @@ def test_a_battle_row_locked_this_run_is_not_observed_again() -> None:
                {'id': 'hp', 'type': 'pool', 'upgrade_ids': ['health'], 'selection': 'priority'}]
     locked = battle_facts(cash_bonus={'status': 'locked', 'value': None, 'price': None, 'observed_at': 0})
     assert blocks.evaluate_program(route(program, lane='battle'), locked, None, 'battle').decision.upgrade_id == 'health'
+
+
+def held(program: list[dict[str, Any]], min_wave: int = 60) -> SimpleNamespace:
+    result = route(program)
+    result.rules = RouteRules(coins=CoinRules(kill_bonus_min_best_wave=min_wave))
+    return result
+
+
+def test_swap_puts_coins_per_wave_in_coins_per_kill_place() -> None:
+    alone = {'id':'eco','type':'pool','selection':'weighted',
+             'upgrade_ids':['cash_bonus','coins_per_kill_bonus','damage'],
+             'weights':{'coins_per_kill_bonus':150}, 'level_caps':{'coins_per_kill_bonus':{'base':3}},
+             'targets':{'coins_per_kill_bonus':1.25}}
+    both = {'id':'both','type':'pool','selection':'priority',
+            'upgrade_ids':['coins_per_kill_bonus','cash_bonus','coins_per_wave'],
+            'targets':{'coins_per_kill_bonus':1.5}}
+    read = {'id':'read','type':'condition','field':'upgrade_value','upgrade_id':'coins_per_kill_bonus',
+            'op':'gte','value':1.1,'then':[{'id':'buy','type':'buy','upgrade_id':'coins_per_kill_bonus'}],'else':[]}
+    swapped_alone, swapped_both, swapped_read = blocks.swap_kill_bonus((alone, both, read))
+    assert swapped_alone['upgrade_ids'] == ['cash_bonus','coins_per_wave','damage']
+    assert swapped_alone['weights'] == {'coins_per_wave':150}
+    assert swapped_alone['level_caps'] == {'coins_per_wave':{'base':3}}
+    assert swapped_alone['targets'] == {'coins_per_wave':blocks.PER_WAVE_STAND_IN_TARGET}
+    # Already listed: one entry, at the higher rank, with its own settings.
+    assert swapped_both['upgrade_ids'] == ['coins_per_wave','cash_bonus']
+    assert swapped_both['targets'] == {}
+    assert swapped_read['upgrade_id'] == 'coins_per_kill_bonus'
+    assert swapped_read['then'][0]['upgrade_id'] == 'coins_per_wave'
+    assert alone['upgrade_ids'][1] == 'coins_per_kill_bonus'  # the route itself is untouched
+
+
+def test_coins_per_kill_waits_for_the_best_wave_rule_in_the_workshop() -> None:
+    program = [{'id':'eco','type':'pool','selection':'priority',
+                'upgrade_ids':['coins_per_kill_bonus','damage']}]
+    sample = replace(facts(), prices={'coins_per_kill_bonus':50,'coins_per_wave':60,'damage':80},
+                     purchases={'unlock_coin_bonuses':1})
+    def pick(best: int | None, min_wave: int = 60) -> str | None:
+        result = blocks.evaluate_program(held(program, min_wave), replace(sample, best_tier_1_wave=best),
+                                         None, 'workshop')
+        return result.decision.upgrade_id
+    assert pick(25) == 'coins_per_wave'
+    assert pick(None) == 'coins_per_wave'
+    assert pick(59) == 'coins_per_wave'
+    assert pick(60) == 'coins_per_kill_bonus'
+    assert pick(25, min_wave=0) == 'coins_per_kill_bonus'
+    assert blocks.evaluate_program(route(program), sample, None, 'workshop').decision.upgrade_id == 'coins_per_kill_bonus'
+
+
+def test_battle_cash_goes_to_coins_per_wave_below_the_best_wave_rule() -> None:
+    rows = {uid: {'status':'available','value':value,'price':price,'observed_at':100}
+            for uid, value, price in (('coins_per_kill_bonus',1.0,10),('coins_per_wave',0.0,12),('cash_bonus',1.0,15))}
+    sample = RouteFacts('account','Air_38','battle',100,101, best_tier_1_wave=33, run_id=8, wave=7,
+                        battle_cash=100, run_purchases={}, upgrade_rows=rows)
+    program = [{'id':'econ','type':'pool','selection':'priority',
+                'upgrade_ids':['coins_per_kill_bonus','cash_bonus'],'targets':{'coins_per_kill_bonus':1.25}}]
+    swapped = blocks.evaluate_program(held(program), sample, None, 'battle')
+    assert swapped.decision.upgrade_id == 'coins_per_wave'
+    assert any('until best Tier 1 wave 60' in line for line in swapped.trace.rejected)
+    native = blocks.native_template_program('turtle', 'battle')
+    assert blocks.evaluate_program(held(list(native)), sample, None, 'battle').decision.upgrade_id != 'coins_per_kill_bonus'
+    later = replace(sample, best_tier_1_wave=60)
+    assert blocks.evaluate_program(held(program), later, None, 'battle').decision.upgrade_id == 'coins_per_kill_bonus'
+
+
+def test_observed_rows_include_the_coins_per_wave_stand_in() -> None:
+    program = blocks.validate_program([{'id':'econ','type':'pool','selection':'priority',
+                                        'upgrade_ids':['coins_per_kill_bonus']}], 'battle')
+    assert blocks.program_upgrade_ids(program) == ('coins_per_kill_bonus','coins_per_wave')

@@ -101,7 +101,7 @@ def test_a_route_without_rules_gets_todays_defaults() -> None:
     assert route.baseline.rules == RouteRules()
     rules = route.to_dict()["baseline"]["rules"]
     assert rules["coins"] == {"lab_share": {"mode": "when_affordable", "pct": 25},
-                              "workshop_spend_limit_pct": 100}
+                              "workshop_spend_limit_pct": 100, "kill_bonus_min_best_wave": 60}
     assert rules["labs"]["auto_start"] is True and rules["labs"]["idle_fill"] == "leave_idle"
     assert rules["gems"] == {"auto_unlock_lab_slots": True, "spend_limit_pct": 100, "keep": 0}
 
