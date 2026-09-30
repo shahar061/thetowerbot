@@ -77,6 +77,14 @@ def test_workshop_unlock_keeps_its_own_identity() -> None:
     assert result.rows[0].value is None
 
 
+def test_a_coin_glyph_read_beside_the_price_is_not_part_of_the_name() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "menu_workshop_attack_coin_glyph.png"))
+    result = parse_frame(frame, recorded("menu_workshop_attack_coin_glyph"), "workshop", now=100)
+    row = next(r for r in result.rows if r.raw_name.startswith("Critical Factor"))
+    assert (row.upgrade_id, row.raw_name, row.value, row.price) == ("critical_factor", "Critical Factor", 1.3, 75)
+
+
 def test_observations_keep_unknown_ocr_visible_without_canonical_execution_identity() -> None:
     from perception import parse_frame
     frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))
