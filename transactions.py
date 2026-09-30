@@ -565,10 +565,15 @@ class TransactionJournal:
                 gems_before=txn.wallet_before,
                 gems_after=txn.reconciliation.get('wallet_after', txn.wallet_before-outcome.spent),
                 transaction_key=txn.key)
+        # The balance this line reports comes from the recovery read, not
+        # wallet_before: by recovery a run may have paid out, and the pre-tap
+        # wallet taken as a reading books that payout as coins that left.
+        after = txn.reconciliation.get('wallet_after')
+        before = after + (outcome.spent or 0) if type(after) is int else None
         return events.Purchased(
             item=txn.item, category=txn.category, price=txn.price,
-            coins_before=txn.wallet_before if txn.currency == "coins" else None,
-            gems_before=txn.wallet_before if txn.currency == "gems" else None,
+            coins_before=before if txn.currency == "coins" else None,
+            gems_before=before if txn.currency == "gems" else None,
             dry_run=False, verdict=outcome.verdict.value, spent=outcome.spent,
             transaction_key=txn.key,
         )

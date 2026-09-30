@@ -921,3 +921,14 @@ def test_observed_rows_include_the_coins_per_wave_stand_in() -> None:
     program = blocks.validate_program([{'id':'econ','type':'pool','selection':'priority',
                                         'upgrade_ids':['coins_per_kill_bonus']}], 'battle')
     assert blocks.program_upgrade_ids(program) == ('coins_per_kill_bonus','coins_per_wave')
+
+
+def test_a_wait_block_reads_prices_it_passed_over_before_holding() -> None:
+    program = [pool(), {'id':'hold','type':'wait'}]
+    unread = replace(facts(), prices={'thorns':100},
+                     price_evidence={'thorns':{'source':'observed','observed_at':99}})
+    result = blocks.evaluate_program(route(program), unread, None, 'workshop')
+    assert result.decision.state == 'observe_price' and result.decision.upgrade_id == 'damage'
+    poor = replace(facts(), wallet_coins=10)
+    held = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert held.decision is None and held.trace.reason == 'Wait block reached'
