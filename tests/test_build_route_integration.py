@@ -78,6 +78,7 @@ def test_account_swap_and_corrupt_route_fail_closed(tmp_path: Path) -> None:
     (worker_root / "fleet-registration.json").write_text(json.dumps(record))
     policy = progress.shopping_policy(Strategy.from_config().shopping)
     assert not policy.enabled
+    assert progress.stop_reason == "Worker account binding changed"
     assert progress.route_runtime.applied_revision() is None
     (tmp_path / "build-route.json").write_text("{bad")
     assert not progress.shopping_policy(Strategy.from_config().shopping).enabled
@@ -488,10 +489,12 @@ def test_labs_first_pauses_workshop_after_the_tutorial_grant(tmp_path: Path) -> 
     paused = progress.shopping_policy(base)
     # Only Workshop waits; card gem buys continue in the same visit.
     assert paused.enabled and paused.workshop == () and paused.cards.enabled
+    assert progress.stop_reason is not None and progress.stop_reason.startswith("Workshop paused")
     progress.note_lab_observation(LabDecision("wait_running", job_completes_at=time.time() + 3600,
                                               game_speed_level=2))
     progress.workshop_worthwhile = lambda: True  # type: ignore[method-assign]
     assert progress.shopping_policy(base).workshop != ()
+    assert progress.stop_reason is None
 
 
 def test_paused_workshop_publishes_a_paused_plan_not_the_unrunnable_buy(tmp_path: Path) -> None:

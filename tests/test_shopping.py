@@ -2289,6 +2289,26 @@ def test_a_strategy_visit_stops_when_the_replan_declines(session, monkeypatch) -
     assert [e.price for e in session._bus.of_type("Purchased")] == [60]
 
 
+def test_a_declined_replan_ends_the_visit_with_the_strategy_reason(session, monkeypatch) -> None:
+    """The caller hands the declined policy back on the next frame; the visit
+    must say why the strategy stopped, not that someone switched it off."""
+    device = FakeDevice()
+    _escalating_row(session, monkeypatch, [60, 85, 110], coins=300)
+    policy = a_policy(armed=True, coin_budget=60, workshop=(
+        ShoppingRule(name="Damage", category="ATTACK"),))
+    declined = dataclasses.replace(policy, enabled=False, workshop=())
+    session.reroll_replan = lambda: declined
+    session.reroll_stop_reason = lambda: "Saving for Thorns (152/497 coins)"
+    session.begin(policy, run_count=1)
+
+    _keep_buying(session, device, policy)
+    session.advance(frame("menu_workshop_attack"), device, declined)
+
+    ended = session._bus.of_type("ShoppingEnded")
+    assert [e.price for e in session._bus.of_type("Purchased")] == [60]
+    assert ended[-1].reason == "Saving for Thorns (152/497 coins)"
+
+
 def test_a_verified_purchase_records_why_the_strategy_chose_it(session, monkeypatch) -> None:
     device = FakeDevice()
     _escalating_row(session, monkeypatch, [60, 5_000], coins=300)
