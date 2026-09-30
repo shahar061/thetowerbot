@@ -488,6 +488,22 @@ class TransactionJournal:
         after the tap. Anything less returns UNPROVEN and leaves the row open. No
         ledger line is written, because nothing was spent.
         """
+        return self._refute_unlanded(key, evidence, now=now, operation='lab_unlock', currency='gems',
+                                     reason='lab unlock tap did not land: slot still locked and gems unchanged')
+
+    def refute_unlanded_start(self, key: str, evidence: RecoveryEvidence, *, now: float) -> Outcome:
+        """Settle a research-start tap that provably did nothing as not charged (spent 0).
+
+        The same rule as an unlanded unlock: an acted, scoped `lab_start` whose
+        visit read the same slot still idle, for the same research and level, with
+        the coin wallet unchanged, at least UNLANDED_SETTLE_SECONDS after the tap.
+        The caller requires two such reads in a row. Anything less is UNPROVEN.
+        """
+        return self._refute_unlanded(key, evidence, now=now, operation='lab_start', currency='coins',
+                                     reason='lab start tap did not land: slot still idle and coins unchanged')
+
+    def _refute_unlanded(self, key: str, evidence: RecoveryEvidence, *, now: float, operation: str,
+                         currency: str, reason: str) -> Outcome:
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM transactions WHERE key = ?", (key,)).fetchone()
@@ -500,19 +516,21 @@ class TransactionJournal:
             txn = _transaction(row)
             acted = txn.acted_at
             proven = (
-                txn.operation == 'lab_unlock' and txn.stage == Stage.ACTED and txn.scope is not None
+                txn.operation == operation and txn.stage == Stage.ACTED and txn.scope is not None
                 and acted is not None and evidence.scope is not None and evidence.scope == txn.scope
                 and self.currencies.scope_matches(evidence.scope, txn.currency, conn)
-                and evidence.operation == 'lab_unlock' and evidence.slot == txn.before.get('slot')
-                and evidence.category == txn.category and txn.currency == evidence.currency == 'gems'
+                and evidence.operation == operation and evidence.slot == txn.before.get('slot')
+                and (operation != 'lab_start' or (
+                    evidence.research_id == txn.before.get('research_id')
+                    and evidence.target_level == txn.before.get('target_level')))
+                and evidence.category == txn.category and txn.currency == evidence.currency == currency
                 and evidence.effect_changed is False and bool(evidence.frame_digest)
                 and evidence.wallet_after is not None and evidence.wallet_after == txn.wallet_before
                 and acted + UNLANDED_SETTLE_SECONDS <= evidence.observed_at <= now
                 and now - evidence.observed_at <= 30)
             if not proven:
                 return Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None,
-                               reason='unlanded unlock not proven')
-            reason = 'lab unlock tap did not land: slot still locked and gems unchanged'
+                               reason=f"unlanded {operation.removeprefix('lab_')} not proven")
             detail.update(reason=reason, reconciliation=asdict(evidence))
             conn.execute("UPDATE transactions SET stage = ?, outcome = ?, spent = 0, resolved_at = ?, "
                          "detail = ? WHERE key = ?",

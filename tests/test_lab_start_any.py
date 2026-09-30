@@ -36,6 +36,7 @@ class StartHarness(LabHarness):
         self.visit.starter, self.visit.worker = self.starter, "Air_1"
         self.visit.evidence_dir = root / "evidence"
         self.started = False
+        self.coins: int | None = None   # overrides the home wallet read when set
         self.swipes: list[tuple] = []
         self.device.swipe = lambda *args: self.swipes.append(args)
         if stage in ("canary", "fleet"):
@@ -56,7 +57,8 @@ class StartHarness(LabHarness):
 
         def selected_home(image, text, *, slot, observed_at):
             return replace(home(image, text, slot=slot, observed_at=observed_at),
-                           coin_balance=583 if self.started else 613)
+                           coin_balance=self.coins if self.coins is not None
+                           else 583 if self.started else 613)
 
         def selected_picker(image, text, *, research_id):
             reading = picker(image, text, research_id=research_id)
@@ -176,3 +178,125 @@ def test_a_tap_on_rush_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert not visit._safe((790, 300))
     assert not visit._safe((790, 420))   # the gem price under Rush
     assert visit._safe((300, 300))
+
+
+def rush_over(point: tuple[int, int]):
+    """A Rush button whose box covers `point`."""
+    from ocr import TextBox
+    import config
+    return TextBox("Rush", .99, config.Rect(point[0] - 40, point[1] - 20, 80, 40))
+
+
+def test_a_rush_box_over_research_refuses_before_any_spend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch)
+    h.visit.cancel("new request")
+    assert h.visit.request(act())
+    for name in FRAMES[:-1]:
+        h.scan(name)
+    name = FRAMES[-1]
+    research = lab_screen.read_confirmation(frame(name), boxes(name)).research_point
+    h.time += 1
+    result = h.visit.advance(frame(name), boxes(name) + (rush_over(research),), h.device, h.time,
+                             observed_at=h.time, capture_scope=h.scope)
+    assert result is not None and result.reason == 'unsafe_tap_target'
+    assert h.journal.open_transactions() == ()
+    assert research not in h.device.taps
+
+
+def test_a_rush_box_over_the_unlock_price_refuses_before_any_spend(tmp_path: Path,
+                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_lab_slot_unlock import PRICE_POINT, UnlockHarness, locked_boxes, promote_canary
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    results = [h.scan(locked_boxes() + (rush_over(PRICE_POINT),)) for _ in range(6)]
+    assert [r.reason for r in results if r is not None] == ['unsafe_tap_target']
+    assert h.transactions() == 0
+    assert PRICE_POINT not in h.device.taps
+
+
+def test_the_visit_cap_after_a_start_tap_halts_the_canary_with_evidence(tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch, stage="canary")
+    h.visit.cancel("new request")
+    assert h.visit.request(act())
+    h.walk()
+    assert h.journal.open_transactions()
+    h.time += 200                                # past the visit's time cap, well before 8 scans
+    h.scan('menu_labs_game_speed_picker')
+    record = h.starter.state().rollout("start:2")
+    assert record.stage == "halted" and record.halted_reason == "Start was not proven"
+    assert record.evidence and all(Path(p).name.startswith("lab-start-slot2-") for p in record.evidence)
+    assert h.journal.open_transactions()
+    assert not h.visit.active and h.visit._outcome.reason == 'lab_start_uncertain'
+
+
+def start_then_read_idle(h: StartHarness, scans: int = 3, coins: int | None = None):
+    """Tap Research, then read slot 2 idle `scans` times, one second apart, the wallet at `coins`."""
+    h.visit.cancel("new request")
+    assert h.visit.request(act())
+    h.walk()
+    (txn,) = h.journal.open_transactions()
+    h.coins = coins
+    for _ in range(scans):
+        h.scan('menu_labs_active')
+    return txn
+
+
+def test_an_unlanded_canary_start_is_not_charged_and_a_second_miss_halts(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch, stage="canary")
+    txn = start_then_read_idle(h)
+    assert h.journal.open_transactions() == ()
+    assert h.visit._outcome.reason == 'unclaimed_dispatch_refuted'
+    record = h.starter.state().rollout("start:2")
+    assert record.stage == "canary"
+    assert (record.outcome["outcome"], record.outcome["transaction_key"]) == ("not_charged", txn.key)
+    start_then_read_idle(h)
+    record = h.starter.state().rollout("start:2")
+    assert record.stage == "halted" and record.halted_reason == "The canary's start tap did not land twice"
+    assert [e.key for e in h.of(events.LabStarterHalted)] == ["start:2"]
+
+
+def test_one_idle_read_then_a_running_read_is_bought_not_refuted(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch)
+    start_then_read_idle(h, scans=2)             # the second read qualifies; one is not enough
+    assert h.journal.open_transactions()
+    h.started = True
+    for _ in range(3):
+        h.scan('menu_labs_active')
+    assert h.journal.open_transactions() == ()
+    assert h.visit._outcome.reason == 'research_confirmed'
+
+
+def test_idle_reads_with_a_moved_wallet_are_not_refuted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch)
+    start_then_read_idle(h, scans=4, coins=590)
+    assert h.journal.open_transactions()
+    assert h.visit._outcome is None or h.visit._outcome.reason != 'unclaimed_dispatch_refuted'
+
+
+@pytest.mark.parametrize("change", [
+    dict(observed_at=12.5),                 # under two seconds after the tap
+    dict(wallet_after=313),                 # the coins moved
+    dict(effect_changed=None),              # the slot was not read
+    dict(slot=2),                           # another slot
+    dict(research_id='labs.attack-speed'),  # another research
+    dict(target_level=2),                   # another level
+    dict(currency='gems'),                  # another wallet
+])
+def test_an_unlanded_start_needs_complete_proof(tmp_path: Path, change: dict) -> None:
+    from transactions import RecoveryEvidence, Verdict
+    from tests.test_lab_transactions import authority, prepared
+    _, journal, scope = authority(tmp_path)
+    txn = prepared(journal, scope)                    # Game Speed, 300 coins from 613, acted at 11
+    proof = RecoveryEvidence(category='LABS', currency='coins', wallet_after=613, effect_changed=False,
+                             observed_at=13., frame_digest='after', scope=scope, operation='lab_start',
+                             slot=1, research_id='labs.game-speed', target_level=1)
+    assert journal.refute_unlanded_start(txn.key, replace(proof, **change), now=13.).verdict == Verdict.UNPROVEN
+    assert journal.refute_unlanded_unlock(txn.key, proof, now=13.).verdict == Verdict.UNPROVEN
+    assert journal.open_transactions()[0].key == txn.key
+    outcome = journal.refute_unlanded_start(txn.key, proof, now=13.)
+    assert (outcome.verdict, outcome.spent) == (Verdict.REFUTED, 0)
+    assert journal.open_transactions() == ()

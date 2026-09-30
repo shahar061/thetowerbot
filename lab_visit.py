@@ -134,6 +134,9 @@ class LabVisit:
         self._start_scans = 0
         self._unsafe_tap = False
         self._picker_seconds: float | None = None
+        # (transaction key, coin read) of the last _recover read that saw the
+        # started slot still idle; a second matching read refutes the start.
+        self._idle_refute: tuple[str, int] | None = None
         self._capture_at = 0.
         self._capture_scope: FactScope | None = None
         self._reading: LabsReading | None = None
@@ -225,6 +228,7 @@ class LabVisit:
         self._start_scans = 0
         self._unsafe_tap = False
         self._picker_seconds = None
+        self._idle_refute = None
         self.last_tap = None
         self.recovery_status = None
         self.preparation_refusal = None
@@ -385,6 +389,8 @@ class LabVisit:
                  picker: LabPickerReading, confirmation: LabConfirmationReading,
                  screen: Image, device: AdbDevice) -> None:
         """Only calibrated inspection navigation is allowed while a spend is unresolved."""
+        # Any read that does not qualify below breaks the run of idle reads.
+        prior_idle, self._idle_refute = self._idle_refute, None
         scope = self._scope()
         self.recovery_status = 'awaiting_lab_semantic_and_wallet_proof'
         if scope is None or self._reading is None:
@@ -400,12 +406,21 @@ class LabVisit:
             boundary = txn.acted_at if txn.acted_at is not None else txn.ts
             current = (record.confirmed and record.observed_at == self._capture_at
                        and record.started_observed_at is not None and record.started_observed_at > boundary)
-            if txn.operation == 'lab_start' and current:
-                if (record.state == 'researching' and record.research_id == txn.before.get('research_id')
+            if txn.operation == 'lab_start':
+                if (current and record.state == 'researching'
+                        and record.research_id == txn.before.get('research_id')
                         and record.target_level == txn.before.get('target_level')):
                     effect = True
-                elif record.state == 'idle':
-                    effect = False
+                elif (record.confirmed and record.observed_at == self._capture_at and record.state == 'idle'
+                        and self._capture_at - boundary >= transactions.UNLANDED_SETTLE_SECONDS
+                        and home.coin_balance is not None):
+                    # The runtime keeps an idle slot's old start time, so an unlanded
+                    # tap is refuted by two consecutive idle reads with one wallet,
+                    # the same rule as an unlanded unlock.
+                    signature = (txn.key, home.coin_balance)
+                    if prior_idle == signature:
+                        effect = False
+                    self._idle_refute = signature
             if txn.operation == 'lab_unlock' and current and self.runtime.snapshot().slots_owned is not None:
                 if self.runtime.snapshot().slots_owned >= txn.before['slot']:
                     effect = True
@@ -418,7 +433,11 @@ class LabVisit:
                 research_id=txn.before.get('research_id') if effect is False else record.research_id,
                 target_level=txn.before.get('target_level') if effect is False else record.target_level,
                 completes_at=record.expected_finish)
-            outcome = self.journal.reconcile(txn.key, proof, now=self.wall_clock())
+            outcome = None
+            if txn.operation == 'lab_start' and effect is False:
+                outcome = self.journal.refute_unlanded_start(txn.key, proof, now=self.wall_clock())
+            if outcome is None or outcome.verdict != transactions.Verdict.REFUTED:
+                outcome = self.journal.reconcile(txn.key, proof, now=self.wall_clock())
             if outcome.verdict in (transactions.Verdict.BOUGHT, transactions.Verdict.FREE):
                 self._restore_receipts()
                 if txn.operation == 'lab_start':
@@ -634,6 +653,16 @@ class LabVisit:
 
     def _tap_unlock(self, locked: LockedSlot, gems: int, screen: Image, device: AdbDevice) -> bool:
         assert locked.price is not None and locked.point is not None
+        if not self._safe(locked.point):
+            # Refuse before preparing: a refused tap must never leave an acted transaction.
+            logger.warning("Refused lab unlock tap at %s: on a Rush control", locked.point)
+            # A research start proven earlier in the visit keeps its result so the
+            # spend is still recorded; the refusal shows in recovery_status.
+            prior = self._outcome
+            self.recovery_status = 'unsafe_tap_target'
+            self._finish(prior if prior is not None and prior.status == 'started' else
+                         LabVisitResult('failed', 'unsafe_tap_target', LabDecision('unknown')))
+            return True
         txn = self._prepare('lab_unlock', gems, locked.price, unlock_slot=locked.slot)
         if txn is None:
             self.recovery_status = f'lab_preparation_refused:{self.preparation_refusal}'
@@ -851,9 +880,14 @@ class LabVisit:
         self._scans += 1
         scan_cap, time_cap = (64, 120.) if self._search is not None else (48, 90.)
         if self._scans > scan_cap or now - self._started_at > time_cap:
+            pending = self.pending_transaction
+            # This visit's own start tap, still unproven, is uncertain: keep the
+            # hold, save the evidence and halt a canary, as the scan limit would.
+            if self._start_tap is not None and pending is not None and pending.key == self._start_tap[0]:
+                return self._start_uncertain(pending)
             # An unsettled unlock tap keeps its hold without halting the slot; the
             # next visit's recovery settles it (and promotes a canary's slot).
-            if self.pending_transaction is not None:
+            if pending is not None:
                 self.recovery_status = 'lab_reconciliation_route_unavailable'
             return self._finish(self._outcome or LabVisitResult(
                 "failed", "visit_timeout", LabDecision("unknown")))
@@ -1034,6 +1068,10 @@ class LabVisit:
             if self._rehearsing:
                 self._rehearse(purchase, confirmation.price)
                 return None
+            if not self._safe(confirmation.research_point):
+                # Refuse before preparing: a refused tap must never leave an acted transaction.
+                logger.warning("Refused lab research tap at %s: on a Rush control", confirmation.research_point)
+                return self._finish(LabVisitResult('failed', 'unsafe_tap_target', LabDecision('unknown')))
             txn = self._prepare('lab_start', confirmation.coin_balance, confirmation.price)
             if txn is None:
                 self._return(LabVisitResult('failed', f'lab_preparation_refused:{self.preparation_refusal}',
@@ -1060,7 +1098,7 @@ class LabVisit:
                 return None
             if home.page:
                 if self._unlock_slot(home, screen, device):
-                    return None
+                    return None if self.active else self._outcome
                 point = self._match(screen, "nav/tab_battle.png")
                 if point is not None:
                     self._tap(device, point, "return_to_battle")
