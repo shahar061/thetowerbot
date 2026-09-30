@@ -354,3 +354,99 @@ def test_rehearsal_result_is_never_observed_as_a_start_or_settles_the_backoff() 
     b._finish_lab_visit(result)
     assert b.reroll_progress.calls == []  # no start, no other observation either
     assert b._lab_action_last == held_backoff  # untouched: only a verified start clears it
+
+
+class CadenceProgress:
+    """The real slot-1 cadence behind the reroll_progress seams _finish_lab_visit uses."""
+
+    def __init__(self, root: Path) -> None:
+        from lab_plan import LabCadence
+        self.lab_cadence = LabCadence(root, 'account-a')
+        self.debits = 0
+        self.failures = 0
+
+    def note_lab_slots(self, slots: dict, gems: int | None) -> None:
+        pass
+
+    def note_lab_observation(self, decision: LabDecision) -> None:
+        self.lab_cadence.note(decision, 1000.)
+
+    def note_lab_coin_debit(self) -> None:
+        self.debits += 1
+
+    def note_lab_failure(self) -> None:
+        self.failures += 1
+        self.lab_cadence.note_failed(1000.)
+
+
+def finishing_bot(tmp_path: Path) -> Any:
+    b = bot(None)
+    b._notifications = SimpleNamespace(snapshot=lambda: {'kinds': {'labs': {'in_flight': False}}})
+    b.reroll_progress = CadenceProgress(tmp_path)
+    b.lab_state = None
+    b._last_lab_confirmation = None
+    b._research_until = None
+    # Lab 1's saved Game Speed evidence: waiting for coins at level 3.
+    b.reroll_progress.lab_cadence.note(
+        LabDecision('wait_coins', price=500, wallet_coins=100, game_speed_level=3), 900.)
+    return b
+
+
+def slot_job(slot: int, research: str, completes_at: float) -> Any:
+    from labs import LabJob
+    return LabJob(slot, research, 'Attack Speed Lv.8', completes_at, 4000.,
+                  None, 'unknown', 'researching', 1., (100, 300, 200, 50))
+
+
+@pytest.mark.parametrize('result_of', [
+    lambda job: ('started', 'research_confirmed',
+                 LabDecision('start', 300, 613, game_speed_level=8, slot=2, research_id='labs.attack-speed'),
+                 job),
+    lambda job: ('observed', 'wait_coins',
+                 LabDecision('wait_coins', 900, 613, game_speed_level=8, slot=2, research_id='labs.attack-speed'),
+                 None),
+    lambda job: ('failed', 'selected_research_mismatch',
+                 LabDecision('start', 300, 613, game_speed_level=9, slot=2, research_id='labs.attack-speed'),
+                 None),
+    lambda job: ('observed', 'unclaimed_dispatch_refuted',
+                 LabDecision('unknown', slot=2, research_id='labs.attack-speed'), None),
+    lambda job: ('observed', 'wait_running',
+                 LabDecision('wait_running', job_completes_at=9000., slot=2, research_id='labs.attack-speed'),
+                 job),
+], ids=['started', 'wait_coins', 'mismatch', 'refuted', 'running'])
+def test_another_slot_never_writes_lab_one_game_speed_cadence(tmp_path: Path, result_of: Any) -> None:
+    from lab_visit import LabVisitResult
+    b = finishing_bot(tmp_path)
+    before = (tmp_path / 'lab-slot1-cadence.json').read_text()
+    status, reason, decided, job = result_of(slot_job(2, 'labs.attack-speed', 9000.))
+    b._finish_lab_visit(LabVisitResult(status, reason, decided, confirmed_job=job,
+                                       observed_coin_spend=300 if status == 'started' else 0,
+                                       transaction_key='txn-2' if status == 'started' else None))
+    assert (tmp_path / 'lab-slot1-cadence.json').read_text() == before
+    assert b._research_until is None  # the progress wait is Game Speed's
+    # The coin debit is the account's, whichever slot spent it.
+    assert b.reroll_progress.debits == (1 if status == 'started' else 0)
+
+
+def test_another_slots_failed_visit_still_backs_off(tmp_path: Path) -> None:
+    from lab_visit import LabVisitResult
+    b = finishing_bot(tmp_path)
+    b._finish_lab_visit(LabVisitResult('failed', 'lab_start_uncertain',
+                                       LabDecision('unknown', slot=2, research_id='labs.attack-speed')))
+    assert b.reroll_progress.failures == 1
+    record = b.reroll_progress.lab_cadence._record()
+    assert (record['kind'], record['price'], record['game_speed_level']) == ('wait_coins', 500, 3)
+
+
+def test_lab_one_game_speed_start_still_writes_its_cadence(tmp_path: Path) -> None:
+    from lab_visit import LabVisitResult
+    b = finishing_bot(tmp_path)
+    job = slot_job(1, 'labs.game-speed', 5000.)
+    b._finish_lab_visit(LabVisitResult('started', 'game_speed_confirmed',
+                                       LabDecision('start', 300, 613, game_speed_level=4), job, 300))
+    record = b.reroll_progress.lab_cadence._record()
+    assert (record['kind'], record['job_completes_at'], record['game_speed_level']) == ('wait_running', 5000., 4)
+    assert b._research_until == 5000.
+    assert b.reroll_progress.debits == 1
+    started = [e for e in b.bus.published if isinstance(e, events.LabResearchStarted)]
+    assert [e.concept_id for e in started] == ['labs.game-speed']

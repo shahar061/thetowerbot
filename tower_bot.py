@@ -1496,13 +1496,18 @@ class TowerBot:
             # LabSlotUnlocked is the journal's recovery_event, with the real slot and price.
             self.reroll_progress.note_lab_slots(dict(result.slot_status), result.gem_balance)
         decision = result.decision
-        if (result.confirmed_job is not None
+        # The slot-1 cadence, its coin hold and the research wait belong to Game
+        # Speed in Lab 1 (a legacy visit's decision defaults to it). Another
+        # slot's job, price or level must never be written over them.
+        game_speed = (decision.slot, decision.research_id) == (1, 'labs.game-speed')
+        if (game_speed and result.confirmed_job is not None
                 and result.confirmed_job.completes_at is not None):
             self._research_until = result.confirmed_job.completes_at
         if result.status == "started" and result.confirmed_job is not None:
-            self.reroll_progress.note_lab_observation(LabDecision(
-                "wait_running", job_completes_at=result.confirmed_job.completes_at,
-                game_speed_level=decision.game_speed_level))
+            if game_speed:
+                self.reroll_progress.note_lab_observation(LabDecision(
+                    "wait_running", job_completes_at=result.confirmed_job.completes_at,
+                    game_speed_level=decision.game_speed_level))
             if (decision.wallet_coins is not None and decision.price is not None
                     and result.observed_coin_spend == decision.price):
                 key = (result.confirmed_job.completes_at,
@@ -1514,7 +1519,7 @@ class TowerBot:
                             self.lab_state.observe(observation)
                     if result.transaction_key is None:
                         self.bus.publish(events.LabResearchStarted(
-                            concept_id="labs.game-speed", price=decision.price,
+                            concept_id=decision.research_id, price=decision.price,
                             coins_before=decision.wallet_coins,
                             coins_after=decision.wallet_coins - decision.price,
                             completes_at=result.confirmed_job.completes_at))
@@ -1527,12 +1532,12 @@ class TowerBot:
             # drives); only the next check backs off.
             if result.status in ("failed", "cancelled") and decision.kind == "unknown":
                 self.reroll_progress.note_lab_failure()
-            elif result.reason not in ("auto_start_off", "research_rehearsed"):
+            elif game_speed and result.reason not in ("auto_start_off", "research_rehearsed"):
                 # A rehearsal decision carries kind 'start' for the rehearsed
                 # slot, but research never began: it must not be observed as
                 # a start or as any other cadence/state-changing observation.
                 self.reroll_progress.note_lab_observation(decision)
-        logger.info("Lab 1 visit ended: %s (%s)%s", result.status, result.reason,
+        logger.info("Lab %s visit ended: %s (%s)%s", decision.slot, result.status, result.reason,
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:

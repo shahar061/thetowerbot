@@ -464,7 +464,8 @@ class LabVisit:
                 self._restore_receipts()
                 self._note_start(txn, 'not_charged')
                 self._start_tap = None
-                self._return(LabVisitResult('observed', 'unclaimed_dispatch_refuted', LabDecision('unknown')))
+                self._return(LabVisitResult('observed', 'unclaimed_dispatch_refuted', LabDecision(
+                    'unknown', slot=txn.before['slot'], research_id=txn.before['research_id'])))
             return
         if not self.account_state.identity_fresh(now=self.wall_clock()):
             self.recovery_status = 'lab_identity_verification_required'
@@ -964,6 +965,10 @@ class LabVisit:
             if not home.page:
                 return None
             decision = decide(home, None)
+            if selected is not None:
+                # The selected slot's card was read: its result must not pass for Lab 1's.
+                decision = replace(decision, slot=selected.slot, research_id=selected.research,
+                                   strategy_revision=selected.strategy_revision)
             if not self._options.start_research and self.runtime is not None:
                 snapshot = self.runtime.snapshot()
                 if (not self._reading.strip_read() or snapshot.slots_owned is None

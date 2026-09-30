@@ -249,6 +249,8 @@ def test_an_unlanded_canary_start_is_not_charged_and_a_second_miss_halts(
     txn = start_then_read_idle(h)
     assert h.journal.open_transactions() == ()
     assert h.visit._outcome.reason == 'unclaimed_dispatch_refuted'
+    # The refutation names slot 2, so TowerBot never writes it over Lab 1's cadence.
+    assert (h.visit._outcome.decision.slot, h.visit._outcome.decision.research_id) == (2, ATTACK)
     record = h.starter.state().rollout("start:2")
     assert record.stage == "canary"
     assert (record.outcome["outcome"], record.outcome["transaction_key"]) == ("not_charged", txn.key)
@@ -300,3 +302,19 @@ def test_an_unlanded_start_needs_complete_proof(tmp_path: Path, change: dict) ->
     outcome = journal.refute_unlanded_start(txn.key, proof, now=13.)
     assert (outcome.verdict, outcome.spent) == (Verdict.REFUTED, 0)
     assert journal.open_transactions() == ()
+
+
+def test_a_running_selected_slot_reads_as_that_slot_not_lab_one(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch)
+    job = LabJob(2, ATTACK, 'Attack Speed Lv.1', 5000., 100, None, 'unknown', 'researching', .99,
+                 (100, 300, 200, 50), source_level=0, target_level=1)
+    monkeypatch.setattr(lab_visit, 'read_selected_home', lambda image, text, *, slot, observed_at:
+                        lab_screen.LabHomeReading(True, 'researching', job, None, 613))
+    h.visit.cancel("new request")
+    assert h.visit.request(act())
+    for name in ('menu_labs_active', 'menu_labs_active'):
+        h.scan(name)
+    outcome = h.visit._outcome
+    assert outcome.decision.kind == 'wait_running'
+    assert (outcome.decision.slot, outcome.decision.research_id) == (2, ATTACK)
