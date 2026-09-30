@@ -343,3 +343,23 @@ def test_a_lone_single_digit_gem_balance_is_read_off_its_own_crop() -> None:
 
     strip = frame("labs_header_gems_7")
     assert lab_screen._gem_balance(strip, (), 1080, 2400) == 7
+
+
+def _without_spaces(names: set[str]) -> tuple[ocr.TextBox, ...]:
+    from dataclasses import replace
+    return tuple(replace(box, text="".join(box.text.split())) if box.text in names else box
+                 for box in recorded("menu_labs_active"))
+
+
+def test_a_running_card_read_without_spaces_resolves_its_lab() -> None:
+    """OCR may drop inner spaces ("LabsSpeedLv.82"); the card must not read unknown."""
+    from lab_screen import read_home, read_slots
+
+    boxes = _without_spaces({"Coins / Kill Bonus Lv.87", "Labs Speed Lv.82"})
+    assert {box.text for box in boxes} >= {"Coins/KillBonusLv.87", "LabsSpeedLv.82"}
+    result = read_slots(frame("menu_labs_active"), boxes, observed_at=1000.)
+    running = {j.slot: (j.concept_id, j.target_level) for j in result.jobs if j.status == "researching"}
+    assert running == {1: ("labs.coins-kill-bonus", 87), 5: ("labs.labs-speed", 82)}
+    assert result.strip_read()
+    home = read_home(frame("menu_labs_active"), boxes)
+    assert home.slot_status == "researching" and home.job.concept_id == "labs.coins-kill-bonus"

@@ -218,8 +218,6 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
     Cropped, duplicate or unrecognised cards retain unknown status instead of
     disappearing from a purportedly complete observation.
     """
-    from concepts import REGISTRY
-
     height, width = screen.shape[:2]
     digest = hashlib.sha256(screen.tobytes()).hexdigest()
     empty = LabsReading(observed_at, width, height, digest, None, "unknown", (), ())
@@ -264,16 +262,16 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
             name = names[0]
             match = _NAME_LEVEL.fullmatch(name.text.strip())
             assert match is not None
-            identities = [c.concept_id for c in REGISTRY.concepts if c.domain == "labs"
-                          and c.name.casefold() == match["name"].casefold()]
+            # OCR may drop inner spaces ("DefenseAbsoluteLv.5"); identity ignores them.
+            identity = _research_identity(name.text)
             timers = [(b, _duration_seconds(b.text)) for b in within]
             timers = [(b, seconds) for b, seconds in timers if seconds is not None]
             target = int(match["level"])
-            if len(identities) != 1 or len(timers) != 1 or target < 1:
+            if identity is None or len(timers) != 1 or target < 1:
                 jobs.append(unknown)
                 continue
             timer, seconds = timers[0]
-            jobs.append(LabJob(slot, identities[0], name.text, observed_at + seconds,
+            jobs.append(LabJob(slot, identity, name.text, observed_at + seconds,
                                seconds, None, "unknown", "researching",
                                min(name.confidence, timer.confidence), rect,
                                source_level=target - 1, target_level=target))
@@ -385,18 +383,13 @@ def read_home(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabHomeReading:
         return LabHomeReading(True, "unknown", None, None, balance, slots_owned,
                               gem_balance, next_locked=next_locked)
 
-    match = _NAME_LEVEL.fullmatch(jobs[0].text.strip())
-    assert match is not None
-    name = match.group("name")
-    from concepts import REGISTRY
-    identities = [concept.concept_id for concept in REGISTRY.concepts
-                  if concept.domain == "labs" and concept.name.casefold() == name.casefold()]
+    identity = _research_identity(jobs[0].text)
     timers = [_duration_seconds(box.text) for box in within]
     remaining = [value for value in timers if value is not None]
-    if len(identities) != 1 or len(remaining) != 1:
+    if identity is None or len(remaining) != 1:
         return LabHomeReading(True, "unknown", None, None, balance, slots_owned,
                               gem_balance, next_locked=next_locked)
-    job = LabJob(1, identities[0], jobs[0].text, time.time() + remaining[0],
+    job = LabJob(1, identity, jobs[0].text, time.time() + remaining[0],
                  remaining[0], None, "unknown", "researching", jobs[0].confidence,
                  tuple(jobs[0].rect))
     return LabHomeReading(True, "researching", job, None, balance, slots_owned,
