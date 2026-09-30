@@ -861,6 +861,10 @@ class LabVisit:
         if (self.starter is None or self.worker is None or txn.operation != 'lab_start'
                 or (txn.before['slot'], txn.before['research_id']) == (1, 'labs.game-speed')):
             return
+        if outcome == 'not_charged' and txn.acted_at is None:
+            # Refuted before the tap was ever dispatched (a crash after prepare):
+            # it says nothing about whether the canary's tap lands.
+            return
         self._publish_starter(self.starter.note_start(
             txn.before['slot'], self.worker, self._account(), txn.key, outcome, at=self.wall_clock()))
 

@@ -407,3 +407,31 @@ def test_a_long_search_keeps_four_frames_and_writes_them_only_for_a_recorded_mis
     search()                                        # within two minutes: not a recorded miss
     assert len(h.starter.state().lab("labs.labs-speed").misses) == 1
     assert sorted((tmp_path / "evidence").glob("lab-search-*.png")) == written
+
+
+def test_a_start_that_never_reached_the_tap_is_not_a_canary_miss(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crash between prepare and the tap leaves an INTENDED row; refuting it says nothing about the tap."""
+    h = StartHarness(tmp_path, monkeypatch, stage="canary")
+    record_action = h.journal.record_action
+
+    def crash(key, *, at):
+        raise RuntimeError("crashed before the tap")
+
+    for _ in range(2):
+        monkeypatch.setattr(h.journal, 'record_action', crash)
+        h.visit.cancel("new request")
+        assert h.visit.request(act())
+        with pytest.raises(RuntimeError, match="before the tap"):
+            h.walk()
+        (txn,) = h.journal.open_transactions()
+        assert txn.acted_at is None
+        monkeypatch.setattr(h.journal, 'record_action', record_action)
+        h.visit.cancel("restart")
+        assert h.visit.request(act())
+        for _ in range(3):
+            h.scan('menu_labs_active')
+        assert h.journal.open_transactions() == ()
+        assert h.visit._outcome.reason == 'unclaimed_dispatch_refuted'
+        record = h.starter.state().rollout("start:2")
+        assert record.stage == "canary" and record.outcome is None
