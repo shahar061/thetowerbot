@@ -143,6 +143,17 @@ section.fs-sec > .fs-sh { cursor: default; }
 .fs-timers .free { padding: 6px 8px; border: 1px dashed var(--cat-labs); color: var(--cat-labs); }
 
 /* in-run upgrades and runs */
+.fs-workshop-view { margin: 0 0 10px; }
+.fs-workshop-bar { padding: 7px 5px; border-bottom: 1px solid var(--fs-line-soft); }
+.fs-workshop-bar.next { background: color-mix(in oklch, var(--c) 14%, transparent); box-shadow: inset 3px 0 0 var(--c); }
+.fs-workshop-bar.locked { color: var(--muted-foreground); }
+.fs-workshop-bar-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; }
+.fs-workshop-bar-head > :first-child { min-width: 0; overflow-wrap: anywhere; }
+.fs-workshop-bar-head > .n { white-space: nowrap; }
+.fs-workshop-bar-value { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-top: 5px; font-size: 11px; }
+.fs-workshop-bar-value .b { height: 10px; background: var(--fs-line-soft); }
+.fs-workshop-bar-value .b i { display: block; height: 100%; transition: width .5s; }
+.fs-price-source { display: block; font-size: 10px; color: var(--muted-foreground); text-align: right; }
 .fs-upt { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
 .fs-upt b { font-family: var(--fs-display); font-size: 28px; font-weight: 700; line-height: 1; }
 .fs-leg { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--muted-foreground); margin: 6px 0 10px; }

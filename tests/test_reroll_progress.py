@@ -412,6 +412,18 @@ def test_battle_policy_only_uses_confirmed_workshop_unlocks(tmp_path: Path) -> N
     assert "damage" in [rule.upgrade_id for rule in opening.rules]
 
 
+def test_late_workshop_rows_stay_locked_until_positive_evidence() -> None:
+    from fleet.reroll_progress import workshop_locked
+
+    late = {"wall_health", "shockwave_size", "rend_armor_chance", "enemy_health_level_skip"}
+    assert late <= workshop_locked({})
+    for status in ("unknown", "unseen", "unreadable", "locked"):
+        assert "wall_health" in workshop_locked({}, {"wall_health": {"status": status}})
+    assert "wall_health" not in workshop_locked({}, {"wall_rebuild": {"status": "available"}})
+    assert "wall_rebuild" not in workshop_locked({"wall_health": 1})
+    assert "shockwave_size" in workshop_locked({"wall_health": 1})
+
+
 def test_opening_battle_prioritizes_verified_turtle_defense(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     with db.connect(progress.root / "tower_bot.db") as connection:

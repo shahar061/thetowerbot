@@ -16,7 +16,7 @@ from fleet.clone_qualification import CloneCandidate, QualificationScope, probe_
 from fleet.first_launch_account import create_first_launch_account, tower_is_unopened
 from fleet.identity import Attempt
 from fleet.manual_air_worker import ManualAirWorker
-from fleet.runtime import WorkerRuntime
+from fleet.runtime import WorkerRuntime, worker_dashboard_port
 
 
 def enroll_manual_instance(
@@ -32,7 +32,7 @@ def enroll_manual_instance(
             or attempt.worker_id != name or attempt.endpoint != endpoint
             or attempt.lease_id != lease_id):
         raise ValueError("manual_instance_identity_invalid")
-    expected_port = 10000 + int(name.rsplit("_", 1)[-1])
+    expected_port = worker_dashboard_port(int(name.rsplit("_", 1)[-1]))
     if runtime.worker_id != name or runtime.web_port != expected_port:
         raise ValueError("manual_worker_runtime_invalid")
     runtime.ensure_directories()

@@ -400,7 +400,11 @@ class AccountState:
                 if f.concept_id in previous and previous[f.concept_id].value == f.value
                 and 0 < f.evidence.observed_at - previous[f.concept_id].evidence.observed_at <= 30
                 and (f.concept_id not in known or known[f.concept_id].value != f.value
-                     or known[f.concept_id].scope != f.scope))
+                     or known[f.concept_id].scope != f.scope
+                     # Identical readings remain deduplicated between refreshes.
+                     # Fresh raw evidence can clear uncertainty from a failed
+                     # purchase even when that purchase changed no stat value.
+                     or f.evidence.observed_at - known[f.concept_id].evidence.observed_at >= 60))
             if not changed:
                 return
             known.update({f.concept_id: f for f in changed})

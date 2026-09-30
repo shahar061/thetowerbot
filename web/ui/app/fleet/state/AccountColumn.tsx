@@ -10,6 +10,7 @@ import {
 import { decisionFor } from "@/lib/rerollState";
 import { CategoryLedger } from "./CategoryLedger";
 import { RunUpgradesChart } from "./RunUpgradesChart";
+import { estimatedPrice, WorkshopChart, workshopLevelText } from "./WorkshopChart";
 import { sectionOpen } from "./selection";
 import { agoText, amount, CAT_COLOR, CAT_LABEL, DASH, priceText, span, whole } from "./stateFormat";
 import { Ago, Countdown } from "./Tickers";
@@ -127,11 +128,16 @@ function BuyQueue({ decision, nextBuy, labs, cards }: {
     </div>);
 }
 
-function WorkshopBody({ workshop, decision, nowMs }: {
-  workshop: FleetStateWorkshop; decision: FleetStateDecision | null; nowMs: number;
+function WorkshopBody({ workshop, nextBuy, nowMs, bars, onViewChange }: {
+  workshop: FleetStateWorkshop; nextBuy: FleetStateNextBuy | null; nowMs: number;
+  bars: boolean; onViewChange: (bars: boolean) => void;
 }): React.JSX.Element {
-  const [tab, setTab] = useState<StateCategory>(decision?.category ?? "attack");
+  const [tab, setTab] = useState<StateCategory>(nextBuy?.category ?? "attack");
   const category = workshop.categories[tab];
+  const upcoming = new Set(category.next_unlock?.upgrade_ids ?? []);
+  const skills = category.skills.filter(skill => !skill.locked || upcoming.has(skill.id));
+  const nextId = nextBuy?.category === tab && skills.some(skill => skill.id === nextBuy.upgrade_id && !skill.locked)
+    ? nextBuy.upgrade_id : null;
   return (<>
     <div className="fs-split" aria-hidden="true">
       {STATE_CATEGORIES.map(c => <i key={c} style={{ flex: workshop.totals[c], background: CAT_COLOR[c] }} />)}
@@ -139,17 +145,23 @@ function WorkshopBody({ workshop, decision, nowMs }: {
     <div className="fs-tabs" role="tablist" aria-label="Workshop category">
       {STATE_CATEGORIES.map(c => (
         <button key={c} type="button" role="tab" aria-selected={c === tab}
-          className={cn("fs-tab", decision?.category === c && "hn")}
+          className={cn("fs-tab", nextBuy?.category === c && "hn")}
           style={{ "--c": CAT_COLOR[c] } as React.CSSProperties} onClick={() => setTab(c)}>
           <span>{CAT_LABEL[c]}</span><b>{whole(workshop.totals[c])}</b>
           <small>{workshop.categories[c].unlocked}/{workshop.categories[c].total} unlocked</small>
         </button>))}
     </div>
+    <div className="fs-seg fs-workshop-view" role="group" aria-label="Workshop display">
+      <button type="button" aria-pressed={bars} onClick={() => onViewChange(true)}>Bars</button>
+      <button type="button" aria-pressed={!bars} onClick={() => onViewChange(false)}>Table</button>
+    </div>
     <CategoryLedger label={`${CAT_LABEL[tab]} workshop`} head="Skill" color={CAT_COLOR[tab]} nowMs={nowMs}
-      nextId={decision?.category === tab ? decision.upgrade_id : null} unlock={category.next_unlock}
-      rows={category.skills.map(skill => ({
+      nextId={nextId} unlock={category.next_unlock}
+      visualization={bars ? <WorkshopChart label={`${CAT_LABEL[tab]} workshop`} skills={skills} nextId={nextId} color={CAT_COLOR[tab]} /> : undefined}
+      rows={skills.map(skill => ({
         id: skill.id, name: skill.name, level: skill.level, invested: skill.invested,
         spent: skill.bot_spent, next: skill.next_cost, maxed: skill.status === "maxed", locked: skill.locked,
+        levelText: workshopLevelText(skill), estimatedPrice: estimatedPrice(skill),
       }))}
       recent={workshop.recent.map((item, index) => ({
         key: `${item.ts}-${index}`, ts: item.ts, name: item.name,
@@ -247,7 +259,8 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
         </section>
         <Section title="Workshop" value={total === null ? undefined : `${whole(total)} lv`} color="var(--cat-utility)"
           open={isOpen("workshop")} onToggle={toggle("workshop")}>
-          {workshop ? <WorkshopBody workshop={workshop} decision={account.decision} nowMs={changedAt} /> : <Unavailable />}
+          {workshop ? <WorkshopBody workshop={workshop} nextBuy={account.next_buy ?? null} nowMs={changedAt}
+            bars={open[`${account.id}:workshop-bars`] ?? true} onViewChange={toggle("workshop-bars")} /> : <Unavailable />}
         </Section>
         <Section title="Cards" value={cards ? `${cards.slots.equipped ?? "?"}/${cards.slots.capacity ?? "?"} slots` : undefined}
           color="var(--cat-cards)" open={isOpen("cards")} onToggle={toggle("cards")}>

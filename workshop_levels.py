@@ -12,6 +12,7 @@ display, a misread) is reported as unmatched, never snapped to the nearest rung.
 from __future__ import annotations
 
 import json
+import math
 import re
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
@@ -77,11 +78,18 @@ def upgrade_state(upgrade_id: str, fact: dict[str, Any] | None) -> dict[str, Any
     row: dict[str, Any] = {"max_level": ladder.max_level, "value": None, "raw_value": None,
                            "observed_at": None, "status": "unseen", "level_min": None,
                            "level_max": None, "next_coins": None}
-    if fact is None or fact.get("value") is None:
+    if (fact is None or fact.get("status") not in ("verified", "available", "maxed")
+            or type(fact.get("value")) not in (int, float)
+            or not math.isfinite(fact["value"]) or fact["value"] < 0):
         return row
-    evidence = fact.get("evidence") or {}
+    evidence = fact.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
     raw = evidence.get("raw_value") or str(fact["value"])
-    row.update(value=fact["value"], raw_value=raw, observed_at=evidence.get("observed_at"))
+    if not isinstance(raw, str) or re.search(r"-\s*\d", raw):
+        return row
+    observed = evidence.get("observed_at")
+    row.update(value=fact["value"], raw_value=raw,
+               observed_at=observed if type(observed) in (int, float) and math.isfinite(observed) else None)
     read = displayed(raw)
     estimate = (infer_level(ladder, read[0], read[1]) if read is not None
                 else LevelEstimate("unmatched", None, None))
@@ -97,7 +105,8 @@ def upgrade_state(upgrade_id: str, fact: dict[str, Any] | None) -> dict[str, Any
 def workshop_state(workshop_stats: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """One row per levelled Workshop upgrade, in the game's tab order, from a
     stored revision's `workshop_stats` facts."""
-    facts = {fact["concept_id"]: fact for fact in workshop_stats or ()}
+    facts = {fact["concept_id"]: fact for fact in workshop_stats or ()
+             if isinstance(fact, dict) and isinstance(fact.get("concept_id"), str)}
     return [{"id": item.id, "name": item.name, "category": item.category,
              **upgrade_state(item.id, facts.get(f"stats.{item.id}"))}
             for item in upgrades.CATALOG if item.id in ladders()]

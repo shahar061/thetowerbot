@@ -20,6 +20,24 @@ def facts(**changes: object) -> RerollFacts:
     return RerollFacts(**values)
 
 
+def test_late_locked_priority_does_not_create_a_readable_fact_or_action() -> None:
+    from fleet.reroll_planner import _readable_rows
+
+    fresh = facts(wallet_coins=1000, prices={"wall_health": 10})
+    assert "wall_health" not in _readable_rows(fresh)
+    assert choose_next(fresh, priority_ids=("wall_health",), include_starter=False,
+                       include_economy=False, include_filler=False).upgrade_id != "wall_health"
+    assert "wall_health" in _readable_rows(facts(purchases={"wall_rebuild": 1}))
+    assert "wall_health" in _readable_rows(facts(values={"wall_rebuild": 0.}))
+
+
+def test_a_future_unlock_priority_waits_for_the_preceding_group() -> None:
+    decision = choose_next(facts(wallet_coins=10_000, prices={"unlock_orbs": 1}),
+                           priority_ids=("unlock_orbs",), include_starter=False,
+                           include_economy=False, include_filler=False)
+    assert decision.upgrade_id != "unlock_orbs"
+
+
 def test_utility_allocation_follows_the_survival_starter() -> None:
     starter = {"damage": 1, "attack_speed": 1, "health": 1,
                "unlock_defense_upgrades": 1, "defense_absolute": 1}

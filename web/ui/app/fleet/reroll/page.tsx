@@ -166,7 +166,6 @@ function FleetLivePage(): React.JSX.Element {
     bulkTargets.map(member => member.name)));
 
   const accountFor = (member: RerollMember) => accounts.find(account => verifiedWorkerAccount(member, account));
-  const liveScreens = members.filter(member => accountFor(member)).length;
   const inspected = inspection && allMembers.find(member => member.name === inspection.worker
     && (member.account_key ?? "") === inspection.account && (member.account_id ?? "") === inspection.identity);
 
@@ -249,8 +248,8 @@ function FleetLivePage(): React.JSX.Element {
 
 
     {!!allMembers.length && <RerollCard title="Devices" action={<Button variant="outline" className="min-h-11"
-      disabled={!liveScreens} title={liveScreens ? "Every running screen side by side, full screen" : "No emulator has a live screen yet"}
-      onClick={() => { enterWallFullscreen(); setWallOpen(true); }}><LayoutGrid aria-hidden="true" />Live wall</Button>}>
+      disabled={!members.length} title="Every emulator screen and its connection status"
+      onClick={() => { setWallOpen(true); enterWallFullscreen(); }}><LayoutGrid aria-hidden="true" />Live wall</Button>}>
       <div className="flex flex-wrap items-center gap-2">{FILTERS.map(option => (
         <button
           key={option.id}

@@ -7,7 +7,37 @@ import pytest
 
 from fleet.identity import Attempt, IdentityEvidence
 from fleet.runtime import WorkerRuntime, validate_isolation
+from fleet import runtime as fleet_runtime
 from tower_bot import parse_args, resolve_worker_runtime
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_locks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Tests must not acquire the real fleet's ADB/port locks on a running host.
+    monkeypatch.setattr(fleet_runtime.tempfile, "tempdir", str(tmp_path))
+
+
+def test_worker_dashboard_ports_preserve_safe_assignments_without_collisions() -> None:
+    ports = [fleet_runtime.worker_dashboard_port(number) for number in range(55_536)]
+    assert ports[80] == 9999
+    assert ports[79] == 10079
+    assert ports[81] == 10081
+    assert ports[10_080] == 20080
+    assert len(ports) == len(set(ports))
+    assert 10080 not in ports
+    assert min(ports) >= 1 and max(ports) == 65535
+
+
+@pytest.mark.parametrize("number", [-1, 55_536, True, 1.5])
+def test_worker_dashboard_port_rejects_invalid_numbers(number: object) -> None:
+    with pytest.raises(ValueError, match="worker number"):
+        fleet_runtime.worker_dashboard_port(number)
+
+
+@pytest.mark.parametrize("port", [21, 22, 5060, 5061, 6000, *range(6665, 6670), 10080])
+def test_worker_runtime_rejects_browser_blocked_dashboard_ports(tmp_path: Path, port: int) -> None:
+    with pytest.raises(ValueError, match="browser"):
+        WorkerRuntime.for_worker(tmp_path, "worker-a", port)
 
 
 def test_attempt_binding_requires_observed_identity_evidence(tmp_path: Path) -> None:

@@ -22,7 +22,8 @@ from fleet.reroll_planner import (FILLER_SHARE, STARTER_MAX_PRICE, UTILITY_CEILI
                                   UTILITY_TARGET_COINS, RerollDecision,
                                   RerollFacts, choose_next, project_next)
 from fleet.reroll_variants import read_variant
-from fleet.workshop_prices import CATALOG, WorkshopPrices, PriceQuote, catalog_price
+from fleet.workshop_prices import WorkshopPrices, PriceQuote
+from fleet.workshop_replay import discount_signature, read_actions, replay_quotes
 from fleet.reroll_survival import prioritize_survival
 from fleet.build_route_runtime import BuildRouteRuntime
 from fleet.build_route import GemRoute, RouteRules, resolve_route
@@ -42,11 +43,6 @@ from strategy import Shopping, ShoppingRule, Strategy
 
 logger = logging.getLogger(__name__)
 
-# An unexplained debit smaller than this cannot be a hidden Workshop
-# purchase, so it cannot have moved a Workshop price.
-CHEAPEST_WORKSHOP_PRICE = min(price for upgrade in CATALOG["upgrades"].values()
-                              for price in upgrade.get("next_coins", []) if price > 0)
-
 # Runs between death-screen detours home for a plan whose price or wallet is
 # still unknown. The first detour reads it; if that read fails, going home
 # again after every short early run costs more time than it plays.
@@ -59,11 +55,12 @@ def workshop_locked(purchases: Mapping[str, int],
 
     A row the battle tab has drawn is unlocked whatever the ledger says.
     """
+    from workshop_unlocks import locked_upgrade_ids, owned_groups
+
     drawn = {uid for uid, row in (observations or {}).items()
-             if row.get("status") not in (None, "unknown", "locked")}
-    return frozenset(child for entry in upgrades.CATALOG
-                     if entry.unlock and purchases.get(entry.id, 0) <= 0
-                     for child in entry.unlocks if child not in drawn)
+             if row.get("status") in {"available", "maxed", "verified"}}
+    bought = {uid for uid, count in purchases.items() if type(count) is int and count > 0}
+    return locked_upgrade_ids(owned_groups(visible_ids=drawn, purchased_ids=bought))
 
 
 class RerollProgress:
@@ -763,22 +760,9 @@ class RerollProgress:
 
     def _discount_signature(self) -> str:
         revision = self.account_state.snapshot().get("revision") or {}
-        levels = revision.get("lab_levels")
-        if levels is None:
-            return "unknown"
-        scope = self.account_state.verified_scope
-        expected = {f"labs.workshop-{category}-discount" for category in ("attack", "defense", "utility")}
-        zero = {fact.get("concept_id") for fact in levels
-                if scope is not None and fact.get("scope") == asdict(scope)
-                and ((fact.get("status") == "verified" and fact.get("value") == 0)
-                     or (fact.get("status") == "available" and fact.get("value") == 1))
-                and 0 <= time.time() - (fact.get("evidence") or {}).get("observed_at", 0) <= 30}
-        if zero == expected:
-            return "none"
-        discounts = sorted((fact.get("concept_id"), fact.get("status"), fact.get("value"))
-                           for fact in levels if "workshop-" in str(fact.get("concept_id"))
-                           and "discount" in str(fact.get("concept_id")))
-        return json.dumps(discounts) if discounts else "unknown"
+        scope = getattr(self.account_state, "verified_scope", None)
+        return discount_signature(revision, asdict(scope) if scope is not None else None,
+                                  now=time.time())
 
     def _import_legacy_target(self) -> None:
         if self.price_memory.path.exists():
@@ -800,11 +784,9 @@ class RerollProgress:
         anchor = self.price_memory.wallet
         earliest = min([entry["observed_at"] for entry in self.price_memory.entries.values()] +
                        ([anchor["observed_at"]] if anchor else [time.time()]))
-        invalidated: dict[str, float] = {}
-        offsets = {uid: entry["purchases"] for uid, entry in self.price_memory.entries.items()}
-        changed_at = 0.
         changes: list[tuple[float, int, int | None, int | None]] = []
         with db.reader(self.root / "tower_bot.db") as conn:
+            actions = read_actions(conn, self.price_memory, now=time.time())
             rows = conn.execute("SELECT id,ts,kind,item,category,delta,balance_after,observed,detail,reason "
                                 # ROUTE_DECISION audits a weighted draw; it moves no coins.
                                 "FROM ledger WHERE dry_run=0 AND ts>=? AND kind!='ROUTE_DECISION' AND "
@@ -819,32 +801,9 @@ class RerollProgress:
             if row["kind"] == "BUY_SKIPPED" and row["reason"] == "unconfirmed":
                 upgrade = upgrades.resolve(row["item"], row["category"])
                 if upgrade:
-                    invalidated[upgrade.id] = max(row["ts"], invalidated.get(upgrade.id, 0))
                     if anchor and row["ts"] >= anchor["observed_at"]:
                         changes.append((row["ts"], row["id"], None, None))
                 continue
-            if row["kind"] == "WORKSHOP_BUY":
-                try:
-                    verdict = json.loads(row["detail"] or "{}").get("verdict")
-                except (ValueError, TypeError, AttributeError):
-                    verdict = None
-                upgrade = upgrades.resolve(row["item"], row["category"])
-                if verdict in {"bought", "free"} and upgrade:
-                    entry = self.price_memory.entries.get(upgrade.id)
-                    # StoreSink is asynchronous. A delayed receipt already
-                    # visible in this observation must not advance it again.
-                    if entry and row["ts"] > entry["observed_at"]:
-                        offsets[upgrade.id] += 1
-                elif verdict not in {"bought", "free"}:
-                    if upgrade:
-                        invalidated[upgrade.id] = max(row["ts"], invalidated.get(upgrade.id, 0))
-            if (row["kind"] == "UNEXPLAINED" and row["delta"] is not None
-                    and row["delta"] <= -CHEAPEST_WORKSHOP_PRICE):
-                # A reconciliation emitted for the very frame we just read
-                # invalidates older rows, not prices observed on that frame.
-                moment = (anchor["observed_at"] if anchor and row["observed"] == anchor["coins"]
-                          and 0 <= row["ts"] - anchor["observed_at"] < 2 else row["ts"])
-                changed_at = max(changed_at, moment)
             if anchor and row["ts"] >= anchor["observed_at"] and row["kind"] != "RUN_PAYOUT":
                 # A balance observation closes an earlier uncertainty. Other
                 # ledger debits/rewards are applied once; run payouts above
@@ -861,14 +820,7 @@ class RerollProgress:
                 wallet += delta
         if wallet is not None and wallet < 0:
             wallet = None
-        quotes = self.price_memory.quotes(offsets, invalidated=invalidated, changed_at=changed_at,
-                                          discount_signature=self._discount_signature())
-        # Unlock prices have no level ambiguity. They are estimates until read.
-        for uid in ("unlock_cash_bonuses", "unlock_coin_bonuses", "unlock_defense_upgrades", "unlock_thorns"):
-            if uid not in quotes and uid not in invalidated and not purchases.get(uid):
-                price = catalog_price(uid, 0)
-                if price is not None:
-                    quotes[uid] = PriceQuote(price, 0, "catalog_estimate")
+        quotes = replay_quotes(self.price_memory, actions, purchases, signature=self._discount_signature())
         return wallet, quotes
 
     def price_quotes(self) -> dict[str, PriceQuote]:

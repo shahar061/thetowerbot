@@ -5,6 +5,7 @@ export interface LedgerRow {
   id: string; name: string; level: number | null;
   invested?: number | null; spent?: number | null;
   next: number | null; maxed?: boolean; locked?: boolean;
+  levelText?: string; estimatedPrice?: boolean;
 }
 export interface LedgerRecent {
   key: string; ts: string | null; name: string; detail?: string | null;
@@ -16,7 +17,7 @@ export interface LedgerUnlock { name: string; cost: number | null }
  * bot's NEXT row highlighted, the next unlock and a scrolling purchase list. */
 export function CategoryLedger({
   label, head, rows, nextId, color, recent, nowMs,
-  unlock, investedHead = "Invested", nextHead = "Next", nextIsPrice = true,
+  unlock, investedHead = "Invested", nextHead = "Next", nextIsPrice = true, visualization,
 }: {
   label: string; head: string; rows: LedgerRow[]; nextId: string | null; color: string;
   recent: LedgerRecent[]; nowMs: number;
@@ -24,11 +25,12 @@ export function CategoryLedger({
   unlock?: LedgerUnlock | null;
   /** Null hides the column. */
   investedHead?: string | null; nextHead?: string; nextIsPrice?: boolean;
+  visualization?: React.ReactNode;
 }): React.JSX.Element {
   const columns = investedHead === null ? 3 : 4;
   return (
     <div className="fs-ledger" style={{ "--c": color } as React.CSSProperties}>
-      <div className="fs-tw" role="region" aria-label={label} tabIndex={0}>
+      {visualization ?? <div className="fs-tw" role="region" aria-label={label} tabIndex={0}>
         <table>
           <thead>
             <tr>
@@ -45,7 +47,7 @@ export function CategoryLedger({
               return (
                 <tr key={row.id} className={cn(next && "next", row.locked && "locked")}>
                   <td>{row.name}{next && <span className="fs-tn">NEXT</span>}</td>
-                  <td className="n">{row.level === null ? DASH : whole(row.level)}</td>
+                  <td className="n">{row.levelText ?? (row.level === null ? DASH : whole(row.level))}</td>
                   {investedHead !== null && (
                     <td className="n fs-dim" title={row.spent ? `Bot spent ${amount(row.spent)}` : undefined}>
                       {amount(row.invested)}
@@ -53,13 +55,13 @@ export function CategoryLedger({
                   <td className="n">
                     {row.locked ? <span className="fs-dim">locked</span>
                       : row.maxed ? <span className="fs-dim">MAX</span>
-                        : nextIsPrice ? priceText(row.next) : amount(row.next)}
+                        : nextIsPrice ? <>{priceText(row.next)}{row.estimatedPrice && row.next !== null && <small className="fs-price-source">Estimated</small>}</> : amount(row.next)}
                   </td>
                 </tr>);
             })}
           </tbody>
         </table>
-      </div>
+      </div>}
       {unlock !== undefined && (
         <div className="fs-unlock">
           {unlock === null ? "All unlocked" : <>Next unlock <b>{unlock.name}</b><span className="fs-unlock-cost">{priceText(unlock.cost)}</span></>}

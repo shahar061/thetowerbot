@@ -5,8 +5,8 @@ live screenshots, and a control plane that writes to disk. Tailscale Serve
 keeps it that way. The tailscale daemon proxies https://<mac>.<tailnet>.ts.net
 to 127.0.0.1, and only devices signed in to the same tailnet can reach it.
 
-The main dashboard goes on 443. Each worker dashboard keeps its own port
-(10000 + emulator number) so the UI can reach it at the same host, see
+The main dashboard goes on 443. Each worker dashboard keeps its browser-safe
+port (normally 10000 + emulator number) so the UI can reach it at the same host, see
 reachableDashboardUrl in web/ui/lib/api.ts. Workers come and go with every
 reroll, so this reconciles instead of configuring once: it asks the main
 dashboard which workers are running, serves those, and unserves worker ports
@@ -24,12 +24,17 @@ import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
+# Also support the documented direct `python tools/tailscale_serve.py` entry point.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fleet.runtime import BROWSER_BLOCKED_PORTS, WORKER_PORT_REPLACEMENTS
+
 MAIN_PORT = 8765
 MAIN_HTTPS = 443
-WORKER_PORTS = range(10000, 11000)
+WORKER_PORTS = frozenset(range(10000, 11000)) | frozenset(WORKER_PORT_REPLACEMENTS.values())
 
 
 def desired(accounts: list[dict[str, object]]) -> dict[int, int]:
@@ -40,7 +45,7 @@ def desired(accounts: list[dict[str, object]]) -> dict[int, int]:
         if not account.get("running") or not isinstance(url, str):
             continue
         port = urlsplit(url).port
-        if port in WORKER_PORTS:
+        if port in WORKER_PORTS and port not in BROWSER_BLOCKED_PORTS:
             ports[port] = port
     return ports
 

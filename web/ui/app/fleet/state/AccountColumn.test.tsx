@@ -20,15 +20,17 @@ const workshop: FleetStateWorkshop = {
   recent: [],
 };
 
-function show(account: FleetStateAccount, shownCount = 1) {
+function show(account: FleetStateAccount, shownCount = 1, open = { [`${account.id}:workshop-bars`]: false }) {
   return render(<AccountColumn account={account} accent="red" changedAt={NOW} shownCount={shownCount}
-    open={{}} onToggleSection={vi.fn()} />);
+    open={open} onToggleSection={vi.fn()} />);
 }
 
 test("the bot's next buy is highlighted and unknown prices never become numbers", () => {
   show(makeAccount({
     online: true, scan: 18442, bot: { screen: "IN_RUN", now: "Shopping", live: true },
     decision: { phase: "buying", reason: "cheapest", upgrade_id: "damage", category: "attack", name: "Damage", cost: null },
+    next_buy: { state: "buy", upgrade_id: "damage", name: "Damage", category: "attack", price: null,
+      price_source: null, wallet: null, reason: "cheapest", goal: null, observed_at: null },
     balances: { coins: 3.84e9, gems: null, stones: null }, workshop,
   }));
   const table = screen.getByRole("region", { name: "Attack workshop" });
@@ -40,6 +42,47 @@ test("the bot's next buy is highlighted and unknown prices never become numbers"
   expect(screen.getByText(/#18,442/)).toBeInTheDocument();
   expect(screen.getByText("3.84B")).toBeInTheDocument();
   expect(screen.getByText("not tracked yet")).toBeInTheDocument();
+});
+
+test("Workshop hides future locked groups and uses its own queue instead of the battle decision", () => {
+  show(makeAccount({
+    decision: { phase: "buying", reason: "battle", upgrade_id: "wall_health", category: "defense", name: "Wall Health", cost: null },
+    next_buy: { state: "save_coins", upgrade_id: "health", name: "Health", category: "defense", price: 55,
+      price_source: "observed", wallet: 30, reason: "saving", goal: null, observed_at: null },
+    workshop: { ...workshop, categories: { ...workshop.categories, defense: {
+      unlocked: 1, total: 18, skills: [skill("health", "Health"),
+        skill("thorns", "Thorns", { locked: true, level: null }),
+        skill("lifesteal", "Lifesteal", { locked: true, level: null }),
+        skill("wall_health", "Wall Health", { locked: true, level: null })],
+      next_unlock: { id: "unlock_thorns", name: "Unlock Thorns", cost: 500, upgrade_ids: ["thorns"] },
+    } } },
+  }));
+  const table = screen.getByRole("region", { name: "Defense workshop" });
+  expect(within(table).getByText("NEXT").closest("tr")).toHaveTextContent("Health");
+  expect(within(table).getByText("Thorns").closest("tr")).toHaveTextContent("locked");
+  expect(within(table).queryByText("Lifesteal")).toBeNull();
+  expect(within(table).queryByText("Wall Health")).toBeNull();
+});
+
+test("Workshop bars retain unknown levels and label estimated prices", () => {
+  const account = makeAccount({ workshop: { ...workshop, categories: { ...workshop.categories,
+    attack: category([skill("damage", "Damage", { level: 3, next_cost_source: "catalog_estimate" }),
+      skill("attack_speed", "Attack Speed", { level: null, next_cost: null })]),
+  } } });
+  show(account, 1, {});
+  const chart = screen.getByRole("region", { name: "Attack workshop levels" });
+  expect(within(chart).getByRole("meter", { name: "Damage level" })).toHaveAttribute("aria-valuenow", "3");
+  expect(within(chart).queryByRole("meter", { name: "Attack Speed level" })).toBeNull();
+  expect(chart).toHaveTextContent("Level unknown");
+  expect(chart).toHaveTextContent("Estimated");
+  expect(chart).toHaveTextContent("price unknown");
+});
+
+test("a battle decision alone never highlights a Workshop purchase", () => {
+  show(makeAccount({ workshop,
+    decision: { phase: "buying", reason: "battle", upgrade_id: "damage", category: "attack", name: "Damage", cost: null },
+  }));
+  expect(screen.queryByText("NEXT")).toBeNull();
 });
 
 test("an offline worker shows its stale age, its error, and a dash for every unknown", () => {
