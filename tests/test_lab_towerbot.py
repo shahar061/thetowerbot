@@ -450,3 +450,15 @@ def test_lab_one_game_speed_start_still_writes_its_cadence(tmp_path: Path) -> No
     assert b.reroll_progress.debits == 1
     started = [e for e in b.bus.published if isinstance(e, events.LabResearchStarted)]
     assert [e.concept_id for e in started] == ['labs.game-speed']
+
+
+def test_planning_sweeps_a_canary_that_left_the_pool(tmp_path: Path) -> None:
+    """A blocked gate plans no action, so the release must happen before planning."""
+    from lab_starter_rollout import LabStarterRollout
+    starter = LabStarterRollout(tmp_path / 'fleet')
+    for at in (1., 700.):
+        starter.note_start_dry_run(2, 'Air_9', 'account-z', 'labs.attack-speed', 1, 30, 15., at)
+    b = bot(action())
+    b.lab_visit.starter, b.lab_visit.worker = starter, 'Air_1'
+    b._plan_lab_action(1000.)
+    assert starter.state().rollout('start:2').stage == 'dry_run'

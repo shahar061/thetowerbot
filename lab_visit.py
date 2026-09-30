@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
 import time
-from typing import Callable
+from typing import Callable, Iterable
 
 from account_state import AccountState
 from evidence_scope import BalanceInterval, FactScope
@@ -125,6 +125,7 @@ class LabVisit:
         self.authorize, self.event_sink = authorize, event_sink
         self.rollout, self.worker, self.evidence_dir = rollout, worker, evidence_dir
         self.starter = starter
+        self._canary_sweep_at = float('-inf')
         self._boxes: tuple[ocr.TextBox, ...] = ()
         self._rehearsing = False
         self._search: PickerSearch | None = None
@@ -191,6 +192,7 @@ class LabVisit:
                 self.recovery_status = 'invalid_lab_action'
                 return False
             self.pending_action = action
+            self.release_stale_canaries((action.slot,))
             gate = self.gate(action.slot, action.research)
             if gate.mode == 'blocked' or (action.operation == 'start' and not gate.enabled):
                 self.recovery_status = 'starter_gate_refused'
@@ -233,6 +235,43 @@ class LabVisit:
         self.recovery_status = None
         self.preparation_refusal = None
         return True
+
+    def release_stale_canaries(self, slots: Iterable[int] = range(1, 6)) -> None:
+        """Free a start canary that can no longer prove its slot, as the unlock path does.
+
+        Another worker's canary is released once it left the pool or plays another
+        account; this worker's own canary only when promoted on another account.
+        Legacy Game Speed never reaches the rollout, so slot 1 is safe to include.
+        """
+        if self.starter is None or self.worker is None:
+            return
+        state, account = self.starter.state(), self._account()
+        for slot in slots:
+            key = start_key(slot)
+            record = state.rollout(key)
+            if record.stage != 'canary':
+                continue
+            if record.canary_worker != self.worker:
+                change = self.starter.release_absent_canary(key)
+            elif account is not None and record.canary_account != account:
+                change = self.starter.release_canary(key, expected_worker=self.worker,
+                                                     expected_account=record.canary_account)
+            else:
+                continue
+            if change.before != change.after:
+                logger.info("Lab start rollout %s: canary %s on %s released to dry run", key,
+                            record.canary_worker, record.canary_account)
+
+    def sweep_stale_canaries(self, now: float) -> None:
+        """release_stale_canaries for every slot, at most once a minute (the planner's scan path).
+
+        A blocked gate plans no action for the slot, so without this sweep no
+        request() would ever release a canary that left the pool.
+        """
+        if now < self._canary_sweep_at:
+            return
+        self._canary_sweep_at = now + 60.
+        self.release_stale_canaries()
 
     def gate(self, slot: int, research: str) -> StarterGate:
         """This worker's gate right now. The file is re-read on every call."""

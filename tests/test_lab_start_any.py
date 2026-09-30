@@ -318,3 +318,53 @@ def test_a_running_selected_slot_reads_as_that_slot_not_lab_one(
     outcome = h.visit._outcome
     assert outcome.decision.kind == 'wait_running'
     assert (outcome.decision.slot, outcome.decision.research_id) == (2, ATTACK)
+
+
+def test_a_canary_whose_worker_left_the_pool_is_released_so_another_worker_rehearses(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch, stage="dry_run")
+    for at in (1., 700.):
+        h.starter.note_start_dry_run(2, "Air_9", "account-z", ATTACK, 1, 30, 15., at)
+    assert h.starter.state().rollout("start:2").canary_worker == "Air_9"   # no pool file: Air_9 left
+    h.visit.cancel("new request")
+    assert h.visit.request(act("rehearse"))
+    assert h.starter.state().rollout("start:2").stage == "dry_run"
+    h.walk()
+    assert h.visit._outcome.reason == "research_rehearsed"
+    record = h.starter.state().rollout("start:2")
+    assert record.stage == "dry_run" and record.rehearsals("Air_1", "account-a") == 1
+
+
+def test_this_workers_canary_on_another_account_is_released(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch, stage="dry_run")
+    for at in (1., 700.):
+        h.starter.note_start_dry_run(2, "Air_1", "account-b", ATTACK, 1, 30, 15., at)
+    h.visit.cancel("new request")
+    assert not h.visit.request(act())          # promoted on account-b: no start on account-a
+    assert h.visit.recovery_status == "starter_gate_refused"
+    assert h.starter.state().rollout("start:2").stage == "dry_run"
+    assert h.visit.request(act("rehearse"))
+
+
+def test_this_workers_canary_on_its_own_account_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch, stage="canary")
+    h.visit.cancel("new request")
+    assert h.visit.request(act())
+    record = h.starter.state().rollout("start:2")
+    assert (record.stage, record.canary_worker, record.canary_account) == ("canary", "Air_1", "account-a")
+
+
+def test_the_planner_sweep_releases_an_absent_canary_at_most_once_a_minute(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = StartHarness(tmp_path, monkeypatch, stage="dry_run")
+    for at in (1., 700.):
+        h.starter.note_start_dry_run(3, "Air_9", "account-z", ATTACK, 1, 30, 15., at)
+    h.visit.sweep_stale_canaries(1000.)
+    assert h.starter.state().rollout("start:3").stage == "dry_run"
+    for at in (1., 700.):
+        h.starter.note_start_dry_run(3, "Air_9", "account-z", ATTACK, 1, 30, 15., at)
+    h.visit.sweep_stale_canaries(1030.)        # throttled
+    assert h.starter.state().rollout("start:3").stage == "canary"
+    h.visit.sweep_stale_canaries(1061.)
+    assert h.starter.state().rollout("start:3").stage == "dry_run"

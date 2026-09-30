@@ -168,3 +168,36 @@ def test_rows_for_the_dashboard(tmp_path: Path) -> None:
                    "price": PRICE, "catalog_price": PRICE, "seconds": 15., "mismatch": False,
                    "worker": "Air_1", "misses": 0, "evidence": []}
     json.dumps(snapshot)
+
+
+def test_release_canary_only_releases_the_expected_worker_and_account(tmp_path: Path) -> None:
+    rollout = LabStarterRollout(tmp_path)
+    canary(rollout)
+    assert rollout.release_canary("start:2", expected_worker="Air_2").after.stage == "canary"
+    assert rollout.release_canary("start:2", expected_worker="Air_1",
+                                  expected_account="acct-z").after.stage == "canary"
+    change = rollout.release_canary("start:2", expected_worker="Air_1", expected_account="acct-a")
+    assert change.after == StageRecord() and change.before.stage == "canary"
+    canary(rollout)
+    assert rollout.release_canary("start:2", expected_worker="Air_1").after == StageRecord()
+
+
+def test_an_absent_canary_is_released_but_not_one_repromoted_on_another_account(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import lab_starter_rollout
+    rollout = LabStarterRollout(tmp_path)
+    canary(rollout)
+    assert rollout.release_absent_canary("start:2").after == StageRecord()  # no pool file: absent
+
+    canary(rollout)
+    repromoted = StageRecord("canary", "Air_1", "acct-b")
+
+    def absent_then_repromoted(root: Path, worker: str, account: str | None) -> bool:
+        # Between the presence check and the locked write, the same worker became
+        # the canary again on another account: that canary must stay.
+        rollout._edit("start:2", lambda state: rollout._with_rollout(state, "start:2", repromoted))
+        return False
+
+    monkeypatch.setattr(lab_starter_rollout, "canary_present", absent_then_repromoted)
+    assert rollout.release_absent_canary("start:2").after == repromoted
+    assert rollout.state().rollout("start:2") == repromoted

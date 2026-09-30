@@ -1419,6 +1419,10 @@ class TowerBot:
         route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
         if (route_runtime is None or self.account_state is None or self.lab_runtime is None):
             return None
+        if self.lab_visit is not None:
+            # A canary that left the pool blocks its slot for everyone else; free it
+            # before the plan reads the rollout.
+            self.lab_visit.sweep_stale_canaries(now)
         snapshot = self.lab_runtime.snapshot()
         facts = self.account_state.lab_facts(snapshot, now=now)
         if facts is None:

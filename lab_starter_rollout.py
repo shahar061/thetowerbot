@@ -404,15 +404,29 @@ class LabStarterRollout:
                 evidence=(*record.evidence, *evidence)[-MAX_EVIDENCE:]))
         return self._edit(key, change)[0]
 
+    def release_canary(self, key: str, *, expected_worker: str,
+                       expected_account: str | None = None) -> StarterChange:
+        """Back to dry run, only while `expected_worker` (on `expected_account`, when given) is the canary."""
+        def change(state: StarterState) -> StarterState:
+            current = state.rollout(key)
+            if (current.stage != "canary" or current.canary_worker != expected_worker
+                    or expected_account is not None and current.canary_account != expected_account):
+                return state
+            return self._with_rollout(state, key, StageRecord())
+        return self._edit(key, change)[0]
+
     def release_absent_canary(self, key: str) -> StarterChange:
+        """Back to dry run when the canary left the pool or now plays another account."""
         record = self.state().rollout(key)
         if (record.stage != "canary" or record.canary_worker is None
                 or canary_present(self.root, record.canary_worker, record.canary_account) is not False):
             return StarterChange(key, record, record)
-
+        # The presence check judged this exact worker and account; a canary
+        # re-promoted since then (even the same worker on another account) stays.
         def change(state: StarterState) -> StarterState:
             current = state.rollout(key)
-            if current.stage != "canary" or current.canary_worker != record.canary_worker:
+            if (current.stage != "canary" or current.canary_worker != record.canary_worker
+                    or current.canary_account != record.canary_account):
                 return state
             return self._with_rollout(state, key, StageRecord())
         return self._edit(key, change)[0]
