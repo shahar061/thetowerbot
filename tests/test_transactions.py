@@ -530,3 +530,23 @@ def test_original_wallet_cannot_be_reused_after_confirmed_spend(tmp_path):
     journal.record_action(txn.key,at=2.)
     assert journal.reconcile(txn.key,_recovery(scope=scope),now=3.).spent == 10
     assert journal.prepare(_intent(ts=4.),scope=scope,balance=balance) is None
+
+
+def test_scoped_intent_settles_unproven_when_the_row_is_read_but_the_wallet_is_not(tmp_path):
+    # An unreadable header is no more proof than battle income: once the row
+    # has been read in scope, the timeout must settle rather than hold forever
+    # on a frame that recovery (which never sends input) cannot change.
+    from currencies import CurrencyRepository
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal)
+    txn = journal.prepare(_intent(), scope=scope, balance=balance)
+    journal.record_action(txn.key, at=2.)
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=None), now=3.)
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
+    outcome = journal.close_unproven(txn.key, reason='timeout', now=4.)
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
+    assert not journal.open_transactions()
+    assert CurrencyRepository(journal.path).committed('coins') == 0
+    with journal._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM currency_observations").fetchone()[0] == 0

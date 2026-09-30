@@ -597,12 +597,16 @@ class TransactionJournal:
                         and evidence.continuity.current == evidence.scope
                         and evidence.continuity.valid(now=now))
                 boundary = txn.acted_at if txn.stage == Stage.ACTED else txn.ts
-                relevant = (
+                # A fresh in-scope read of the item, whether or not the wallet was legible.
+                inspected = (
                     scope_matches and boundary is not None
                     and (txn.stage == Stage.ACTED or txn.scope is not None and txn.stage == Stage.INTENDED)
                     and boundary < evidence.observed_at <= now
                     and now - evidence.observed_at <= 30 and bool(evidence.frame_digest)
                     and evidence.category == txn.category and evidence.currency == txn.currency
+                )
+                relevant = (
+                    inspected
                     and txn.currency in ("coins", "gems", "cash", "stones")
                     and txn.price is not None and txn.price >= 0
                     and txn.wallet_before is not None and txn.wallet_before >= 0
@@ -631,9 +635,12 @@ class TransactionJournal:
                 if evidence.continuity is not None:
                     saved_evidence['continuity']['root'] = str(evidence.continuity.root)
                 detail.update(reason=outcome.reason, reconciliation=saved_evidence)
-                if not proven and relevant and evidence.effect_changed is not None:
+                if (not proven and evidence.effect_changed is not None
+                        and (relevant or inspected and txn.operation == 'workshop_buy')):
                     # A confirmed in-scope read of the item after the action;
-                    # close_unproven may now settle it (see there).
+                    # close_unproven may now settle it (see there). An illegible
+                    # wallet proves no more than battle income does, and recovery
+                    # never sends input, so waiting on the same frame cannot help.
                     detail.setdefault('inspected_at', evidence.observed_at)
                 conn.execute(
                     "UPDATE transactions SET stage = ?, outcome = ?, spent = ?, resolved_at = ?, detail = ? "
