@@ -22,7 +22,9 @@ import tiles
 import upgrades
 from device import Image
 
-_NUMBER = re.compile(r"(?:x|\$)?\s*(\d+(?:\.\d+)?)\s*([KMBTqQ]?)\s*(?:%|/s|/sec|s|sec)?")
+# Balances from 1,000 to 9,999 are shown in full with a thousands comma
+# ("1,000"); only a well-formed grouping is accepted, and never with a suffix.
+_NUMBER = re.compile(r"(?:x|\$)?\s*(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*([KMBTqQ]?)\s*(?:%|/s|/sec|s|sec)?")
 _MULTIPLIERS = {"": 1, "K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12, "q": 1e15, "Q": 1e18}
 # The game speed readout, the health recovery rate and the pause banner. The
 # `x` and the `/s` are required, not decoration: they are what separates the
@@ -35,9 +37,9 @@ _PAUSED = re.compile(r"game\s*paused", re.I)
 
 def stat_number(text: str) -> float | None:
     match = _NUMBER.fullmatch(text.strip())
-    if not match:
+    if not match or "," in match[1] and match[2]:
         return None
-    result = float(match[1]) * _MULTIPLIERS[match[2]]
+    result = float(match[1].replace(",", "")) * _MULTIPLIERS[match[2]]
     return result if math.isfinite(result) else None
 
 

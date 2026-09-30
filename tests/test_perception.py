@@ -42,6 +42,16 @@ def test_stat_number_handles_units_without_guessing(text: str, want: float | Non
     assert stat_number(text) == want
 
 
+@pytest.mark.parametrize("text,want", [("1,000", 1000), ("9,999", 9999), ("1,234,567", 1234567),
+                                      ("1,00", None), ("12,34", None), ("1,000K", None),
+                                      ("1,000.5", None), (",100", None)])
+def test_price_number_reads_the_headers_thousands_separator(text: str, want: int | None) -> None:
+    # The Workshop header shows 1,000-9,999 in full with a comma; an
+    # unparsed wallet left a purchase unprovable and the worker wedged.
+    from perception import price_number
+    assert price_number(text) == want
+
+
 def test_duration_stat_is_not_a_purchase_price() -> None:
     from perception import price_number
     assert price_number("10.0s") is None
