@@ -255,7 +255,7 @@ def rehearsed_rows(state: StarterState) -> list[dict[str, Any]]:
     return [{"lab_id": lab_id, "name": _name(lab_id), "status": lab.status, "level": lab.level,
              "price": lab.price, "catalog_price": lab.catalog_price, "seconds": lab.seconds,
              "mismatch": (lab.price is not None and lab.catalog_price is not None
-                          and lab.price != lab.catalog_price),
+                          and not price_matches(lab.price, lab.catalog_price)),
              "worker": lab.worker, "misses": len(lab.misses), "evidence": list(lab.evidence)}
             for lab_id, lab in sorted(state.labs.items())]
 

@@ -201,3 +201,14 @@ def test_an_absent_canary_is_released_but_not_one_repromoted_on_another_account(
     monkeypatch.setattr(lab_starter_rollout, "canary_present", absent_then_repromoted)
     assert rollout.release_absent_canary("start:2").after == repromoted
     assert rollout.state().rollout("start:2") == repromoted
+
+
+def test_the_dashboard_flags_only_a_price_beyond_its_abbreviation() -> None:
+    from lab_starter_rollout import RehearsedLab, rehearsed_rows
+    state = StarterState({}, {
+        ATTACK: RehearsedLab("rehearsed", level=6, price=1349, catalog_price=1340),     # "1.34K"
+        "labs.damage": RehearsedLab("needs_review", level=6, price=1400, catalog_price=1340),
+        "labs.health": RehearsedLab("rehearsed", level=1, price=31, catalog_price=30),  # shown in full
+    })
+    assert {row["lab_id"]: row["mismatch"] for row in rehearsed_rows(state)} == {
+        ATTACK: False, "labs.damage": True, "labs.health": True}

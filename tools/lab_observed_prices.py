@@ -14,7 +14,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import lab_catalog  # noqa: E402
-from lab_starter_rollout import LabStarterRollout, StarterState  # noqa: E402
+from lab_starter_rollout import LabStarterRollout, StarterState, price_matches  # noqa: E402
 
 DEFAULT_ROOT = Path.home() / ".local/share/thetowerbot/fleet"
 
@@ -25,7 +25,8 @@ def differences(state: StarterState) -> list[dict[str, Any]]:
         if lab.level is None or lab.price is None:
             continue
         level = lab_catalog.level(lab_id, lab.level)
-        if level is None or lab.price != level.coins:
+        # An abbreviated read ("1.34K") within its rounding is not a difference.
+        if level is None or not price_matches(lab.price, level.coins):
             rows.append({"lab_id": lab_id, "level": lab.level, "field": "coins", "observed": lab.price,
                          "catalog": level.coins if level is not None else None})
         if level is not None and lab.seconds is not None and abs(lab.seconds - level.seconds) > 1:
