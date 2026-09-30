@@ -491,6 +491,7 @@ class TransactionJournal:
         return self._refute_unlanded(key, evidence, now=now, operation='lab_unlock', currency='gems',
                                      reason='lab unlock tap did not land: slot still locked and gems unchanged')
 
+    @_recovery_mutation
     def refute_unlanded_start(self, key: str, evidence: RecoveryEvidence, *, now: float) -> Outcome:
         """Settle a research-start tap that provably did nothing as not charged (spent 0).
 
