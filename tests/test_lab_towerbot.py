@@ -103,6 +103,18 @@ def test_uncalibrated_planned_action_is_never_requested() -> None:
     assert not b.lab_visit.active
 
 
+def test_gate_refusal_between_plan_and_request_falls_back_to_legacy_check() -> None:
+    """The gate can move between the plan read and the request read (e.g.
+    another worker wrote lab-starter-rollout.json this scan). LabVisit.request
+    then refuses the planned action, but that must not skip the whole scan:
+    due work still arms the legacy slot-1 check, and undue work is a no-op."""
+    b = bot(action(2, 'labs.attack-speed', 1))  # gate blocked: no starter wired
+    assert not b._request_planned_lab_visit(1000., due=False)
+    assert not b.lab_visit.active
+    assert b._request_planned_lab_visit(1000., due=True)
+    assert b.lab_visit.active and b.lab_visit.selected_action is None
+
+
 def test_uncalibrated_plan_choices_are_published_once_with_their_reason() -> None:
     b = bot(None)
     b._plan_lab_action(1000.)

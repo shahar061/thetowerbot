@@ -1470,7 +1470,10 @@ class TowerBot:
                     # Pessimistic: only a verified start clears the backoff.
                     self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
                     return True
-                return False
+                # The gate refused between plan and request (e.g. another
+                # worker moved the starter rollout this scan): no backoff is
+                # set, so fall through to the legacy check rather than
+                # refusing the whole scan and retrying every pass.
         return due and self.lab_visit.request(None, options=options)
 
     def _settle_planned_lab_attempt(self, result: Any) -> None:
