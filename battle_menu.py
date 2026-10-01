@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 import config
+import ocr
 from account_collection import locate_control
 from config import Rect
 from device import Image
@@ -212,3 +213,64 @@ def free_gem_tile(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] 
         if patch.size and red_pixels(patch) >= config.BATTLE_MENU_BADGE_MIN_PIXELS:
             return button
     return None
+
+
+def daily_ad_tile(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] | None:
+    """Only the badged video button in the Store's exact 20-gem FREE tile."""
+    button = free_gem_tile(screen, boxes)
+    if button is None:
+        return None
+    if any(
+        re.fullmatch(r"x\s*20", b.text.strip(), re.IGNORECASE)
+        and abs(_centre(b.rect)[0] - button[0]) < 160
+        and 150 < button[1] - _centre(b.rect)[1] < 380
+        for b in boxes
+    ):
+        return button
+    # On some Store frames the full-frame OCR misses the small "x 20";
+    # its own tile crop reads the amount as a clean "20" instead.
+    region = Rect(button[0] - 170, button[1] - 400, 340, 280)
+    amounts = [b for b in ocr.read_region(screen, region)
+               if re.fullmatch(r"(?:x\s*)?20", b.text.strip(), re.IGNORECASE)
+               and b.confidence >= .8]
+    return button if len(amounts) == 1 else None
+
+
+def store_gems(screen: Image, boxes: tuple[TextBox, ...]) -> int | None:
+    """Read the Store's gem header, refusing missing or ambiguous balances."""
+    if not _is_store_page(boxes):
+        return None
+    width, height = screen.shape[1], screen.shape[0]
+    band = [b for b in boxes if b.confidence >= .9
+            and width * .35 < b.rect.x < width * .55
+            and b.rect.y < height * .043]
+    if not band:
+        region = Rect(int(width * .35), 0, int(width * .2), int(height * .043))
+        band = [b for b in ocr.read_region(screen, region)
+                if b.confidence >= (.8 if len(b.text.strip()) == 1 else .9)]
+    values = [v for b in band if (v := ocr.parse_number(b.text)) is not None]
+    return values[0] if len(values) == 1 else None
+
+
+def ad_reward_claim(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] | None:
+    """Claim on the full-screen 20 GEMS reward, never a Store offer."""
+    if _is_store_page(boxes) or any(is_price(b.text) for b in boxes):
+        return None
+    width, height = screen.shape[1], screen.shape[0]
+    reward = [b for b in boxes if _norm(b.text) == "20 gems"
+              and .45 * height < _centre(b.rect)[1] < .7 * height]
+    claims = [b for b in boxes if _norm(b.text) == "claim"
+              and .7 * height < _centre(b.rect)[1] < .9 * height
+              and .25 * width < _centre(b.rect)[0] < .75 * width]
+    return _centre(claims[0].rect) if len(reward) == len(claims) == 1 else None
+
+
+def ad_upsell_close(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] | None:
+    """Close the observed Disable Ads end card, away from its purchase button."""
+    texts = [_norm(b.text) for b in boxes]
+    if _is_store_page(boxes) or "disable ads" not in texts:
+        return None
+    if not any(t.startswith("buy for") and is_price(t) for t in texts):
+        return None
+    width, height = screen.shape[1], screen.shape[0]
+    return (int(width * .9), int(height * .055))

@@ -124,6 +124,38 @@ def test_free_gem_tile_found_on_scrolled_store():
 
 
 @needs_ocr
+def test_daily_ad_reader_requires_exact_reward_and_own_dot(monkeypatch):
+    ready = frame("battle_menu/store_ad_ready")
+    found = battle_menu.daily_ad_tile(ready, boxes("battle_menu/store_ad_ready"))
+    assert found is not None and found[0] < 540
+    assert battle_menu.store_gems(ready, boxes("battle_menu/store_ad_ready")) == 8
+    claimed = frame("battle_menu/store_ad_claimed")
+    assert battle_menu.daily_ad_tile(claimed, boxes("battle_menu/store_ad_claimed")) is None
+    assert battle_menu.store_gems(claimed, boxes("battle_menu/store_ad_claimed")) == 28
+    without_amount = tuple(b for b in boxes("battle_menu/store_ad_ready")
+                           if b.text.strip() != "x 20")
+    monkeypatch.setattr(battle_menu.ocr, "read_region", lambda screen, rect: ())
+    assert battle_menu.daily_ad_tile(ready, without_amount) is None
+
+
+@needs_ocr
+def test_daily_ad_reader_recovers_amount_from_tile_crop():
+    screen = frame("battle_menu/store_free_tiles")
+    assert battle_menu.daily_ad_tile(screen, boxes("battle_menu/store_free_tiles")) is not None
+
+
+@needs_ocr
+def test_reward_claim_and_upsell_close_are_distinct_from_paid_offer():
+    reward = frame("battle_menu/ad_reward_claim")
+    point = battle_menu.ad_reward_claim(reward, boxes("battle_menu/ad_reward_claim"))
+    assert point is not None and 400 < point[0] < 700 and point[1] > 1700
+    upsell = frame("battle_menu/ad_upsell")
+    assert battle_menu.ad_reward_claim(upsell, boxes("battle_menu/ad_upsell")) is None
+    close = battle_menu.ad_upsell_close(upsell, boxes("battle_menu/ad_upsell"))
+    assert close is not None and close[0] > 850 and close[1] < 250
+
+
+@needs_ocr
 def test_free_gem_tile_absent_on_store_top():
     assert battle_menu.free_gem_tile(frame("battle_menu/store_top"),
                                      boxes("battle_menu/store_top")) is None

@@ -321,6 +321,13 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                 detail={"point": list(event.point)},
                 **base),)
 
+        case events.DailyAdGemClaimed():
+            return (LedgerLine(
+                kind="GEM_CLAIM", item="daily ad", category="STORE",
+                currency=GEMS, delta=event.delta,
+                balance_after=event.gems_after, observed=event.gems_before,
+                **base),)
+
         case events.ClaimUncertain():
             return (LedgerLine(
                 kind="CLAIM_UNCERTAIN",
@@ -544,6 +551,7 @@ _REPLAYABLE: dict[str, type[events.Event]] = {
     "MilestoneClaimed": events.MilestoneClaimed,
     "ClaimUncertain": events.ClaimUncertain,
     "FloatingGemClaimed": events.FloatingGemClaimed,
+    "DailyAdGemClaimed": events.DailyAdGemClaimed,
 }
 
 

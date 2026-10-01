@@ -29,6 +29,9 @@ class Step(Enum):
     IN_PAGE = auto()
     RETURNING = auto()
     CLOSING = auto()
+    AD_PLAYING = auto()
+    AD_CLAIMED = auto()
+    AD_RECOVER = auto()
 
 
 class BattleMenuVisit:
@@ -52,10 +55,20 @@ class BattleMenuVisit:
         # when the icon was attended to, so two icons queued together and
         # visited back-to-back expire together too.
         self._entered = 0.0
+        self._ad_started = 0.0
+        self._ad_claimed_at = 0.0
+        self._gems_before: int | None = None
+        self._ad_upsell_closed = False
+        self._ad_recorded = False
+        self._ad_uncertain_recorded = False
 
     @property
     def active(self) -> bool:
         return self._step is not Step.IDLE
+
+    @property
+    def watching_ad(self) -> bool:
+        return self._step in (Step.AD_PLAYING, Step.AD_CLAIMED, Step.AD_RECOVER)
 
     def cancel(self, reason: str = "cancelled", detail: str = "") -> None:
         """End an active visit outright: no tap, no state record.
@@ -83,10 +96,13 @@ class BattleMenuVisit:
         if self._step is Step.IDLE:
             return self._idle(screen, device, policy, now, in_run)
         self._waited += 1
-        if self._waited > config.BATTLE_MENU_STEP_FRAMES:
+        if (self._step not in (Step.AD_PLAYING, Step.AD_CLAIMED, Step.AD_RECOVER)
+                and self._waited > config.BATTLE_MENU_STEP_FRAMES):
             return self._bail(screen, boxes, device, policy, now)
         handler = {Step.OPENING: self._opening, Step.IN_PAGE: self._in_page,
-                   Step.RETURNING: self._returning, Step.CLOSING: self._closing}[self._step]
+                   Step.RETURNING: self._returning, Step.CLOSING: self._closing,
+                   Step.AD_PLAYING: self._ad_playing, Step.AD_CLAIMED: self._ad_claimed,
+                   Step.AD_RECOVER: self._ad_recover}[self._step]
         return handler(screen, boxes, device, policy, now)
 
     # -- steps -----------------------------------------------------------------
@@ -125,8 +141,21 @@ class BattleMenuVisit:
         # (events_claim.EventsClaim) owns claiming and scrolling, armed from
         # home by the main-menu Events dot, which a visit here leaves lit.
         if reading.page == "store":
+            tile = battle_menu.daily_ad_tile(screen, boxes())
+            if (config.BATTLE_MENU_WATCH_ADS and self.current == "cart"
+                    and self._badge == battle_menu.Badge("red") and tile is not None):
+                before = battle_menu.store_gems(screen, boxes())
+                if before is not None:
+                    self._tap(device, policy, tile)
+                    self._gems_before = before
+                    self._ad_started = now
+                    self._ad_upsell_closed = False
+                    self._ad_recorded = False
+                    self._ad_uncertain_recorded = False
+                    self._go(Step.AD_PLAYING)
+                    return Outcome.TAPPED
             if battle_menu.free_gem_tile(screen, boxes()) is not None:
-                self._outcome = "free_tile_seen"   # Task 7 turns this into an ad watch
+                self._outcome = "free_tile_seen"
             elif self._scrolls < 2:
                 self._swipe(device, policy)
                 self._scrolls += 1
@@ -136,6 +165,66 @@ class BattleMenuVisit:
         self._tap(device, policy, reading.return_point)
         self._go(Step.RETURNING)
         return Outcome.TAPPED
+
+    def _ad_playing(self, screen: Image, boxes: Callable[[], tuple], device: Any,
+                    policy: Any, now: float) -> Outcome:
+        if now - self._ad_started >= config.BATTLE_MENU_AD_TIMEOUT:
+            device.press_back()
+            self._go(Step.AD_RECOVER)
+            return Outcome.TAPPED
+        text = boxes()
+        claim = battle_menu.ad_reward_claim(screen, text)
+        if claim is not None:
+            self._tap(device, policy, claim)
+            self._ad_claimed_at = now
+            self._go(Step.AD_CLAIMED)
+            return Outcome.TAPPED
+        if not self._ad_upsell_closed:
+            close = battle_menu.ad_upsell_close(screen, text)
+            if close is not None:
+                self._tap(device, policy, close)
+                self._ad_upsell_closed = True
+                return Outcome.TAPPED
+        return Outcome.HOLD
+
+    def _ad_claimed(self, screen: Image, boxes: Callable[[], tuple], device: Any,
+                    policy: Any, now: float) -> Outcome:
+        text = boxes()
+        page = battle_menu.read_page(text)
+        if page.page == "store" and page.return_point is not None:
+            if self._ad_recorded:
+                self._tap(device, policy, page.return_point)
+                self._go(Step.RETURNING)
+                return Outcome.TAPPED
+            after = battle_menu.store_gems(screen, text)
+            if (self._gems_before is not None and after is not None
+                    and after - self._gems_before == 20):
+                if not self._ad_recorded:
+                    self._bus.publish(events.DailyAdGemClaimed(
+                        gems_before=self._gems_before, gems_after=after, delta=20))
+                    self._ad_recorded = True
+                self._outcome = "ad_watched"
+                self._tap(device, policy, page.return_point)
+                self._go(Step.RETURNING)
+                return Outcome.TAPPED
+        if now - self._ad_claimed_at >= config.BATTLE_MENU_AD_CONFIRM_TIMEOUT:
+            return self._ad_fail(screen, boxes, device, policy, now, "balance_unconfirmed")
+        return Outcome.HOLD
+
+    def _ad_recover(self, screen: Image, boxes: Callable[[], tuple], device: Any,
+                    policy: Any, now: float) -> Outcome:
+        if battle_menu.read_page(boxes()).page == "store":
+            return self._ad_fail(screen, boxes, device, policy, now, "ad_timeout")
+        if self._waited >= config.BATTLE_MENU_STEP_FRAMES:
+            return self._ad_fail(screen, boxes, device, policy, now, "ad_timeout")
+        return Outcome.HOLD
+
+    def _ad_fail(self, screen: Image, boxes: Callable[[], tuple], device: Any,
+                 policy: Any, now: float, reason: str) -> Outcome:
+        if not self._ad_uncertain_recorded:
+            self._bus.publish(events.ClaimUncertain(target="daily_ad_gems", reason=reason))
+            self._ad_uncertain_recorded = True
+        return self._bail(screen, boxes, device, policy, now)
 
     def _returning(self, screen, boxes, device, policy, now) -> Outcome:
         menu = battle_menu.read_menu(screen, self._templates)

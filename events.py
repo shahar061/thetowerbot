@@ -169,6 +169,15 @@ class BattleMenuIconHandled(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class DailyAdGemClaimed(Event):
+    """The Store's 20-gem ad reward, proven by the gem header increase."""
+
+    gems_before: int
+    gems_after: int
+    delta: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class RunStarted(Event):
     run_id: int
     purpose: str = "farm"

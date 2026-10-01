@@ -22,13 +22,16 @@ POLICY = SimpleNamespace(tap_jitter_px=0, tap_delay=0.0, timing_jitter=0.0)
 
 class Device:
     def __init__(self):
-        self.taps, self.swipes = [], []
+        self.taps, self.swipes, self.backs = [], [], 0
 
     def click(self, x, y):
         self.taps.append((x, y))
 
     def swipe(self, *args):
         self.swipes.append(args)
+
+    def press_back(self):
+        self.backs += 1
 
 
 class Bus:
@@ -200,7 +203,8 @@ def test_never_taps_a_price_or_exit_battle(monkeypatch):
     """Every tap and swipe start, across full flows, lands outside EXIT
     BATTLE and outside every price box of the frame it was issued on."""
     reads = {name: ocr.read(frame(name)) for name in
-             ("event_info_modal", "event_page", "store_top", "store_free_tiles")}
+             ("event_info_modal", "event_page", "store_top", "store_ad_ready",
+              "ad_upsell", "ad_reward_claim", "store_ad_claimed")}
 
     # Event visit: hamburger, star, info modal X, return footer, close X.
     state = BattleMenuState(None)
@@ -213,8 +217,8 @@ def test_never_taps_a_price_or_exit_battle(monkeypatch):
     assert len(d.taps) == 5 and not v.active
     _assert_every_input_safe(d)
 
-    # Store visit: two scrolls, then the return footer; then a free tile
-    # (seen, never tapped) and the return footer; then close.
+    # Store visit: two scrolls, then the return footer; then the verified
+    # 20-gem ad tile, upsell close, reward claim, return footer, menu close.
     state = BattleMenuState(None)
     state.handled("event", battle_menu.Badge("blue"), now=0)
     v, d = visitor(state), _Recording()
@@ -229,11 +233,14 @@ def test_never_taps_a_price_or_exit_battle(monkeypatch):
     state.handled("event", battle_menu.Badge("blue"), now=0)
     v2 = visitor(state)
     _drive(v2, d, [("collapsed_badged", (), None), ("open_badged", (), None),
-                   ("store_free_tiles", reads["store_free_tiles"], None),
+                   ("store_ad_ready", reads["store_ad_ready"], None),
+                   ("ad_upsell", reads["ad_upsell"], None),
+                   ("ad_reward_claim", reads["ad_reward_claim"], None),
+                   ("store_ad_claimed", reads["store_ad_claimed"], None),
                    ("open_badged", (), None), ("collapsed_badged", (), None)])
     assert not v2.active
-    free = battle_menu.free_gem_tile(frame("store_free_tiles"), reads["store_free_tiles"])
-    assert free is not None and free not in d.taps
+    free = battle_menu.daily_ad_tile(frame("store_ad_ready"), reads["store_ad_ready"])
+    assert free is not None and free in d.taps
     _assert_every_input_safe(d)
 
     # Bail from IN_PAGE: the modal's X never reads, the step budget runs
@@ -331,3 +338,62 @@ def test_a_menu_of_only_missing_and_clear_icons_closes_once_and_stays_shut(monke
     for t in (3, 500, 5000):
         assert step(v, d, "collapsed_badged", t) is Outcome.IDLE
     assert len(d.taps) == 2
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_daily_ad_claims_only_after_reward_screen_and_verified_balance():
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    v, d = visitor(state), Device()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    ready = ocr.read(frame("store_ad_ready"))
+    assert step(v, d, "store_ad_ready", 2, ready) is Outcome.TAPPED
+    assert d.taps[-1] == battle_menu.daily_ad_tile(frame("store_ad_ready"), ready)
+    assert step(v, d, "ad_upsell", 38, ocr.read(frame("ad_upsell"))) is Outcome.TAPPED
+    assert step(v, d, "ad_reward_claim", 40,
+                ocr.read(frame("ad_reward_claim"))) is Outcome.TAPPED
+    assert d.taps[-1] == battle_menu.ad_reward_claim(
+        frame("ad_reward_claim"), ocr.read(frame("ad_reward_claim")))
+    claimed = ocr.read(frame("store_ad_claimed"))
+    assert step(v, d, "store_ad_claimed", 42, claimed) is Outcome.TAPPED
+    assert any(isinstance(e, events.DailyAdGemClaimed)
+               and (e.gems_before, e.gems_after, e.delta) == (8, 28, 20)
+               for e in v._bus.published)
+    assert d.backs == 0
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_daily_ad_timeout_backs_once_and_records_failure():
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    v, d = visitor(state), Device()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
+    assert step(v, d, "ad_upsell", 63, ()) is Outcome.TAPPED
+    assert d.backs == 1
+    assert step(v, d, "store_ad_ready", 64,
+                ocr.read(frame("store_ad_ready"))) is Outcome.TAPPED
+    assert any(isinstance(e, events.ClaimUncertain) and e.target == "daily_ad_gems"
+               for e in v._bus.published)
+    assert d.backs == 1
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_verified_ad_reward_is_recorded_once_if_return_tap_is_refused():
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    v, d = visitor(state), _Refusing()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
+    step(v, d, "ad_reward_claim", 3, ocr.read(frame("ad_reward_claim")))
+    claimed = ocr.read(frame("store_ad_claimed"))
+    d.refuse = True
+    with pytest.raises(RuntimeError):
+        step(v, d, "store_ad_claimed", 4, claimed)
+    d.refuse = False
+    assert step(v, d, "store_ad_claimed", 5, claimed) is Outcome.TAPPED
+    assert len([e for e in v._bus.published
+                if isinstance(e, events.DailyAdGemClaimed)]) == 1
