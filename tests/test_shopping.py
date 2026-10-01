@@ -15,6 +15,7 @@ from tempfile import TemporaryDirectory
 import cv2
 import dataclasses
 import hashlib
+import json
 import pytest
 
 import config
@@ -1736,6 +1737,83 @@ def test_info_panel_after_unlock_is_dismissed_while_purchase_stays_pending(
     assert device.taps[-1] == config.PANEL_DISMISS_POINT
     assert session._pending is not None
     assert session._bus.of_type("PurchaseSkipped") == []
+
+
+@pytest.mark.parametrize("current_label,max_label,confidence,expected", [
+    ("Current Level", "Max Level", .99, True),
+    ("CurrentLevel", "Max Level", .99, True),
+    ("Current Level", "MaxLevel", .99, True),
+    ("CURRENT   LEVEL", "MAXLEVEL", .99, True),
+    ("CurrentLevel", "MaxLevel", .89, False),
+    ("CurrentLevel", "Unknown", .99, False),
+    ("Ultimate Weapons", "OK", .99, False),
+])
+def test_info_popup_detection_uses_generic_labels(
+    monkeypatch: pytest.MonkeyPatch, current_label: str, max_label: str,
+    confidence: float, expected: bool,
+) -> None:
+    # No upgrade name or tab is needed to recognize the common info panel.
+    boxes = (
+        ocr.TextBox(current_label, confidence, config.Rect(300, 1100, 250, 35)),
+        ocr.TextBox(max_label, .99, config.Rect(300, 1180, 250, 35)),
+    )
+    monkeypatch.setattr(ocr, "read", lambda _: boxes)
+    assert shopping_mod.ShoppingSession._info_panel_visible(
+        frame("menu_workshop_info_panel")) is expected
+
+
+@pytest.mark.parametrize("joined_labels", [False, True])
+def test_real_unlock_popup_is_dismissed_then_shopping_continues(
+    session: shopping_mod.ShoppingSession, fake_header: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch, joined_labels: bool,
+) -> None:
+    """Replay the popup whose joined CurrentLevel label ended a funded visit."""
+    popup = frame("menu_workshop_cash_info_panel")
+    boxes = tuple(ocr.TextBox(b["text"], b["confidence"], config.Rect(*b["rect"]))
+                  for b in json.loads((FIXTURES / "ocr" /
+                                      "menu_workshop_cash_info_panel.json").read_text()))
+    if joined_labels:
+        # OCR segmentation varies between reads. Replay the joined labels
+        # observed during the failure without altering the recorded output.
+        boxes = tuple(dataclasses.replace(box, text=box.text.replace(" ", ""))
+                      if box.text in ("Current Level", "Max Level") else box
+                      for box in boxes)
+    read = ocr.read
+    monkeypatch.setattr(ocr, "read", lambda screen, **kwargs:
+                        boxes if screen is popup else read(screen, **kwargs))
+    device = FakeDevice()
+    fake_header["coins"] = 182
+    policy = a_policy(armed=True, coin_budget=40, workshop=(
+        ShoppingRule(name="Unlock Cash Bonuses", category="UTILITY"),))
+    following = a_policy(armed=True, coin_budget=100, workshop=(
+        ShoppingRule(name="Unlock Coin Bonuses", category="UTILITY"),))
+    session.reroll_replan = lambda: following
+    session.begin(policy, run_count=1)
+    session.advance(frame("menu_main"), device, policy)
+    session.advance(frame("menu_workshop_utility"), device, policy)
+    pending = session._pending
+    assert pending is not None and pending.row.upgrade_id == "unlock_cash_bonuses"
+    taps_before_popup = len(device.taps)
+
+    fake_header["coins"] = 142
+    session.advance(popup, device, policy)
+    assert len(device.taps) == taps_before_popup + 1
+    assert device.taps[-1] == config.PANEL_DISMISS_POINT
+    assert session._pending is pending and pending.info_dismissed
+    assert pending.frames == 0
+    assert session._bus.of_type("Purchased") == []
+
+    # Dismissal is not purchase proof. The newly visible rows settle the
+    # pending unlock before the next frame may buy another affordable item.
+    session.advance(frame("menu_workshop_utility_early"), device, policy)
+    assert session._pending is None
+    assert [e.item for e in session._bus.of_type("Purchased")] == ["Unlock Cash Bonuses"]
+    assert len(device.taps) == taps_before_popup + 1
+    session.advance(frame("menu_workshop_utility_early"), device, policy)
+    assert session._pending is not None
+    assert session._pending.row.upgrade_id == "unlock_coin_bonuses"
+    assert len(device.taps) == taps_before_popup + 2
+    assert session._bus.of_type("ShoppingEnded") == []
 
 
 def test_a_screen_that_stays_blind_ends_the_visit(session, fake_header) -> None:
