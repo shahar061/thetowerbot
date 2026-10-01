@@ -223,6 +223,12 @@ class RerollProgress:
         root = self.fleet_root
         return LabUnlockRollout(root) if root is not None else None
 
+    def starter_rollout(self) -> "LabStarterRollout | None":
+        """The fleet's shared lab-start rollout record. A solo bot has none: only legacy Game Speed."""
+        from lab_starter_rollout import LabStarterRollout
+        root = self.fleet_root
+        return LabStarterRollout(root) if root is not None else None
+
     def next_unlock_slot(self) -> int | None:
         """The slot the gem lane unlocks next, from this account's slot record."""
         return next_unlock_slot(gem_lane_blocks(self._effective_gems()), self.lab_cadence.slot_records())
@@ -255,6 +261,8 @@ class RerollProgress:
                     and wallet_gems >= 0 else None)
         rollout = self.unlock_rollout()
         rollout_slots = rollout.slots() if rollout is not None else None
+        starter = self.starter_rollout()
+        starter_state = starter.state() if starter is not None else None
         facts = replace(facts, available_coins=available, wallet_coins=available,
                         wallet_gems=gems,
                         jar=self.coin_jar.amount(quiet=True),
@@ -263,7 +271,7 @@ class RerollProgress:
                         slot_ownership=self.lab_cadence.slot_records(),
                         owned_floor=(getattr(runtime, "slots_owned", None)
                                      if type(getattr(runtime, "slots_owned", None)) is int else None),
-                        rollout=rollout_slots, worker=self.worker_id)
+                        rollout=rollout_slots, worker=self.worker_id, starter=starter_state)
         route = self.route_runtime.current()
         return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
 

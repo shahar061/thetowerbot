@@ -184,7 +184,7 @@ def test_observed_slot_has_current_research_and_ownership_without_execution_clai
     assert slot.now.research_name == "Coins / Wave"
     assert slot.now.owned is True
     assert slot.now.evidence_status == "historical"
-    assert slot.capabilities == {"observe": True, "plan": True, "execute": False}
+    assert slot.capabilities == {"observe": True, "plan": True, "execute": False, "rehearse": False}
     owned = evaluate_lab_plan(template_route(), LabFacts(
         now=1000., slot2={"status": "owned", "wallet_gems": 5, "observed_at": 900.}))
     assert [slot.now.state for slot in owned.slots[1:]] == ["owned_unread", "unknown", "unknown", "unknown"]

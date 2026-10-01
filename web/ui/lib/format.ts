@@ -128,6 +128,12 @@ export function splitEvent(event: BotEvent): EventLine {
       return { kind: "LAB", body: `Lab ${event.slot} unlock promoted to ${event.stage}` };
     case "LabUnlockHalted":
       return { kind: "LAB!", body: `Lab ${event.slot} unlock halted: ${event.reason}` };
+    case "LabStartRehearsed":
+      return { kind: "LAB", body: `rehearsed Lab ${event.slot} ${event.research_id} Lv.${event.level}: ${event.price} coins` };
+    case "LabStarterPromoted":
+      return { kind: "LAB", body: `${event.key} starts promoted to ${event.stage}` };
+    case "LabStarterHalted":
+      return { kind: "LAB!", body: `${event.key} starts halted: ${event.reason}` };
     case "PageChanged":
       return {
         kind: "PAGE",

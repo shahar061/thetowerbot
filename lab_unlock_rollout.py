@@ -10,34 +10,20 @@ dry run, so nothing taps.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
-import fcntl
-import json
-import logging
 import math
-import os
 from pathlib import Path
-import time
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Mapping
 
 import lab_catalog
-from fleet.build_route_store import _write_json_atomic
-
-logger = logging.getLogger(__name__)
+from staged_rollout import (MAX_EVIDENCE, PROMOTION_SPACING_SECONDS, STAGES, LockedJsonFile,
+                            RolloutError, canary_present)
 
 SCHEMA_VERSION = 1
 SLOTS = (2, 3, 4, 5)
-STAGES = ("dry_run", "canary", "fleet", "halted")
 PROMOTION_REHEARSALS = 2
-PROMOTION_SPACING_SECONDS = 600.
 MAX_DRY_RUNS_PER_PAIR = 5
-MAX_EVIDENCE = 32
 OUTCOMES = ("bought", "not_charged")
-
-
-class RolloutError(ValueError):
-    """An owner action that does not apply to the slot's current stage."""
 
 
 @dataclass(frozen=True)
@@ -156,25 +142,6 @@ def _check_slot(slot: int) -> None:
         raise ValueError(f"lab slot must be one of {SLOTS}")
 
 
-def canary_present(fleet_root: Path, worker: str, account_id: str | None) -> bool | None:
-    """Whether `worker` is still a pool member bound to `account_id`. None when unreadable."""
-    from web.account_catalog import registered_worker
-    try:
-        members = json.loads((Path(fleet_root) / "reroll-pool.json").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False
-    except (OSError, ValueError):
-        return None
-    if not isinstance(members, list):
-        return None
-    if not any(isinstance(item, dict) and item.get("name") == worker for item in members):
-        return False
-    registration = registered_worker(Path(fleet_root) / "workers" / worker)
-    if registration is None:
-        return False
-    return account_id is None or registration.account_id == account_id
-
-
 def rollout_status(state: SlotRollout, slot: int, worker: str | None) -> str:
     """The Fleet State line for a worker whose next gem step unlocks `slot`."""
     if state.stage == "halted":
@@ -194,53 +161,22 @@ class LabUnlockRollout:
         self.root = Path(fleet_root)
         self.path = self.root / "lab-unlock-rollout.json"
         self.lock_path = self.root / ".lab-unlock-rollout.lock"
+        self._file = LockedJsonFile(self.path, self.lock_path, "Lab unlock rollout")
 
-    @contextmanager
-    def _locked(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
-        with self.lock_path.open("a+b") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    def _locked(self):  # kept for callers that hold the lock across reads
+        return self._file.locked()
 
-    def _corrupt(self, quarantine: bool, exc: Exception) -> dict[int, SlotRollout]:
-        if quarantine:
-            aside = self.path.with_name(f"{self.path.name}.corrupt-{time.time_ns()}")
-            os.replace(self.path, aside)
-            logger.warning("Lab unlock rollout %s is corrupt (%s); moved to %s; every slot "
-                           "is back at dry run", self.path, exc, aside)
-        else:
-            logger.warning("Lab unlock rollout %s is corrupt (%s); reading every slot as dry run",
-                           self.path, exc)
-        return {}
+    @staticmethod
+    def _parse(document: object) -> dict[int, SlotRollout]:
+        if not isinstance(document, dict) or document.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("unsupported rollout schema")
+        raw = document.get("slots")
+        if not isinstance(raw, dict) or any(key not in {str(slot) for slot in SLOTS} for key in raw):
+            raise ValueError("slots must be keyed 2-5")
+        return {int(key): SlotRollout.from_dict(value) for key, value in raw.items()}
 
     def _load(self, *, quarantine: bool, for_write: bool = False) -> dict[int, SlotRollout]:
-        """The stored slots. A read error other than a missing file reads as all dry run,
-        except `for_write`, where it raises: writing back only the changed slot would
-        erase every other slot's record, a halt included."""
-        try:
-            text = self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return {}
-        except UnicodeDecodeError as exc:
-            return self._corrupt(quarantine, exc)
-        except OSError as exc:
-            if for_write:
-                raise
-            logger.warning("Lab unlock rollout %s unreadable (%s); every slot is at dry run", self.path, exc)
-            return {}
-        try:
-            document = json.loads(text)
-            if not isinstance(document, dict) or document.get("schema_version") != SCHEMA_VERSION:
-                raise ValueError("unsupported rollout schema")
-            raw = document.get("slots")
-            if not isinstance(raw, dict) or any(key not in {str(slot) for slot in SLOTS} for key in raw):
-                raise ValueError("slots must be keyed 2-5")
-            return {int(key): SlotRollout.from_dict(value) for key, value in raw.items()}
-        except (ValueError, TypeError, AttributeError) as exc:
-            return self._corrupt(quarantine, exc)
+        return self._file.load(self._parse, quarantine=quarantine, for_write=for_write) or {}
 
     def slots(self, *, quarantine: bool = True) -> dict[int, SlotRollout]:
         """Every slot 2-5. A dashboard read passes quarantine=False and never moves a file."""
@@ -267,7 +203,7 @@ class LabUnlockRollout:
             after = change(before)
             if after != before:
                 stored[slot] = after
-                _write_json_atomic(self.path, {
+                self._file.write({
                     "schema_version": SCHEMA_VERSION,
                     "slots": {str(key): value.to_dict() for key, value in sorted(stored.items())}})
         return RolloutChange(slot, before, after)

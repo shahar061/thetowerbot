@@ -41,9 +41,9 @@ from missions_screen import MissionsReadings
 from missions_visit import MissionsVisit
 from lab_plan import LabDecision, LabVisitOptions
 from lab_visit import LabVisit
-from lab_routes import research_gate
 import lab_catalog
 import lab_screen
+from lab_starter_rollout import LabStarterRollout
 from lab_unlock_rollout import LabUnlockRollout
 from identity_reverify import IdentityReverifier
 from labs import LabsState
@@ -284,6 +284,9 @@ class TowerBot:
             self.lab_visit.rollout = rollout if isinstance(rollout, LabUnlockRollout) else None
             worker = getattr(reroll_progress, 'worker_id', None)
             self.lab_visit.worker = worker if isinstance(worker, str) else None
+            starter_opener = getattr(reroll_progress, 'starter_rollout', None)
+            starter = starter_opener() if callable(starter_opener) else None
+            self.lab_visit.starter = starter if isinstance(starter, LabStarterRollout) else None
         self.stall_watchdog = stall_watchdog.StallWatchdog(
             time.time, no_effect_limit=config.STALL_NO_EFFECT_LIMIT,
             blocked_limit=config.STALL_BLOCKED_SECONDS)
@@ -1383,7 +1386,7 @@ class TowerBot:
         if not options.start_research or decision is None:
             return False
         slot, research, target = decision.slot, decision.research_id, decision.target_level
-        if not research_gate(slot, research).enabled:
+        if self.lab_visit is None or not self.lab_visit.gate(slot, research).enabled:
             return False
         # A selected action binds slot, research, level and the strategy
         # revision it was planned under; any drift refuses the spend.
@@ -1402,18 +1405,24 @@ class TowerBot:
             return False
         plan = self.reroll_progress.lab_strategy_plan(snapshot, available_coins=facts.available_coins, now=now)
         action = self.account_state.lab_action(plan, snapshot, revision=revision, now=now) if plan else None
-        return (action is not None and action.slot == slot and action.research == research
-                and action.target_level == target and action.strategy_revision == revision)
+        return (action is not None and action.operation == 'start' and action.slot == slot
+                and action.research == research and action.target_level == target
+                and action.strategy_revision == revision)
 
     def _plan_lab_action(self, now: float) -> Any | None:
-        """One route-gated start from the assigned plan; uncalibrated choices only surface.
+        """One route-gated start or rehearsal from the assigned plan; uncalibrated choices only surface.
 
-        Uses the plan's route gates (via choose_lab_action and research_gate),
-        never automated_list(). Only called from the safe MAIN_MENU branch.
+        Uses the plan's route gates (via choose_lab_action and the starter
+        rollout's gate), never automated_list(). Only called from the safe
+        MAIN_MENU branch.
         """
         route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
         if (route_runtime is None or self.account_state is None or self.lab_runtime is None):
             return None
+        if self.lab_visit is not None:
+            # A canary that left the pool blocks its slot for everyone else; free it
+            # before the plan reads the rollout.
+            self.lab_visit.sweep_stale_canaries(now)
         snapshot = self.lab_runtime.snapshot()
         facts = self.account_state.lab_facts(snapshot, now=now)
         if facts is None:
@@ -1423,7 +1432,7 @@ class TowerBot:
             return None
         self._note_lab_route_pending(plan)
         action = self.account_state.lab_action(plan, snapshot, revision=route_runtime.current().revision, now=now)
-        if action is None or action.operation != 'start' or not research_gate(action.slot, action.research).enabled:
+        if action is None or action.operation not in ('start', 'rehearse'):
             return None
         return action
 
@@ -1453,7 +1462,7 @@ class TowerBot:
         options = self.reroll_progress.lab_visit_options()
         action = self._plan_lab_action(now)
         if action is not None:
-            key = (action.slot, action.research, action.target_level, action.strategy_revision)
+            key = (action.slot, action.research, action.target_level, action.strategy_revision, action.operation)
             record = next((r for r in getattr(self.lab_runtime.snapshot(), 'slots', ())
                            if getattr(r, 'slot', None) == action.slot), None)
             evidence = ((record.state, record.research_id, record.transaction_id)
@@ -1465,7 +1474,10 @@ class TowerBot:
                     # Pessimistic: only a verified start clears the backoff.
                     self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
                     return True
-                return False
+                # The gate refused between plan and request (e.g. another
+                # worker moved the starter rollout this scan): no backoff is
+                # set, so fall through to the legacy check rather than
+                # refusing the whole scan and retrying every pass.
         return due and self.lab_visit.request(None, options=options)
 
     def _settle_planned_lab_attempt(self, result: Any) -> None:
@@ -1488,13 +1500,18 @@ class TowerBot:
             # LabSlotUnlocked is the journal's recovery_event, with the real slot and price.
             self.reroll_progress.note_lab_slots(dict(result.slot_status), result.gem_balance)
         decision = result.decision
-        if (result.confirmed_job is not None
+        # The slot-1 cadence, its coin hold and the research wait belong to Game
+        # Speed in Lab 1 (a legacy visit's decision defaults to it). Another
+        # slot's job, price or level must never be written over them.
+        game_speed = (decision.slot, decision.research_id) == (1, 'labs.game-speed')
+        if (game_speed and result.confirmed_job is not None
                 and result.confirmed_job.completes_at is not None):
             self._research_until = result.confirmed_job.completes_at
         if result.status == "started" and result.confirmed_job is not None:
-            self.reroll_progress.note_lab_observation(LabDecision(
-                "wait_running", job_completes_at=result.confirmed_job.completes_at,
-                game_speed_level=decision.game_speed_level))
+            if game_speed:
+                self.reroll_progress.note_lab_observation(LabDecision(
+                    "wait_running", job_completes_at=result.confirmed_job.completes_at,
+                    game_speed_level=decision.game_speed_level))
             if (decision.wallet_coins is not None and decision.price is not None
                     and result.observed_coin_spend == decision.price):
                 key = (result.confirmed_job.completes_at,
@@ -1506,7 +1523,7 @@ class TowerBot:
                             self.lab_state.observe(observation)
                     if result.transaction_key is None:
                         self.bus.publish(events.LabResearchStarted(
-                            concept_id="labs.game-speed", price=decision.price,
+                            concept_id=decision.research_id, price=decision.price,
                             coins_before=decision.wallet_coins,
                             coins_after=decision.wallet_coins - decision.price,
                             completes_at=result.confirmed_job.completes_at))
@@ -1519,9 +1536,12 @@ class TowerBot:
             # drives); only the next check backs off.
             if result.status in ("failed", "cancelled") and decision.kind == "unknown":
                 self.reroll_progress.note_lab_failure()
-            elif result.reason != "auto_start_off":
+            elif game_speed and result.reason not in ("auto_start_off", "research_rehearsed"):
+                # A rehearsal decision carries kind 'start' for the rehearsed
+                # slot, but research never began: it must not be observed as
+                # a start or as any other cadence/state-changing observation.
                 self.reroll_progress.note_lab_observation(decision)
-        logger.info("Lab 1 visit ended: %s (%s)%s", result.status, result.reason,
+        logger.info("Lab %s visit ended: %s (%s)%s", decision.slot, result.status, result.reason,
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:

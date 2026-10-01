@@ -69,6 +69,22 @@ function validRolloutRow(item: unknown): boolean {
     Array.isArray(item.evidence) && item.evidence.every(path => typeof path === "string");
 }
 
+function validStarterRow(item: unknown): boolean {
+  return record(item) && typeof item.key === "string" && UNLOCK_STAGES.includes(item.stage as string) &&
+    (item.canary_worker === null || typeof item.canary_worker === "string") && Number.isInteger(item.dry_runs) &&
+    (item.halted_reason === null || typeof item.halted_reason === "string") &&
+    Array.isArray(item.evidence) && item.evidence.every(path => typeof path === "string");
+}
+
+function validRehearsedLab(item: unknown): boolean {
+  return record(item) && typeof item.lab_id === "string" && typeof item.name === "string" &&
+    ["rehearsed", "needs_review", "unfindable", "missing"].includes(item.status as string) &&
+    nullableNumber(item.level) && nullableNumber(item.price) && nullableNumber(item.catalog_price) &&
+    nullableNumber(item.seconds) && bool(item.mismatch) && Number.isInteger(item.misses) &&
+    (item.worker === null || typeof item.worker === "string") &&
+    Array.isArray(item.evidence) && item.evidence.every(path => typeof path === "string");
+}
+
 /** API data is untrusted even when fetchFleetLabs has a TypeScript return type. */
 export function validatedLabsSnapshot(value: unknown): LabsSnapshot | null {
   if (!record(value) || !Array.isArray(value.workers) || !value.workers.every(validRow) ||
@@ -89,6 +105,10 @@ export function validatedLabsSnapshot(value: unknown): LabsSnapshot | null {
         typeof item.url === "string" && typeof item.checked === "string")) return null;
   if (value.unlock_rollout !== undefined &&
       (!Array.isArray(value.unlock_rollout) || !value.unlock_rollout.every(validRolloutRow))) return null;
+  if (value.starter_rollout !== undefined &&
+      (!Array.isArray(value.starter_rollout) || !value.starter_rollout.every(validStarterRow))) return null;
+  if (value.rehearsed_labs !== undefined &&
+      (!Array.isArray(value.rehearsed_labs) || !value.rehearsed_labs.every(validRehearsedLab))) return null;
   if (new Set(value.workers.map(row => row.worker)).size !== value.workers.length) return null;
   return value as LabsSnapshot;
 }

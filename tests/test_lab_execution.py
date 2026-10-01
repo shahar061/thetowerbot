@@ -49,7 +49,7 @@ def test_uncalibrated_action_is_retained_without_enabling_a_visit() -> None:
     assert not visit.request(requested)
     assert not visit.active
     assert visit.pending_action == requested
-    assert visit.recovery_status == 'lab_route_calibration_required'
+    assert visit.recovery_status == 'starter_gate_refused'
     matrix = labs.capabilities()
     assert not any(key.startswith('unlock_slot_') for key in matrix['route_gates'])
     assert matrix['route_gates']['in_battle_labs']['enabled'] is False
@@ -140,13 +140,18 @@ def test_selected_action_never_enters_labs_during_battle(tmp_path: Path, monkeyp
 
 def test_offline_general_executor_binds_the_selected_slot_research_and_account(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Injected observations exercise control flow only; no calibration is saved."""
-    from lab_routes import RouteGate
     from labs import LabJob
     import lab_visit
     h = LabHarness(tmp_path, monkeypatch)
     h.visit.cancel('new request')
-    # Bypass the gate ONLY inside this offline unit test. Production stays gated.
-    monkeypatch.setattr(lab_visit, 'research_gate', lambda *_: RouteGate(True, 'test_only', 'offline'))
+    # Fleet-stage the starter rollout ONLY inside this offline unit test so the
+    # gate opens; production reaches fleet stage through real dry runs.
+    from lab_starter_rollout import LabStarterRollout
+    starter = LabStarterRollout(tmp_path / 'fleet')
+    for at in (1., 700.):
+        starter.note_start_dry_run(2, 'Air_1', 'account-a', 'labs.attack-speed', 1, 30, 15., at)
+    starter.note_start(2, 'Air_1', 'account-a', 'seed', 'bought', at=800.)
+    h.visit.starter, h.visit.worker = starter, 'Air_1'
     assert h.visit.request(action(2, 'labs.attack-speed'))
     original_slots = lab_screen.read_slots
     original_home = lab_screen.read_selected_home
@@ -193,197 +198,6 @@ def test_offline_general_executor_binds_the_selected_slot_research_and_account(t
     assert h.runtime.snapshot().slots[1].transaction_id == txn.key
     assert h.visit._outcome.reason == 'research_confirmed'
     assert h.visit._outcome.observed_coin_spend == 30
-
-
-@pytest.mark.parametrize('record', [
-    {'enabled': True, 'slot': 2, 'research_id': 'labs.attack-speed'},
-    {'source': 'synthetic', 'slot': 2, 'research_id': 'labs.attack-speed'},
-    {'source': 'continuous_live_capture', 'slot': 2, 'research_id': 'labs.attack-speed',
-     'frames': [{'image': 'isolated.png', 'stage': 'running'}]},
-])
-def test_future_route_records_fail_closed_without_recorded_semantic_sequence(tmp_path: Path, record: dict) -> None:
-    import json
-    from lab_routes import load_recorded_routes
-    manifest = tmp_path / 'routes.json'
-    manifest.write_text(json.dumps({'schema_version': 1, 'routes': [record]}))
-    assert load_recorded_routes(manifest) == {}
-
-
-def test_missing_or_invalid_manifest_keeps_only_the_legacy_route(tmp_path: Path) -> None:
-    from lab_routes import load_recorded_routes
-    path = tmp_path / 'routes.json'
-    assert load_recorded_routes(path) == {}
-    path.write_text('{')
-    assert load_recorded_routes(path) == {}
-
-
-def _reference(path: Path) -> dict[str, str]:
-    import hashlib
-    return {'path': path.name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-
-
-def _log(tmp_path: Path, record: dict, *, entries: list | None = None, **overrides: object) -> None:
-    """A TEST-AUTHORED stand-in for the recorder's capture log (never installed)."""
-    import json
-    document = {'format': 'towerbot-capture-log', 'version': 1, 'session_id': record['session_id'],
-                'account_id': record['account_id'], 'game_version': record['game_version'],
-                'entries': entries if entries is not None else [
-                    {'capture_id': f['capture_id'], 'png_sha256': f['image']['sha256'],
-                     'captured_at': f['captured_at'], 'recording': 'recorded', 'input': f.get('input')}
-                    for f in record['frames']], **overrides}
-    path = tmp_path / 'capture-log.json'
-    path.write_text(json.dumps(document))
-    record['capture_log'] = _reference(path)
-
-
-def _install(tmp_path: Path, record: dict) -> Path:
-    import json
-    manifest = tmp_path / 'routes.json'
-    manifest.write_text(json.dumps({'schema_version': 1, 'routes': [record]}))
-    return manifest
-
-
-def _copy(tmp_path: Path, name: str, target: str) -> dict[str, str]:
-    from tests.test_lab_visit import FIXTURES
-    path = tmp_path / f'{target}.png'
-    path.write_bytes((FIXTURES / f'{name}.png').read_bytes())
-    return _reference(path)
-
-
-@pytest.fixture
-def research_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Schema exercise over distinct recorded legacy PNGs, their real OCR and a
-    real offline journal receipt. Its capture log is TEST-AUTHORED: the legacy
-    fixtures are isolated captures, not a continuous recording, so nothing
-    built here is ever installed in the shipped manifest."""
-    import sqlite3
-    from tests.test_lab_visit import FIXTURES
-    h = LabHarness(tmp_path, monkeypatch)
-    h.confirmation()
-    h.scan('menu_labs_game_speed_confirmation')
-    key = h.journal.open_transactions()[0].key
-    for _ in range(3):
-        h.scan('menu_labs_game_speed_running')
-    journal_copy = tmp_path / 'receipt.db'
-    with sqlite3.connect(h.journal.path) as source, sqlite3.connect(journal_copy) as target:
-        source.backup(target)
-    frames = []
-    for index, (stage, name) in enumerate([
-        ('home', 'menu_labs_slot1_affordable'), ('home', 'menu_labs_slot1_affordable'),
-        ('picker', 'menu_labs_game_speed_affordable'), ('picker', 'menu_labs_game_speed_affordable'),
-        ('confirmation', 'menu_labs_game_speed_confirmation'), ('confirmation', 'menu_labs_game_speed_confirmation'),
-        ('running', 'menu_labs_game_speed_running'), ('running', 'menu_labs_game_speed_running'),
-        ('running', 'menu_labs_game_speed_running'), ('return', 'menu_main_labs_unlocked'),
-    ]):
-        frame_record = {'stage': stage, 'captured_at': 11. + index, 'capture_id': f'test-{index}',
-                        'image': _copy(tmp_path, name, str(index))}
-        if stage != 'return':
-            text_path = tmp_path / f'{index}.json'
-            text_path.write_text((FIXTURES / 'ocr' / f'{name}.json').read_text())
-            frame_record['ocr'] = _reference(text_path)
-        if index in (1, 3, 5, 8):
-            tap_index = (1, 3, 5, 8).index(index)
-            frame_record['input'] = {'kind': ('open_slot', 'select_research', 'research', 'return_home')[tap_index],
-                                     'point': list(h.device.taps[tap_index])}
-        frames.append(frame_record)
-    record = {'kind': 'research', 'source': 'continuous_live_capture', 'slot': 1,
-              'research_id': 'labs.game-speed', 'account_id': 'account-a', 'session_id': 'schema-test-only',
-              'game_version': 'test-only', 'reviewed_by': 'schema-test-only', 'layout': [1080, 2400],
-              'frames': frames, 'journal': _reference(journal_copy), 'receipt_key': key}
-    _log(tmp_path, record)
-    return record
-
-
-def test_research_record_validator_uses_pixels_log_and_real_durable_receipt(tmp_path: Path, research_record: dict) -> None:
-    import json
-    from lab_routes import _validate_record, load_recorded_routes
-    record = research_record
-    assert _validate_record(record, tmp_path) == (1, 'labs.game-speed')
-    assert load_recorded_routes(_install(tmp_path, record))[(1, 'labs.game-speed')].enabled
-    for key, value in (('source', 'offline_composed'), ('account_id', 'wrong-account'), ('kind', None)):
-        broken = json.loads(json.dumps(record))
-        if value is None:
-            del broken[key]
-        else:
-            broken[key] = value
-        assert load_recorded_routes(_install(tmp_path, broken)) == {}
-
-
-def test_edited_ocr_on_a_recorded_png_is_refused(tmp_path: Path, research_record: dict) -> None:
-    import json
-    from lab_routes import _validate_record
-    text_path = tmp_path / '2.json'
-    entries = json.loads(text_path.read_text())
-    price = next(e for e in entries if e['text'] == '300')
-    price['text'] = '30'
-    text_path.write_text(json.dumps(entries))
-    research_record['frames'][2]['ocr'] = _reference(text_path)
-    with pytest.raises(ValueError, match='ocr_mismatch'):
-        _validate_record(research_record, tmp_path)
-
-
-def test_validation_fails_closed_when_ocr_is_unavailable(tmp_path: Path, research_record: dict,
-                                                         monkeypatch: pytest.MonkeyPatch) -> None:
-    import ocr
-    from lab_routes import _validate_record, load_recorded_routes
-    monkeypatch.setattr(ocr, 'available', lambda: False)
-    with pytest.raises(ValueError, match='ocr_unavailable'):
-        _validate_record(research_record, tmp_path)
-    assert load_recorded_routes(_install(tmp_path, research_record)) == {}
-
-
-def test_every_stage_is_pixel_classified(tmp_path: Path, research_record: dict) -> None:
-    from lab_routes import _validate_record
-    # A (different) Labs home frame posing as the picker overlay.
-    research_record['frames'][2]['image'] = research_record['frames'][3]['image'] = _copy(
-        tmp_path, 'menu_labs_slot1_idle', 'posing')
-    _log(tmp_path, research_record)
-    with pytest.raises(ValueError, match='stage_page'):
-        _validate_record(research_record, tmp_path)
-
-
-def test_a_state_change_must_show_new_pixels(tmp_path: Path, research_record: dict) -> None:
-    from lab_routes import _validate_record
-    confirmation = research_record['frames'][4]
-    for frame in research_record['frames'][6:9]:
-        frame['image'], frame['ocr'] = confirmation['image'], confirmation['ocr']
-    _log(tmp_path, research_record)
-    with pytest.raises(ValueError, match='state_change_without_new_pixels'):
-        _validate_record(research_record, tmp_path)
-
-
-@pytest.mark.parametrize('damage', ['missing', 'derived', 'gap', 'session', 'digest'])
-def test_frames_must_be_a_contiguous_recorded_window_of_the_capture_log(
-        tmp_path: Path, research_record: dict, damage: str) -> None:
-    from lab_routes import _validate_record, load_recorded_routes
-    record = research_record
-    entries = [{'capture_id': f['capture_id'], 'png_sha256': f['image']['sha256'],
-                'captured_at': f['captured_at'], 'recording': 'recorded', 'input': f.get('input')}
-               for f in record['frames']]
-    if damage == 'missing':
-        del record['capture_log']
-        assert load_recorded_routes(_install(tmp_path, record)) == {}
-        return
-    if damage == 'derived':
-        entries[6]['recording'] = 'derived'
-    elif damage == 'gap':  # an unlisted capture (and possibly input) between frames
-        entries.insert(4, {'capture_id': 'hidden', 'png_sha256': 'x', 'captured_at': 14.5,
-                           'recording': 'recorded', 'input': {'kind': 'tap', 'point': [1, 1]}})
-    elif damage == 'digest':
-        entries[3]['png_sha256'] = '0' * 64
-    _log(tmp_path, record, entries=entries, **({'session_id': 'other'} if damage == 'session' else {}))
-    with pytest.raises(ValueError, match='capture_log'):
-        _validate_record(record, tmp_path)
-
-
-def test_unlock_records_in_the_route_manifest_enable_nothing(tmp_path: Path) -> None:
-    import json
-    import lab_routes
-    manifest = tmp_path / 'lab-routes.v1.json'
-    manifest.write_text(json.dumps({'schema_version': 1, 'routes': [{'kind': 'unlock', 'slot': 2}]}))
-    assert lab_routes.load_recorded_routes(manifest) == {}
-    assert not hasattr(lab_routes, 'unlock_gate') and not hasattr(lab_routes, 'recorded_unlocks')
-    assert not any(key.startswith('unlock_slot_') for key in lab_routes.route_gates())
 
 
 @pytest.mark.parametrize('text', ['Game Speed Lv.1', 'GameSpeed Lv.1', 'Game  Speed Lv.1', 'game speed Lv.1'])

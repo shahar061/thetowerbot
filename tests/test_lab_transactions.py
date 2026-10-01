@@ -523,3 +523,20 @@ def test_production_constructor_wires_the_unlock_rollout(tmp_path: Path) -> None
     assert bot.lab_visit.rollout.path == tmp_path / 'lab-unlock-rollout.json'
     assert bot.lab_visit.worker == 'Air_1'
     assert bot.lab_visit.evidence_dir == root / 'evidence'
+
+
+@pytest.mark.parametrize("method", ["refute_unlanded_start", "refute_unlanded_unlock"])
+def test_refuting_an_unlanded_tap_fences_recovery_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                        method: str) -> None:
+    """Like every recovery mutation, a refutation bumps the fence so a concurrent read retries."""
+    import transactions
+    _, journal, scope = authority(tmp_path)
+    seen = []
+
+    def refute(self, key, evidence, *, now, operation, currency, reason):
+        seen.append(transactions._recovery_fences[self._recovery_key]['active'])
+        return transactions.Outcome(key=key, verdict=transactions.Verdict.UNPROVEN, spent=0, reason='')
+
+    monkeypatch.setattr(transactions.TransactionJournal, '_refute_unlanded', refute)
+    getattr(journal, method)('k', None, now=1.)
+    assert seen == [1]

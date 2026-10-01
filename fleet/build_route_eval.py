@@ -178,7 +178,7 @@ def _gem_step(route: EffectiveRoute, facts: RouteFacts,
     owned = max((slot for slot, record in ownership.items() if record["status"] == "owned"), default=None)
     if owned is None:
         return ResourceStep(first, "unknown", "Gem balance or lab ownership unverified")
-    starter = f"Slot {owned} owned · waiting for lab starter"
+    starter = f"Slot {owned} owned"
     if pending is not None:
         return ResourceStep(_gem_action(route, pending), "planned", f"{starter} · planned, not automated")
     return ResourceStep(f"lab_slot_{owned}_owned", "supported", starter)

@@ -236,7 +236,7 @@ def _evaluate_slots(route: Any, facts: LabFacts,
     from the slots after it (spec section 3, "Coins between slots"). The starts-now
     spending is summed apart and only subtracted for the returned leftover.
     """
-    from fleet.resource_blocks import LAB_SLOTS, SlotPlan, _capabilities, research_automated
+    from fleet.resource_blocks import LAB_SLOTS, SlotPlan, _capabilities, research_gate_for
     rules = route.rules
     entries = route.labs.blocks[0]["entries"]
     rate = income_rate(facts, rules)
@@ -252,7 +252,8 @@ def _evaluate_slots(route: Any, facts: LabFacts,
                                   None, _capabilities(slot, False, now, facts, False)))
             continue
         own = now.research_id if now.state == "researching" else None
-        elsewhere = ctx.unavailable - {own}
+        elsewhere = ((ctx.unavailable - {own})
+                    | (facts.starter.blocked_labs() if facts.starter else frozenset()))
         why: list[str] = []
         target, entry = _target(slot, entries, facts, ctx, elsewhere, claimed, wallet,
                                 rate, _hours_until(now, facts.now), rules, why)
@@ -278,12 +279,17 @@ def _evaluate_slots(route: Any, facts: LabFacts,
                 why.append(f"Filler {filler.name} L{filler.level} while saving"
                            + (f" for {target.name} L{target.level}" if target else ""))
         starts_now = idle and next_ is not None and wallet is not None and next_.price <= wallet
-        automated = next_ is not None and rules.labs.auto_start and research_automated(next_.lab_id, slot)
-        note = "Start manually" if next_ is not None and not automated else None
+        gate = research_gate_for(facts, next_.lab_id, slot) if next_ is not None else None
+        automated = gate is not None and rules.labs.auto_start and gate.enabled
+        rehearse = gate is not None and rules.labs.auto_start and gate.mode == "rehearse"
+        if gate is not None and not gate.enabled:
+            why.append(gate.reason)
+        note = "Start manually" if next_ is not None and not (automated or rehearse) else None
         covered = (True if starts_now else None if wallet is None or next_ is None
                    else False if idle else None)
         plans.append(SlotPlan(slot, now, next_, covered, automated, tuple(why), note,
-                              _capabilities(slot, automated, now, facts, True), role, saving_for))
+                              _capabilities(slot, automated, now, facts, True, rehearse), role, saving_for,
+                              rehearse=rehearse))
         for picked in (next_, saving_for):
             if picked is not None:
                 claimed.add(picked.lab_id)

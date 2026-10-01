@@ -44,6 +44,9 @@ export type BotEvent =
   | (EventBase & { type: "LabUnlockRehearsed"; slot: number; price: number; gems: number })
   | (EventBase & { type: "LabUnlockPromoted"; slot: number; stage: string })
   | (EventBase & { type: "LabUnlockHalted"; slot: number; reason: string })
+  | (EventBase & { type: "LabStartRehearsed"; slot: number; research_id: string; level: number; price: number; seconds: number | null })
+  | (EventBase & { type: "LabStarterPromoted"; key: string; stage: string })
+  | (EventBase & { type: "LabStarterHalted"; key: string; reason: string })
   | (EventBase & { type: "ClaimUncertain"; target: string; reason: string; detail: string });
 
 /** A row from the `events` table, which carries columns plus a JSON blob. */

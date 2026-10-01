@@ -30,7 +30,7 @@ import type { AccountMetrics } from "./accountMetrics";
 import type { TelegramMode, TelegramProfile, TelegramSettingsResponse } from "./telegram";
 import type { BuildRouteDocument, BuildRoutePreview, BuildRouteRevisions, BuildRouteRebindPreview } from "./buildRoute";
 import type { SaveStrategyInput, StrategyLedger, StrategyLibrary } from "./strategyStudio";
-import type { LabsSnapshot, UnlockRolloutRow } from "./labs";
+import type { LabsSnapshot, RehearsedLabRow, StarterRolloutRow, UnlockRolloutRow } from "./labs";
 import type { FleetStatePayload } from "./fleetState";
 import type { RecoverySettings, RecoverySettingsResponse } from "./recovery";
 
@@ -106,6 +106,11 @@ export const fetchReroll = () => getJson<RerollSnapshot>("/api/fleet/reroll", { 
 export const fetchFleetLabs = () => getJson<LabsSnapshot>("/api/fleet/labs", { cache: "no-store" }, false);
 export const resetLabUnlockRollout = (slot: number) =>
   send<{ unlock_rollout: UnlockRolloutRow[] }>(`/api/fleet/labs/unlock-rollout/${slot}/reset`, "POST", undefined, "fleet");
+type StarterSnapshot = { starter_rollout: StarterRolloutRow[]; rehearsed_labs: RehearsedLabRow[] };
+export const resetLabStarterRollout = (key: string) =>
+  send<StarterSnapshot>(`/api/fleet/labs/starter-rollout/${encodeURIComponent(key)}/reset`, "POST", undefined, "fleet");
+export const labStarterAction = (labId: string, action: "reset" | "accept") =>
+  send<StarterSnapshot>(`/api/fleet/labs/rehearsed/${encodeURIComponent(labId)}/${action}`, "POST", undefined, "fleet");
 export const fetchFleetState = () => getJson<FleetStatePayload>("/api/fleet/state", { cache: "no-store" }, false);
 export const fetchRecoverySettings = () => getJson<RecoverySettingsResponse>(
   "/api/fleet/recovery/settings", { cache: "no-store" }, false);
