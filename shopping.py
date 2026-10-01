@@ -35,6 +35,7 @@ from geometry import anchored_point
 import jitter
 import ocr
 import pages
+import screen_discovery
 import tiles
 import transactions
 import upgrades
@@ -1233,9 +1234,12 @@ class ShoppingSession:
 
     @staticmethod
     def _info_panel_visible(screen: Image) -> bool:
-        labels = {box.text.strip().lower() for box in ocr.read(screen)
-                  if box.confidence >= .9}
-        return "current level" in labels and "max level" in labels
+        # Share perception's generic popup identity: OCR can join the level
+        # labels, and every skill uses the same panel. Keep the confidence
+        # gate before allowing a dismissal tap.
+        boxes = tuple(box for box in ocr.read(screen) if box.confidence >= .9)
+        return screen_discovery.discover(
+            screen, boxes, "workshop").screen_id == "workshop.info_overlay"
 
     def _find_row(self, name: str, observation: Observation, device: Any,
                   shopping: Shopping, screen: Image, coins: int) -> None:
