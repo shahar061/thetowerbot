@@ -447,6 +447,10 @@ class DeviceSupervisor:
         self._action(lambda: self._device.swipe(x, y, x2, y2, duration),
                      f"swipe ({x}, {y}) -> ({x2}, {y2})")
 
+    def press_back(self) -> None:
+        """One guarded Android Back key press for an ad that timed out."""
+        self._action(lambda: self._device.shell("input keyevent KEYCODE_BACK"), "back")
+
     @property
     def device(self) -> Any | None:
         return self._device
@@ -495,3 +499,6 @@ class GuardedDevice:
 
     def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
         self.supervisor.swipe(x, y, x2, y2, duration)
+
+    def press_back(self) -> None:
+        self.supervisor.press_back()

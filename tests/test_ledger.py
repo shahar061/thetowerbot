@@ -31,6 +31,15 @@ def test_confirmed_lab_slot_unlock_debits_gems() -> None:
     assert line.detail["gems_after"] == 19
 
 
+def test_daily_ad_gems_are_recorded_from_verified_balance() -> None:
+    (line,) = ledger.classify(events.DailyAdGemClaimed(
+        gems_before=8, gems_after=28, delta=20, seq=16, ts=1000.))
+    assert (line.kind, line.item, line.currency, line.delta) == (
+        "GEM_CLAIM", "daily ad", "gems", 20)
+    assert line.observed == 8 and line.balance_after == 28
+    assert "DailyAdGemClaimed" in ledger._REPLAYABLE
+
+
 def test_game_speed_research_preserves_the_verified_coin_balance(tmp_path: Path) -> None:
     write, _ = writer(tmp_path)
     lines = write.lines_for(events.LabResearchStarted(

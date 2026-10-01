@@ -27,6 +27,7 @@ export const LEDGER_EVENTS = new Set([
   "MilestoneClaimed",
   "ClaimUncertain",
   "FloatingGemClaimed",
+  "DailyAdGemClaimed",
 ]);
 
 /** Every kind `classify()` can emit - `ledger.KINDS` minus its five reserved

@@ -735,7 +735,9 @@ BATTLE_MENU_COOLDOWNS: dict[str, float] = {
 BATTLE_MENU_MAX_BACKOFF = 7200.0
 BATTLE_MENU_MIN_SESSION_GAP = 180.0
 BATTLE_MENU_STEP_FRAMES = 6
-BATTLE_MENU_WATCH_ADS = False
+BATTLE_MENU_WATCH_ADS = True
+BATTLE_MENU_AD_TIMEOUT = 60.0
+BATTLE_MENU_AD_CONFIRM_TIMEOUT = 15.0
 
 # The Store's free-gem ▶ button's own red dot, patch relative to the button
 # centre (which itself sits ~138px below the "FREE" caption's centre).

@@ -117,6 +117,8 @@ export function splitEvent(event: BotEvent): EventLine {
         kind: "GEM",
         body: `+${event.delta} at (${event.point[0]},${event.point[1]}) ${event.gems_before} -> ${event.gems_after}`,
       };
+    case "DailyAdGemClaimed":
+      return { kind: "GEM", body: `Daily ad +${event.delta} gems ${event.gems_before} -> ${event.gems_after}` };
     case "ClaimUncertain":
       return {
         kind: "CLAIM?",

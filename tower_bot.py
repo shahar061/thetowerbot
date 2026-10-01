@@ -1635,7 +1635,7 @@ class TowerBot:
         # changed (spec P3); battle frames always read their bands fresh. So
         # does any scan with a walk or a shopping visit active: it tapped and
         # now reads what the tap did.
-        acting = self._any_walk_active() or self.shopping.active
+        acting = self._any_walk_active() or self.shopping.active or self.battle_menu.active
         reads = ocr.FrameReads(self.screen,
                                reuse=reading.state is not screens.ScreenState.IN_RUN
                                and not acting)
@@ -1696,6 +1696,11 @@ class TowerBot:
                         observed_screen = "BATTLE_MENU"
                     elif battle_menu.read_page(boxes).page != "none":
                         observed_screen = "BATTLE_MENU_PAGE"
+                    elif self.battle_menu.watching_ad:
+                        # Ad creatives have no stable OCR anchor. The visit
+                        # owns this bounded interval, and its reward/end card
+                        # readers authorize only specific taps on it.
+                        observed_screen = "BATTLE_AD"
                 # The Free Ticket offer covers the main menu without hiding
                 # its anchors, so it is looked for on MAIN_MENU too; its
                 # reveal shares the milestone reward modal's SKIP + CLAIM
