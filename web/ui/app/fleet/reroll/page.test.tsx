@@ -3,7 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import RerollPage from "./page";
 import { RerollWorkspaceProvider } from "./RerollWorkspace";
 import { PastRerolls } from "./PastRerolls";
-import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopPurchases, fetchRecoverySettings, fetchReroll, fetchRerollJournal, hideRerollMembers, listRerolls, removeRerollMember, restoreRerollMembers, startNewReroll, startReroll } from "@/lib/api";
+import { addRerollMembers, fetchAccountRunPurchases, fetchAccountRuns, fetchAccountWorkshopLevels, fetchAccountWorkshopPurchases, fetchRecoverySettings, fetchReroll, fetchRerollJournal, hideRerollMembers, listRerolls, removeRerollMember, restoreRerollMembers, startNewReroll, startReroll } from "@/lib/api";
 import type { RecoverySettingsResponse } from "@/lib/recovery";
 import type { FleetOverview, RerollMember, RerollPlan } from "@/lib/fleet";
 
@@ -14,7 +14,7 @@ const DEFAULT_ACCOUNTS = [{ key: "one", account_id: "100", instance: "Air_1", ru
 const selection = vi.hoisted(() => ({ accounts: [] as Record<string, unknown>[] }));
 vi.mock("@/lib/AccountSelection", () => ({ useAccountSelection: () => ({ accounts: selection.accounts, choose }) }));
 vi.mock("./FleetLabsContext", () => ({ useFleetLabs: () => ({ snapshot: null, loading: false, error: null, refresh: vi.fn() }) }));
-vi.mock("@/lib/api", () => ({ ApiError: class ApiError extends Error { status = 0; }, fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), hideRerollMembers: vi.fn(), restoreRerollMembers: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn(), fetchRecoverySettings: vi.fn(), saveRecoverySettings: vi.fn() }));
+vi.mock("@/lib/api", () => ({ ApiError: class ApiError extends Error { status = 0; }, fetchReroll: vi.fn(), fetchRerollJournal: vi.fn(), fetchAccountWorkshopLevels: vi.fn(), fetchAccountWorkshopPurchases: vi.fn(), fetchAccountRuns: vi.fn(), fetchAccountRunPurchases: vi.fn(), addRerollMembers: vi.fn(), removeRerollMember: vi.fn(), hideRerollMembers: vi.fn(), restoreRerollMembers: vi.fn(), startNewReroll: vi.fn(), listRerolls: vi.fn(), startReroll: vi.fn(), pauseReroll: vi.fn(), setRerollConcurrency: vi.fn(), fetchRecoverySettings: vi.fn(), saveRecoverySettings: vi.fn() }));
 
 // Named separately so a test that extends the plan keeps its full type -
 // spreading `members[0].reroll_plan` inferred it as optional and lost it.
@@ -37,6 +37,7 @@ beforeEach(() => {
   vi.mocked(fetchRerollJournal).mockResolvedValue({ entries: [] });
   vi.mocked(listRerolls).mockResolvedValue({ runs: [] });
   vi.mocked(fetchAccountWorkshopPurchases).mockResolvedValue({ lines: [], balances: { coins: null, gems: null }, rehearsals: 0, next: null });
+  vi.mocked(fetchAccountWorkshopLevels).mockResolvedValue({ account_id: "100", upgrades: [] });
   vi.mocked(fetchAccountRuns).mockResolvedValue([]);
   vi.mocked(fetchAccountRunPurchases).mockResolvedValue({ purchases: [], totals: { count: 0, spent: 0, unpriced: 0, by_category: {} } });
   vi.mocked(fetchRecoverySettings).mockResolvedValue(recoverySettings);
@@ -185,6 +186,78 @@ test("the live wall shows every running screen and closes on Escape", async () =
   expect(within(wall).getByRole("region", { name: "Air_2 live screen" })).toHaveTextContent("not verified");
   fireEvent.keyDown(window, { key: "Escape" });
   expect(screen.queryByRole("dialog", { name: "Live wall" })).toBeNull();
+});
+
+test("two new Workshop buys stack above the live wall without replaying older buys", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-01T12:00:00.000Z"));
+  const ts = Date.now() / 1000;
+  const line = (id: number, item: string) => ({
+    id, seq: id, ts, kind: "WORKSHOP_BUY", item, category: "ATTACK", currency: "coins",
+    delta: -20, price: 20, balance_after: 10, observed: 30, dry_run: 0,
+    run_id: null, visit: 1, reason: null, detail: { verdict: "bought" },
+  });
+  vi.mocked(fetchReroll)
+    .mockResolvedValueOnce({ candidates: [], members: [{ ...members[0], account_key: "one",
+      reroll_plan: { ...plan, observed_at: ts - 5, reason: "Old plan" } }] })
+    .mockResolvedValue({ candidates: [], members: [{ ...members[0], account_key: "one",
+      reroll_plan: { ...plan, observed_at: ts + 5, reason: "Save for Health" } }] });
+  vi.mocked(fetchAccountWorkshopLevels).mockResolvedValue({ account_id: "100", upgrades: [{
+    id: "damage", name: "Damage", category: "ATTACK", max_level: 6000, value: 12,
+    raw_value: "12", observed_at: ts, status: "exact", level_min: 12, level_max: 12, next_coins: 30,
+  }] });
+  vi.mocked(fetchAccountWorkshopPurchases)
+    .mockResolvedValueOnce({ lines: [line(1, "Old buy")], balances: {}, rehearsals: 0, next: null })
+    .mockResolvedValue({ lines: [line(3, "Attack Speed"), line(2, "Damage"), line(1, "Old buy")], balances: {}, rehearsals: 0, next: null });
+  const view = render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.click(screen.getByRole("button", { name: "Live wall" }));
+    expect(screen.queryByText("Old buy")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(screen.getByRole("dialog", { name: "Live wall" })).toBeInTheDocument();
+    const notices = screen.getAllByRole("status", { name: /Workshop purchase/ });
+    expect(notices).toHaveLength(2);
+    expect(notices[0]).toHaveTextContent("Damage");
+    expect(notices[1]).toHaveTextContent("Attack Speed");
+    expect(notices[0]).toHaveTextContent("20 coins");
+    expect(notices[0].getAttribute("style")).toContain("var(--ws-attack)");
+    expect(notices[0].parentElement).toHaveClass("z-[60]");
+    expect(notices[0]).toHaveTextContent("Current Lv 12");
+    expect(notices[1]).toHaveTextContent("Current Lv ?");
+    expect(notices[0]).toHaveTextContent("Next: Save for Health");
+    expect(screen.queryByText("Old buy")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+    expect(screen.queryAllByRole("status", { name: /Workshop purchase/ })).toHaveLength(0);
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+test("a purchase made during the first ledger read is still announced", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-01T12:00:00.000Z"));
+  let finishRead!: (value: Awaited<ReturnType<typeof fetchAccountWorkshopPurchases>>) => void;
+  vi.mocked(fetchReroll).mockResolvedValue({ candidates: [], members: [{ ...members[0], account_key: "one" }] });
+  vi.mocked(fetchAccountWorkshopPurchases).mockReturnValueOnce(new Promise(resolve => { finishRead = resolve; }));
+  const view = render(<RerollWorkspaceProvider><RerollPage /></RerollWorkspaceProvider>);
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(fetchAccountWorkshopPurchases).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    await act(async () => { finishRead({ lines: [{
+      id: 4, seq: 4, ts: Date.now() / 1000, kind: "WORKSHOP_BUY", item: "Health", category: "DEFENSE",
+      currency: "coins", delta: -30, price: 30, balance_after: 10, observed: 40,
+      dry_run: 0, run_id: null, visit: 1, reason: null, detail: { verdict: "bought" },
+    }], balances: {}, rehearsals: 0, next: null }); });
+    const notice = screen.getByRole("status", { name: "Health Workshop purchase" });
+    expect(notice).toHaveTextContent("30 coins");
+    expect(notice).toHaveTextContent("Calculating next move…");
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
 });
 
 test("the live wall stays accessible while worker feeds are unverified", async () => {

@@ -23,6 +23,7 @@ import { useRerollWorkspace } from "./RerollWorkspace";
 import { NewRerollDialog } from "./NewRerollDialog";
 import { RerollCard } from "./RerollCard";
 import { RecoverySettingsPanel } from "./RecoverySettingsPanel";
+import { PurchaseNotifications } from "./PurchaseNotifications";
 
 function stateLabel(value: string): string { return standingFor(value).label; }
 
@@ -301,6 +302,7 @@ function FleetLivePage(): React.JSX.Element {
       {inspection && !inspected && !loading && <p role="status" className="rounded-lg border border-warn/30 bg-warn-surface p-3 text-sm text-warn">This account attempt is no longer active. Select an emulator to inspect its current account. <button className="underline" onClick={closeInspection}>Dismiss</button></p>}
     </div>
     {wallOpen && <LiveWall members={members} accounts={accounts} onClose={() => setWallOpen(false)} />}
+    <PurchaseNotifications members={allMembers} />
     <NewRerollDialog open={dialog} onClose={() => setDialog(false)} run={run} members={pool?.members ?? []}
       candidates={pool?.candidates ?? []} busy={busy} error={dialogError} onConfirm={confirmNew} />
   </div>;
