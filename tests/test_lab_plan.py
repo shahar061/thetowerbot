@@ -87,6 +87,18 @@ def test_busy_slot_one_preserves_its_job() -> None:
     decision = decide(LabHomeReading(True, "researching", job, None), row())
     assert decision.kind == "wait_running"
     assert decision.job_completes_at == 5000.
+    assert decision.research_id == "labs.coins-kill-bonus"
+    assert decision.slot == 1
+
+
+def test_unidentified_busy_slot_does_not_claim_game_speed() -> None:
+    from lab_plan import decide
+
+    job = LabJob(1, None, "Unidentified research", 5000., 100., None,
+                 "unknown", "researching", .99, (31, 345, 439, 37))
+    decision = decide(LabHomeReading(True, "researching", job, None), None)
+    assert decision.kind == "wait_running"
+    assert decision.research_id == ""
 
 
 def test_unaffordable_game_speed_reserves_slot_one_without_blocking_workshop() -> None:
@@ -161,6 +173,15 @@ def test_confirmed_next_level_unlocks_x2_speed_after_restart(tmp_path: Path) -> 
         "unknown", "researching", .99, (96, 615, 290, 40)), None),
         None), now=1100.)
     assert resumed.speed_target() == 2.0
+
+
+def test_confirmed_third_level_row_targets_x2_5(tmp_path: Path) -> None:
+    from lab_plan import LabCadence, decide
+
+    cadence = LabCadence(tmp_path / "worker", "ACCOUNT-A")
+    cadence.note(decide(idle(), row(level=3, cost=12000., balance=4000,
+                                    status="unavailable", point=None)), now=1000.)
+    assert cadence.speed_target() == 2.5
 
 
 @pytest.mark.parametrize(("level", "maxed", "ceiling"), [

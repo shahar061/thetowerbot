@@ -52,7 +52,8 @@ def decide(slot: LabHomeReading, row: LabPickerReading | None, *,
     if slot.slot_status == "researching":
         if slot.job is None or slot.job.status != "researching":
             return LabDecision("unknown")
-        return LabDecision("wait_running", job_completes_at=slot.job.completes_at)
+        return LabDecision("wait_running", job_completes_at=slot.job.completes_at,
+                           slot=slot.job.slot, research_id=slot.job.concept_id or "")
     if slot.slot_status != "idle":
         return LabDecision("unknown")
     if row is None:

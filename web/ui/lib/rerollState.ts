@@ -220,6 +220,8 @@ export function ladderProgress(best: number | null | undefined): LadderProgress 
  *  different things from the operator - one is arithmetic, the other is a
  *  screenshot - and the page has to say which. */
 export const DECISIONS: Record<string, { label: string; tone: MachineState; hint: string }> = {
+  replanning: { label: "Replanning", tone: "idle",
+    hint: "The strategy changed after this Workshop plan was saved. The worker will refresh it on its next Workshop visit." },
   buy: { label: "Buying", tone: "live",
     hint: "Affordable and within the spend reserve. The worker buys it on its next Workshop visit." },
   save_coins: { label: "Saving coins", tone: "idle",

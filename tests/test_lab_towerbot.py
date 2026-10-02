@@ -428,6 +428,21 @@ def test_another_slot_never_writes_lab_one_game_speed_cadence(tmp_path: Path, re
     assert b.reroll_progress.debits == (1 if status == 'started' else 0)
 
 
+def test_other_research_in_lab_one_does_not_overwrite_game_speed_cadence(tmp_path: Path) -> None:
+    from lab_visit import LabVisitResult
+    from lab_plan import decide
+    from lab_screen import LabHomeReading
+
+    b = finishing_bot(tmp_path)
+    before = (tmp_path / 'lab-slot1-cadence.json').read_text()
+    job = slot_job(1, 'labs.damage', 9000.)
+    decision = decide(LabHomeReading(True, 'researching', job, None), None)
+    b._finish_lab_visit(LabVisitResult('observed', 'wait_running', decision,
+                                       confirmed_job=job))
+    assert (tmp_path / 'lab-slot1-cadence.json').read_text() == before
+    assert b._research_until is None
+
+
 def test_another_slots_failed_visit_still_backs_off(tmp_path: Path) -> None:
     from lab_visit import LabVisitResult
     b = finishing_bot(tmp_path)

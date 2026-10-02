@@ -198,6 +198,21 @@ def test_the_next_buy_comes_from_this_accounts_plan_with_its_price() -> None:
     assert state_view.build_next_buy(None, "account-a") is None
 
 
+def test_a_workshop_plan_from_before_the_active_route_is_replanning() -> None:
+    route = SimpleNamespace(revision=66, authored_at=100.)
+    old = {"account_id": "account-a", "state": "observe_price",
+           "upgrade_id": "unlock_knockback", "observed_at": 90.}
+    stale = state_view.build_next_buy(old, "account-a", route)
+    assert stale is not None
+    assert (stale["state"], stale["upgrade_id"], stale["price"]) == ("replanning", None, None)
+    assert "Workshop" in stale["reason"]
+
+    fresh = {**old, "observed_at": 101., "route_revision": 66}
+    assert state_view.build_next_buy(fresh, "account-a", route)["upgrade_id"] == "unlock_knockback"
+    wrong_revision = {**fresh, "route_revision": 65}
+    assert state_view.build_next_buy(wrong_revision, "account-a", route)["state"] == "replanning"
+
+
 def test_a_new_account_with_zero_runs_has_no_tier_no_best_and_no_upgrades() -> None:
     """Review Focus: a brand-new account has not finished a single run."""
     assert state_view.build_runs([]) == []
@@ -496,6 +511,23 @@ def test_an_account_column_carries_its_strategy_and_next_buy(tmp_path: Path) -> 
                                         now=7000.)["accounts"]
     assert (account["next_buy"]["name"], account["next_buy"]["price"]) == ("Damage", 900)
     assert account["strategy"] is None and account["error"] is None
+
+
+def test_account_column_rejects_a_plan_older_than_its_published_route(tmp_path: Path) -> None:
+    from fleet.build_route import RouteDocument
+
+    root = _registered(tmp_path, "Air_1", "account-a", 8001)
+    (root / "reroll-plan.json").write_text(json.dumps({
+        "account_id": "account-a", "state": "observe_price",
+        "upgrade_id": "unlock_knockback", "observed_at": 6990.}))
+    route = RouteDocument.compatibility().to_dict()
+    route.update(revision=1, authored_at=6995.)
+    (tmp_path / "build-route.json").write_text(json.dumps(route))
+
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}], fetch=_fetch({}),
+                                        now=7000.)["accounts"]
+    assert account["next_buy"]["state"] == "replanning"
+    assert account["next_buy"]["upgrade_id"] is None
 
 
 def test_an_offline_worker_is_built_from_its_database_with_a_stale_age(tmp_path: Path) -> None:
