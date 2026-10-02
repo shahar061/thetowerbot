@@ -59,6 +59,8 @@ class BattleMenuVisit:
         self._ad_claimed_at = 0.0
         self._gems_before: int | None = None
         self._ad_upsell_closed = False
+        self._ad_end_close_count = 0
+        self._ad_last_close = float("-inf")
         self._ad_recorded = False
         self._ad_uncertain_recorded = False
 
@@ -150,6 +152,8 @@ class BattleMenuVisit:
                     self._gems_before = before
                     self._ad_started = now
                     self._ad_upsell_closed = False
+                    self._ad_end_close_count = 0
+                    self._ad_last_close = float("-inf")
                     self._ad_recorded = False
                     self._ad_uncertain_recorded = False
                     self._go(Step.AD_PLAYING)
@@ -168,10 +172,6 @@ class BattleMenuVisit:
 
     def _ad_playing(self, screen: Image, boxes: Callable[[], tuple], device: Any,
                     policy: Any, now: float) -> Outcome:
-        if now - self._ad_started >= config.BATTLE_MENU_AD_TIMEOUT:
-            device.press_back()
-            self._go(Step.AD_RECOVER)
-            return Outcome.TAPPED
         text = boxes()
         claim = battle_menu.ad_reward_claim(screen, text)
         if claim is not None:
@@ -185,6 +185,18 @@ class BattleMenuVisit:
                 self._tap(device, policy, close)
                 self._ad_upsell_closed = True
                 return Outcome.TAPPED
+        if (now - self._ad_started >= config.BATTLE_MENU_AD_CLOSE_MIN_SECONDS
+                and self._ad_end_close_count < 3 and now - self._ad_last_close >= 3):
+            close = battle_menu.ad_end_card_close(screen, self._templates)
+            if close is not None:
+                self._tap(device, policy, close)
+                self._ad_end_close_count += 1
+                self._ad_last_close = now
+                return Outcome.TAPPED
+        if now - self._ad_started >= config.BATTLE_MENU_AD_TIMEOUT:
+            device.press_back()
+            self._go(Step.AD_RECOVER)
+            return Outcome.TAPPED
         return Outcome.HOLD
 
     def _ad_claimed(self, screen: Image, boxes: Callable[[], tuple], device: Any,

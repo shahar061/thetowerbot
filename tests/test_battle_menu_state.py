@@ -50,6 +50,7 @@ def test_session_gap():
 def test_worth_opening_learns_once_then_respects_cooldowns():
     state = BattleMenuState(None)
     assert state.worth_opening(0)                 # nothing known yet
+    state.session_started(0)
     state.remember(menu(event=BLUE))
     state.handled("event", BLUE, now=0)
     assert not state.worth_opening(100)           # only a cooled-down badge
@@ -58,13 +59,16 @@ def test_worth_opening_learns_once_then_respects_cooldowns():
 
 def test_settings_only_is_not_worth_opening():
     state = BattleMenuState(None)
+    state.session_started(0)
     state.remember(menu())                        # menu seen, no non-settings badge
-    assert not state.worth_opening(10_000)
+    assert not state.worth_opening(500)
+    assert state.worth_opening(600)                # a new cart dot may have appeared
 
 
 def test_persists_across_restart(tmp_path):
     path = tmp_path / "battle-menu-state.json"
     first = BattleMenuState(path)
+    first.session_started(100)
     first.remember(menu(event=BLUE))
     first.handled("event", BLUE, now=100)
     second = BattleMenuState(path)

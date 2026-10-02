@@ -705,7 +705,13 @@ BATTLE_MENU_TEMPLATES: dict[str, str] = {
     "cards": "battle_menu/cards.png",
     "labs": "battle_menu/labs.png",
     "event": "battle_menu/event.png",
+    "ad_end_close_circle": "battle_menu/ad_end_close_circle.png",
+    "ad_end_close_meta_skip": "battle_menu/ad_end_close_meta_skip.png",
+    "ad_end_close_meta_landing": "battle_menu/ad_end_close_meta_landing.png",
 }
+BATTLE_MENU_AD_CLOSE_VARIANTS = (
+    "ad_end_close_circle", "ad_end_close_meta_skip", "ad_end_close_meta_landing",
+)
 # The badge sits on the icon frame's top-left corner, outside the inner crop,
 # and overlaps the crop itself by only a few pixels. Offsets are from the
 # located template's top-left; measured in Task 2 on open_badged.png /
@@ -734,10 +740,12 @@ BATTLE_MENU_COOLDOWNS: dict[str, float] = {
 }
 BATTLE_MENU_MAX_BACKOFF = 7200.0
 BATTLE_MENU_MIN_SESSION_GAP = 180.0
+BATTLE_MENU_RECHECK_SECONDS = 600.0
 BATTLE_MENU_STEP_FRAMES = 6
 BATTLE_MENU_WATCH_ADS = True
-BATTLE_MENU_AD_TIMEOUT = 60.0
+BATTLE_MENU_AD_TIMEOUT = 180.0
 BATTLE_MENU_AD_CONFIRM_TIMEOUT = 15.0
+BATTLE_MENU_AD_CLOSE_MIN_SECONDS = 30.0
 
 # The Store's free-gem ▶ button's own red dot, patch relative to the button
 # centre (which itself sits ~138px below the "FREE" caption's centre).
