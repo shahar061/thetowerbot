@@ -40,6 +40,15 @@ def test_daily_ad_gems_are_recorded_from_verified_balance() -> None:
     assert "DailyAdGemClaimed" in ledger._REPLAYABLE
 
 
+def test_in_game_ad_gems_have_a_distinct_battle_ledger_entry() -> None:
+    (line,) = ledger.classify(events.InGameAdGemClaimed(
+        gems_before=164, gems_after=170, delta=6, run_id=7, seq=17, ts=1000.))
+    assert (line.kind, line.item, line.category, line.currency, line.delta) == (
+        "GEM_CLAIM", "in-game video ad", "BATTLE", "gems", 6)
+    assert (line.observed, line.balance_after, line.run_id) == (164, 170, 7)
+    assert "InGameAdGemClaimed" in ledger._REPLAYABLE
+
+
 def test_game_speed_research_preserves_the_verified_coin_balance(tmp_path: Path) -> None:
     write, _ = writer(tmp_path)
     lines = write.lines_for(events.LabResearchStarted(

@@ -11,6 +11,15 @@ else already owns the tap.
 from __future__ import annotations
 
 import events
+import config
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def menu_fixture_has_no_claimable_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This suite isolates hamburger navigation; its shared battle capture
+    # also happens to show a lit six-gem tile, which has higher priority.
+    monkeypatch.setattr(config, "IN_GAME_AD_WATCH_ADS", False)
 
 
 def test_in_run_badged_hamburger_is_tapped_and_scan_ends(bot_with_frames):

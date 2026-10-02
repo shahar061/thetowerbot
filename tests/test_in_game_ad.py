@@ -1,0 +1,146 @@
+"""The in-battle six-gem ad, using frames from a verified live claim."""
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import cv2
+import pytest
+
+import battle_menu
+import events
+import in_game_ad
+import ocr
+from device import Image
+from vision import TemplateCache
+
+
+ROOT = Path(__file__).resolve().parent.parent
+FIX = ROOT / "tests" / "fixtures" / "in_game_ad"
+TEMPLATES = TemplateCache(ROOT / "templates")
+POLICY = SimpleNamespace(tap_jitter_px=0, tap_delay=0.0, timing_jitter=0.0)
+
+
+def frame(name: str) -> Image:
+    return cv2.imread(str(FIX / f"{name}.jpg"))
+
+
+class Device:
+    def __init__(self) -> None:
+        self.taps: list[tuple[int, int]] = []
+        self.backs = 0
+
+    def click(self, x: int, y: int) -> None:
+        self.taps.append((x, y))
+
+    def press_back(self) -> None:
+        self.backs += 1
+
+
+class Reader:
+    def __init__(self, balances: list[int | None]) -> None:
+        self.balances = iter(balances)
+
+    def read(self, *args: Any) -> int | None:
+        return next(self.balances)
+
+
+class Bus:
+    def __init__(self) -> None:
+        self.events: list[events.Event] = []
+
+    def publish(self, event: events.Event) -> None:
+        self.events.append(event)
+
+
+def test_tile_requires_the_lit_play_control_and_battle_hud() -> None:
+    assert in_game_ad.find_tile(frame("battle_available"), (30, 35), TEMPLATES) == (200, 1368)
+    assert in_game_ad.find_tile(frame("battle_claimed"), (30, 35), TEMPLATES) is None
+    assert in_game_ad.find_tile(frame("reward"), None, TEMPLATES) is None
+
+
+def test_reward_reader_is_specific_to_six_gems() -> None:
+    reward = frame("reward")
+    boxes = ocr.read(reward)
+    assert battle_menu.ad_reward_claim(reward, boxes, amount=6) is not None
+    assert battle_menu.ad_reward_claim(reward, boxes) is None
+
+
+def test_live_ad_variant_closes_only_after_maturity() -> None:
+    bus, device = Bus(), Device()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 170]), sleep=lambda _: None)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    assert device.taps == [(200, 1368)]
+    assert claim.observe(frame("end_card"), None, device, POLICY, 20, 7, False)
+    assert len(device.taps) == 1
+    assert claim.observe(frame("end_card"), None, device, POLICY, 31, 7, False)
+    assert device.taps[-1] == (81, 104)
+    assert claim.observe(frame("reward"), None, device, POLICY, 34, 7, False)
+    assert len(device.taps) == 3
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 36, 7, True)
+    assert not claim.active
+    assert bus.events == [events.InGameAdGemClaimed(
+        gems_before=164, gems_after=170, delta=6, run_id=7)]
+
+
+def test_unconfirmed_balance_is_uncertain_and_tile_is_not_retapped() -> None:
+    bus, device = Bus(), Device()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 164, 164]), sleep=lambda _: None)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    assert claim.observe(frame("reward"), None, device, POLICY, 35, 7, False)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 36, 7, True)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 52, 7, True)
+    assert not claim.active
+    assert len(device.taps) == 2
+    assert isinstance(bus.events[0], events.ClaimUncertain)
+    assert not claim.observe(frame("battle_available"), (30, 35), device, POLICY, 60, 7, True)
+    assert len(device.taps) == 2
+
+
+def test_scan_loop_starts_video_before_menu_or_upgrades(bot_with_frames: Any) -> None:
+    bot = bot_with_frames(["in_run_early"], battle_menu_opt_in=True)
+    available = frame("battle_available")
+
+    def refresh() -> Image:
+        bot._screen = available
+        return available
+
+    bot.refresh_screen = refresh
+    bot.gem.observe = lambda **kwargs: False
+    assert bot.run_once()
+    assert len(bot.device.taps) == 1
+    assert abs(bot.device.taps[0][0] - 200) <= 8
+    assert abs(bot.device.taps[0][1] - 1368) <= 8
+    assert bot.in_game_ad.active
+    assert not bot.battle_menu.active
+
+
+@pytest.mark.parametrize("supervised", [False, True])
+def test_ad_walk_claims_across_unclassified_frames(
+        bot_with_frames: Any, tmp_path: Path, supervised: bool) -> None:
+    from tests.test_battle_menu_loop import _supervised
+
+    bot = bot_with_frames(["in_run_early"], battle_menu_opt_in=True)
+    images = [frame(name) for name in (
+        "battle_available", "end_card", "reward", "battle_claimed")]
+    index = 0
+
+    def refresh() -> Image:
+        nonlocal index
+        bot._screen = images[min(index, len(images) - 1)]
+        index += 1
+        return bot._screen
+
+    bot.refresh_screen = refresh
+    bot.gem.observe = lambda **kwargs: False
+    hardware = _supervised(bot, tmp_path) if supervised else bot.device
+    assert bot.run_once()
+    bot.in_game_ad._started -= 31
+    for _ in range(3):
+        assert bot.run_once()
+
+    assert len(hardware.taps) == 3
+    assert not bot.in_game_ad.active
+    assert any(isinstance(event, events.InGameAdGemClaimed)
+               for event in bot.bus.published)
