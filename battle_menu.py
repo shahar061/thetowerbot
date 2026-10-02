@@ -89,10 +89,20 @@ def close_point(screen: Image, templates: TemplateCache) -> tuple[int, int] | No
     if not supported_frame(screen.shape[1], screen.shape[0]):
         return None
     close = _locate(screen, templates, "close")
-    exit_battle = _locate(screen, templates, "exit_battle")
-    if close.status != "located" or exit_battle.status != "located":
+    if close.status != "located":
         return None
-    return close.point
+    exit_battle = _locate(screen, templates, "exit_battle")
+    if exit_battle.status == "located":
+        return close.point
+    # The live game's action was renamed from EXIT BATTLE to END ROUND.
+    # Require that exact caption in the same menu area alongside the X;
+    # a standalone X on an unrelated screen is not an open menu.
+    region = Rect(830, 500, 250, 160)
+    labels = ocr.read_region(screen, region)
+    if any(b.confidence >= .8 and re.fullmatch(r"end\s*round", b.text.strip(), re.I)
+           for b in labels):
+        return close.point
+    return None
 
 
 def read_menu(screen: Image, templates: TemplateCache) -> dict[Icon, IconReading] | None:
@@ -274,3 +284,15 @@ def ad_upsell_close(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int
         return None
     width, height = screen.shape[1], screen.shape[0]
     return (int(width * .9), int(height * .055))
+
+
+def ad_end_card_close(screen: Image, templates: TemplateCache) -> tuple[int, int] | None:
+    """Locate a witnessed ad close control wherever the ad placed it."""
+    found: list[tuple[int, int]] = []
+    for variant in config.BATTLE_MENU_AD_CLOSE_VARIANTS:
+        target = _locate(screen, templates, variant)
+        if target.status == "ambiguous":
+            return None
+        if target.status == "located":
+            found.append(target.point)
+    return found[0] if len(found) == 1 else None

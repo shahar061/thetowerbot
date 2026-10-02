@@ -8,9 +8,11 @@ import pytest
 
 import battle_menu
 import config
+import ocr
 from vision import TemplateCache
 
 FIX = Path(__file__).parent / "fixtures"
+needs_ocr = pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
 
 
 @pytest.fixture(scope="module")
@@ -64,6 +66,32 @@ def test_read_menu_none_when_collapsed(templates):
     assert battle_menu.read_menu(frame("battle_menu/collapsed_badged"), templates) is None
 
 
+@needs_ocr
+def test_open_menu_with_end_round_still_reads_badged_cart(templates):
+    screen = frame("battle_menu/open_end_round")
+    assert battle_menu.close_point(screen, templates) is not None
+    menu = battle_menu.read_menu(screen, templates)
+    assert menu is not None
+    assert menu["cart"].badge == battle_menu.Badge("red")
+
+
+def test_ad_end_card_close_is_located_on_screen_not_at_a_fixed_point(templates):
+    screen = frame("battle_menu/ad_end_card")
+    point = battle_menu.ad_end_card_close(screen, templates)
+    assert point is not None and point[0] > 900
+    moved = screen.copy()
+    icon = moved[28:112, 969:1053].copy()
+    moved[28:112, 969:1053] = 0
+    moved[80:164, 40:124] = icon
+    assert battle_menu.ad_end_card_close(moved, templates) == (82, 122)
+    assert battle_menu.ad_end_card_close(
+        frame("battle_menu/ad_reward_claim"), templates) is None
+    assert battle_menu.ad_end_card_close(
+        frame("battle_menu/ad_meta_complete"), templates) == (982, 180)
+    assert battle_menu.ad_end_card_close(
+        frame("battle_menu/ad_meta_landing"), templates) == (77, 75)
+
+
 def test_close_point_only_when_open(templates):
     assert battle_menu.close_point(frame("battle_menu/open_badged"), templates) is not None
     assert battle_menu.close_point(frame("battle_menu/collapsed_badged"), templates) is None
@@ -78,11 +106,6 @@ def test_unsupported_frame_reads_nothing(templates):
     small = cv2.resize(frame("battle_menu/open_badged"), (540, 1200))
     assert battle_menu.read_menu(small, templates) is None
     assert battle_menu.collapsed(small, templates) is None
-
-
-import ocr
-
-needs_ocr = pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
 
 
 def boxes(name):

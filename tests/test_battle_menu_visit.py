@@ -96,9 +96,10 @@ def test_settings_only_menu_closes_and_is_not_reopened(monkeypatch):
     close = battle_menu.close_point(frame("open_badged"), TEMPLATES)
     assert d.taps[-1] == close
     step(v, d, "collapsed_badged", 2)                 # CLOSING -> IDLE
-    for t in (3, 500, 5000):
+    for t in (3, 500):
         assert step(v, d, "collapsed_badged", t) is Outcome.IDLE
     assert len(d.taps) == 2
+    assert step(v, d, "collapsed_badged", 600) is Outcome.TAPPED
 
 
 @pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
@@ -326,7 +327,7 @@ def test_a_menu_missing_an_icon_still_visits_the_others():
     assert d.taps[-1] == menu["cart"].point
 
 
-def test_a_menu_of_only_missing_and_clear_icons_closes_once_and_stays_shut(monkeypatch):
+def test_a_menu_of_only_missing_and_clear_icons_closes_then_rechecks(monkeypatch):
     state = BattleMenuState(None)
     v, d = visitor(state), Device()
     partial = {i: battle_menu.IconReading(i, (900, 300), None) for i in ("missions", "cards")}
@@ -335,9 +336,10 @@ def test_a_menu_of_only_missing_and_clear_icons_closes_once_and_stays_shut(monke
     assert step(v, d, "open_badged", 1) is Outcome.TAPPED      # close, nothing due
     assert d.taps[-1] == battle_menu.close_point(frame("open_badged"), TEMPLATES)
     step(v, d, "collapsed_badged", 2)                          # CLOSING -> IDLE
-    for t in (3, 500, 5000):
+    for t in (3, 500):
         assert step(v, d, "collapsed_badged", t) is Outcome.IDLE
     assert len(d.taps) == 2
+    assert step(v, d, "collapsed_badged", 600) is Outcome.TAPPED
 
 
 @pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
@@ -371,13 +373,49 @@ def test_daily_ad_timeout_backs_once_and_records_failure():
     step(v, d, "collapsed_badged", 0)
     step(v, d, "open_badged", 1)
     step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
-    assert step(v, d, "ad_upsell", 63, ()) is Outcome.TAPPED
+    assert step(v, d, "ad_upsell", 63, ()) is Outcome.HOLD
+    assert d.backs == 0
+    assert step(v, d, "ad_upsell", 183, ()) is Outcome.TAPPED
     assert d.backs == 1
-    assert step(v, d, "store_ad_ready", 64,
+    assert step(v, d, "store_ad_ready", 184,
                 ocr.read(frame("store_ad_ready"))) is Outcome.TAPPED
     assert any(isinstance(e, events.ClaimUncertain) and e.target == "daily_ad_gems"
                for e in v._bus.published)
     assert d.backs == 1
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_daily_ad_closes_detected_end_card_after_playing():
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    v, d = visitor(state), Device()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
+    assert step(v, d, "ad_end_card", 20, ()) is Outcome.HOLD
+    assert step(v, d, "ad_end_card", 45, ()) is Outcome.TAPPED
+    assert d.taps[-1] == battle_menu.ad_end_card_close(frame("ad_end_card"), TEMPLATES)
+    assert d.backs == 0
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_daily_ad_closes_meta_skip_and_landing_then_claims():
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    v, d = visitor(state), Device()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
+    assert step(v, d, "ad_meta_complete", 45, ()) is Outcome.TAPPED
+    assert d.taps[-1] == (982, 180)
+    assert step(v, d, "ad_meta_landing", 50, ()) is Outcome.TAPPED
+    assert d.taps[-1] == (77, 75)
+    assert step(v, d, "ad_reward_claim", 51,
+                ocr.read(frame("ad_reward_claim"))) is Outcome.TAPPED
+    assert step(v, d, "store_ad_claimed", 52,
+                ocr.read(frame("store_ad_claimed"))) is Outcome.TAPPED
+    assert any(isinstance(e, events.DailyAdGemClaimed) for e in v._bus.published)
+    assert d.backs == 0
 
 
 @pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")

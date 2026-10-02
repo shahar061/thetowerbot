@@ -35,8 +35,13 @@ class BattleMenuState:
     def worth_opening(self, now: float) -> bool:
         if self._last_menu is None:
             return True
-        return any(color is not None and self._due(icon, color, now)
-                   for icon, color in self._last_menu.items())
+        if any(color is not None and self._due(icon, color, now)
+               for icon, color in self._last_menu.items()):
+            return True
+        # The hamburger's dot can persist for Settings while every known
+        # non-settings icon is clear. Recheck occasionally: a later cart dot
+        # cannot be discovered from the stale last-menu snapshot alone.
+        return now - self._last_session >= config.BATTLE_MENU_RECHECK_SECONDS
 
     # -- updates ---------------------------------------------------------------
     def session_started(self, now: float) -> None:
