@@ -42,7 +42,8 @@ from account_collection import (
 )
 from account_screens import ControlTarget
 from device import Image
-from missions_screen import ClaimTarget, MissionsReadings
+from missions_screen import (ClaimTarget, MissionsReadings,
+                             WEEKLY_REWARD_SCREEN, WeeklyRewardModal)
 from events_claim import EventsClaim
 from mail_claim import MailClaim
 
@@ -62,6 +63,8 @@ MISSIONS_SCREEN = 'missions.daily'
 # rather than a loop.
 MAX_CLAIMS_PER_WALK = 8
 MAX_MISSIONS_SCROLLS = 4
+MAX_WEEKLY_CHESTS_PER_WALK = 7
+MAX_WEEKLY_STRIP_SCROLLS = 2
 
 TARGET = 'missions'
 
@@ -84,6 +87,19 @@ class _PendingClaim:
     coins: int | None
     gems: int | None
     completed_target: int | None
+
+
+@dataclass
+class _PendingChest:
+    """A tapped chest, with reward steps observed before final confirmation."""
+
+    threshold: int
+    rewards: list[tuple[str, int]]
+    reward_texts: list[str]
+    unreadable_rewards: int = 0
+    index: int = 0
+    total: int | None = None
+    final_tapped: bool = False
 
 
 class Step(Enum):
@@ -117,6 +133,10 @@ class MissionsClaim(ControlTaps):
         # has no `rect` field to hold one, so this is true by construction
         # rather than by remembering not to read one off it.
         self._pending: tuple[_PendingClaim, int] | None = None
+        self._pending_chest: _PendingChest | None = None
+        self._chests_claimed = 0
+        self._chest_scrolls = 0
+        self._chest_seek_failed = False
         self._mail = MailClaim(frame_budget=frame_budget)
         self._events = EventsClaim(frame_budget=frame_budget)
         # The side walk this transaction is standing in for, if any: mail and
@@ -134,6 +154,11 @@ class MissionsClaim(ControlTaps):
             return (self._step is not Step.IDLE or self._mail.active
                     or self._events.active)
 
+    @property
+    def chest_pending(self) -> bool:
+        with self._lock:
+            return self._pending_chest is not None
+
     def snapshot(self) -> dict[str, Any]:
         """Detached. 'idle' is the absence of a walk, not a failed one.
 
@@ -147,6 +172,7 @@ class MissionsClaim(ControlTaps):
                 self._result.status if self._result is not None else 'idle')
             return {'status': status, 'step': self._step.name.lower(),
                     'requested_at': self._requested_at, 'claimed': self._claimed,
+                    'chests_claimed': self._chests_claimed,
                     'trail': list(self._trail),
                     'result': asdict(self._result) if self._result is not None else None}
 
@@ -179,6 +205,10 @@ class MissionsClaim(ControlTaps):
             self._claimed = 0
             self._announced = False
             self._pending = None
+            self._pending_chest = None
+            self._chests_claimed = 0
+            self._chest_scrolls = 0
+            self._chest_seek_failed = False
             self._scrolls = 0
             self._scroll_pending = None
             self._scroll_seen.clear()
@@ -195,7 +225,7 @@ class MissionsClaim(ControlTaps):
             if self._step is Step.IDLE:
                 return
             moment = time.time() if now is None else now
-            if self._pending is not None:
+            if self._pending is not None or self._pending_chest is not None:
                 self._uncertain(reason, detail, moment)
             else:
                 self._finish('failed', reason, detail, moment)
@@ -234,12 +264,17 @@ class MissionsClaim(ControlTaps):
             if not at_missions_home(state, readings.current_evidence(), evidence):
                 return self._wait('home_not_restored', 'The missions page was walked, but the '
                                   'main menu was not confirmed again.', moment)
-            return self._finish('completed', 'claimed', f'{self._claimed} mission reward(s) '
-                                'were claimed and the game returned to the main menu.', moment)
+            return self._finish(
+                'completed', 'claimed',
+                f'{self._claimed} mission reward(s) and {self._chests_claimed} '
+                'weekly chest(s) were claimed; the game returned to the main menu.',
+                moment)
 
     # -- the claiming itself -----------------------------------------------
     def _claim_step(self, screen: Image, device: Any, templates: Any,
                     evidence: dict[str, Any], moment: float) -> ClaimAction | None:
+        if self._pending_chest is not None:
+            return self._chest_step(device, evidence, moment)
         if evidence['error'] is not None:
             if self._pending is not None:
                 return self._uncertain('missions_unreadable', 'The missions page became unreadable '
@@ -300,7 +335,73 @@ class MissionsClaim(ControlTaps):
             self._scroll_pending = None
             self._waited = 0
 
+        chests = evidence.get('chests', ())
+        if self._chests_claimed < MAX_WEEKLY_CHESTS_PER_WALK and chests:
+            target = chests[0]
+            x = target.rect[0] + target.rect[2] // 2
+            y = target.rect[1] + target.rect[3] // 2
+            prepare_chest = getattr(self._bus, 'prepare_chest', None)
+            if prepare_chest is not None:
+                prepare_chest(threshold=target.threshold, completed_before=completed,
+                              now=moment)
+            action = self._tap_target(
+                ControlTarget(name='weekly_chest', point=(x, y),
+                              status='located', score=1., rect=target.rect),
+                device, 'weekly_chest', Step.CLAIM, moment)
+            if action is None:
+                discard = getattr(self._bus, 'discard_prepared_claim', None)
+                if discard is not None:
+                    discard(moment)
+                return self._refuse('chest_target_unusable', 'The weekly chest could not '
+                                    'be tapped at its verified position.', moment)
+            self._pending_chest = _PendingChest(target.threshold, [], [])
+            return action
+
         claims = evidence['claims']
+        if claims and self._claimed < self._max_claims:
+            target = claims[0]
+            prepare = getattr(self._bus, 'prepare_claim', None)
+            if prepare is not None:
+                prepare(mission=target.raw_text, mission_id=target.mission_id,
+                        coins=target.coins, gems=target.gems,
+                        completed_before=completed,
+                        completed_target=evidence.get('completed_target'),
+                        visible_before=list(evidence.get('visible', ())), now=moment)
+            self._pending = (_PendingClaim(target.raw_text, target.mission_id,
+                                           target.coins, target.gems,
+                                           evidence.get('completed_target')), completed)
+            action = self._tap_point(target, device, moment)
+            if action is None:
+                discard = getattr(self._bus, 'discard_prepared_claim', None)
+                if discard is not None:
+                    discard(moment)
+                self._pending = None
+            return action
+
+        # The recorded strip initially shows 5..25; a horizontal gesture
+        # reveals 30 and 35. Only seek it when an eligible threshold is
+        # absent from this frame, and never tap a box inferred from a count.
+        seen = {threshold for threshold, _ in evidence.get('milestones', ())}
+        unseen_eligible = [threshold for threshold in (30, 35)
+                           if completed >= threshold and threshold not in seen]
+        if unseen_eligible:
+            if self._chest_scrolls >= MAX_WEEKLY_STRIP_SCROLLS:
+                if not self._chest_seek_failed:
+                    self._publish(events.ClaimSkipped(
+                        target='weekly_chest', reason='chest_strip_not_reached',
+                        detail=f'The {unseen_eligible[0]}-mission chest was eligible '
+                               'but its position was not visible after the weekly strip '
+                               'was swiped.'))
+                    self._chest_seek_failed = True
+            else:
+                height, width = screen.shape[:2]
+                x, x2, y = int(width * .81), int(width * .17), int(height * .16)
+                device.swipe(x, y, x2, y, .4)
+                self._chest_scrolls += 1
+                self._waited = 0
+                return ClaimAction('claim', 'weekly_chest_scroll', x, y, 1.,
+                                   (x2, y, 1, x - x2))
+
         if self._claimed >= self._max_claims:
             return self._return_home(screen, device, templates, moment)
         if not claims:
@@ -318,24 +419,78 @@ class MissionsClaim(ControlTaps):
                                    (x, y2, 1, y - y2))
             return self._return_home(screen, device, templates, moment)
 
-        target = claims[0]
-        prepare = getattr(self._bus, 'prepare_claim', None)
-        if prepare is not None:
-            prepare(mission=target.raw_text, mission_id=target.mission_id,
-                    coins=target.coins, gems=target.gems,
-                    completed_before=completed,
-                    completed_target=evidence.get('completed_target'),
-                    visible_before=list(evidence.get('visible', ())), now=moment)
-        self._pending = (_PendingClaim(target.raw_text, target.mission_id,
-                                       target.coins, target.gems,
-                                       evidence.get('completed_target')), completed)
-        action = self._tap_point(target, device, moment)
-        if action is None:
-            discard = getattr(self._bus, 'discard_prepared_claim', None)
-            if discard is not None:
-                discard(moment)
-            self._pending = None
-        return action
+        return None
+
+    def _chest_step(self, device: Any, evidence: dict[str, Any],
+                    moment: float) -> ClaimAction | None:
+        pending = self._pending_chest
+        assert pending is not None
+        if evidence.get('error') is not None:
+            return self._uncertain('chest_unreadable', f'The {pending.threshold}-mission '
+                                   'chest was tapped, but the next screen was unreadable.', moment)
+
+        if evidence.get('screen_id') == WEEKLY_REWARD_SCREEN:
+            modal: WeeklyRewardModal | None = evidence.get('reward_modal')
+            if modal is None:
+                return self._wait_for_chest(pending, moment)
+            if modal.index == pending.index:
+                return self._wait_for_chest(pending, moment)
+            if (pending.final_tapped or modal.index != pending.index + 1
+                    or pending.total is not None and modal.total != pending.total):
+                return self._uncertain('chest_reward_sequence_changed',
+                                       'The weekly chest reward pages changed order.', moment)
+            rect = modal.control
+            x, y = rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
+            observe_reward = getattr(self._bus, 'observe_chest_reward', None)
+            if observe_reward is not None:
+                observe_reward(index=modal.index, total=modal.total,
+                               currency=modal.currency, amount=modal.amount,
+                               reward_text=modal.reward_text,
+                               final_tapped=modal.action == 'claim', now=moment)
+            action = self._tap_target(
+                ControlTarget(name=f'weekly_chest_{modal.action}', point=(x, y),
+                              status='located', score=1., rect=rect),
+                device, f'weekly_chest_{modal.action}', Step.CLAIM, moment)
+            if action is None:
+                return self._uncertain('chest_reward_control_unusable',
+                                       'A weekly chest reward control could not be tapped.', moment)
+            pending.index = modal.index
+            pending.total = modal.total
+            if modal.reward_text is not None:
+                pending.reward_texts.append(modal.reward_text)
+            if modal.currency is not None and modal.amount is not None:
+                pending.rewards.append((modal.currency, modal.amount))
+            else:
+                pending.unreadable_rewards += 1
+            pending.final_tapped = modal.action == 'claim'
+            self._waited = 0
+            return action
+
+        if evidence.get('screen_id') == MISSIONS_SCREEN:
+            states = dict(evidence.get('milestones', ()))
+            if pending.final_tapped and states.get(pending.threshold) == 'claimed':
+                self._publish(events.WeeklyChestClaimed(
+                    threshold=pending.threshold, rewards=tuple(pending.rewards),
+                    unreadable_rewards=pending.unreadable_rewards,
+                    reward_text=', '.join(pending.reward_texts) or None,
+                    confirmation='chest_marked_claimed'))
+                self._pending_chest = None
+                self._chests_claimed += 1
+                self._waited = 0
+                return None
+            if states.get(pending.threshold) == 'claimed' and not pending.final_tapped:
+                return self._uncertain('chest_claimed_early', 'The weekly chest changed '
+                                       'before its reward ceremony was completed.', moment)
+        return self._wait_for_chest(pending, moment)
+
+    def _wait_for_chest(self, pending: _PendingChest,
+                        moment: float) -> ClaimAction | None:
+        self._waited += 1
+        if self._waited > self._budget:
+            return self._uncertain('chest_not_confirmed',
+                                   f'The {pending.threshold}-mission chest was tapped '
+                                   'but its reward and green check were not confirmed.', moment)
+        return None
 
     def _return_home(self, screen: Image, device: Any, templates: Any,
                      moment: float) -> ClaimAction | None:
@@ -411,10 +566,11 @@ class MissionsClaim(ControlTaps):
                 moment: float) -> ClaimAction | None:
         self._result = ClaimResult(status, reason, detail, MISSIONS_SCREEN, moment)
         self._publish(events.ClaimEnded(
-            target=TARGET, claimed=self._claimed, reason=reason,
+            target=TARGET, claimed=self._claimed + self._chests_claimed, reason=reason,
             aborted=status != 'completed'))
         self._step = Step.IDLE
         self._waited = 0
         self._pending = None
+        self._pending_chest = None
         self._scroll_pending = None
         return None

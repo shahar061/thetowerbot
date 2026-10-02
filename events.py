@@ -525,6 +525,23 @@ class MissionClaimed(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class WeeklyChestClaimed(Event):
+    """A five-mission Weekly Challenge chest confirmed after a tap.
+
+    Rewards are recorded only when the game named both a currency and an
+    amount. An empty tuple means the chest was confirmed but its contents
+    could not be read; the journal must preserve that distinction.
+    """
+
+    threshold: int
+    rewards: tuple[tuple[str, int], ...] = ()
+    unreadable_rewards: int = 0
+    reward_text: str | None = None
+    confirmation: str
+    receipt_key: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
 class ClaimSkipped(Event):
     """A claim the walk refused to make, and why it refused."""
 

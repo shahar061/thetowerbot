@@ -336,6 +336,72 @@ def test_read_only_verification_requires_original_scope_and_matching_cards(tmp_p
     assert rotated.snapshot()["pending_claim"] is not None
 
 
+def test_weekly_chest_tap_intent_survives_restart_and_blocks_another_visit(tmp_path) -> None:
+    path = tmp_path / 'notification.json'
+    state = NotificationState(path, scope=SCOPE)
+    state.begin('missions', 100)
+    state.prepare_chest(threshold=5, completed_before=7, now=101)
+
+    restarted = NotificationState(path, scope=SCOPE)
+
+    assert restarted.snapshot()['pending_claim']['kind'] == 'weekly_chest'
+    assert restarted.snapshot()['pending_claim']['threshold'] == 5
+    assert not restarted.eligible('missions', 200)
+
+
+def test_restarted_weekly_chest_reconciles_saved_reward_pages_once(tmp_path) -> None:
+    path = tmp_path / 'notification.json'
+    state = NotificationState(path, scope=SCOPE)
+    state.begin('missions', 100)
+    state.prepare_chest(threshold=5, completed_before=7, now=101)
+    state.observe_chest_reward(index=1, total=2, currency='coins', amount=300,
+                               reward_text='300 COINS', final_tapped=False, now=102)
+    state.observe_chest_reward(index=2, total=2, currency='gems', amount=10,
+                               reward_text='10 GEMS', final_tapped=True, now=103)
+    restarted = NotificationState(path, scope=SCOPE)
+    claimed = {'screen_id': 'missions.daily', 'error': None, 'completed': 7,
+               'milestones': ((5, 'claimed'),)}
+
+    event = restarted.reconcile_claim(claimed, frame_id='capture-1', now=104)
+
+    assert isinstance(event, events.WeeklyChestClaimed)
+    assert event.rewards == (('coins', 300), ('gems', 10))
+    assert event.receipt_key == restarted.snapshot()['receipts'][0]['key']
+    assert restarted.snapshot()['pending_claim'] is None
+    assert restarted.reconcile_claim(claimed, frame_id='capture-2', now=105) == 'unknown'
+
+
+def test_weekly_chest_reconciliation_refuses_unproven_worker_rotation(tmp_path) -> None:
+    path = tmp_path / 'notification.json'
+    state = NotificationState(path, scope=SCOPE)
+    state.begin('missions', 100)
+    state.prepare_chest(threshold=5, completed_before=7, now=101)
+    state.observe_chest_reward(index=1, total=1, currency='gems', amount=10,
+                               reward_text='10 GEMS', final_tapped=True, now=102)
+    rotated = NotificationState(path, scope={**SCOPE, 'generation': 'generation-2'})
+    claimed = {'screen_id': 'missions.daily', 'error': None, 'completed': 7,
+               'milestones': ((5, 'claimed'),)}
+
+    assert rotated.reconcile_claim(claimed, frame_id='capture-1', now=104) == 'unknown'
+    assert rotated.snapshot()['receipts'] == []
+    assert rotated.snapshot()['pending_claim'] is not None
+
+
+def test_weekly_chest_still_claimable_on_two_frames_clears_failed_tap(tmp_path) -> None:
+    path = tmp_path / 'notification.json'
+    state = NotificationState(path, scope=SCOPE)
+    state.begin('missions', 100)
+    state.prepare_chest(threshold=5, completed_before=7, now=101)
+    restarted = NotificationState(path, scope=SCOPE)
+    claimable = {'screen_id': 'missions.daily', 'error': None, 'completed': 7,
+                 'milestones': ((5, 'claimable'),)}
+
+    assert restarted.reconcile_claim(claimable, frame_id='capture-1', now=104) == 'unknown'
+    assert restarted.reconcile_claim(claimable, frame_id='capture-2', now=105) == 'no_reward'
+    assert restarted.snapshot()['pending_claim'] is None
+    assert restarted.snapshot()['receipts'] == []
+
+
 def test_read_only_no_reward_needs_two_distinct_captures_and_backs_off(tmp_path) -> None:
     state = NotificationState(tmp_path / "notification.json", scope=SCOPE)
     state.begin("missions", 100)

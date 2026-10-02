@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import statistics
 import time
 import threading
 from collections import Counter
@@ -79,8 +80,8 @@ _COMPLETED = Rect(700, 306, 380, 76)
 _COMPLETED_TEXT = re.compile(r'completed\s*(\d+)\s*/\s*(\d+)', re.I)
 
 # The weekly milestone thresholds, measured as a single row of bare integers
-# at y 577-621 spanning x 133-961. The strip runs off the right edge of the
-# capture, so what it holds is a prefix of the ladder and never all of it.
+# at y 577-621. The first viewport shows 5..25; a horizontal swipe reveals
+# 30 and 35. Each frame contains only the boxes visible in that viewport.
 _MILESTONES = Rect(60, 555, 950, 90)
 
 # The two mission cards tiles.candidates finds at (17, 738, 1046, 242) and
@@ -97,6 +98,9 @@ _REWARD_LEFT_FRACTION = .85
 _PROGRESS_TOP_FRACTION = .5
 _PROGRESS = re.compile(r'(\d+)\s*/\s*(\d+)')
 _INTEGER = re.compile(r'\d+')
+_WEEKLY_REWARD = re.compile(r'\s*(\d+)\s*(coins|gems|medals|stones)\s*', re.I)
+_WEEKLY_PROGRESS = re.compile(r'(\d+)\s*/\s*(\d+)')
+WEEKLY_REWARD_SCREEN = 'missions.weekly_reward_modal'
 
 # The button that replaces the progress bar on a finished card. Measured at
 # (454, 751, 153, 46) on menu_missions_claimable_no_status_bar - centred in the
@@ -138,17 +142,66 @@ class MissionEntry:
 class MilestoneEntry:
     """One weekly-challenge chest, addressed by its threshold.
 
-    `status` is derived from the completed counter, never from the padlock
-    art: 'locked' means the counter was read and has not reached this
-    threshold, 'unlocked' means it has, and 'unreadable' means the counter or
-    the threshold itself could not be trusted. Whether an unlocked chest is
-    still claimable or was already taken is not observable here.
+    `status` is the historical counter-derived eligibility. `claim_state` is
+    read from the chest pixels: a bright box can be tapped, a green check has
+    already been claimed, and an unreadable box must never become a target.
+    `rect` bounds the chest itself, not the number printed underneath it.
     """
 
     threshold: int
     status: str
+    claim_state: str
     confidence: float
     rect: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class ChestTarget:
+    threshold: int
+    rect: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class WeeklyRewardModal:
+    index: int
+    total: int
+    action: str
+    control: tuple[int, int, int, int]
+    reward_text: str | None
+    currency: str | None
+    amount: int | None
+
+
+def weekly_reward_modal(screen: Image,
+                        boxes: tuple[ocr.TextBox, ...]) -> WeeklyRewardModal | None:
+    """Read one frame of the chest's NEXT ... CLAIM ceremony."""
+    height, width = screen.shape[:2]
+    skips = [box for box in boxes if _trusted(box)
+             and box.text.strip().casefold() == 'skip'
+             and box.rect.x > width * .7 and box.rect.y < height * .2]
+    steps = [match for box in boxes if _trusted(box)
+             and box.rect.y > height * .9
+             for match in [_WEEKLY_PROGRESS.fullmatch(box.text.strip())] if match]
+    actions = [box for box in boxes if _trusted(box)
+               and box.text.strip().casefold() in {'next', 'claim'}
+               and height * .72 < box.rect.y < height * .84]
+    rewards = [box for box in boxes if _trusted(box)
+               and height * .53 < box.rect.y < height * .63
+               and _WEEKLY_REWARD.fullmatch(box.text) is not None]
+    if len(skips) != 1 or len(steps) != 1 or len(actions) != 1 or len(rewards) > 1:
+        return None
+    index, total = map(int, steps[0].groups())
+    action = actions[0].text.strip().casefold()
+    if not (1 <= index <= total <= 8
+            and action == ('claim' if index == total else 'next')):
+        return None
+    reward_text = rewards[0].text if rewards else None
+    match = _WEEKLY_REWARD.fullmatch(reward_text) if reward_text else None
+    rect = actions[0].rect
+    return WeeklyRewardModal(
+        index, total, action, (rect.x, rect.y, rect.w, rect.h), reward_text,
+        match[2].lower() if match else None,
+        int(match[1]) if match else None)
 
 
 @dataclass(frozen=True)
@@ -335,23 +388,65 @@ def _counter(boxes: tuple[ocr.TextBox, ...],
     return (done, total) if done <= total else (None, None)
 
 
-def _milestones(boxes: tuple[ocr.TextBox, ...], completed: int | None,
-                offset: int) -> tuple[MilestoneEntry, ...]:
+def _chest_state(screen: Image, centre_x: int, title_y: int) -> str:
+    """Classify the recorded lock, glow and green-check art conservatively."""
+    region = screen[title_y + 161:title_y + 296, centre_x - 77:centre_x + 78]
+    if region.shape != (135, 155, 3):
+        return 'unreadable'
+    blue, green, red = region[:, :, 0], region[:, :, 1], region[:, :, 2]
+    white = int(((blue > 215) & (green > 215) & (red > 215)).sum())
+    checked = int(((green > 110) & (green > red * 1.2)
+                   & (green > blue * 1.15)).sum())
+    glowing = int(((red > 145) & (blue > 100) & (red > green * 1.35)
+                   & (blue > green * 1.15)).sum())
+    if checked >= 700:
+        return 'claimed'
+    if white >= 2500 and glowing >= 1500:
+        return 'claimable'
+    if white >= 500 and glowing < 800:
+        return 'locked'
+    return 'unreadable'
+
+
+def _milestones(screen: Image, boxes: tuple[ocr.TextBox, ...],
+                completed: int | None, offset: int) -> tuple[MilestoneEntry, ...]:
     band = _shift(_MILESTONES, offset)
     found = [b for b in boxes if _inside(band, b.rect)
-             and _INTEGER.fullmatch(b.text.strip())]
+             and _INTEGER.fullmatch(b.text.strip())
+             and int(b.text) in range(5, 36, 5)]
     thresholds = Counter(int(b.text) for b in found if _trusted(b))
-    entries = []
-    for box in sorted(found, key=lambda b: b.rect.x):
-        threshold = int(box.text)
+    anchors = sorted((int(box.text), box.rect.x + box.rect.w / 2, box.confidence)
+                     for box in found if _trusted(box) and thresholds[int(box.text)] == 1)
+    measured = [(int(box.text), box.rect.x + box.rect.w / 2, box.confidence)
+                for box in found]
+    if len(anchors) >= 2 and all(count == 1 for count in thresholds.values()):
+        slopes = [(right[1] - left[1]) / ((right[0] - left[0]) / 5)
+                  for left, right in zip(anchors, anchors[1:])]
+        spacing = statistics.median(slopes)
+        origin = statistics.median(x - spacing * (threshold / 5 - 1)
+                                   for threshold, x, _ in anchors)
+        if (180 <= spacing <= 210
+                and all(abs(x - (origin + spacing * (threshold / 5 - 1))) <= 15
+                        for threshold, x, _ in anchors)):
+            measured = [(threshold, origin + spacing * (threshold / 5 - 1),
+                         min(confidence for _, _, confidence in anchors))
+                        for threshold in range(5, 36, 5)
+                        if 77 <= origin + spacing * (threshold / 5 - 1)
+                        <= screen.shape[1] - 78]
+    entries: list[MilestoneEntry] = []
+    title_y = _RECORDED_TITLE_Y + offset
+    for threshold, x, confidence in sorted(measured, key=lambda item: item[1]):
         # A repeated threshold is two chests claiming one identity, and an
         # unread counter is no evidence at all. Neither may become 'locked'.
-        status = ('unreadable' if not _trusted(box) or thresholds[threshold] > 1
+        status = ('unreadable' if confidence < _MIN_CONFIDENCE or thresholds[threshold] > 1
                   or completed is None else
                   'unlocked' if completed >= threshold else 'locked')
+        centre_x = round(x)
+        state = (_chest_state(screen, centre_x, title_y)
+                 if status != 'unreadable' else 'unreadable')
         entries.append(MilestoneEntry(
-            threshold, status, box.confidence if _trusted(box) else 0.,
-            (box.rect.x, box.rect.y, box.rect.w, box.rect.h)))
+            threshold, status, state, confidence,
+            (centre_x - 72, title_y + 195, 144, 122)))
     return tuple(entries)
 
 
@@ -506,9 +601,8 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
         hashlib.sha256(screen.tobytes()).hexdigest(),
         completed, completed_target, shown, offered,
         offered - shown if shown is not None and offered is not None else None,
-        len(cards), missions, _milestones(boxes, completed, offset),
-        # Never complete: the weekly strip is cut off by the right edge of the
-        # capture and only `shown` of `offered` missions are on the page.
+        len(cards), missions, _milestones(screen, boxes, completed, offset),
+        # One viewport cannot show the entire weekly strip or all missions.
         complete=False)
 
 
@@ -537,6 +631,7 @@ class MissionsReadings:
         # module's whole style exists to prevent, so these are cleared by
         # every observe() that does not supply new ones.
         self._claims: tuple[ClaimTarget, ...] = ()
+        self._reward_modal: WeeklyRewardModal | None = None
 
     def snapshot(self) -> dict[str, Any]:
         """Detached payload. Carries no coordinate: a card's or a chest's
@@ -556,14 +651,16 @@ class MissionsReadings:
                 for key in ('missions', 'milestones'):
                     latest[key] = [{k: v for k, v in entry.items() if k != 'rect'}
                                    for entry in latest[key]]
-            current = None if self._reading is None else self._reading.screen_id
+            current = (self._reading.screen_id if self._reading is not None else
+                       WEEKLY_REWARD_SCREEN if self._reward_modal is not None else None)
             return {'latest': latest, 'current_screen_id': current,
                     'error': self._error, 'scanned': self._scanned}
 
     def current_evidence(self) -> dict[str, Any]:
         """What the last frame showed, for a transaction step to check."""
         with self._lock:
-            screen_id = None if self._reading is None else self._reading.screen_id
+            screen_id = (self._reading.screen_id if self._reading is not None else
+                         WEEKLY_REWARD_SCREEN if self._reward_modal is not None else None)
             return {'screen_id': screen_id, 'error': self._error, 'scanned': self._scanned}
 
     def claim_evidence(self) -> dict[str, Any]:
@@ -581,18 +678,30 @@ class MissionsReadings:
         """
         with self._lock:
             reading = self._reading
-            return {'screen_id': None if reading is None else reading.screen_id,
+            return {'screen_id': (reading.screen_id if reading is not None else
+                                  WEEKLY_REWARD_SCREEN if self._reward_modal is not None
+                                  else None),
                     'error': self._error, 'scanned': self._scanned,
                     'completed': None if reading is None else reading.completed,
                     'completed_target': None if reading is None else reading.completed_target,
                     'claims': self._claims,
+                    'reward_modal': self._reward_modal,
+                    'chests': (() if reading is None else tuple(
+                        ChestTarget(entry.threshold, entry.rect)
+                        for entry in reading.milestones
+                        if entry.status == 'unlocked'
+                        and entry.claim_state == 'claimable')),
+                    'milestones': (() if reading is None else tuple(
+                        (entry.threshold, entry.claim_state)
+                        for entry in reading.milestones)),
                     'visible': (() if reading is None else tuple(
                         (entry.mission_id, entry.raw_text, entry.status)
                         for entry in reading.missions))}
 
     def observe(self, reading: MissionsReading | None, *, error: str | None = None,
                 scanned: bool = False,
-                claims: tuple[ClaimTarget, ...] = ()) -> None:
+                claims: tuple[ClaimTarget, ...] = (),
+                reward_modal: WeeklyRewardModal | None = None) -> None:
         with self._lock:
             self._reading = reading
             if reading is not None:
@@ -600,9 +709,11 @@ class MissionsReadings:
             self._error = error
             self._scanned = scanned or reading is not None
             self._claims = claims
+            self._reward_modal = reward_modal
 
     def scan(self, screen: Image, *,
-             boxes: tuple[ocr.TextBox, ...] | None = None) -> bool:
+             boxes: tuple[ocr.TextBox, ...] | None = None,
+             reward_modal: bool = False) -> bool:
         """Update from this frame; return whether all actions must hold.
 
         Actions hold whenever the missions page is up or might be: the bot
@@ -627,6 +738,11 @@ class MissionsReadings:
         try:
             if boxes is None:
                 boxes = ocr.read(screen, strict=True)
+            if reward_modal:
+                modal = weekly_reward_modal(screen, boxes)
+                if modal is not None:
+                    self.observe(None, scanned=True, reward_modal=modal)
+                    return True
             if screen_discovery._missions_title(boxes) is None:
                 # Examined the whole frame, and no missions title anywhere in
                 # the band screen_discovery searches (0..MAX_TOP_INSET, wide

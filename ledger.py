@@ -52,6 +52,7 @@ KINDS: tuple[str, ...] = (
     "LAB",
     "CARD_BUY",
     "MISSION_CLAIM",
+    "WEEKLY_CHEST_CLAIM",
     "MAIL_CLAIM",
     "MILESTONE_CLAIM",
     "GEM_CLAIM",
@@ -254,6 +255,29 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                            detail={"receipt_key": event.receipt_key} if event.receipt_key else {}, **base),
             )
 
+        case events.WeeklyChestClaimed():
+            detail = {"threshold": event.threshold,
+                      "reward_text": event.reward_text,
+                      "unreadable_rewards": event.unreadable_rewards,
+                      "confirmation": event.confirmation}
+            if event.receipt_key is not None:
+                detail["receipt_key"] = event.receipt_key
+            rewards: dict[str, int] = {}
+            for currency, amount in event.rewards:
+                rewards[currency] = rewards.get(currency, 0) + amount
+            note = (f"{event.unreadable_rewards} reward"
+                    f"{'s' if event.unreadable_rewards != 1 else ''} unreadable"
+                    if event.unreadable_rewards else None)
+            return tuple(LedgerLine(
+                kind="WEEKLY_CHEST_CLAIM", item=f"{event.threshold} missions",
+                category="MISSIONS", currency=currency, delta=amount,
+                reason=note, detail=detail, **base,
+            ) for currency, amount in rewards.items()) if rewards else (LedgerLine(
+                kind="WEEKLY_CHEST_CLAIM", item=f"{event.threshold} missions",
+                category="MISSIONS", delta=None, reason=note or "reward unreadable",
+                detail=detail, **base,
+            ),)
+
         case events.ClaimStarted():
             return (LedgerLine(kind="VISIT_START", reason=event.target, **base),)
 
@@ -453,9 +477,9 @@ class LedgerWriter:
                 return []
         out: list[LedgerLine] = []
         for line in classify(event):
-            if isinstance(event, events.MissionClaimed) and event.receipt_key:
+            if isinstance(event, (events.MissionClaimed, events.WeeklyChestClaimed)) and event.receipt_key:
                 if self._conn.execute(
-                    "SELECT 1 FROM ledger WHERE json_extract(detail, '$.receipt_key')=? AND currency=?",
+                    "SELECT 1 FROM ledger WHERE json_extract(detail, '$.receipt_key')=? AND currency IS ?",
                     (event.receipt_key, line.currency)).fetchone():
                     continue
             out.extend(self._reconcile(line))
@@ -545,6 +569,7 @@ _REPLAYABLE: dict[str, type[events.Event]] = {
     "ControlChanged": events.ControlChanged,
     "ClaimStarted": events.ClaimStarted,
     "MissionClaimed": events.MissionClaimed,
+    "WeeklyChestClaimed": events.WeeklyChestClaimed,
     "MailClaimed": events.MailClaimed,
     "ClaimSkipped": events.ClaimSkipped,
     "ClaimEnded": events.ClaimEnded,

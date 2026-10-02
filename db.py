@@ -118,6 +118,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS ledger_event_line_idx
 CREATE UNIQUE INDEX IF NOT EXISTS ledger_receipt_currency_idx
     ON ledger(json_extract(detail, '$.receipt_key'), currency)
     WHERE json_extract(detail, '$.receipt_key') IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_receipt_unknown_idx
+    ON ledger(json_extract(detail, '$.receipt_key'))
+    WHERE json_extract(detail, '$.receipt_key') IS NOT NULL AND currency IS NULL;
 CREATE INDEX IF NOT EXISTS ledger_ts_idx   ON ledger(ts);
 CREATE INDEX IF NOT EXISTS ledger_kind_idx ON ledger(kind);
 

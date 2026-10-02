@@ -40,7 +40,7 @@ def test_receipt_currency_lines_deduplicate_across_independent_writers(tmp_path)
     second.close()
 
 
-def receipt_source(tmp_path):
+def receipt_source(tmp_path, *, chest=False, unknown=False):
     from account_state import AccountRepository, AccountState
     from evidence_scope import FactScope
     from fleet.identity import IdentityEvidence
@@ -60,12 +60,59 @@ def receipt_source(tmp_path):
     notifications = NotificationState(root / 'mission-notification-state.json',
                                      scope=dict(account_id='acct',lease_id='lease',generation='a' * 32,attempt_id='attempt',fact_epoch=0))
     notifications.begin('missions', 10.)
+    if chest:
+        notifications.prepare_chest(threshold=5, completed_before=7, now=10.)
+        if unknown:
+            notifications.observe_chest_reward(index=1, total=1, currency=None, amount=None,
+                                               reward_text=None, final_tapped=True, now=10.5)
+            claim = events.WeeklyChestClaimed(
+                threshold=5, rewards=(), unreadable_rewards=1,
+                reward_text=None, confirmation='chest_marked_claimed')
+        else:
+            notifications.observe_chest_reward(index=1, total=2, currency='coins', amount=300,
+                                               reward_text='300 COINS', final_tapped=False, now=10.5)
+            notifications.observe_chest_reward(index=2, total=2, currency='gems', amount=10,
+                                               reward_text='10 GEMS', final_tapped=True, now=10.7)
+            claim = events.WeeklyChestClaimed(
+                threshold=5, rewards=(('coins', 300), ('gems', 10)),
+                reward_text='300 COINS, 10 GEMS', confirmation='chest_marked_claimed')
+        event = notifications.record_chest_receipt(claim, 11.)
+        assert event is not None
+        return root, path, state, event, event.receipt_key
     notifications.prepare_claim(mission='Damage',mission_id='d',coins=None,gems=3,
                                 completed_before=1,completed_target=5,visible_before=[['d','Damage']],now=10.)
     event = events.MissionClaimed(mission='Damage',mission_id='d',coins=None,gems=3,completed_before=1,completed_after=2)
     assert notifications.record_receipt(event,11.)
     key = notifications.snapshot()['receipts'][0]['key']
     return root, path, state, event, key
+
+
+def test_weekly_chest_receipt_replays_after_lost_event_without_duplicate(tmp_path):
+    from mission_receipts import ingest_receipts
+    root, path, state, event, key = receipt_source(tmp_path, chest=True)
+
+    assert ingest_receipts(root, state, now=12.) == {key}
+    assert ingest_receipts(root, state, now=13.) == {key}
+    with db.connect(path) as conn:
+        rows = conn.execute("SELECT currency,delta FROM ledger WHERE kind='WEEKLY_CHEST_CLAIM' "
+                            "ORDER BY currency").fetchall()
+        assert [(row['currency'], row['delta']) for row in rows] == [
+            ('coins', 300), ('gems', 10)]
+        assert ledger.LedgerWriter(conn).lines_for(event) == []
+
+
+def test_unreadable_weekly_chest_receipt_replays_once_with_unknown_amount(tmp_path):
+    from mission_receipts import ingest_receipts
+    root, path, state, event, key = receipt_source(tmp_path, chest=True, unknown=True)
+
+    assert ingest_receipts(root, state, now=12.) == {key}
+    assert ingest_receipts(root, state, now=13.) == {key}
+    with db.connect(path) as conn:
+        rows = conn.execute("SELECT currency,delta,reason FROM ledger WHERE "
+                            "kind='WEEKLY_CHEST_CLAIM'").fetchall()
+        assert [(row['currency'], row['delta'], row['reason']) for row in rows] == [
+            (None, None, '1 reward unreadable')]
+        assert ledger.LedgerWriter(conn).lines_for(event) == []
 
 
 def test_durable_receipt_ingestion_survives_lost_event_and_acks_after_commit(tmp_path, monkeypatch):

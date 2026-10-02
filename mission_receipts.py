@@ -82,21 +82,32 @@ def ingest_receipts(root: Path, state: AccountState, *, now: float,
                     else:
                         acknowledged.discard(key)
                     continue
-                event = events.MissionClaimed(
-                    mission=receipt['mission'], mission_id=receipt.get('mission_id'),
-                    coins=receipt.get('coins'), gems=receipt.get('gems'),
-                    completed_before=receipt['completed_before'], completed_after=receipt['completed_after'],
-                    receipt_key=key, ts=receipt['confirmed_at'])
+                if receipt.get('kind') == 'weekly_chest':
+                    event: events.Event = events.WeeklyChestClaimed(
+                        threshold=receipt['threshold'],
+                        rewards=tuple(tuple(reward) for reward in receipt['rewards']),
+                        unreadable_rewards=receipt['unreadable_rewards'],
+                        reward_text=receipt['reward_text'],
+                        confirmation='chest_marked_claimed',
+                        receipt_key=key, ts=receipt['confirmed_at'])
+                else:
+                    event = events.MissionClaimed(
+                        mission=receipt['mission'], mission_id=receipt.get('mission_id'),
+                        coins=receipt.get('coins'), gems=receipt.get('gems'),
+                        completed_before=receipt['completed_before'], completed_after=receipt['completed_after'],
+                        receipt_key=key, ts=receipt['confirmed_at'])
                 for line in ledger.LedgerWriter(conn).lines_for(event):
                     detail = {**line.detail, 'receipt_scope': raw_scope,
                               'confirmed_at': receipt['confirmed_at'], 'receipt_fingerprint': fingerprint}
                     # Historical credits never establish an actionable current balance.
                     db.insert_ledger(conn, replace(line, seq=None, detail=detail,
                         balance_after=None, observed=None).as_row(), commit=False)
-                for currency in ('coins', 'gems'):
+                for expected in ledger.classify(event):
+                    currency = expected.currency
                     saved_line = conn.execute("SELECT delta,detail FROM ledger WHERE "
-                        "json_extract(detail,'$.receipt_key')=? AND currency=?", (key,currency)).fetchone()
-                    if saved_line is None or saved_line['delta'] != receipt.get(currency):
+                        "json_extract(detail,'$.receipt_key')=? AND currency IS ?",
+                        (key,currency)).fetchone()
+                    if saved_line is None or saved_line['delta'] != expected.delta:
                         raise ValueError('receipt conflicts with ledger')
                     detail = json.loads(saved_line['detail'] or '{}')
                     if detail.get('receipt_scope', raw_scope) != raw_scope:
@@ -105,7 +116,7 @@ def ingest_receipts(root: Path, state: AccountState, *, now: float,
                         raise ValueError('receipt content conflicts with ledger')
                     conn.execute("UPDATE ledger SET detail=json_set(detail,'$.receipt_scope',json(?),"
                                  "'$.receipt_fingerprint',?) "
-                                 "WHERE json_extract(detail,'$.receipt_key')=? AND currency=?",
+                                 "WHERE json_extract(detail,'$.receipt_key')=? AND currency IS ?",
                                  (scope_json,fingerprint,key,currency))
                 conn.execute('INSERT INTO mission_receipt_ack (key,scope,confirmed_at,fingerprint) VALUES (?,?,?,?)',
                              (key, scope_json, receipt['confirmed_at'],fingerprint))
@@ -115,12 +126,9 @@ def ingest_receipts(root: Path, state: AccountState, *, now: float,
 
 def _valid_receipt(value: Any, *, now: float) -> bool:
     valid = (isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 1
-            and {'mission_id','coins','gems'} <= value.keys()
             and all(isinstance(value.get(k),str) and re.fullmatch(r'[0-9a-f]{32}',value[k]) is not None
                     for k in ('intent_id','receipt_token'))
             and isinstance(value.get('key'), str) and re.fullmatch(r'[0-9a-f]{64}', value['key']) is not None
-            and isinstance(value.get('mission'), str) and bool(value['mission'])
-            and (value.get('mission_id') is None or isinstance(value['mission_id'],str) and bool(value['mission_id']))
             and isinstance(value.get('intent_scope'),dict)
             and all(isinstance(value['intent_scope'].get(k),str) and value['intent_scope'][k]
                     for k in ('account_id','lease_id','attempt_id','generation'))
@@ -128,11 +136,37 @@ def _valid_receipt(value: Any, *, now: float) -> bool:
                  or type(value['intent_scope']['fact_epoch']) is int and value['intent_scope']['fact_epoch'] >= 0)
             and type(value.get('prepared_at')) in (int,float) and math.isfinite(value['prepared_at'])
             and type(value.get('confirmed_at')) in (int,float)
-            and math.isfinite(value['confirmed_at']) and 0 < value['prepared_at'] <= value['confirmed_at'] <= now
-            and type(value.get('completed_before')) is int and type(value.get('completed_after')) is int
-            and 0 <= value['completed_before'] and value['completed_after'] == value['completed_before'] + 1
-            and all(value.get(k) is None or type(value[k]) is int and value[k] >= 0 for k in ('coins','gems')))
+            and math.isfinite(value['confirmed_at']) and 0 < value['prepared_at'] <= value['confirmed_at'] <= now)
     if not valid:
+        return False
+    if value.get('kind') == 'weekly_chest':
+        rewards = value.get('rewards')
+        if (type(value.get('threshold')) is not int or value['threshold'] not in range(5, 36, 5)
+                or not isinstance(rewards, list)
+                or type(value.get('unreadable_rewards')) is not int
+                or not 0 <= value['unreadable_rewards'] <= 8
+                or len(rewards) + value['unreadable_rewards'] not in range(1, 9)
+                or value.get('reward_text') is not None
+                and not isinstance(value['reward_text'], str)
+                or any(not isinstance(reward, list) or len(reward) != 2
+                       or reward[0] not in {'coins', 'gems', 'medals', 'stones'}
+                       or type(reward[1]) is not int or reward[1] < 0
+                       for reward in rewards)):
+            return False
+        source = [value['receipt_token'], 'weekly_chest', value['threshold']]
+        return value['key'] == hashlib.sha256(
+            json.dumps(source, separators=(',', ':')).encode()).hexdigest()
+    if (value.get('kind') is not None or not {'mission_id','coins','gems'} <= value.keys()
+            or not isinstance(value.get('mission'), str) or not value['mission']
+            or value.get('mission_id') is not None
+            and (not isinstance(value['mission_id'], str) or not value['mission_id'])
+            or type(value.get('completed_before')) is not int
+            or type(value.get('completed_after')) is not int
+            or value['completed_before'] < 0
+            or value['completed_after'] != value['completed_before'] + 1
+            or any(value.get(k) is not None
+                   and (type(value[k]) is not int or value[k] < 0)
+                   for k in ('coins', 'gems'))):
         return False
     source = [value['receipt_token'],value.get('mission_id'),value['mission'],
               value['completed_before'],value['completed_after']]
