@@ -307,6 +307,104 @@ class NotificationState:
         self._summary(now)
         self._save()
 
+    def prepare_chest(self, *, threshold: int, completed_before: int,
+                      now: float) -> None:
+        """Fsync a weekly chest tap before the device can receive it."""
+        if (not self._row["kinds"]["missions"]["in_flight"]
+                or self._row["pending_claim"] is not None
+                or threshold not in range(5, 36, 5)
+                or type(completed_before) is not int or completed_before < threshold
+                or not math.isfinite(now)):
+            raise ValueError("weekly chest tap requires one active, eligible walk")
+        previous = copy.deepcopy(self._row)
+        self._row["pending_claim"] = {
+            "kind": "weekly_chest", "intent_id": uuid.uuid4().hex,
+            "threshold": threshold, "completed_before": completed_before,
+            "rewards": [], "reward_texts": [], "unreadable_rewards": 0,
+            "index": 0, "total": None, "final_tapped": False,
+            "scope": self.scope,
+            "fact_epoch": (self.scope.get("fact_epoch")
+                           if type(self.scope.get("fact_epoch")) is int else None),
+            "prepared_at": now, "verification_attempts": 0,
+            "verification_retry_at": 0.0, "no_reward_frame": None,
+        }
+        self._summary(now)
+        try:
+            self._save()
+        except Exception:
+            self._row = previous
+            raise
+
+    def observe_chest_reward(self, *, index: int, total: int,
+                             currency: str | None, amount: int | None,
+                             reward_text: str | None, final_tapped: bool,
+                             now: float) -> None:
+        """Save each reward page before its NEXT or CLAIM control is tapped."""
+        pending = self._row["pending_claim"]
+        if (not isinstance(pending, dict) or pending.get("kind") != "weekly_chest"
+                or type(index) is not int or index != pending["index"] + 1
+                or type(total) is not int or not 1 <= index <= total <= 8
+                or pending["total"] is not None and pending["total"] != total
+                or final_tapped != (index == total)
+                or (currency is None) != (amount is None)
+                or amount is not None and (type(amount) is not int or amount < 0)
+                or not math.isfinite(now)):
+            raise ValueError("weekly chest reward page is not sequential")
+        previous = copy.deepcopy(self._row)
+        pending["index"] = index
+        pending["total"] = total
+        pending["final_tapped"] = final_tapped
+        if reward_text is not None:
+            pending["reward_texts"].append(reward_text)
+        if currency is not None and amount is not None:
+            pending["rewards"].append([currency, amount])
+        else:
+            pending["unreadable_rewards"] += 1
+        try:
+            self._save()
+        except Exception:
+            self._row = previous
+            raise
+
+    def record_chest_receipt(self, event: events.WeeklyChestClaimed,
+                             now: float) -> events.WeeklyChestClaimed | None:
+        """Durably bind a checked chest to its saved tap and reward pages."""
+        pending = self._row["pending_claim"]
+        token = self._row["receipt_attempt"]
+        if (not isinstance(pending, dict) or pending.get("kind") != "weekly_chest"
+                or not token or not math.isfinite(now)
+                or not pending.get("final_tapped")
+                or event.threshold != pending.get("threshold")
+                or event.confirmation != "chest_marked_claimed"
+                or tuple(tuple(reward) for reward in pending["rewards"]) != tuple(event.rewards)
+                or event.unreadable_rewards != pending["unreadable_rewards"]
+                or event.reward_text != (", ".join(pending["reward_texts"]) or None)):
+            raise ValueError("weekly chest receipt does not match durable tap intent")
+        source = [token, "weekly_chest", event.threshold]
+        key = hashlib.sha256(json.dumps(source, separators=(",", ":")).encode()).hexdigest()
+        if any(row["key"] == key for row in self._row["receipts"]):
+            return None
+        previous = copy.deepcopy(self._row)
+        self._row["receipts"].append({
+            "key": key, "kind": "weekly_chest", "intent_id": pending["intent_id"],
+            "schema_version": 1, "receipt_token": token,
+            "intent_scope": copy.deepcopy(pending["scope"]),
+            "prepared_at": pending["prepared_at"], "threshold": event.threshold,
+            "rewards": copy.deepcopy(pending["rewards"]),
+            "unreadable_rewards": event.unreadable_rewards,
+            "reward_text": event.reward_text, "confirmed_at": now,
+        })
+        self._row["last_claim_at"] = now
+        self._row["pending_claim"] = None
+        self._row["kinds"]["missions"].update(prior_uncertain=False, uncertain=False)
+        self._summary(now)
+        try:
+            self._save()
+        except Exception:
+            self._row = previous
+            raise
+        return replace(event, receipt_key=key)
+
     def record_receipt(self, event: events.MissionClaimed, now: float) -> bool:
         """Save a counter-confirmed credit before forwarding a lossy event.
 
@@ -447,11 +545,15 @@ class NotificationState:
         self._save()
 
     def reconcile_claim(self, evidence: Mapping[str, Any], *, frame_id: str,
-                        now: float, continuity: ScopeContinuity | None = None) -> str:
-        """Classify only same-account, same-day card evidence; never tap rewards."""
+                        now: float, continuity: ScopeContinuity | None = None
+                        ) -> str | events.WeeklyChestClaimed:
+        """Reconcile a durable card or chest tap from fresh same-account evidence."""
         claim = self._row["pending_claim"]
         if claim is None or claim.get("scope", {}).get("account_id") != self.scope.get("account_id"):
             return "unknown"
+        if claim.get("kind") == "weekly_chest":
+            return self._reconcile_chest(claim, evidence, frame_id=frame_id,
+                                         now=now, continuity=continuity)
         if (evidence.get("screen_id") != "missions.daily" or evidence.get("error") is not None
                 or type(evidence.get("completed")) is not int
                 or type(evidence.get("completed_target")) is not int
@@ -516,6 +618,62 @@ class NotificationState:
             return "claimed"
         return "unknown"
 
+    def _reconcile_chest(self, claim: Mapping[str, Any], evidence: Mapping[str, Any], *,
+                         frame_id: str, now: float,
+                         continuity: ScopeContinuity | None
+                         ) -> str | events.WeeklyChestClaimed:
+        """Resolve a restarted chest only from its saved final tap and same-scope art."""
+        if (evidence.get("screen_id") != "missions.daily"
+                or evidence.get("error") is not None
+                or type(evidence.get("completed")) is not int):
+            return "unknown"
+        source = claim.get("scope", {})
+        proven = (isinstance(continuity, ScopeContinuity)
+                  and type(claim.get("fact_epoch")) is int
+                  and type(self.scope.get("fact_epoch")) is int
+                  and continuity.original.account_id == source.get("account_id")
+                  and continuity.original.lease_id == source.get("lease_id")
+                  and continuity.original.generation == source.get("generation")
+                  and continuity.original.epoch == claim["fact_epoch"]
+                  and continuity.current.account_id == self.scope.get("account_id")
+                  and continuity.current.lease_id == self.scope.get("lease_id")
+                  and continuity.current.generation == self.scope.get("generation")
+                  and continuity.current.epoch == self.scope["fact_epoch"]
+                  and continuity.valid(now=now))
+        if source != self.scope and not proven:
+            return "unknown"
+        state = dict(evidence.get("milestones", ())).get(claim["threshold"])
+        if (state == "claimed" and claim.get("final_tapped") is True
+                and evidence["completed"] >= claim["completed_before"]):
+            event = events.WeeklyChestClaimed(
+                threshold=claim["threshold"],
+                rewards=tuple(tuple(reward) for reward in claim["rewards"]),
+                unreadable_rewards=claim["unreadable_rewards"],
+                reward_text=", ".join(claim["reward_texts"]) or None,
+                confirmation="chest_marked_claimed")
+            stored = self.record_chest_receipt(event, now)
+            self.finish("missions", now, claimed=True)
+            return stored if stored is not None else "unknown"
+        if (state == "claimable" and evidence["completed"] == claim["completed_before"]
+                and now - claim["prepared_at"] >= 2):
+            if claim.get("no_reward_frame") is None:
+                claim["no_reward_frame"] = frame_id
+                self._save()
+                return "unknown"
+            if claim["no_reward_frame"] != frame_id:
+                previous = copy.deepcopy(self._row)
+                self._row["pending_claim"] = None
+                self._row["resolved_intents"].append(claim["intent_id"])
+                self._row["kinds"]["missions"].update(
+                    uncertain=False, prior_uncertain=False, in_flight=False)
+                try:
+                    self.finish("missions", now, claimed=False)
+                except Exception:
+                    self._row = previous
+                    raise
+                return "no_reward"
+        return "unknown"
+
 
 class MissionReceiptBus:
     """Publish mission events only after their confirmed credit is durable."""
@@ -530,6 +688,9 @@ class MissionReceiptBus:
                 return event
             key = self.notifications.snapshot()["receipts"][-1]["key"]
             return self.bus.publish(replace(event, receipt_key=key))
+        if isinstance(event, events.WeeklyChestClaimed):
+            stored = self.notifications.record_chest_receipt(event, time.time())
+            return self.bus.publish(stored) if stored is not None else event
         return self.bus.publish(event)
 
     def prepare_claim(self, **kwargs: Any) -> None:
@@ -537,3 +698,9 @@ class MissionReceiptBus:
 
     def discard_prepared_claim(self, now: float) -> None:
         self.notifications.discard_prepared_claim(now)
+
+    def prepare_chest(self, **kwargs: Any) -> None:
+        self.notifications.prepare_chest(**kwargs)
+
+    def observe_chest_reward(self, **kwargs: Any) -> None:
+        self.notifications.observe_chest_reward(**kwargs)

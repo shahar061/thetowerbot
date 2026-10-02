@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from dataclasses import replace
+import json
 
 import cv2
 import pytest
@@ -157,6 +159,150 @@ def drive(frames: list[dict[str, Any]], *,
                       bus=bus, state='MAIN_MENU', now=0.)
         readings.step()
     return claim, bus, device
+
+
+def captured_evidence(stem: str, *, reward_modal: bool = False) -> dict[str, Any]:
+    readings = missions_screen.MissionsReadings()
+    boxes = tuple(missions_screen.ocr.TextBox(
+        row['text'], row['confidence'], config.Rect(*row['rect']))
+        for row in json.loads((FIXTURES / 'ocr' / f'{stem}.json').read_text()))
+    assert readings.scan(image(stem), boxes=boxes, reward_modal=reward_modal)
+    return readings.claim_evidence()
+
+
+def test_a_weekly_box_is_journaled_only_after_the_final_claim_and_green_check() -> None:
+    frames = [
+        home(),
+        captured_evidence('menu_missions_weekly_chest_claimable'),
+        captured_evidence('menu_missions_weekly_chest_reward_coins', reward_modal=True),
+        captured_evidence('menu_missions_weekly_chest_reward_gems', reward_modal=True),
+        captured_evidence('menu_missions_weekly_chest_claimed'),
+    ]
+    claim = missions_claim.MissionsClaim()
+    assert claim.request(now=0.)
+    bus, device, templates = FakeBus(), FakeDevice(), FakeTemplates()
+    readings = FakeReadings(frames)
+    for index in range(len(frames)):
+        claim.advance(screen=screen(claim.snapshot()['step']), device=device,
+                      templates=templates, readings=FakePanel(), missions=readings,
+                      bus=bus, state='MAIN_MENU', now=float(index))
+        if index < len(frames) - 1:
+            assert not bus.of(events.WeeklyChestClaimed)
+        readings.step()
+
+    (event,) = bus.of(events.WeeklyChestClaimed)
+    assert event.threshold == 5
+    assert event.rewards == (('coins', 300), ('gems', 10))
+    assert event.confirmation == 'chest_marked_claimed'
+    assert len(device.taps) == 4  # open Missions, box, NEXT, final CLAIM
+
+
+def test_a_weekly_box_without_a_green_check_stays_uncertain() -> None:
+    claimable = captured_evidence('menu_missions_weekly_chest_claimable')
+    coins = captured_evidence('menu_missions_weekly_chest_reward_coins', reward_modal=True)
+    gems = captured_evidence('menu_missions_weekly_chest_reward_gems', reward_modal=True)
+    claim, bus, device = drive([home(), claimable, coins, gems] + [claimable] * 12)
+
+    assert claim.snapshot()['result']['reason'] == 'chest_not_confirmed'
+    assert bus.of(events.ClaimUncertain)
+    assert not bus.of(events.WeeklyChestClaimed)
+    assert len(device.taps) == 4
+
+
+def test_weekly_chest_walk_saves_receipt_before_publishing_reward(tmp_path) -> None:
+    state = NotificationState(tmp_path / 'notification.json', scope={
+        'account_id': 'account-1', 'lease_id': 'lease-1',
+        'attempt_id': 'attempt-1', 'generation': 'generation-1'})
+    state.begin('missions', 100)
+    downstream = FakeBus()
+    bus = MissionReceiptBus(downstream, state)
+    frames = [home(), captured_evidence('menu_missions_weekly_chest_claimable'),
+              captured_evidence('menu_missions_weekly_chest_reward_coins', reward_modal=True),
+              captured_evidence('menu_missions_weekly_chest_reward_gems', reward_modal=True),
+              captured_evidence('menu_missions_weekly_chest_claimed')]
+    claim = missions_claim.MissionsClaim()
+    claim.request(now=100)
+    readings, device, templates = FakeReadings(frames), FakeDevice(), FakeTemplates()
+    for index in range(len(frames)):
+        claim.advance(screen=screen(claim.snapshot()['step']), device=device,
+                      templates=templates, readings=FakePanel(), missions=readings,
+                      bus=bus, state='MAIN_MENU', now=100 + index)
+        if index == 1:
+            assert state.snapshot()['pending_claim']['kind'] == 'weekly_chest'
+        readings.step()
+
+    (event,) = downstream.of(events.WeeklyChestClaimed)
+    assert state.snapshot()['pending_claim'] is None
+    assert event.receipt_key == state.snapshot()['receipts'][0]['key']
+
+
+def test_partly_unreadable_chest_reward_is_marked_partial_after_confirmation() -> None:
+    first = captured_evidence('menu_missions_weekly_chest_reward_coins', reward_modal=True)
+    first['reward_modal'] = replace(first['reward_modal'], reward_text=None,
+                                    currency=None, amount=None)
+    frames = [home(), captured_evidence('menu_missions_weekly_chest_claimable'),
+              first,
+              captured_evidence('menu_missions_weekly_chest_reward_gems', reward_modal=True),
+              captured_evidence('menu_missions_weekly_chest_claimed')]
+
+    _, bus, _ = drive(frames, steps=5)
+
+    (event,) = bus.of(events.WeeklyChestClaimed)
+    assert event.rewards == (('gems', 10),)
+    assert event.unreadable_rewards == 1
+
+
+def test_later_weekly_boxes_trigger_a_horizontal_strip_swipe() -> None:
+    left = captured_evidence('menu_missions_weekly_chest_claimed')
+    right = captured_evidence('menu_missions_weekly_chest_scrolled')
+    left['completed'] = right['completed'] = 30
+
+    _, _, device = drive([home(), left, right, home()], steps=3)
+
+    assert device.swipes[0] == (874, 384, 183, 384, .4)
+
+
+def test_unreachable_later_box_does_not_preempt_a_visible_mission_claim() -> None:
+    ready = page(30, 1)
+    after = page(31, 0)
+    for frame in (ready, after):
+        frame['milestones'] = ((5, 'claimed'), (10, 'claimed'),
+                               (15, 'claimed'), (20, 'claimed'), (25, 'claimed'))
+
+    _, bus, _ = drive([home(), ready] + [after] * 8)
+
+    assert len(bus.of(events.MissionClaimed)) == 1
+
+
+def test_unreachable_later_box_does_not_skip_missions_below_the_viewport() -> None:
+    top = page(30, 0, visible=('daily-a', 'daily-b'))
+    below = page(30, 1, visible=('daily-c', 'daily-d'))
+    confirmed = page(31, 0, visible=('daily-c', 'daily-d'))
+    for frame in (top, below, confirmed):
+        frame['milestones'] = ((5, 'claimed'), (10, 'claimed'),
+                               (15, 'claimed'), (20, 'claimed'), (25, 'claimed'))
+
+    _, bus, device = drive([home(), top, top, top, below, confirmed] + [confirmed] * 5)
+
+    assert len(bus.of(events.MissionClaimed)) == 1
+    assert any(swipe[1] > swipe[3] for swipe in device.swipes)
+    assert len([event for event in bus.of(events.ClaimSkipped)
+                if event.target == 'weekly_chest']) == 1
+
+
+def test_confirmed_weekly_box_counts_in_the_finished_walk() -> None:
+    claimed = captured_evidence('menu_missions_weekly_chest_claimed')
+    claimed['visible'] = ()
+    frames = [home(), captured_evidence('menu_missions_weekly_chest_claimable'),
+              captured_evidence('menu_missions_weekly_chest_reward_coins', reward_modal=True),
+              captured_evidence('menu_missions_weekly_chest_reward_gems', reward_modal=True),
+              claimed, claimed, home()]
+
+    claim, bus, _ = drive(frames)
+
+    assert claim.snapshot()['result']['status'] == 'completed'
+    assert claim.snapshot()['chests_claimed'] == 1
+    assert bus.of(events.ClaimEnded)[0].claimed == 1
 
 
 def test_a_walk_refuses_to_tap_when_the_counter_cannot_be_read() -> None:

@@ -921,11 +921,13 @@ class TowerBot:
         if not self._mission_attempt or self.claim.active:
             return
         self._mission_attempt = False
-        result = self.claim.snapshot()["result"]
+        claim = self.claim.snapshot()
+        result = claim["result"]
         now = time.time()
         if self._notifications.snapshot()["pending_claim"] is not None:
             self._notifications.finish("missions", now, claimed=None)
-        elif result is not None and self.claim.snapshot()["claimed"] > 0:
+        elif (result is not None
+              and claim["claimed"] + claim["chests_claimed"] > 0):
             self._notifications.finish("missions", now, claimed=True)
         else:
             self._notifications.finish("missions", now, claimed=False)
@@ -2148,7 +2150,9 @@ class TowerBot:
                 shared_boxes = reads.full()
             except Exception:
                 shared_boxes = None
-            missions_page = self.missions.scan(self.screen, boxes=shared_boxes)
+            missions_page = self.missions.scan(
+                self.screen, boxes=shared_boxes,
+                reward_modal=self.claim.chest_pending)
             intent = self._notifications.snapshot()["pending_claim"]
             if intent is not None and not self.claim.active:
                 proof = None
@@ -2161,10 +2165,12 @@ class TowerBot:
                                          lease_id=source["lease_id"],
                                          generation=source["generation"], epoch=epoch)
                     proof = self.account_state.continuity(original, now=time.time())
-                self._notifications.reconcile_claim(
+                reconciliation = self._notifications.reconcile_claim(
                     self.missions.claim_evidence(),
                     frame_id=f"{PROCESS_BOOT_ID}:{self._capture_sequence}",
                     now=time.time(), continuity=proof)
+                if isinstance(reconciliation, events.WeeklyChestClaimed):
+                    self.bus.publish(reconciliation)
             # The same passive ownership for both MILESTONES screens. This
             # matters most for the reward modal: it is a full-screen overlay
             # carrying a tappable CLAIM, and config.NAV_DISMISS - walked by

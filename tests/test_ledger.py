@@ -561,6 +561,47 @@ def test_a_mission_claim_credits_both_currencies_as_two_lines() -> None:
     assert coins.item == gems.item == "Kill 200 basic enemies"
 
 
+def test_a_weekly_chest_claim_journals_each_observed_reward() -> None:
+    lines = ledger.classify(events.WeeklyChestClaimed(
+        threshold=5, rewards=(("gems", 10), ("medals", 5)),
+        reward_text="10 GEMS, 5 MEDALS", confirmation="chest_marked_claimed",
+        seq=21, ts=1000.0))
+
+    assert [(line.kind, line.item, line.currency, line.delta) for line in lines] == [
+        ("WEEKLY_CHEST_CLAIM", "5 missions", "gems", 10),
+        ("WEEKLY_CHEST_CLAIM", "5 missions", "medals", 5),
+    ]
+    assert all(line.category == "MISSIONS" for line in lines)
+    assert all(line.detail["confirmation"] == "chest_marked_claimed" for line in lines)
+
+
+def test_a_confirmed_weekly_chest_with_unread_rewards_has_one_unknown_line() -> None:
+    (line,) = ledger.classify(events.WeeklyChestClaimed(
+        threshold=10, rewards=(), reward_text=None,
+        confirmation="reward_modal_closed", seq=22, ts=1000.0))
+
+    assert (line.kind, line.item, line.currency, line.delta) == (
+        "WEEKLY_CHEST_CLAIM", "10 missions", None, None)
+
+
+def test_a_partly_read_weekly_chest_says_its_journal_amount_is_incomplete() -> None:
+    (line,) = ledger.classify(events.WeeklyChestClaimed(
+        threshold=15, rewards=(("gems", 10),), unreadable_rewards=1,
+        reward_text="10 GEMS", confirmation="chest_marked_claimed"))
+
+    assert (line.currency, line.delta) == ("gems", 10)
+    assert line.reason == "1 reward unreadable"
+    assert line.detail["unreadable_rewards"] == 1
+
+
+def test_weekly_chest_pages_with_the_same_currency_share_one_ledger_amount() -> None:
+    (line,) = ledger.classify(events.WeeklyChestClaimed(
+        threshold=20, rewards=(("coins", 100), ("coins", 200)),
+        reward_text="100 COINS, 200 COINS", confirmation="chest_marked_claimed"))
+
+    assert (line.currency, line.delta) == ("coins", 300)
+
+
 def test_a_claim_never_treats_the_abbreviated_coin_balance_as_a_reading() -> None:
     """The page shows coins as "6.08K". Handing that to the reconciler as a
     balance would contradict the running total and manufacture an UNEXPLAINED

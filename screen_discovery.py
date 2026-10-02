@@ -129,10 +129,7 @@ _UNSUPPORTED_OWNERS = {
     # Reading a row does not enable a research or gem-spend action.
     'labs_research_actions': 'L02',
     'labs_acceleration_spend': 'L03',
-    'missions_claim_actions': 'T01',
     'missions_reward_currency': 'T01',
-    'missions_milestone_claim_state': 'T01',
-    'missions_beyond_the_recorded_strip': 'T01',
     # A stocked v29.0.2 Modules page is recorded, but no Modules discovery
     # context or banner/pity state is validated. Inventory and spend actions
     # stay disabled until their own readers are proved.
@@ -533,16 +530,9 @@ def capabilities() -> dict[str, Any]:
             'battle_history_export', 'native_stat_export',
             'labs_research_actions', 'labs_acceleration_spend',
             'other_locales', 'other_resolutions', 'unknown_overlays',
-            # A claimable capture and the full 5..35 strip are now recorded
-            # (menu_missions_claimable and menu_missions_weekly), so the
-            # limits below are no longer about missing evidence. They are
-            # about the reader: a card whose progress bar is replaced by a
-            # CLAIM button carries no "N / M" text, so it parses as
-            # `unreadable` with no mission id at all. The reader sees that a
-            # card is there and honestly reports it cannot identify it. It
-            # observes; it never claims a reward or names a currency.
-            'missions_claim_actions', 'missions_reward_currency',
-            'missions_milestone_claim_state', 'missions_beyond_the_recorded_strip',
+            # Mission cards and weekly boxes can be claimed. Card reward
+            # currency remains inferred from icon order rather than read.
+            'missions_reward_currency',
             # Listed with the missing captures rather than the reader limits:
             # the Modules screen has never been recorded, so `discover` refuses
             # its context outright instead of guessing at anchors.

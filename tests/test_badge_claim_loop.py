@@ -111,6 +111,20 @@ def test_settlement_uses_durable_tap_intent_after_cancellation() -> None:
     assert bot._offer_claim(bot.controls.snapshot()) is None
 
 
+def test_settlement_counts_a_confirmed_weekly_chest_without_a_mission_card() -> None:
+    bot = bot_with_claims()
+    bot._notifications.begin('missions', 100)
+    assert bot.claim.request(now=100)
+    bot.claim._chests_claimed = 1
+    bot.claim._finish('completed', 'claimed', 'weekly chest confirmed', 102)
+    bot._mission_attempt = True
+
+    bot._settle_mission_attempt()
+
+    assert not bot._notifications.snapshot()['kinds']['missions']['in_flight']
+    assert bot._notifications.snapshot()['last_claim_at'] is not None
+
+
 def test_notification_scope_uses_only_matching_verified_fact_epoch(tmp_path) -> None:
     bot = bot_with_claims()
     heartbeat = {'account_id': 'account-1', 'lease_id': 'lease-1',

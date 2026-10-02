@@ -473,7 +473,7 @@ def test_the_support_matrix_no_longer_claims_stages_and_nested_menus_are_unseen(
     assert 'later_unlock_stage_layouts_outside_workshop' in unsupported
     # Still genuinely out of scope, and each attributed to the task that owns it.
     assert {'other_locales', 'other_resolutions', 'unknown_overlays'} <= set(unsupported)
-    assert capabilities['unsupported_owners']['missions_claim_actions'] == 'T01'
+    assert capabilities['unsupported_owners']['missions_reward_currency'] == 'T01'
     assert capabilities['unsupported_owners']['other_resolutions'] == 'V06'
 
 

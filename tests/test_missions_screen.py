@@ -335,6 +335,83 @@ def test_weekly_milestones_are_locked_from_the_completed_count_not_from_icons() 
     assert reading.complete is False
 
 
+def test_a_glowing_weekly_box_is_claimable_even_when_ocr_misses_its_number() -> None:
+    stem = 'menu_missions_weekly_chest_claimable'
+    screen = cv2.imread(str(FIXTURES / f'{stem}.png'))
+    boxes = recorded(stem)
+    readings = missions_screen.MissionsReadings()
+
+    assert readings.scan(screen, boxes=boxes)
+    milestones = readings.snapshot()['latest']['milestones']
+    assert [(item['threshold'], item['claim_state']) for item in milestones[:2]] == [
+        (5, 'claimable'), (10, 'locked')]
+    (target,) = readings.claim_evidence()['chests']
+    assert target.threshold == 5
+    assert 70 <= target.rect[0] < 180 and 300 <= target.rect[1] < 400
+
+
+def test_a_checked_weekly_box_is_not_offered_again() -> None:
+    stem = 'menu_missions_weekly_chest_claimed'
+    screen = cv2.imread(str(FIXTURES / f'{stem}.png'))
+    readings = missions_screen.MissionsReadings()
+
+    assert readings.scan(screen, boxes=recorded(stem))
+    assert readings.snapshot()['latest']['milestones'][0]['claim_state'] == 'claimed'
+    assert readings.claim_evidence()['chests'] == ()
+
+
+def test_scrolled_weekly_strip_locates_the_30_and_35_boxes() -> None:
+    stem = 'menu_missions_weekly_chest_scrolled'
+    screen = cv2.imread(str(FIXTURES / f'{stem}.png'))
+    readings = missions_screen.MissionsReadings()
+
+    assert readings.scan(screen, boxes=recorded(stem))
+    milestones = readings.snapshot()['latest']['milestones']
+    assert [item['threshold'] for item in milestones] == [15, 20, 25, 30, 35]
+    assert all(item['claim_state'] == 'locked' for item in milestones)
+    reading = missions_screen.parse_frame(screen, recorded(stem))
+    assert reading is not None
+    assert all(0 <= item.rect[0] < 1080 for item in reading.milestones)
+
+
+def test_counter_eligibility_alone_never_makes_a_locked_box_tappable() -> None:
+    readings = missions_screen.MissionsReadings()
+    boxes = retext(recorded(), 'completed 0/35', 'completed 20/35')
+
+    assert readings.scan(frame(), boxes=boxes)
+    assert readings.snapshot()['latest']['milestones'][0]['status'] == 'unlocked'
+    assert readings.claim_evidence()['chests'] == ()
+
+
+def test_weekly_box_reward_frames_expose_ordered_rewards_and_safe_controls() -> None:
+    readings = missions_screen.MissionsReadings()
+    expected = (
+        ('menu_missions_weekly_chest_reward_coins', 1, 2, 'next', 'coins', 300),
+        ('menu_missions_weekly_chest_reward_gems', 2, 2, 'claim', 'gems', 10),
+    )
+    for stem, index, total, action, currency, amount in expected:
+        screen = cv2.imread(str(FIXTURES / f'{stem}.png'))
+        assert readings.scan(screen, boxes=recorded(stem), reward_modal=True)
+        evidence = readings.claim_evidence()
+        assert evidence['screen_id'] == 'missions.weekly_reward_modal'
+        modal = evidence['reward_modal']
+        assert (modal.index, modal.total, modal.action, modal.currency, modal.amount) == (
+            index, total, action, currency, amount)
+        assert modal.control[2] > 0 and modal.control[3] > 0
+
+
+def test_unreadable_weekly_reward_keeps_the_claim_control_but_not_an_amount() -> None:
+    stem = 'menu_missions_weekly_chest_reward_coins'
+    screen = cv2.imread(str(FIXTURES / f'{stem}.png'))
+    boxes = tuple(box for box in recorded(stem) if box.text != '300 COINS')
+    readings = missions_screen.MissionsReadings()
+
+    assert readings.scan(screen, boxes=boxes, reward_modal=True)
+    modal = readings.claim_evidence()['reward_modal']
+    assert modal.action == 'next'
+    assert (modal.currency, modal.amount) == (None, None)
+
+
 def test_an_unreadable_completed_count_never_becomes_zero_or_locked() -> None:
     reading = read(without(recorded(), 'completed 0/35'))
     assert reading.completed is None and reading.completed_target is None
@@ -473,14 +550,15 @@ def test_the_wrong_geometry_is_never_read_at_all() -> None:
 
 # --- capability matrix ----------------------------------------------------
 
-def test_capabilities_declare_the_missions_reader_and_what_it_cannot_do() -> None:
+def test_capabilities_declare_the_missions_reader_and_remaining_limit() -> None:
     import screen_discovery
     capabilities = screen_discovery.capabilities()
     assert capabilities['readers']['missions.daily'] == 'menu_missions'
     assert 'missions.daily' in capabilities['recorded_verified']
-    for name in ('missions_claim_actions', 'missions_reward_currency',
-                 'missions_milestone_claim_state', 'missions_beyond_the_recorded_strip'):
-        assert name in capabilities['unsupported']
+    assert 'missions_reward_currency' in capabilities['unsupported']
+    for name in ('missions_claim_actions', 'missions_milestone_claim_state',
+                 'missions_beyond_the_recorded_strip'):
+        assert name not in capabilities['unsupported']
     assert (FIXTURES / 'ocr' / 'menu_missions.json').exists()
 
 
@@ -513,7 +591,7 @@ def test_the_missions_reader_exposes_no_field_a_tap_could_be_read_from() -> None
         'mission_id', 'raw_text', 'progress', 'target', 'status',
         'reward_values', 'rewards_status', 'confidence', 'rect'}
     assert {f.name for f in fields(missions_screen.MilestoneEntry)} == {
-        'threshold', 'status', 'confidence', 'rect'}
+        'threshold', 'status', 'claim_state', 'confidence', 'rect'}
 
 
 # --- the scan-loop holder -------------------------------------------------
@@ -610,7 +688,7 @@ def test_the_holder_snapshot_exposes_no_field_a_tap_could_be_read_from() -> None
             'mission_id', 'raw_text', 'progress', 'target', 'status',
             'reward_values', 'rewards_status', 'confidence'}
     for entry in latest['milestones']:
-        assert set(entry) == {'threshold', 'status', 'confidence'}
+        assert set(entry) == {'threshold', 'status', 'claim_state', 'confidence'}
     assert 'rect' not in json.dumps(snapshot)
     assert 'frame_digest' not in latest
 
