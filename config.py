@@ -961,9 +961,9 @@ SPEED_READOUT_REGION: Region = Region(dx=733, dy=-255, w=126, h=50)
 # value here without a template is a crash the first time the bot reads the
 # widget, so never add one by hand.
 #
-# x2.0 was harvested from a live account whose Game Speed Lv.1 had finished.
+# x2.5 was harvested from a live account whose Game Speed Lv.2 had finished.
 # Later levels need their own measured readout templates before being added.
-SPEED_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0)
+SPEED_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0, 2.5)
 
 # The subset a strategy may aim for. x0.0 is deliberately excluded, and the
 # asymmetry with SPEED_VALUES above is the whole point.

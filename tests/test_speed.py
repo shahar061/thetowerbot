@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import cv2
 import pytest
 
+import config
 import events
 import speed
 import vision
@@ -46,6 +47,15 @@ def templates() -> vision.TemplateCache:
 
 def test_reads_the_speed_off_a_real_in_run_frame(templates: vision.TemplateCache) -> None:
     assert speed.read(frame("in_run_lit"), templates, anchor=(12, 1646)) == 1.0
+
+
+def test_reads_x2_5_from_an_independent_live_crop(
+    templates: vision.TemplateCache, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crop = cv2.imread(str(FIXTURES / "speed_2.5_readout.png"), cv2.IMREAD_COLOR)
+    assert crop is not None
+    monkeypatch.setattr(config, "SPEED_READOUT_REGION", config.Region(0, 0, 126, 50))
+    assert speed.read(crop, templates, anchor=(0, 0)) == 2.5
 
 
 def test_reads_the_paused_speed(templates: vision.TemplateCache) -> None:

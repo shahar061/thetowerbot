@@ -44,6 +44,18 @@ test("the bot's next buy is highlighted and unknown prices never become numbers"
   expect(screen.getByText("not tracked yet")).toBeInTheDocument();
 });
 
+test("a stale Workshop plan shows replanning instead of its old unlock", () => {
+  show(makeAccount({ next_buy: {
+    state: "replanning", upgrade_id: null, name: "Awaiting Workshop plan",
+    category: null, price: null, price_source: null, wallet: null,
+    reason: "Strategy changed; the next Workshop visit will refresh this plan",
+    goal: null, observed_at: null,
+  } }));
+  expect(screen.getByText("Awaiting Workshop plan")).toBeInTheDocument();
+  expect(screen.getByText("Replanning")).toBeInTheDocument();
+  expect(screen.queryByText("Unlock Knockback")).not.toBeInTheDocument();
+});
+
 test("Workshop hides future locked groups and uses its own queue instead of the battle decision", () => {
   show(makeAccount({
     decision: { phase: "buying", reason: "battle", upgrade_id: "wall_health", category: "defense", name: "Wall Health", cost: null },

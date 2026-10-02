@@ -988,12 +988,14 @@ class RerollProgress:
         banned: frozenset[str] = frozenset()
         priorities: tuple[str, ...] = ()
         block_program = False
+        route_revision = None
         if self.route_runtime is not None:
             try:
                 route = self.route_runtime.current()
             except RouteUnavailable:
                 route = None
             if route is not None and route.revision > 0:
+                route_revision = route.revision
                 workshop = resolve_route(route, self.root.name, self.account_id).workshop
                 banned = workshop.banned_upgrade_ids
                 block_program = workshop.mode == "blocks"
@@ -1004,6 +1006,7 @@ class RerollProgress:
                                            utility_spent_coins=self._utility_spent()),
                                banned_upgrade_ids=banned, priority_ids=priorities)
         payload = {**asdict(decision), "observed_at": now,
+                   "route_revision": route_revision,
                    "projection_note": ("Future block choices depend on fresh prices and confirmed purchases"
                                        if block_program else None),
                    "confirmed_purchases": purchases,

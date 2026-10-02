@@ -27,6 +27,7 @@ import workshop_unlocks
 from account_state import completed_lab_level
 from concepts import REGISTRY
 from currencies import currency_overview
+from fleet.build_route import RouteDocument
 from fleet.reroll_lifetime import read_lifetime
 from fleet.state_records import ForeignDatabase, read_records
 from fleet.workshop_replay import WorkshopEvidence
@@ -264,7 +265,8 @@ def build_strategy(assignment: object, account_id: str) -> dict[str, Any] | None
             "version": assignment.strategy_version}
 
 
-def build_next_buy(plan: Mapping[str, Any] | None, account_id: str) -> dict[str, Any] | None:
+def build_next_buy(plan: Mapping[str, Any] | None, account_id: str,
+                   route: RouteDocument | None = None) -> dict[str, Any] | None:
     """The Workshop planner's next purchase from the worker's reroll-plan.json.
 
     `price` is None until someone has read it; `state` is the planner's verdict
@@ -273,6 +275,18 @@ def build_next_buy(plan: Mapping[str, Any] | None, account_id: str) -> dict[str,
     if (not isinstance(plan, Mapping) or plan.get("account_id") != account_id
             or not isinstance(plan.get("state"), str)):
         return None
+    revision = getattr(route, "revision", 0)
+    authored_at = getattr(route, "authored_at", None)
+    observed_at = _number(plan.get("observed_at"))
+    plan_revision = plan.get("route_revision")
+    if (type(revision) is int and revision > 0
+            and ((type(plan_revision) is int and plan_revision != revision)
+                 or (type(plan_revision) is not int and type(authored_at) in (int, float)
+                     and (observed_at is None or observed_at < authored_at)))):
+        return {"state": "replanning", "upgrade_id": None, "name": "Awaiting Workshop plan",
+                "category": None, "price": None, "price_source": None, "wallet": None,
+                "reason": "Strategy changed; the next Workshop visit will refresh this plan",
+                "goal": None, "observed_at": iso(observed_at)}
     upgrade_id = plan.get("upgrade_id") if isinstance(plan.get("upgrade_id"), str) else None
     upgrade = upgrades.by_id(upgrade_id) if upgrade_id else None
     item = _text(plan.get("item"))
@@ -477,11 +491,11 @@ def _currency(worker_root: Path, db_path: Path, account_id: str, lease_id: objec
                              generation=start["generation"], now=now)
 
 
-def _assignment(root: Path, worker: str) -> object:
+def _route(root: Path) -> RouteDocument | None:
     from fleet.build_route_store import BuildRouteStore, RouteUnavailable
 
     try:
-        return BuildRouteStore(root).read().assignments.get(worker)
+        return BuildRouteStore(root).read()
     except (RouteUnavailable, OSError, ValueError):
         return None
 
@@ -522,10 +536,13 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
                        bot=_section("bot", build_bot, status) or build_bot(None),
                        decision=_section("decision", build_decision, status.get("decision")))
     # Neither lives in the worker DB, so a DB error below still shows them.
+    route = _route(Path(root))
+    assignment = route.assignments.get(account["id"]) if route is not None else None
     account.update(
-        strategy=_section("strategy", build_strategy, _assignment(Path(root), account["id"]),
+        strategy=_section("strategy", build_strategy, assignment,
                           registration.account_id),
-        next_buy=_section("next_buy", build_next_buy, _plan(worker_root), registration.account_id))
+        next_buy=_section("next_buy", build_next_buy, _plan(worker_root),
+                          registration.account_id, route))
     try:
         records = read_records(registration.db_path, registration.account_id, _live_run_id(status), now=now)
     except ForeignDatabase:
