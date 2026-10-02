@@ -178,6 +178,16 @@ class DailyAdGemClaimed(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class InGameAdGemClaimed(Event):
+    """The battle HUD's six-gem video reward, verified against its counter."""
+
+    gems_before: int
+    gems_after: int
+    delta: int
+    run_id: int | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class RunStarted(Event):
     run_id: int
     purpose: str = "farm"

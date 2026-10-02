@@ -81,6 +81,7 @@ import events
 import free_ticket
 import game_over
 import gem_claim
+import in_game_ad
 import stall_watchdog
 import jitter
 import ledger
@@ -417,6 +418,8 @@ class TowerBot:
                             if self.progress is not None else None),
             sleep=self._stopping.wait,
         )
+        self.in_game_ad = in_game_ad.InGameAdClaim(
+            bus, self.templates, self.reader, sleep=self._stopping.wait)
 
     @property
     def screen_state(self) -> screens.ScreenState:
@@ -1120,7 +1123,7 @@ class TowerBot:
                 or self.claim.active or self.milestones_claim.active
                 or self.cards_intro.active
                 or (self.lab_visit is not None and self.lab_visit.active)
-                or self.battle_menu.active)
+                or self.battle_menu.active or self.in_game_ad.active)
 
     # -- O4 recovery (scan thread only) -------------------------------------
     def _recovery_active(self) -> bool:
@@ -1294,7 +1297,8 @@ class TowerBot:
     def _cancel_walks(self, reason: str, detail: str) -> None:
         """End whichever walk is armed. Each cancel is idempotent."""
         for walk in (self.collection, self.visit, self.claim,
-                     self.milestones_claim, self.cards_intro, self.battle_menu):
+                     self.milestones_claim, self.cards_intro, self.battle_menu,
+                     self.in_game_ad):
             walk.cancel(reason, detail)
         if self.lab_visit is not None:
             self.lab_visit.cancel(reason)
@@ -1658,6 +1662,10 @@ class TowerBot:
         if self.supervisor is not None:
             recovery_status = getattr(self.supervisor, "status", None)
             watched = callable(recovery_status)
+            if self.in_game_ad.active:
+                # Ad frames can remain static longer than the stall window.
+                # The ad walk has its own bounded timeout and owns this lane.
+                self.stall_watchdog.reset()
             had_pending = watched and recovery_status().pending_action
             stall_verdict = self.stall_watchdog.verdict() if watched else None
             stall_reason = self.stall_watchdog.reason or ""
@@ -1703,6 +1711,8 @@ class TowerBot:
                         # owns this bounded interval, and its reward/end card
                         # readers authorize only specific taps on it.
                         observed_screen = "BATTLE_AD"
+                if self.in_game_ad.active and observed_screen == "UNKNOWN":
+                    observed_screen = "BATTLE_AD"
                 # The Free Ticket offer covers the main menu without hiding
                 # its anchors, so it is looked for on MAIN_MENU too; its
                 # reveal shares the milestone reward modal's SKIP + CLAIM
@@ -1849,7 +1859,7 @@ class TowerBot:
                         self._recovery_blocked_scans = 0
                 return False
             self._recovery_blocked_scans = 0
-            if escape is not None:
+            if escape is not None and not self.in_game_ad.active:
                 label, point = escape
                 logger.warning("No progress (%s); pressing %s at %s to get out.",
                                stall_reason, label, point)
@@ -1860,7 +1870,7 @@ class TowerBot:
                 self.bus.publish(events.Tapped(
                     action="stall:escape", x=point[0], y=point[1], score=1.0))
                 return True
-            if unlocked is not None:
+            if unlocked is not None and not self.in_game_ad.active:
                 if (self.reroll_progress is not None
                         and unlocked_screen.is_labs_unlock(unlocked.caption)):
                     self.reroll_progress.note_lab_unlocked(
@@ -1872,7 +1882,7 @@ class TowerBot:
                 self.bus.publish(events.Tapped(
                     action="unlocked:ok", x=unlocked.ok[0], y=unlocked.ok[1], score=1.0))
                 return True
-            if ticket is not None:
+            if ticket is not None and not self.in_game_ad.active:
                 if settings.paused:
                     return False
                 logger.info("Claiming the tournament Free Ticket (%s).", ticket.screen)
@@ -1881,13 +1891,26 @@ class TowerBot:
                     action="free_ticket:claim", x=ticket.claim[0], y=ticket.claim[1],
                     score=1.0))
                 return True
-            if tutorial_claim is not None:
+            if tutorial_claim is not None and not self.in_game_ad.active:
                 if settings.paused:
                     return False
                 self.device.click(*tutorial_claim)
                 self.bus.publish(events.Tapped(
                     action="reroll:workshop_tutorial_claim", x=tutorial_claim[0],
                     y=tutorial_claim[1], score=1.0))
+                return True
+        if self.in_game_ad.active and not settings.paused:
+            if self.in_game_ad.observe(
+                    self.screen, reading.cash_top_left,
+                    self.device, settings.strategy, time.time(),
+                    self.runs.current_id,
+                    reading.state is screens.ScreenState.IN_RUN):
+                if self.frames is not None:
+                    self.frames.set_boxes([])
+                self.bus.publish(events.ScanCompleted(
+                    screen=reading.state.value,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    wallet=self.wallet))
                 return True
         # An active in-battle menu visit owns every frame until it finishes,
         # even off IN_RUN (a destination page classifies UNKNOWN), so it is
@@ -2558,6 +2581,24 @@ class TowerBot:
                     screen=state.value, duration_ms=(time.monotonic() - started) * 1000,
                     wallet=self.wallet, wave=self._reported_wave(state),
                 ))
+                return True
+
+            # The six-gem video tile is a battle HUD action. Once tapped,
+            # its claim walk owns every frame, including unclassified ads.
+            if (not self.gem.active and not self.shopping.active
+                    and not self.shopping.reconciliation_pending
+                    and self.autopilot.pending is None
+                    and not self._any_walk_active()
+                    and self.in_game_ad.observe(
+                        self.screen, cash_anchor, self.device,
+                        settings.strategy, time.time(), self.runs.current_id,
+                        True)):
+                if self.frames is not None:
+                    self.frames.set_boxes([])
+                self.bus.publish(events.ScanCompleted(
+                    screen=state.value,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    wallet=self.wallet, wave=self._reported_wave(state)))
                 return True
 
             # The in-battle menu's badged hamburger, opportunistic like the

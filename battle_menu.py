@@ -262,12 +262,13 @@ def store_gems(screen: Image, boxes: tuple[TextBox, ...]) -> int | None:
     return values[0] if len(values) == 1 else None
 
 
-def ad_reward_claim(screen: Image, boxes: tuple[TextBox, ...]) -> tuple[int, int] | None:
-    """Claim on the full-screen 20 GEMS reward, never a Store offer."""
+def ad_reward_claim(screen: Image, boxes: tuple[TextBox, ...],
+                    amount: int = 20) -> tuple[int, int] | None:
+    """Claim on a full-screen ad reward of the exact amount, never a Store offer."""
     if _is_store_page(boxes) or any(is_price(b.text) for b in boxes):
         return None
     width, height = screen.shape[1], screen.shape[0]
-    reward = [b for b in boxes if _norm(b.text) == "20 gems"
+    reward = [b for b in boxes if _norm(b.text) == f"{amount} gems"
               and .45 * height < _centre(b.rect)[1] < .7 * height]
     claims = [b for b in boxes if _norm(b.text) == "claim"
               and .7 * height < _centre(b.rect)[1] < .9 * height

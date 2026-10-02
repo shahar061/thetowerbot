@@ -58,6 +58,9 @@ def render(event: events.Event) -> str:
                 f"{ts} GEM    +{event.delta} at ({x},{y}) "
                 f"{event.gems_before} -> {event.gems_after}"
             )
+        case events.InGameAdGemClaimed():
+            return (f"{ts} AD     +{event.delta} gems in battle "
+                    f"{event.gems_before} -> {event.gems_after}")
         case events.Navigated():
             return f"{ts} NAV    {event.target}"
         case events.UnknownScreen():
