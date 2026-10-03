@@ -2449,3 +2449,32 @@ def test_a_replan_that_names_the_retired_unlock_again_ends_the_visit(
     assert device.taps == []
     assert [s.reason for s in session._bus.of_type("PurchaseSkipped")] == [
         "already_unlocked", "already_unlocked"]
+
+
+def test_card_shopping_handoff_queues_once_without_a_second_tapper(session, fake_header) -> None:
+    device = FakeDevice()
+    received: list[tuple[str, CardPolicy]] = []
+    session.queue_cards = lambda key, policy: received.append((key, policy)) or True
+    policy = a_policy(armed=True, cards=CardPolicy(enabled=True, batch='x10', max_per_visit=10))
+    session.begin(policy, run_count=1)
+    session._step = shopping_mod.Step.BUY_CARDS
+    session._buy_cards(SimpleNamespace(page='CARDS', top_left=None), frame('menu_cards'), device, policy)
+    session._buy_cards(SimpleNamespace(page='CARDS', top_left=None), frame('menu_cards'), device, policy)
+    assert len(received) == 1
+    assert received[0][1].batch == 'x10'
+    assert received[0][0]
+    assert device.taps == []
+    assert session._step == shopping_mod.Step.RETURN
+
+
+def test_card_rehearsal_keeps_tap_budget_without_sending_input(session, fake_header) -> None:
+    device = FakeDevice()
+    policy = a_policy(armed=False, max_taps_per_visit=1, cards=CardPolicy(enabled=True, gem_floor=0, max_per_visit=5))
+    fake_header['gems'] = 400
+    session.begin(policy, run_count=1)
+    session._step = shopping_mod.Step.BUY_CARDS
+    for _ in range(2):
+        session._buy_cards(SimpleNamespace(page='CARDS', top_left=None), frame('menu_cards'), device, policy)
+    bought = [e for e in session._bus.of_type('Purchased') if e.category == 'CARDS']
+    assert len(bought) == 1
+    assert bought[0].dry_run and device.taps == []

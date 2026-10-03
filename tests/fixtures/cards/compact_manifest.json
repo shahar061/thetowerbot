@@ -1,0 +1,50 @@
+{
+  "game_version": "29.0.3",
+  "resolution": [
+    1080,
+    2400
+  ],
+  "locale": "en",
+  "capture_method": "ADB full-resolution PNG",
+  "manual_capture_session": true,
+  "runtime_actions_tested": false,
+  "ocr_method": "tools/record_ocr.py (ocr.read), unedited JSON",
+  "captures": [
+    {
+      "fixture": "menu_cards_compact_empty",
+      "source_capture": "82-03-cards-top.png",
+      "captured_at": "2026-10-03T16:46:25.676703+00:00",
+      "png_sha256": "b508a62e2b2592828d01489fca92e6aab3d0f26da171f22cf12aa3945636375b",
+      "ocr_sha256": "f6bb5dfae75a0664aee3e82172e629d775a03736e9faa075d2efaf9a50664141"
+    },
+    {
+      "fixture": "menu_cards_compact_damage",
+      "source_capture": "82-09-claimed-damage.png",
+      "captured_at": "2026-10-03T16:49:13.403369+00:00",
+      "png_sha256": "aadba33b5648cff68585fd81d82d09e3071cd91b82a52945bacc650ef6acf2f1",
+      "ocr_sha256": "f77d268a00ba52da0039453036e77a8aa3f0c805331b2b426bf51ec8496d432e"
+    },
+    {
+      "fixture": "menu_cards_compact_equipped",
+      "source_capture": "82-10-damage-selected.png",
+      "captured_at": "2026-10-03T16:49:38.259214+00:00",
+      "png_sha256": "1a85276c9b123ee66285d25d81d10af5b7ea1d945f6e9d37aee322c13a70ce67",
+      "ocr_sha256": "36c158713789a9bfc1702985a1abe2d2fb0839bbba90b312d754e3e6f723ea1d"
+    },
+    {
+      "fixture": "menu_cards_compact_restored",
+      "source_capture": "82-11-damage-unequipped.png",
+      "captured_at": "2026-10-03T16:49:54.529047+00:00",
+      "png_sha256": "62b6cd80ae70deb78649a20d3c1c4c40b154d27c3a5dc35b3ebbcc5f01f0b48f",
+      "ocr_sha256": "3a45e457015b3df449449a9daed5dbf0663525bd42b982ff4d61a616fe9e168a"
+    },
+    {
+      "fixture": "menu_cards_compact_duplicate",
+      "source_capture": "82-13-claimed-duplicate.png",
+      "captured_at": "2026-10-03T16:50:36.679751+00:00",
+      "png_sha256": "4cbf95b51ea3337dd188a84708373e190ed2a56a09cb0adffba958d96a83f59b",
+      "ocr_sha256": "6434bbe9a22ae90117b45759a4290e945b1f607a6acda923e9b354369557e931"
+    }
+  ],
+  "mutation_capabilities_enabled_during_capture": false
+}

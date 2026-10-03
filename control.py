@@ -24,6 +24,8 @@ loop depends on it, and the scan loop must not import the web layer.
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -72,7 +74,7 @@ class Controls:
     paused: bool = False
 
     def __post_init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._commands: list[str] = []
         self._recovery_revision = 0
 
@@ -107,6 +109,16 @@ class Controls:
             taken = tuple(self._commands)
             self._commands.clear()
         return taken
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Serialize guarded read/validate/persist operations with all policy edits.
+
+        Lock order: runner, route store, account scope, controls, strategy file.
+        Reentrant so callers can use snapshot/apply/replace inside the guard.
+        """
+        with self._lock:
+            yield
 
     def snapshot(self) -> Live:
         """A frozen view. Safe to hand to the scan loop or a request handler."""
@@ -180,7 +192,8 @@ class Controls:
                 # strategy would make every patch look like a full swap in
                 # the event log.
                 changed.update(
-                    {key: after[key] for key in after if before[key] != after[key]}
+                    {key: after.get(key) for key in before.keys() | after.keys()
+                     if before.get(key) != after.get(key)}
                 )
                 if "actions" in changed:
                     # A summary, not the rows. `changed` is rendered as one

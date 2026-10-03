@@ -18,12 +18,15 @@ import { LabSlotPlanner } from "./LabSlotPlanner";
 import { StrategyRules } from "./StrategyRules";
 import { RouteInspector } from "./RouteInspector";
 import { StrategyHistory } from "./StrategyHistory";
+import { CardPlanEditor } from "@/components/cards/CardPlanEditor";
+import { CardLoadoutEditor } from "@/components/cards/CardLoadoutEditor";
+import { emptyCardProgram, fetchCardCatalog, cardDraftError, type CardCatalog } from "@/lib/cards";
 import styles from "./studio.module.css";
 
 type Draft = StrategyDefinition & { dirty?: boolean };
 type AssignmentReview = { linkIdentity: string; strategyId: string; strategyVersion: number; memberScope: string };
 const LANES = [{ id: "workshop", label: "Workshop", icon: Hammer }, { id: "battle", label: "In-game", icon: Swords },
-  { id: "gems", label: "Gems", icon: Gem }, { id: "labs", label: "Labs", icon: FlaskConical }] as const;
+  { id: "gems", label: "Gems", icon: Gem }, { id: "labs", label: "Labs", icon: FlaskConical }, { id: "cards", label: "Cards", icon: BookOpen }] as const;
 const messageOf = (error: unknown): string => error instanceof Error ? error.message : "The request could not be completed.";
 
 export function StrategyStudio({ library: initialLibrary, saved, catalog, members, onPublished, labsSnapshot = null, labObservations,
@@ -88,6 +91,16 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
   const programLane = lane === "workshop" || lane === "battle" ? lane : null;
   const blocks = current && programLane ? current.baseline[programLane].blocks ?? [] : [];
   const selectedBlock = findBlock(blocks, selection) ?? blocks[0];
+  const [cardCatalog, setCardCatalog] = useState<CardCatalog>({ cards: [], max_gem_slots: 21 });
+  const [cardCatalogError, setCardCatalogError] = useState("");
+  useEffect(() => {
+    if (lane !== "cards" && lane !== "gems") return;
+    const abort = new AbortController();
+    void fetchCardCatalog({ scope: null, accountId: null, worker: null }, abort.signal).then(value => {
+      if (!abort.signal.aborted) { setCardCatalog(value); setCardCatalogError(""); }
+    }).catch(error => { if (!abort.signal.aborted) setCardCatalogError(messageOf(error)); });
+    return () => abort.abort();
+  }, [lane]);
 
   useEffect(() => {
     const key = (event: KeyboardEvent): void => {
@@ -201,6 +214,8 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     editBlocks(insertBlock(updateBlock(blocks, id, () => null), block, { ...from, index: from.index + direction }));
   }
   async function save(): Promise<void> {
+    const invalidCards = strategy.baseline.cards ? cardDraftError(strategy.baseline.cards, null) : null;
+    if (invalidCards) { setError(invalidCards); return; }
     setBusy(true); setError("");
     try {
       const next = await saveFleetStrategy({ name: strategy.name, source_template: strategy.source_template,
@@ -264,8 +279,8 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
     <div className={styles.sourceBanner}>{locked ? <LockKeyhole size={14} /> : <GitBranch size={14} />}<span>{viewingAssignedSnapshot ? `This is the exact assigned v${strategy.version} baseline. Create a copy to edit it; newer saved versions remain separate.` : locked ? "Built-in strategy · create a copy to make it yours." : `Based on ${strategy.source_template} · save a version, then assign it. Existing assignments never change with your draft.`}</span></div>
     {error && !copyOpen && !assignOpen && <p role="alert" className={styles.error}>{error}</p>}
     {message && <p role="status" className={styles.status}>{message}</p>}
-    <div className={styles.workspace} inert={busy} style={lane === "labs" ? { gridTemplateColumns: "minmax(0, 1fr)" } : undefined}>
-      {lane !== "labs" && <aside className={styles.palette} aria-label="Block palette">
+    <div className={styles.workspace} inert={busy} style={lane === "labs" || lane === "cards" ? { gridTemplateColumns: "minmax(0, 1fr)" } : undefined}>
+      {lane !== "labs" && lane !== "cards" && <aside className={styles.palette} aria-label="Block palette">
         <div className={styles.paletteHeading}><h3>Blocks</h3><span>drag to connect</span></div>
         {programLane ? <>
           <div className={styles.smallTabs} role="tablist" aria-label="Block categories">{(["Logic", "Flow", "Buy"] as const).map(group => <button key={group} role="tab" type="button" aria-selected={category === group} onClick={() => setCategory(group)}>{group}</button>)}</div>
@@ -282,14 +297,22 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
       </aside>}
       <main className={styles.canvasPane}>
         <div role="tablist" aria-label="Spending lanes" className={styles.lanes}>{LANES.map(item => <button role="tab" aria-selected={lane === item.id} type="button" key={item.id} onClick={() => { setLane(item.id); setSelection(null); setTarget(ROOT_END); setPreview(null); }}><item.icon size={16} />{item.label}</button>)}</div>
-        <div className={styles.canvasMeta}><span>{lane === "workshop" ? "Coins · after a run · research first" : lane === "battle" ? "Cash · during a run · verified rows" : lane === "gems" ? "Gems · reserve before spending" : "Coins · Game Speed before Workshop"}</span><span>{locked ? "Template" : "Editable copy"}</span></div>
+        <div className={styles.canvasMeta}><span>{lane === "workshop" ? "Coins · after a run · research first" : lane === "battle" ? "Cash · during a run · verified rows" : lane === "cards" ? "Cards · independent account budgets · between runs" : lane === "gems" ? "Gems · reserve before spending" : "Coins · Game Speed before Workshop"}</span><span>{locked ? "Template" : "Editable copy"}</span></div>
         <div className={styles.canvas}>
           <div className={styles.trigger}><Sparkles size={14} />{lane === "battle" ? "When battle facts are ready" : "When the main menu is ready"}</div>
           {programLane ? <StrategyCanvas {...{ blocks, names, locked, target }} selected={selectedBlock?.id ?? null} onSelect={id => { setSelection(id); const at = locateBlock(blocks, id);
             // The goal branch is not an insertion point: add after its save-for block instead.
             const pos = at?.branch === "goal" && at.parent ? locateBlock(blocks, at.parent) : at;
             if (pos) setTarget({ ...pos, index: pos.index + 1 }); }} onTarget={setTarget} onDrop={drop} onMove={move} onDrag={setDrag} />
-            : lane === "labs" ? <div className="min-w-0 space-y-4">
+            : lane === "cards" ? <section className="space-y-4" aria-label="Library Cards program">
+              <p>Saving a Cards program creates a library revision. Assign it from Fleet Cards; each account keeps its own budget. Saving never enables automation.</p>
+              <Link href="/fleet/reroll/cards/">Compare accounts and assign Cards</Link>
+              {cardCatalogError && <p role="alert">Card catalog unavailable: {cardCatalogError}. Existing references are retained.</p>}
+              {strategy.baseline.cards ? <>
+                <CardPlanEditor program={strategy.baseline.cards} catalog={cardCatalog} disabled={locked || busy} onChange={cards => edit({ ...strategy.baseline, cards })} />
+                <CardLoadoutEditor program={strategy.baseline.cards} catalog={cardCatalog} disabled={locked || busy} onChange={cards => edit({ ...strategy.baseline, cards })} />
+              </> : <button type="button" disabled={locked || busy} onClick={() => edit({ ...strategy.baseline, cards: emptyCardProgram() })}>Add Cards program</button>}
+            </section> : lane === "labs" ? <div className="min-w-0 space-y-4">
               <label className="grid min-w-0 gap-1 text-xs">Account observations
                 <select aria-label="Lab observation account" className="min-h-11 min-w-0 w-full" value={observationMember ? observationAccount : ""}
                   onChange={event => setObservationAccount(event.target.value)}>
@@ -307,7 +330,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
                   onGemsChange={() => {}} onLabsChange={labs => { if (locked) startCopy(); else edit({ ...strategy.baseline, labs }); }} />
               </details>
               </>}
-            </div> : <ResourceBlocks kind="gems" gems={strategy.baseline.gems} labs={strategy.baseline.labs} locked={locked}
+            </div> : <ResourceBlocks cardProgram={strategy.baseline.cards} cardCatalog={cardCatalog} kind="gems" gems={strategy.baseline.gems} labs={strategy.baseline.labs} locked={locked}
                 automated={labsSnapshot?.automated ?? []} catalog={labsSnapshot?.reference ?? null} hideGemSpendLimit
                 rules={rulesOf(strategy.baseline)}
                 onGemsChange={gems => { if (locked) startCopy(); else edit({ ...strategy.baseline, gems }); }}
@@ -319,7 +342,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
       {programLane ? <StrategyBlockInspector block={selectedBlock} lane={programLane} catalog={catalog} locked={locked}
         isGoal={selectedBlock ? locateBlock(blocks, selectedBlock.id)?.branch === "goal" : false} onCopy={() => startCopy()}
         onChange={block => editBlocks(updateBlock(blocks, block.id, () => block))} onRemove={() => { if (selectedBlock) editBlocks(updateBlock(blocks, selectedBlock.id, () => null)); setSelection(null); setTarget(ROOT_END); }} />
-        : <aside className={styles.inspector} style={lane === "labs" ? { gridColumn: "1 / -1" } : undefined} aria-label="Resource strategy settings"><p className={styles.eyebrow}>Resource path</p><h3>{lane === "gems" ? "Protect your lab fund" : "Keep research moving"}</h3><p className={styles.hint}>{lane === "gems" ? "Lab slot 2 is the first 100-gem purchase. Later cards and lab steps stay visibly planned." : "Game Speed uses lab slot 1 through all supported levels, before Workshop spending."}</p>
+        : <aside className={styles.inspector} style={lane === "labs" || lane === "cards" ? { gridColumn: "1 / -1" } : undefined} aria-label="Resource strategy settings"><p className={styles.eyebrow}>Resource path</p><h3>{lane === "gems" ? "Protect your lab fund" : "Keep research moving"}</h3><p className={styles.hint}>{lane === "gems" ? "Lab slot 2 is the first 100-gem purchase. Later cards and lab steps stay visibly planned." : "Game Speed uses lab slot 1 through all supported levels, before Workshop spending."}</p>
           {locked && <button className={styles.primaryButton} type="button" onClick={() => startCopy()}>Create copy to edit</button>}
         </aside>}
     </div>

@@ -409,11 +409,8 @@ def test_uw_pick_distinguishes_unknown_from_not_owned_from_owned() -> None:
     assert uw_pick_1.satisfied_by(revision(ultimate_weapons=owned)) is True
 
 
-def test_cards_unlock_has_no_observable_channel_and_says_so() -> None:
-    """Documents the family-4 design choice directly: unlike every other
-    family, no AccountRevision shape can ever make this predicate True or
-    False - cards.py never writes a per-card Fact. None always, by
-    construction, not merely on an empty revision."""
+def test_cards_unlock_uses_explicit_ownership_only() -> None:
+    """Slot counts cannot imply card ownership; explicit projected ownership can."""
     by_id = {o.id: o for o in objectives.GRAPH}
     card = by_id["cards.unlock.attack_speed"]
     assert card.satisfied_by(revision()) is None
@@ -422,6 +419,8 @@ def test_cards_unlock_has_no_observable_channel_and_says_so() -> None:
         unlocks=(fact("unlocks.tier.2", True),),
     )
     assert card.satisfied_by(fully_populated) is None
+    assert card.satisfied_by(revision(cards=(fact("cards.attack-speed", "owned"),))) is True
+    assert card.satisfied_by(revision(cards=(fact("cards.attack-speed", "unowned"),))) is False
 
 
 def test_claims_are_never_done_but_are_not_permanently_unknown_either() -> None:
@@ -434,13 +433,12 @@ def test_claims_are_never_done_but_are_not_permanently_unknown_either() -> None:
         assert by_id[oid].requires == ()
 
 
-def test_cards_slots_are_really_observable_unlike_cards_unlock() -> None:
-    """Unlike cards.unlock.*, cards.slots.* reads a Fact cards.py actually
-    writes (SLOT_CAPACITY_KEY), so all three states are reachable."""
+def test_cards_slots_distinguish_unknown_from_observed_capacity() -> None:
+    """An absent slot count is unknown; observed capacity determines progress."""
     by_id = {o.id: o for o in objectives.GRAPH}
     slots_3 = by_id["cards.slots.3"]
     assert slots_3.satisfied_by(revision(cards=None)) is None
-    assert slots_3.satisfied_by(revision(cards=())) is False
+    assert slots_3.satisfied_by(revision(cards=())) is None
     assert slots_3.satisfied_by(revision(cards=(fact("cards.slots.capacity", 2),))) is False
     assert slots_3.satisfied_by(revision(cards=(fact("cards.slots.capacity", 3),))) is True
 
@@ -478,7 +476,8 @@ def _maximal_revision() -> AccountRevision:
                  fact("unlocks.tier.4", True)),
         lab_slots_owned=99,
         lab_levels=tuple(fact(cid, 999) for cid in all_concept_ids),
-        cards=(fact("cards.slots.capacity", 999), fact("cards.slots.equipped", 999)),
+        cards=(fact("cards.slots.capacity", 999), fact("cards.slots.equipped", 999),
+               *(fact(cid, "owned") for cid in all_concept_ids if cid.startswith("cards."))),
         ultimate_weapons=ultimate_weapons.unknown_record(ownership="owned"),
     )
 
@@ -505,13 +504,13 @@ def test_every_objective_is_satisfiable_or_declares_itself_never_satisfiable() -
             "objective, or it should declare never_satisfiable=True")
 
 
-def test_never_satisfiable_objectives_are_exactly_the_two_known_families() -> None:
+def test_never_satisfiable_objectives_are_recurring_claims_only() -> None:
     """Pins WHICH objectives declare it, so a future edit that adds the
     flag to something satisfiable (silencing the probe above rather than
     fixing it) is itself caught."""
     flagged = {o.id for o in objectives.GRAPH if o.never_satisfiable}
     expected = {o.id for o in objectives.GRAPH
-                if o.id.startswith(("cards.unlock.", "claim."))}
+                if o.id.startswith("claim.")}
     assert flagged == expected
     assert flagged  # sanity: the families actually exist in the graph
 

@@ -121,9 +121,16 @@ class BuildRouteStore:
         if type(revision) is not int or revision < 1:
             raise ValueError("rollback revision must be positive")
         current = self.read()
+        if current.revision != expected_revision:
+            raise RouteConflict(current)
         if revision > current.revision:
             raise ValueError("rollback revision not published")
-        return self.publish(self._revision(revision), expected_revision, actor)
+        historical = self._revision(revision)
+        if historical.card_assignments != current.card_assignments:
+            raise ValueError("Cards assignments must be published through the Cards assignment endpoint")
+        # publish repeats the revision check under its file lock, so a racing
+        # Cards publication cannot slip between this ownership check and save.
+        return self.publish(historical, expected_revision, actor)
 
 
 def _changed_rules(before: RouteDocument, after: RouteDocument) -> list[str]:
@@ -146,4 +153,7 @@ def _changed_rules(before: RouteDocument, after: RouteDocument) -> list[str]:
     for worker in sorted(set(before.assignments) | set(after.assignments)):
         if before.assignments.get(worker) != after.assignments.get(worker):
             changed.append(f"assignment.{worker}")
+    for account in sorted(set(before.card_assignments) | set(after.card_assignments)):
+        if before.card_assignments.get(account) != after.card_assignments.get(account):
+            changed.append(f"cards.{account}")
     return changed

@@ -13,6 +13,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterator, Mapping, Sequence
 
 import lab_catalog
+import card_catalog
+from card_models import AcquireGoal, CardPlanContext, CardProgram, CardSnapshot, CardTarget, SlotGoal
+from card_plan import EVIDENCE_MAX_AGE, MIN_CONFIDENCE, current_quote, current_snapshot, goal_met, plan_cards
 from lab_runtime import LabScope
 from fleet.build_route import is_lab_list
 # lab_list reaches back into this module only inside its functions, so it
@@ -242,10 +245,15 @@ def validate_gems(value: object) -> tuple[dict[str, Any], ...]:
             last_slot = slot
         elif kind == "card_slots":
             _fields(block, {"up_to", "when_usable_card"})
-            _int(block.get("up_to"), "card slots up_to", 2, 10)
+            _int(block.get("up_to"), "card slots up_to", 2, card_catalog.max_card_slots())
             if type(block.get("when_usable_card", False)) is not bool:
                 raise ValueError("when_usable_card must be boolean")
             block.setdefault("when_usable_card", False)
+        elif kind == "card_goal":
+            _fields(block, {"goal_id"})
+            goal_id = block.get("goal_id")
+            if not isinstance(goal_id, str) or not goal_id or any(ch.isspace() for ch in goal_id):
+                raise ValueError("card goal block needs a goal id")
         elif kind == "buy_cards":
             _fields(block, {"purpose", "cards"})
             if block.get("purpose") == "card_missions":
@@ -469,6 +477,9 @@ class LabFacts:
     # The fleet's lab-starter rollout (lab_starter_rollout.StarterState); None on a solo bot.
     starter: Any = None
     direct_start: bool = False
+    card_program: CardProgram | None = None
+    card_snapshot: CardSnapshot | None = None
+    card_context: CardPlanContext | None = None
 
 
 @dataclass(frozen=True)
@@ -531,6 +542,7 @@ class GemPlan:
     automated: bool
     why: tuple[str, ...]
     steps: tuple[GemStep, ...]
+    eligible_card_goal_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -797,6 +809,8 @@ def _gem_label(block: Mapping[str, Any]) -> str:
     if kind == "buy_cards":
         return ("Cards for card-buy missions" if block["purpose"] == "card_missions"
                 else f"Cards until {', '.join(block['cards'])}")
+    if kind == "card_goal":
+        return f"Card goal: {block['goal_id']}"
     if kind == "save_for":
         return "Save for modules"
     return "Wait"
@@ -810,13 +824,31 @@ def _ownership(facts: LabFacts) -> dict[int, Mapping[str, Any]]:
     return {2: facts.slot2} if isinstance(facts.slot2, Mapping) else {}
 
 
+def _card_goal(block: Mapping[str, Any], program: CardProgram | None) -> AcquireGoal | SlotGoal | None:
+    if block['type'] == 'card_goal':
+        return next((goal for goal in program.goals if goal.id == block['goal_id']), None) if program else None
+    if block['type'] == 'card_slots':
+        return SlotGoal(id=block['id'], kind='slots', capacity=block['up_to'],
+                        when_usable_card=block.get('when_usable_card', False))
+    if block['type'] == 'buy_cards' and block.get('purpose') == 'until_cards':
+        ids = [card_catalog.resolve_legacy_name(name) for name in block['cards']]
+        if ids and all(ids) and len(set(ids)) == len(ids):
+            return AcquireGoal(id=block['id'], kind='acquire',
+                               targets=tuple(CardTarget(card_id=card_id) for card_id in ids))
+    return None
+
+
 def _gem_met(block: Mapping[str, Any], ownership: Mapping[int, Mapping[str, Any]],
-             owned_floor: int | None = None) -> bool | None:
+             owned_floor: int | None = None, *, card_program: CardProgram | None = None,
+             card_snapshot: CardSnapshot | None = None) -> bool | None:
     """True or False when read. None when we cannot know, which is never a guess.
 
     Slots unlock in order: an owned higher slot proves this one owned, and a
     locked lower slot proves this one locked.
     """
+    if block['type'] in {'card_goal', 'card_slots', 'buy_cards'}:
+        goal = _card_goal(block, card_program)
+        return goal_met(goal, card_snapshot) if goal is not None and card_snapshot is not None else None
     if block["type"] != "unlock_lab_slot":
         return False
     slot = block["slot"]
@@ -836,10 +868,17 @@ def gem_lane_blocks(gems: Any) -> tuple[dict[str, Any], ...]:
 
 
 def next_unlock_slot(blocks: Sequence[Mapping[str, Any]], ownership: Mapping[int, Mapping[str, Any]],
-                     owned_floor: int | None = None) -> int | None:
+                     owned_floor: int | None = None, *, card_program: CardProgram | None = None,
+                     card_snapshot: CardSnapshot | None = None,
+                     card_context: CardPlanContext | None = None) -> int | None:
     """The slot the gem lane unlocks next, or None when its next step is not a slot unlock."""
+    # Active lab spending cannot rely on a historical snapshot without live authority.
+    card_snapshot = current_snapshot(card_context) if card_context is not None else None
+    if card_context is not None:
+        card_program = card_context.program
     for block in blocks:
-        if _gem_met(block, ownership, owned_floor) is True:
+        if _gem_met(block, ownership, owned_floor, card_program=card_program,
+                    card_snapshot=card_snapshot) is True:
             continue
         return block["slot"] if block["type"] == "unlock_lab_slot" else None
     return None
@@ -866,8 +905,20 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
     why: list[str] = []
     current: GemStep | None = None
     ownership = _ownership(facts)
+    card_context = facts.card_context
+    program = card_context.program if card_context is not None else facts.card_program
+    snapshot = card_context.snapshot if card_context is not None else facts.card_snapshot
+    if card_context is not None:
+        snapshot = current_snapshot(card_context.model_copy(update={'now': facts.now}))
+    elif snapshot is not None and (not 0 <= facts.now - snapshot.observed_at <= EVIDENCE_MAX_AGE
+            or snapshot.confidence is None or snapshot.confidence < MIN_CONFIDENCE):
+        snapshot = None
+    elif snapshot is not None:
+        snapshot = snapshot.model_copy(update={'observed_at': facts.now})
+    eligible: tuple[str, ...] = ()
     for block in blocks:
-        met = _gem_met(block, ownership, facts.owned_floor)
+        met = _gem_met(block, ownership, facts.owned_floor,
+                       card_program=program, card_snapshot=snapshot)
         automated = gem_automated(block, facts.rollout) and rules.gems.auto_unlock_lab_slots
         if block["type"] == "unlock_lab_slot" and not gem_automated(block, facts.rollout):
             why.append(f"{block['id']}: {_unlock_line(block, facts)}")
@@ -883,8 +934,21 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
                 why.append("Auto-unlock off")
         else:
             state = "next"
+        price = _gem_price(block)
+        if block['type'] == 'card_goal' and state == 'current':
+            eligible = (block['goal_id'],)
+            if card_context is not None:
+                scoped = card_context.model_copy(update={'eligible_goal_ids': eligible, 'now': facts.now,
+                                                         'command': None})
+                decision = plan_cards(scoped)
+                why.append(f"{block['id']}: {decision.reason}")
+                automated = decision.kind in {'buy', 'slot'} and decision.goal_id == block['goal_id']
+                observed_quote = current_quote(scoped, decision.kind, decision.quantity) if automated else None
+                price = observed_quote.price if observed_quote is not None else None
+            else:
+                why.append(f"{block['id']}: live card context unavailable")
         step = GemStep(block["id"], block["type"], block.get("label") or _gem_label(block),
-                       state, _gem_price(block), automated,
+                       state, price, automated,
                        block["slot"] if block["type"] == "unlock_lab_slot" else None)
         if state == "current":
             current = step
@@ -892,7 +956,7 @@ def _gem_plan(blocks: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any) 
     price = current.price if current else None
     need = price + rules.gems.keep if price is not None else None
     return GemPlan(facts.wallet_gems, current, price, facts.wallet_gems, need,
-                   current.automated if current else False, tuple(why), tuple(steps))
+                   current.automated if current else False, tuple(why), tuple(steps), eligible)
 
 
 @dataclass(frozen=True)

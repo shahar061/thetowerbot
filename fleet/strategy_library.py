@@ -118,7 +118,16 @@ class StrategyLibrary:
             raise ValueError("strategy name must contain 1 to 100 characters")
         if source_template not in SOURCE_TEMPLATES:
             raise ValueError("unknown source template")
-        validated = RouteBaseline.from_dict(baseline).to_dict()
+        parsed = RouteBaseline.from_dict(baseline)
+        validated = parsed.to_dict()
+        if parsed.gems.mode == "blocks":
+            from card_program import normalize_legacy_gems
+            program, blocks = normalize_legacy_gems(list(parsed.gems.blocks), parsed.cards)
+            if blocks != list(parsed.gems.blocks):
+                validated["gems"]["blocks"] = blocks
+                if program is not None:
+                    validated["cards"] = program.model_dump(mode="json")
+                validated = RouteBaseline.from_dict(validated).to_dict()
         with self._locked():
             state = self._state()
             if state["revision"] != expected_revision:

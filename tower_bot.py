@@ -427,6 +427,35 @@ class TowerBot:
         self.in_game_ad = in_game_ad.InGameAdClaim(
             bus, self.templates, self.reader, sleep=self._stopping.wait)
 
+        self.card_runtime = None
+        if account_state is not None and account_state.safety_path is not None and isinstance(safety_journal, transactions.TransactionJournal):
+            from card_runtime import CardRuntime
+            self.card_runtime = CardRuntime(self)
+            self.shopping.queue_cards = self.card_runtime.queue_automatic
+            self.cards_intro.queue_refresh = self.card_runtime.queue_refresh
+            self.cards_intro.visit_owned = lambda: self.card_runtime.active
+            account_state.card_context = self.card_runtime.context
+            if self.reroll_progress is not None:
+                self.reroll_progress.card_context = self.card_runtime.context
+
+    def _advance_cards(self, boxes: tuple[ocr.TextBox, ...], *, opportunity: bool = False) -> bool:
+        """Exclusive scheduler entry; recovery precedes generic shopping recovery."""
+        runtime = self.card_runtime
+        if runtime is None:
+            return False
+        peers = (self.collection.active or self.visit.active or self.claim.active
+                 or self.milestones_claim.active or self.cards_intro.active
+                 or self.battle_menu.active or self.shopping.visit_in_progress
+                 or self.lab_visit is not None and self.lab_visit.active)
+        owned = runtime.advance(boxes, opportunity=opportunity and not peers)
+        if owned:
+            self.controls.drain()
+            self.wallet = None
+            self.autopilot.suspend('Cards visit holds actions')
+        if self.progress is not None:
+            self.progress.observe_cards(runtime.status())
+        return owned
+
     @property
     def screen_state(self) -> screens.ScreenState:
         return self.tracker.state
@@ -1128,6 +1157,7 @@ class TowerBot:
         return (self.collection.active or self.visit.active
                 or self.claim.active or self.milestones_claim.active
                 or self.cards_intro.active
+                or (getattr(self, "card_runtime", None) is not None and self.card_runtime.active)
                 or (self.lab_visit is not None and self.lab_visit.active)
                 or self.battle_menu.active or self.in_game_ad.active)
 
@@ -1308,6 +1338,8 @@ class TowerBot:
             walk.cancel(reason, detail)
         if self.lab_visit is not None:
             self.lab_visit.cancel(reason)
+        if getattr(self, 'card_runtime', None) is not None:
+            self.card_runtime.visit.cancel(reason)
 
     def _observe_menu_wallet(self, coins: int | None, gems: int | None, *, evidence_ref: str) -> None:
         """Publish this capture before maintenance policy; fetch time is never evidence."""
@@ -1778,6 +1810,10 @@ class TowerBot:
                           or (reading.state is screens.ScreenState.UNKNOWN
                               and reading.cash_top_left is not None))
         self._last_scan_in_battle = battle_context
+        self._card_observed_state = reading.state.value
+        self._card_in_run = (reading.state is screens.ScreenState.IN_RUN or
+            reading.state is screens.ScreenState.UNKNOWN and self.tracker.state is screens.ScreenState.IN_RUN
+            and not (self.card_runtime is not None and self.card_runtime.active))
         info_dismiss = None
         recovery_escape = None
         unrenamed_screen = reading.state.value
@@ -1983,6 +2019,11 @@ class TowerBot:
                         self._recovery_blocked_scans = 0
                 return False
             self._recovery_blocked_scans = 0
+            if (not (self.in_game_ad.active or late_ad_reward)
+                    and self.card_runtime is not None and self._advance_cards(reads.full())):
+                self.bus.publish(events.ScanCompleted(screen=reading.state.value,
+                    duration_ms=(time.monotonic()-started)*1000, wallet=None))
+                return False
             if escape is not None and not self.in_game_ad.active:
                 label, point = escape
                 logger.warning("No progress (%s); pressing %s at %s to get out.",
@@ -2036,6 +2077,11 @@ class TowerBot:
                     duration_ms=(time.monotonic() - started) * 1000,
                     wallet=self.wallet))
                 return True
+        if (self.supervisor is None and not (self.in_game_ad.active or late_ad_reward)
+                and self.card_runtime is not None and self._advance_cards(reads.full())):
+            self.bus.publish(events.ScanCompleted(screen=reading.state.value,
+                duration_ms=(time.monotonic()-started)*1000, wallet=None))
+            return False
         # An active in-battle menu visit owns every frame until it finishes,
         # even off IN_RUN (a destination page classifies UNKNOWN), so it is
         # stepped here, ahead of every reader below - but only after the
@@ -2265,7 +2311,8 @@ class TowerBot:
         screen_readings = self.account_state.screen_readings if self.account_state is not None else self._screen_readings
         walking_before = (self.collection.active or self.visit.active
                           or self.claim.active or self.milestones_claim.active
-                          or self.cards_intro.active)
+                          or self.cards_intro.active
+                       or (self.card_runtime is not None and self.card_runtime.active))
         # Spec P1: on a battle frame whose upgrade panel is readable, no
         # account panel, missions page or milestones screen is up - they are
         # menu overlays. MAIN_MENU, GAME_OVER and UNKNOWN keep all three,
@@ -2386,7 +2433,8 @@ class TowerBot:
         # answer and "nothing is walking" is another's.
         walking_now = (self.collection.active or self.visit.active
                        or self.claim.active or self.milestones_claim.active
-                       or self.cards_intro.active)
+                       or self.cards_intro.active
+                       or (self.card_runtime is not None and self.card_runtime.active))
         # Cancelling a mail walk while paused can leave a full-screen Inbox
         # whose lifecycle state is UNKNOWN. Its current semantic footer is
         # the only permitted recovery action; never restart reward traversal.
@@ -2444,7 +2492,8 @@ class TowerBot:
         if not deadlocked and (
                 panel or missions_page or milestones_page or self.collection.active
                 or self.visit.active or self.claim.active
-                or self.milestones_claim.active or self.cards_intro.active):
+                or self.milestones_claim.active or self.cards_intro.active
+                          or (self.card_runtime is not None and self.card_runtime.active)):
             self.controls.drain()
             self.wallet = None
             if panel:
@@ -2841,6 +2890,14 @@ class TowerBot:
                 and reading.state is screens.ScreenState.MAIN_MENU):
             self._observe_menu_notifications(time.time())
 
+        if (state is screens.ScreenState.MAIN_MENU and reading.state is screens.ScreenState.MAIN_MENU
+                and self.card_runtime is not None
+                and any(op.command.source == 'manual' for op in self.card_runtime.store.unresolved())
+                and self._advance_cards(reads.full(), opportunity=True)):
+            self.bus.publish(events.ScanCompleted(screen=state.value,
+                duration_ms=(time.monotonic()-started)*1000, wallet=None))
+            return False
+
         # Reserve this frame for a due Workshop visit before navigation can
         # start the next battle. Newly begun visits advance on the next frame.
         if (
@@ -2920,6 +2977,14 @@ class TowerBot:
                 if armed is not None:
                     logger.info("Armed a %s claim from the main menu.", armed)
 
+        if (state is screens.ScreenState.MAIN_MENU
+                and reading.state is screens.ScreenState.MAIN_MENU
+                and self.card_runtime is not None
+                and self._advance_cards(reads.full(), opportunity=True)):
+            self.bus.publish(events.ScanCompleted(screen=state.value,
+                duration_ms=(time.monotonic()-started)*1000, wallet=None))
+            return False
+
         if (
             settings.strategy.auto_navigate
             and not settings.paused
@@ -2927,6 +2992,7 @@ class TowerBot:
             and not visiting and not self.shopping.visit_in_progress
             and not self.claim.active and not self.milestones_claim.active
             and not self.cards_intro.active
+            and not (self.card_runtime is not None and self.card_runtime.active)
             and not (self.lab_visit is not None and self.lab_visit.active)
         ):
             # Navigator taps BATTLE on MAIN_MENU on a cooldown - left alone
@@ -2967,6 +3033,7 @@ class TowerBot:
                                        publish_estimate=state is screens.ScreenState.GAME_OVER,
                                        detour=state is screens.ScreenState.GAME_OVER)))
                              or self._claim_owed(settings)
+                             or (self.card_runtime is not None and self.card_runtime.needs_home())
                              # A held purchase re-inspects only on MAIN_MENU; detour
                              # home when its paced retry is due (never spends).
                              or (state is screens.ScreenState.GAME_OVER
@@ -3236,6 +3303,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-telegram", action="store_true",
         help="suppress Telegram digests even when the environment configures them",
     )
+    parser.add_argument("--standalone-root", type=Path, default=None,
+                        help="private verified single-account runtime parent")
+    parser.add_argument("--expected-account", default=None,
+                        help="account ID to compare with a fresh observed account walk")
     parser.add_argument("--worker-id", default=None, help="fleet worker identity")
     parser.add_argument("--lease-id", default=None, help="fleet lease identity")
     parser.add_argument("--attempt-id", default=None, help="fleet attempt identity")
@@ -3280,6 +3351,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def resolve_worker_runtime(args: argparse.Namespace) -> WorkerRuntime | None:
     fields = (args.worker_id, args.lease_id, args.attempt_id, args.runtime_root)
+    if args.standalone_root is not None or args.expected_account is not None:
+        if (args.standalone_root is None or not args.expected_account
+                or not args.expected_account.strip() or not args.web or not args.store
+                or args.once or args.debug_scores or not args.web_port_explicit
+                or not args.game_package or args.web_host not in {"127.0.0.1", "localhost", "::1"}
+                or any(value is not None for value in fields)
+                or any(value is not None for value in (args.bluestacks_instance,
+                    args.bluestacks_pool, args.reroll_pool, args.fleet_root,
+                    args.fleet_capacity, args.fleet_name_prefix))):
+            raise ValueError("standalone verification requires an isolated stored loopback dashboard, game package, root and expected account")
+        return WorkerRuntime.for_worker(args.standalone_root, "standalone", args.web_port)
     if not any(value is not None for value in fields):
         return None
     if not all(value is not None for value in fields):
@@ -3752,6 +3834,12 @@ def main(argv: list[str] | None = None) -> int:
 def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     from bluestacks import BlueStacksAdapter, ManualPool
 
+    if args.standalone_root is not None:
+        # main holds this private root, dashboard port and endpoint reservation.
+        # These identify the owner only; the account is proved in runner.start.
+        import hashlib
+        owner = hashlib.sha256(f"{runtime.root}:{args.host}:{args.port}".encode()).hexdigest()
+        args.worker_id, args.lease_id, args.attempt_id = "standalone", owner, owner
     runtime_records = RuntimeRecords(runtime.root / "runtime-records.json") if runtime is not None else None
     if runtime_records is not None:
         try:
@@ -3842,7 +3930,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
     fleet_controller = None
     if (args.web and args.bluestacks_instance is None
             and args.web_host in {"127.0.0.1", "localhost", "::1"}
-            and args.fleet_root is None):
+            and args.fleet_root is None and args.standalone_root is None):
         from fleet.setup import FleetSetupService
 
         fleet_controller = FleetSetupService(
@@ -3918,7 +4006,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
         return 0
 
     db_path = runtime.db_path if runtime is not None else Path(args.db)
-    if runtime is not None and args.store:
+    if runtime is not None and args.store and args.standalone_root is None:
         from web.account_catalog import registered_worker
         registration = registered_worker(runtime.root)
         if registration is None:
@@ -4131,6 +4219,7 @@ def _main(args: argparse.Namespace, runtime: WorkerRuntime | None) -> int:
                 supervisor_path=(runtime.checkpoint_root / "supervisor.json")
                 if runtime is not None else None,
                 game_package=args.game_package,
+                standalone_expected_account=args.expected_account,
                 host_adapter=host_adapter,
                 host_instance=args.bluestacks_instance,
                 host_popup_checker=host_popup_checker,

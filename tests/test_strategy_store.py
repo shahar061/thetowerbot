@@ -105,7 +105,7 @@ def test_save_is_atomic(store, monkeypatch) -> None:
     # The docstring's other half, now actually asserted: the finally clause
     # cleans up after a failed replace, so the directory holds exactly the
     # profile that was there before and nothing else.
-    assert sorted(p.name for p in store.directory.iterdir()) == ["mine.json"]
+    assert sorted(p.name for p in store.directory.iterdir()) == [".lock", "mine.json"]
 
 
 def test_two_saves_of_one_profile_do_not_share_a_temp_path(store, monkeypatch) -> None:
@@ -133,7 +133,7 @@ def test_two_saves_of_one_profile_do_not_share_a_temp_path(store, monkeypatch) -
 
 def test_save_leaves_no_temp_files_behind(store) -> None:
     store.save(Strategy.from_config("mine"))
-    assert [p.name for p in store.directory.iterdir() if p.suffix != ".json"] == []
+    assert [p.name for p in store.directory.iterdir() if p.suffix != ".json" and p.name != ".lock"] == []
 
 
 def test_save_rejects_a_strategy_with_a_missing_template(store, monkeypatch) -> None:

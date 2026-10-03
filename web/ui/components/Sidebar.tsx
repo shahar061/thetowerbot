@@ -35,6 +35,7 @@ const GROUPS: { label: string; items: Item[] }[] = [
   {
     label: "Configure",
     items: [
+      { href: "/cards/", label: "Cards", icon: LayoutGrid },
       { href: "/strategy/", label: "Strategy", icon: SlidersHorizontal },
       { href: "/control/", label: "Control", icon: Power },
     ],
@@ -48,6 +49,7 @@ const FLEET_GROUPS: { label: string; items: Item[] }[] = [{
     { href: "/fleet/state/", label: "Fleet State", icon: LayoutGrid },
     { href: "/fleet/reroll/stats/", label: "Stats", icon: ChartLine },
     { href: "/fleet/reroll/workshop/", label: "Workshop", icon: Wrench },
+    { href: "/fleet/reroll/cards/", label: "Cards", icon: LayoutGrid },
     { href: "/fleet/reroll/labs/", label: "Labs & Gems", icon: FlaskConical },
     { href: "/fleet/reroll/runs/", label: "Runs", icon: Swords },
     { href: "/fleet/reroll/ledger/", label: "Ledger", icon: Receipt },

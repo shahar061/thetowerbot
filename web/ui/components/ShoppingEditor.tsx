@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
 import { type ComponentRef, useEffect, useRef, useState } from "react";
 import { OrderChip, ReorderButtons } from "@/components/StrategyEditor";
@@ -10,7 +11,7 @@ import { NumberField } from "@/components/ui/number-field";
 import { SectionCard } from "@/components/ui/section-card";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import type { CardPolicy, Shopping, ShoppingRule } from "@/lib/types";
+import type { Shopping, ShoppingRule } from "@/lib/types";
 
 /** Verbatim from the Guide's "Per-row hints for the Strategy page" table,
  * keyed by row name. A row not in this map gets no hint rather than a made
@@ -32,7 +33,7 @@ const HINTS: Record<string, string> = {
 
 /** The gem floor's warning copy. A test asserts on this exact phrase, so it
  * and the rendered text must stay in step. */
-const GEM_FLOOR_NOTE = "Gems cannot be earned back quickly, unlike coins.";
+
 
 const COIN_BUDGET_NOTE =
   "Empty means no limit - it keeps buying, at each row's rising price, until the " +
@@ -109,7 +110,6 @@ export function ShoppingEditor({
     set("workshop", next);
   };
 
-  const setCards = (patch: Partial<CardPolicy>) => set("cards", { ...shopping.cards, ...patch });
 
   // Arming needs an explicit second step because it is the only control in
   // the dashboard that spends something the player cannot get back;
@@ -371,43 +371,8 @@ export function ShoppingEditor({
       </SectionCard>
 
       <SectionCard id="cards" title="Cards" contentClassName="flex flex-col gap-3">
-        <div className="flex items-center justify-between text-sm">
-          Buy cards with gems
-          <Switch
-            label="Cards enabled"
-            checked={shopping.cards.enabled}
-            disabled={disabled}
-            onCheckedChange={(next) => setCards({ enabled: next })}
-          />
-        </div>
-        <NumberField
-          label="Gem floor"
-          note={`${GEM_FLOOR_NOTE} The bot stops buying cards once spending would take the balance below this.`}
-          value={shopping.cards.gem_floor} disabled={disabled}
-          min={0} step={1}
-          onCommit={(n) => setCards({ gem_floor: n })}
-        />
-        <NumberField
-          label="Max cards per visit"
-          value={shopping.cards.max_per_visit} disabled={disabled}
-          min={1} step={1}
-          onCommit={(n) => setCards({ max_per_visit: n })}
-        />
-        <div className="text-sm">
-          <div className="mb-1">Batch size</div>
-          {(["x1", "x10"] as const).map((b) => (
-            <label key={b} className="mr-4">
-              <input
-                type="radio" name="card-batch" aria-label={b}
-                className="accent-primary"
-                checked={shopping.cards.batch === b}
-                disabled={disabled}
-                onChange={() => setCards({ batch: b })}
-              />{" "}
-              {b}
-            </label>
-          ))}
-        </div>
+        <p className="text-sm">Automatic Cards purchases: {shopping.cards.enabled ? "enabled" : "disabled"}. Reserve {shopping.cards.gem_floor} gems · at most {shopping.cards.max_per_visit} cards per visit.</p>
+        <Link href="/cards/" className="text-sm text-primary underline">Manage Cards collection, goals, loadouts, and budget</Link>
       </SectionCard>
     </div>
   );

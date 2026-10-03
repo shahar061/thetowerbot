@@ -25,7 +25,7 @@ from dataclasses import asdict
 from enum import Enum, auto
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import config
 import pages
@@ -86,6 +86,8 @@ class CardsIntro(ControlTaps):
 
     def __init__(self, *, threshold: float = MATCH_THRESHOLD,
                  frame_budget: int = STEP_FRAME_BUDGET) -> None:
+        self.visit_owned: Callable[[], bool] | None = None
+        self.queue_refresh: Callable[[float], bool] | None = None
         self._lock = threading.RLock()
         self._threshold = threshold
         self._budget = frame_budget
@@ -118,13 +120,18 @@ class CardsIntro(ControlTaps):
     def due(self, now: float) -> bool:
         """Whether a request now would be more than a retry of a walk just run."""
         with self._lock:
-            return (self._step is Step.IDLE
+            return (not (self.visit_owned and self.visit_owned())
+                    and self._step is Step.IDLE
                     and (self._finished_at is None
                          or now - self._finished_at >= RETRY_SECONDS))
 
     def request(self, now: float | None = None) -> bool:
         """Arm a visit. False when one is already running; never queues."""
         with self._lock:
+            if self.visit_owned and self.visit_owned():
+                return False
+            if self.queue_refresh is not None:
+                return self.queue_refresh(time.time() if now is None else now)
             if self._step is not Step.IDLE:
                 return False
             self._requested_at = time.time() if now is None else now
@@ -149,6 +156,9 @@ class CardsIntro(ControlTaps):
                 tuning: Strategy | None = None) -> CollectionAction | None:
         """One frame of the visit. Returns the tap it issued, if any."""
         with self._lock:
+            if self.visit_owned and self.visit_owned():
+                self.cancel('cards_visit_owned', 'The shared Cards visit owns navigation.', now=now)
+                return None
             self._tuning = tuning
             if self._step is Step.IDLE:
                 return None

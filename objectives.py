@@ -60,9 +60,8 @@ catalog concepts, on purpose, and must never be added to `concept_ids`:
   bespoke account-level flags the same way `game_version` is a plain field
   with no catalog identity - not an oversight, and not something a future
   edit should "fix" by inventing a `tier.*` catalog family.
-- `cards.slots.capacity` / `cards.slots.equipped` (the two Facts
-  cards.py's `facts()` ever actually writes to `AccountRevision.cards` - see
-  cards.py:200-213). This module hardcodes the same string
+- `cards.slots.capacity` / `cards.slots.equipped` are slot counts alongside
+  the per-card ownership and level facts. This module hardcodes the string
   `cards.py.SLOT_CAPACITY_KEY` uses rather than importing cards.py, because
   cards.py pulls in the screen-reading stack this module must stay clear of
   (see "Only two imports" below).
@@ -185,8 +184,7 @@ class Objective:
     # lookalike, for objectives whose predicate reads a non-catalog account
     # key - see the module docstring's "Non-catalog account keys".
     concept_ids: tuple[str, ...] = ()
-    # True only for cards.unlock.* (satisfied_by returns None forever - no
-    # AccountRevision shape expresses per-card unlock state) and claim.*
+    # True for recurring claim.* objectives
     # (satisfied_by returns False forever - the cadence needs a clock the
     # one-argument predicate signature cannot take). Declared HERE, on the
     # objective, rather than left for a consumer (director.py) to recognise
@@ -253,8 +251,8 @@ def _cards_capacity_at_least(revision: AccountRevision, count: int) -> bool | No
     if facts is None:
         return None
     capacity = facts.get(_CARDS_SLOT_CAPACITY_KEY)
-    if capacity is None:
-        return False
+    if type(capacity) is not int or capacity < 0:
+        return None
     return bool(capacity >= count)
 
 
@@ -576,20 +574,18 @@ _CARD_UNLOCKS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _no_per_card_unlock_signal(revision: AccountRevision) -> bool | None:
-    """AccountRevision.cards carries only the two slot-count Facts
-    cards.py's facts() ever writes (cards.slots.equipped/.capacity) - no
-    per-card unlock flag reaches an account revision at all, by that
-    module's own design ("No card fact is ever produced", cards.py:200-204).
-
-    This is not "unread" (which None would also mean) so much as
-    "unrepresentable with the current account model" - but the honest
-    three-valued answer is still None rather than False: False would assert
-    "provably not unlocked", which this module has no way to prove. See
-    task-4-report.md for why None, not the claim family's False, was chosen
-    here.
-    """
-    del revision
+def _card_unlocked(revision: AccountRevision, card_id: str) -> bool | None:
+    """Observed ownership projection is progress history, never action authority."""
+    fact = next((fact for fact in revision.cards or () if fact.concept_id == card_id), None)
+    if (fact is None or fact.status not in {'observed', 'historical', 'verified'}
+            or fact.evidence.confidence < .90
+            or fact.scope is not None and revision.account_id is not None
+            and fact.scope.account_id != revision.account_id):
+        return None
+    if fact.value == 'owned':
+        return True
+    if fact.value in {'unowned', 'locked', 'unavailable'}:
+        return False
     return None
 
 
@@ -600,14 +596,13 @@ def _card_unlock_objectives() -> tuple[Objective, ...]:
             id=f"cards.unlock.{slug}",
             requires=(gate,),
             grants=(f"cards.unlock.{slug}",),
-            satisfied_by=_no_per_card_unlock_signal,
+            satisfied_by=(lambda revision, card_id=concept_id: _card_unlocked(revision, card_id)),
             actions=(Action(executor="cards.unlock", params=(("card", concept_id),),
                             precondition=f"{gate} satisfied"),),
             value=0.25,
             risk="refundable",
             knowledge_refs=("priority.cards.unlock_order", "priority.gems.spend_order"),
             concept_ids=(concept_id,),
-            never_satisfiable=True,
         ))
     return tuple(objs)
 
@@ -624,9 +619,7 @@ def _card_unlock_objectives() -> tuple[Objective, ...]:
 # This objective will therefore show "ready" whenever nothing else blocks
 # it, for as long as this graph exists; task 7's ranking has to know a
 # permanently-ready objective like this one will dominate unless it
-# specifically defers to claim_schedule.due for cadence, exactly as
-# cards.unlock.* (family 4) will dominate for the unrelated reason that its
-# own satisfaction can never be observed at all. Both declare
+# specifically defers to claim_schedule.due for cadence. Claims declare
 # never_satisfiable=True below so a ranking consumer can act on that fact
 # directly rather than recognising the family by id prefix.
 _CLAIMS: tuple[Objective, ...] = (

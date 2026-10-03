@@ -135,6 +135,30 @@ def test_saved_strategy_assignment_pins_version_and_checks_identity(tmp_path: Pa
     assert client.get("/api/fleet/reroll/route").json()["revision"] == 1
 
 
+def test_card_program_assignment_api_keeps_saved_revision(tmp_path: Path) -> None:
+    _registered_worker(tmp_path, "ACCOUNT-A", "ACCOUNT-A")
+    client = _client(tmp_path, active_names=("Air_38",))
+    baseline = client.get("/api/fleet/reroll/strategies").json()["templates"][0]["baseline"]
+    baseline["cards"] = {"version": 1, "gem_cap": 100, "goals": [], "loadouts": []}
+    first = client.post("/api/fleet/reroll/strategies", json={
+        "expected_revision": 0, "name": "Card route", "source_template": "opening",
+        "baseline": baseline})
+    assert first.status_code == 200
+    strategy_id = first.json()["strategies"][0]["id"]
+    assigned = client.post("/api/fleet/reroll/strategies/assign", json={
+        "expected_revision": 0, "strategy_id": strategy_id, "strategy_version": 1,
+        "workers": [{"worker": "Air_38", "account_id": "ACCOUNT-A"}]})
+    assert assigned.status_code == 200
+    baseline["cards"]["gem_cap"] = 200
+    revised = client.post("/api/fleet/reroll/strategies", json={
+        "expected_revision": 1, "name": "Card route", "source_template": "opening",
+        "strategy_id": strategy_id, "baseline": baseline})
+    assert revised.status_code == 200
+    current = client.get("/api/fleet/reroll/route").json()
+    assert current["assignments"]["Air_38"]["strategy_version"] == 1
+    assert current["assignments"]["Air_38"]["baseline"]["cards"]["gem_cap"] == 100
+
+
 def test_strategy_api_rejects_invalid_and_protected_saves(tmp_path: Path) -> None:
     client = _client(tmp_path)
     template = client.get("/api/fleet/reroll/strategies").json()["templates"][0]

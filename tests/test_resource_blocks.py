@@ -627,3 +627,84 @@ def test_gem_automation_follows_the_rollout_stage() -> None:
         now=1000., wallet_gems=160, slot_ownership={2: {"status": "locked"}},
         rollout={2: SlotRollout(stage="halted", halted_reason="x")}, worker="Air_38"))
     assert plan.gems.automated is False and "gems.lab2: Halted: x" in plan.gems.why
+
+
+def test_card_goal_gem_route_progress_uses_observed_targets() -> None:
+    from tests.test_card_plan import goal, item, snapshot
+    from card_models import CardProgram
+    program = CardProgram(version=1, gem_cap=100, goals=(goal(),))
+    block = {'id': 'cards', 'type': 'card_goal', 'goal_id': 'g'}
+    assert rb._gem_met(block, {}, card_program=program, card_snapshot=snapshot()) is None
+    assert rb._gem_met(block, {}, card_program=program, card_snapshot=snapshot(item())) is False
+    assert rb._gem_met(block, {}, card_program=program,
+                       card_snapshot=snapshot(item(ownership='owned'))) is True
+    stale = item(ownership='owned').model_copy(update={'field_evidence': {}})
+    assert rb._gem_met(block, {}, card_program=program, card_snapshot=snapshot(stale)) is None
+
+
+def test_card_goal_route_exposes_only_current_eligible_goal_and_shared_decision() -> None:
+    from tests.test_card_plan import context, item, snapshot
+    ctx = context()
+    blocks = [{'id': 'labs', 'type': 'unlock_lab_slot', 'slot': 2},
+              {'id': 'cards', 'type': 'card_goal', 'goal_id': 'g'},
+              {'id': 'wait', 'type': 'wait'}]
+    facts = LabFacts(now=101., wallet_gems=500, card_context=ctx, owned_floor=2)
+    ready = rb._gem_plan(blocks, facts, template_route().rules)
+    assert ready.eligible_card_goal_ids == ('g',)
+    assert ready.next.block_id == 'cards' and ready.price == 20 and ready.automated
+    stopped = rb._gem_plan(blocks, LabFacts(now=101., card_context=ctx), template_route().rules)
+    assert stopped.eligible_card_goal_ids == ()
+    assert not next(row for row in stopped.steps if row.block_id == 'cards').automated
+    completed = rb._gem_plan(blocks, LabFacts(now=101., card_context=ctx.model_copy(update={
+        'snapshot': snapshot(item(ownership='owned'))}), owned_floor=2), template_route().rules)
+    assert completed.next.block_id == 'wait' and completed.eligible_card_goal_ids == ()
+
+
+def test_card_route_without_live_context_does_not_advertise_automation() -> None:
+    from tests.test_card_plan import goal, item, snapshot
+    from card_models import CardProgram
+    blocks = [{'id': 'cards', 'type': 'card_goal', 'goal_id': 'g'}]
+    facts = LabFacts(now=101., card_program=CardProgram(version=1, gem_cap=100, goals=(goal(),)),
+        card_snapshot=snapshot(item()))
+    plan = rb._gem_plan(blocks, facts, template_route().rules)
+    assert plan.eligible_card_goal_ids == ('g',) and not plan.automated
+    assert plan.price is None
+
+
+def test_next_lab_unlock_after_card_goal_needs_observed_completion() -> None:
+    from tests.test_card_plan import context, goal, item, snapshot
+    from card_models import CardProgram
+    blocks = [{'id': 'cards', 'type': 'card_goal', 'goal_id': 'g'},
+              {'id': 'labs', 'type': 'unlock_lab_slot', 'slot': 3}]
+    program = CardProgram(version=1, gem_cap=100, goals=(goal(),))
+    assert rb.next_unlock_slot(blocks, {}, card_program=program,
+                              card_context=context(program=program,
+                                  snapshot=snapshot(item(ownership='owned')))) == 3
+    assert rb.next_unlock_slot(blocks, {}, card_program=program, card_snapshot=snapshot()) is None
+
+
+def test_card_route_and_lab_unlock_reject_stale_or_wrong_visit() -> None:
+    from tests.test_card_plan import context, item, snapshot
+    blocks = [{'id': 'cards', 'type': 'card_goal', 'goal_id': 'g'},
+              {'id': 'labs', 'type': 'unlock_lab_slot', 'slot': 3}]
+    for changes in ({'now': 1000.}, {'visit_id': 'other'}):
+        ctx = context(snapshot=snapshot(item(ownership='owned')), **changes)
+        plan = rb._gem_plan(blocks, LabFacts(now=ctx.now, card_context=ctx), template_route().rules)
+        assert plan.next.block_id == 'cards'
+        assert rb.next_unlock_slot(blocks, {}, card_context=ctx) is None
+    assert rb.next_unlock_slot(blocks, {}, card_program=context().program,
+                              card_snapshot=snapshot(item(ownership='owned'))) is None
+
+
+def test_card_slot_route_rejects_unknown_capacity_confidence() -> None:
+    from tests.test_card_plan import context, snapshot
+    from card_models import CardProgram, SlotGoal
+    program = CardProgram(version=1, gem_cap=100,
+                          goals=(SlotGoal(id='g', kind='slots', capacity=2),))
+    blocks = [{'id': 'cards', 'type': 'card_goal', 'goal_id': 'g'},
+              {'id': 'labs', 'type': 'unlock_lab_slot', 'slot': 3}]
+    for confidence in (None, .1):
+        ctx = context(program=program, snapshot=snapshot(capacity=2, confidence=confidence))
+        plan = rb._gem_plan(blocks, LabFacts(now=ctx.now, card_context=ctx), template_route().rules)
+        assert plan.next.block_id == 'cards'
+        assert rb.next_unlock_slot(blocks, {}, card_context=ctx) is None

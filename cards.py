@@ -1,18 +1,7 @@
-"""Passive readings of the recorded English Cards page.
+"""Passive readings of the recorded empty and populated English Cards pages.
 
-One capture backs this module: a 1080x2400 Cards page belonging to an account
-that owns no card. It carries the page identity, the ACTIVE band - how many
-cards are equipped, out of how many slots - and a locked next slot. It carries
-no card row, no preset tab and no mastery tile, because none of those are
-drawn on an empty collection.
-
-So the slots are read exactly and the collection is not read at all. Those two
-results are kept apart on purpose: an unobserved card contributes `unknown` to
-an effective stat, never 0, and effective_stat_inputs() exists so a consumer
-cannot total this page's contribution without first seeing which half of it
-was actually observed.
-
-Nothing here taps. Buying a card, buying a slot and equipping belong to C02.
+Partial inventory observations never imply a complete collection or equipment
+set. Unknown bonuses stay unknown. This compatibility reader never plans taps.
 """
 from __future__ import annotations
 
@@ -23,6 +12,7 @@ import time
 from typing import Any
 
 import ocr
+import card_screen
 import screen_discovery
 from account_state import Evidence, Fact
 from concepts import REGISTRY
@@ -103,6 +93,7 @@ class CardObservation:
     copies: int | None
     level: int | None
     reason: str
+    evidence: Evidence | None = None
 
 
 @dataclass(frozen=True)
@@ -150,7 +141,7 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
     the second opinion that talks the bot onto a page discovery refused.
     """
     observed_at = time.time() if now is None else now
-    if not math.isfinite(observed_at):
+    if not math.isfinite(observed_at) or observed_at < 0:
         return None
     discovery = screen_discovery.discover(screen, boxes, 'cards', locale=locale)
     if not discovery.readable or discovery.screen_id != SCREEN_ID:
@@ -164,15 +155,24 @@ def parse_frame(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
     slots = SlotReading(equipped, capacity, _next_slot(boxes), 'observed',
                         band.confidence, band.text.strip(),
                         (rect.x, rect.y, rect.w, rect.h))
-    # Zero equipped is the one equipped set this page can state exactly: no
-    # slot is filled, so there is nothing left to name. Any other count needs
-    # card rows to name, and this capture proves none can be read.
+    # The stocked capture shows only part of the active strip; only zero is complete.
     named: tuple[str, ...] | None = () if equipped == 0 else None
     reason = ('no_card_row_is_readable_on_this_page' if named is not None
               else 'equipped_identities_unreadable')
+    observed = {item.card_id: item for item in card_screen.read_items(screen, boxes, now=observed_at)}
+    if sum(item.equipped is True for item in observed.values()) > equipped:
+        return None
+    observations = tuple(
+        replace(item, status='observed', copies=observed[item.concept_id].copies,
+                level=observed[item.concept_id].level, reason='recorded_inventory_tile',
+                evidence=Evidence(observed_at, observed[item.concept_id].confidence, item.concept_id,
+                                  None, (0, 0, 1080, 2400), 1080, 2400,
+                                  observed[item.concept_id].frame_digest))
+        if item.concept_id in observed else item
+        for item in _unobserved('identity_not_observed_on_this_page'))
     return CardsReading(SCREEN_ID, observed_at, 1080, 2400,
                         hashlib.sha256(screen.tobytes()).hexdigest(), slots, named,
-                        _unobserved('no_card_row_is_readable_on_this_page'), reason)
+                        observations, reason)
 
 
 def equipment_known(reading: CardsReading | None) -> bool:
@@ -194,8 +194,8 @@ def effective_stat_inputs(reading: CardsReading | None) -> dict[str, Any]:
 
     The acceptance gate in one call: equipment_known says whether the exact
     equipped cards and available slots are known before any effective stat is
-    formed, and card_bonus stays None - never 0 - because no card level was
-    ever observed. A consumer that wants a total has to look at these two
+    formed, and card_bonus stays None - never 0 - because no complete bonus
+    calculation is supported by these observations. A consumer that wants a total has to look at these two
     answers first, and no arrangement of this payload offers it a zero.
     """
     slots = ({'equipped': reading.slots.equipped, 'capacity': reading.slots.capacity,
@@ -233,7 +233,7 @@ def facts(reading: CardsReading | None) -> tuple[Fact, ...]:
                            (card_copies_key(card.concept_id), card.copies)):
             if value is not None:
                 card_facts.append(Fact(key, value, 'observed',
-                                       replace(evidence, raw_name=card.concept_id,
+                                       replace(card.evidence or evidence, raw_name=card.concept_id,
                                                raw_value=str(value))))
     return (Fact(SLOT_EQUIPPED_KEY, reading.slots.equipped, 'observed', evidence),
             Fact(SLOT_CAPACITY_KEY, reading.slots.capacity, 'observed', evidence),

@@ -28,7 +28,10 @@ import sqlite3
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from card_transactions import CardBudgetPrecondition
 
 import db
 import events
@@ -171,7 +174,7 @@ class Intent:
             repr(sorted(self.evidence)),
             repr(self.ts),
         )
-        if self.operation in ('lab_start', 'lab_unlock'):
+        if self.operation in ('lab_start', 'lab_unlock') or self.before.get('card_operation_id'):
             parts += (self.operation, json.dumps(self.before, sort_keys=True))
         return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:32]
 
@@ -207,6 +210,9 @@ class RecoveryEvidence:
     research_id: str | None = None
     target_level: int | None = None
     completes_at: float | None = None
+    card_operation_id: str | None = None
+    card_result: dict[str, Any] | None = None
+    card_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -273,9 +279,14 @@ class TransactionJournal:
 
     @_recovery_mutation
     def prepare(self, intent: Intent, *, scope: FactScope, balance: BalanceInterval,
-                reserve: int = 0) -> Transaction | None:
+                reserve: int = 0, cards: CardBudgetPrecondition | None = None) -> Transaction | None:
         """Reserve and record under one write lock; all spenders share commitments."""
-        if intent.operation not in (None, 'workshop_buy', 'card_buy', 'lab_start', 'lab_unlock'):
+        if intent.operation not in (None, 'workshop_buy', 'card_buy', 'card_slot_buy', 'lab_start', 'lab_unlock'):
+            return None
+        if (intent.operation == 'card_slot_buy' or intent.before.get('card_operation_id')) and cards is None:
+            return None
+        if cards is not None and (balance.source != 'observed' or balance.lower != balance.upper
+                                  or intent.wallet_before != balance.lower):
             return None
         if intent.operation in ('lab_start', 'lab_unlock'):
             before = intent.before
@@ -306,6 +317,8 @@ class TransactionJournal:
             if existing is not None:
                 txn = _transaction(existing)
                 return txn if txn.scope == scope else None
+            if cards is not None and not cards.check(conn, intent, scope):
+                return None
             pending = conn.execute("SELECT key FROM transactions WHERE stage != ? LIMIT 1",
                                    (Stage.RESOLVED.value,)).fetchone()
             if pending:
@@ -327,6 +340,8 @@ class TransactionJournal:
                              intent.currency, intent.price, intent.wallet_before, json.dumps(sorted(intent.evidence)),
                              json.dumps({'before': intent.before, 'scope': asdict(scope), 'balance': asdict(balance),
                                          'operation': intent.operation or ('card_buy' if intent.category == 'CARDS' else 'workshop_buy')})))
+            if cards is not None:
+                cards.link(conn, intent)
             conn.execute("INSERT INTO currency_observations VALUES (?,?) ON CONFLICT(currency) DO UPDATE SET detail=excluded.detail",
                          (balance.currency, json.dumps(asdict(balance))))
         return self._require(intent.key)
@@ -570,8 +585,23 @@ class TransactionJournal:
             conn.close()
         return tuple(row["key"] for row in rows)
 
-    @staticmethod
-    def recovery_event(txn: Transaction, outcome: Outcome) -> events.Event:
+    def recovery_event(self, txn: Transaction, outcome: Outcome, *,
+                       conn: sqlite3.Connection | None = None) -> events.Event:
+        if txn.before.get('card_operation_id'):
+            from card_store import CardStore
+            from card_transactions import card_operation_event
+            operation = (CardStore._operation(conn, txn.before['card_operation_id']) if conn is not None
+                         else CardStore(self.path).operation(txn.before['card_operation_id']))
+            if operation is not None:
+                if operation.status != 'confirmed':
+                    operation = operation.model_copy(update={'status': 'reconciliation_required'})
+                return card_operation_event(operation, txn)
+            cls = events.CardSlotPurchased if txn.operation == 'card_slot_buy' else events.CardPurchaseObserved
+            return cls(operation_id=txn.before['card_operation_id'], account_id=txn.scope.account_id,
+                       result='reconciliation_required', verified_amount=outcome.spent, dry_run=False,
+                       transaction_key=txn.key, gems_before=txn.wallet_before,
+                       gems_after=txn.reconciliation.get('wallet_after'),
+                       rewards=tuple((txn.reconciliation.get('card_result') or {}).get('rewards', ())))
         if txn.operation == 'lab_start':
             return events.LabResearchStarted(
                 concept_id=txn.before['research_id'], slot=txn.before['slot'],
@@ -642,6 +672,15 @@ class TransactionJournal:
                         and (txn.operation == 'lab_unlock' or
                              evidence.research_id == txn.before.get('research_id')
                              and evidence.target_level == txn.before.get('target_level')))
+                canonical_card_result = None
+                if txn.before.get('card_operation_id'):
+                    from card_transactions import validated_journal_result
+                    if relevant:
+                        canonical_card_result = validated_journal_result(txn, evidence, conn=conn, now=now)
+                    relevant = relevant and canonical_card_result is not None and (
+                        evidence.card_operation_id == txn.before['card_operation_id']
+                        and evidence.operation == txn.operation and evidence.effect_changed is True
+                        and txn.wallet_before - evidence.wallet_after == txn.price)
                 outcome = judge(key, price=txn.price, wallet_before=txn.wallet_before,
                                 wallet_after=evidence.wallet_after,
                                 effect_changed=evidence.effect_changed if relevant else None)
@@ -656,6 +695,10 @@ class TransactionJournal:
                     outcome = Outcome(key=key, verdict=Verdict.UNPROVEN, spent=None,
                                       reason="restart evidence is insufficient; further actions blocked")
                 saved_evidence = asdict(evidence)
+                if proven and canonical_card_result is not None:
+                    from card_transactions import persist_journal_result
+                    persist_journal_result(conn, canonical_card_result, now=now)
+                    saved_evidence['card_result'] = canonical_card_result.model_dump(mode='json')
                 if evidence.continuity is not None:
                     saved_evidence['continuity']['root'] = str(evidence.continuity.root)
                 detail.update(reason=outcome.reason, reconciliation=saved_evidence)
@@ -678,7 +721,8 @@ class TransactionJournal:
                     # Pre-action wallet cannot authorize another purchase after any effect.
                     conn.execute("DELETE FROM currency_observations WHERE currency=?", (txn.currency,))
                     if not undispatched:
-                        event = replace(self.recovery_event(replace(txn, reconciliation=saved_evidence), outcome), ts=now)
+                        event = replace(self.recovery_event(
+                            replace(txn, reconciliation=saved_evidence), outcome, conn=conn), ts=now)
                         for line in ledger.LedgerWriter(conn).lines_for(event):
                             db.insert_ledger(conn, replace(line, seq=None).as_row(), commit=False)
                 return outcome

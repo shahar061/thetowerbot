@@ -295,14 +295,28 @@ class BuildRouteRuntime:
     def acknowledge(self, revision: int, account_id: str) -> None:
         if account_id != self.account_id:
             raise ValueError("worker account changed before route acknowledgement")
-        if self.current().revision != revision:
+        route = self.current()
+        if route.revision != revision:
             raise ValueError("route changed before acknowledgement")
+        cards = None
+        overlay = route.card_assignments.get(account_id)
+        if overlay is not None:
+            from web.account_catalog import registered_worker
+            from fleet.build_route import resolve_route
+            registration = registered_worker(self.root / "workers" / self.worker)
+            if (registration is None or registration.account_id != account_id
+                    or db.bound_account(registration.db_path) != account_id):
+                raise ValueError("Cards acknowledgement requires verified account binding")
+            effective = resolve_route(route, self.worker, account_id)
+            if effective.cards == overlay.program:
+                cards = {"overlay_id": overlay.overlay_id,
+                         "published_revision": overlay.published_revision}
         self.ack_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.ack_path.with_name(f".build-route-applied.{uuid4().hex}.tmp")
         try:
             with temporary.open("x", encoding="utf-8") as output:
                 json.dump({"account_id": account_id, "revision": revision,
-                           "observed_at": time.time()}, output, sort_keys=True)
+                           "observed_at": time.time(), "cards": cards}, output, sort_keys=True)
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())

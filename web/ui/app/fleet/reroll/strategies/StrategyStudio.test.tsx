@@ -7,6 +7,7 @@ import { StrategyStudio } from "./StrategyStudio";
 import { StrategyCanvas } from "./StrategyCanvas";
 import { StrategyBlockInspector } from "./StrategyBlockInspector";
 
+vi.mock("@/lib/cards", async original => ({ ...await original<typeof import("@/lib/cards")>(), fetchCardCatalog: vi.fn().mockResolvedValue({ cards: [{ card_id: "cards.damage", name: "Damage", max_level: 7 }], max_gem_slots: 21 }) }));
 vi.mock("./studio.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 vi.mock("./routeCanvas.module.css", () => ({ default: new Proxy({}, { get: (_, key) => key }) }));
 const api = vi.hoisted(() => ({ save: vi.fn(), assign: vi.fn(), preview: vi.fn(), ledger: vi.fn() }));
@@ -507,4 +508,15 @@ test("inspector switches a wave condition between fixed and % of best", () => {
   expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ relative: { pct: 40, floor: 5, cap: 30 } }));
   fireEvent.change(screen.getByLabelText("Account fact"), { target: { value: "wallet" } });
   expect(onChange).toHaveBeenLastCalledWith({ id: "c", type: "condition", field: "wallet", op: "lte", value: 30, then: [], else: [] });
+});
+
+test("Cards authoring saves through immutable library revisions and preserves other lanes", async () => {
+  setup(); copy();
+  fireEvent.click(screen.getByRole("tab", { name: "Cards" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add Cards program" }));
+  fireEvent.blur(screen.getByLabelText("Plan gem cap"), { target: { value: "60" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save strategy" }));
+  await waitFor(() => expect(api.save).toHaveBeenCalled());
+  expect(api.save.mock.calls[0][0].baseline).toMatchObject({ workshop: baseline.workshop, labs: baseline.labs, cards: { version: 1, gem_cap: 60, goals: [], loadouts: [] } });
+  expect(api.assign).not.toHaveBeenCalled();
 });

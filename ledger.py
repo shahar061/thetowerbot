@@ -51,6 +51,8 @@ KINDS: tuple[str, ...] = (
     "WORKSHOP_BUY",
     "LAB",
     "CARD_BUY",
+    "CARD_SLOT_BUY",
+    "CARD_ASSIGN",
     "MISSION_CLAIM",
     "WEEKLY_CHEST_CLAIM",
     "MAIL_CLAIM",
@@ -138,6 +140,31 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
     base: dict[str, Any] = {"ts": event.ts, "seq": event.seq}
 
     match event:
+        case events.CardPurchaseObserved():
+            assignment = isinstance(event, events.CardAssignmentObserved)
+            slot = isinstance(event, events.CardSlotPurchased)
+            assignment_recorded = assignment and (event.result == 'confirmed'
+                or event.result == 'canceled' and event.snapshot_after is not None)
+            if not event.dry_run and (assignment and not assignment_recorded
+                or not assignment and event.result in ('queued', 'preflight', 'canceled', 'blocked', 'not_applied')):
+                return ()
+            if not assignment and event.verified_amount is None and not event.dry_run:
+                return ()
+            return (LedgerLine(kind='CARD_ASSIGN' if assignment else 'CARD_SLOT_BUY' if slot else 'CARD_BUY',
+                category='CARDS', item='Card equipment' if assignment else 'Card slot' if slot else 'Cards',
+                currency=None if assignment else GEMS,
+                delta=0 if event.dry_run or assignment else -event.verified_amount,
+                price=None if assignment else event.verified_amount, dry_run=event.dry_run,
+                observed=None if assignment else event.gems_before,
+                detail={'card_operation_id': event.operation_id, 'account_id': event.account_id,
+                        'transaction_key': event.transaction_key, 'result': event.result,
+                        'verdict': 'bought' if not assignment and event.verified_amount is not None else None,
+                        'rewards': event.rewards, 'snapshot_before': event.snapshot_before,
+                        'snapshot_after': event.snapshot_after, 'gems_after': event.gems_after,
+                        'quantity': event.quantity, 'source': event.source,
+                        'program_revision': event.program_revision, 'goal_id': event.goal_id,
+                        'budget_cycle_id': event.budget_cycle_id, 'loadout_id': event.loadout_id,
+                        'requested_equipped': event.requested_equipped}, **base),)
         case events.LabSlotUnlocked():
             return (LedgerLine(
                 kind="LAB", item=f"Lab slot {event.slot}", category="SLOT",
@@ -476,6 +503,15 @@ class LedgerWriter:
                 self._stale[currency] = row is not None and row[0] is None
             self._rounded = _rounded_since_reading(self._conn)
             self._data_version = version
+        if isinstance(event, events.CardPurchaseObserved):
+            existing = self._conn.execute("SELECT balance_after FROM ledger WHERE json_extract(detail,'$.card_operation_id')=?",
+                                          (event.operation_id,)).fetchone()
+            if existing is not None:
+                return [dataclasses.replace(line, seq=None, balance_after=existing[0]) for line in classify(event)]
+        if isinstance(event, events.Purchased) and event.transaction_key:
+            # Linked Cards transactions have one operation-keyed projection.
+            if self._conn.execute('SELECT 1 FROM card_operations WHERE transaction_key=?', (event.transaction_key,)).fetchone():
+                return []
         if isinstance(event, (events.Purchased, events.LabResearchStarted, events.LabSlotUnlocked)) and event.transaction_key:
             if self._conn.execute(
                 "SELECT 1 FROM ledger WHERE json_extract(detail, '$.transaction_key') = ? "
@@ -566,6 +602,9 @@ class LedgerWriter:
 # The events the ledger cares about, by the `type` string stored in the
 # events table. Anything else is skipped without being rebuilt at all.
 _REPLAYABLE: dict[str, type[events.Event]] = {
+    'CardPurchaseObserved': events.CardPurchaseObserved,
+    'CardSlotPurchased': events.CardSlotPurchased,
+    'CardAssignmentObserved': events.CardAssignmentObserved,
     "RunEnded": events.RunEnded,
     "LabResearchStarted": events.LabResearchStarted,
     "LabSlotUnlocked": events.LabSlotUnlocked,

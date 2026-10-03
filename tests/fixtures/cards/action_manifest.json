@@ -1,0 +1,56 @@
+{
+  "game_version": "29.0.3",
+  "resolution": [
+    1080,
+    2400
+  ],
+  "locale": "en",
+  "capture_method": "ADB full-resolution PNG",
+  "manual_capture_session": true,
+  "live_runtime_actions_tested": false,
+  "ocr_method": "ocr.read, recorded without edits",
+  "captures": [
+    {
+      "fixture": "card_reward_new",
+      "source_capture": "82-08-buy-one-settled.png",
+      "captured_at": "2026-10-03T16:48:59.682915+00:00",
+      "png_sha256": "b7289e6a3b618650e3f521267432f1b1d7b82a829a9259632b08b21f763d2edd",
+      "ocr_sha256": "c20f4af700b29ea4fde239f5e75b24cd5a219bc1af8847d1ddb897fc42aed6e4"
+    },
+    {
+      "fixture": "card_reward_duplicate",
+      "source_capture": "82-12-buy-two-settled.png",
+      "captured_at": "2026-10-03T16:50:19.281544+00:00",
+      "png_sha256": "1c0ec1b4598ce0ab6fb764a1dd72c948a78613f83c174a3b49c8fd4e144e389f",
+      "ocr_sha256": "515497f830ba26f9295ae947c624db79c40a4bd4aae9e9c790f1eba811f5a4d5"
+    },
+    {
+      "fixture": "card_reward_early",
+      "source_capture": "82-08-buy-one-early.png",
+      "captured_at": "2026-10-03T16:48:57.072700+00:00",
+      "png_sha256": "c4532690823c86cfdb5b603f0d677e6c564b6f37db74ee2e664ea09d1053f608",
+      "ocr_sha256": "7564eabda6b5c635eb44cae3eefdcb4c6339a19314f2c3de5adba2f3e5fe3541"
+    },
+    {
+      "fixture": "card_reward_animating",
+      "source_capture": "82-12-buy-two-mid.png",
+      "captured_at": "2026-10-03T16:50:17.719723+00:00",
+      "png_sha256": "c14e7f65ad1a23dd50c084e70f487ebda55fda14899c551cc434b7ca8a4b0539",
+      "ocr_sha256": "b4de83b315dd6ae8e21c2a7fd2dbf871862fe5f78d2fdc076e847ffe37570275"
+    },
+    {
+      "fixture": "cards_compact_home",
+      "source_capture": "82-01-home.png",
+      "captured_at": "2026-10-03T16:45:58.951418+00:00",
+      "png_sha256": "daf69447e28294073e662bc736dac0fb63f5b40f9f717f7a8c58c8a1f83f4409",
+      "ocr_sha256": "54c3d4fcef83c42a7781b71e03b9b8b512535e5e12437756e9978b1667ab5db4"
+    },
+    {
+      "fixture": "card_detail_damage",
+      "source_capture": "82-16-damage-detail.png",
+      "captured_at": null,
+      "png_sha256": "060923d8cd06f0e2c26f18845aa78f5034c6e42826f66366ecd1cd4a07fb5e86",
+      "ocr_sha256": "5bd065a2bee0c0ad8270b3d263a82a6886792266b3e18e7b5d91810c8449d6b4"
+    }
+  ]
+}

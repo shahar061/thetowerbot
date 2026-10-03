@@ -19,6 +19,10 @@ not depend on the web layer.
 from __future__ import annotations
 
 import dataclasses
+import fcntl
+import hashlib
+from contextlib import contextmanager
+from collections.abc import Iterator
 import json
 import math
 import os
@@ -31,6 +35,8 @@ from uuid import uuid4
 
 import builds
 import config
+from card_models import CardProgram
+from card_program import parse_program
 from policy import AutopilotPolicy, PolicyError
 
 # A floor because a zero or negative interval is a busy loop against ADB, and
@@ -147,7 +153,7 @@ _STRATEGY_TYPES: dict[str, tuple[type, ...]] = {
 
 # Fields whose declared type includes None, so None is not a type error.
 _OPTIONAL = frozenset({"max_runs", "target_speed", "target", "coin_budget",
-                       "coin_budget_pct", "build"})
+                       "coin_budget_pct", "build", "cards"})
 
 
 def _has_type(value: Any, types: tuple[type, ...]) -> bool:
@@ -616,6 +622,7 @@ _STRATEGY_TYPES["shopping"] = (Shopping,)
 _STRATEGY_TYPES["autopilot"] = (AutopilotPolicy,)
 _STRATEGY_TYPES["claims"] = (Claims,)
 _STRATEGY_TYPES["tier_promotion"] = (TierPromotion,)
+_STRATEGY_TYPES["cards"] = (CardProgram,)
 
 
 @dataclass(frozen=True)
@@ -671,6 +678,8 @@ class Strategy:
     # Per-tier best wave that moves the bot up a tier. Empty by default, so
     # a profile that has not set one stays on the tier it plays.
     tier_promotion: TierPromotion = TierPromotion()
+    # Optional, versioned plan; shopping.cards remains the purchase control.
+    cards: CardProgram | None = None
 
     # Which committed recipe in knowledge/builds.v1.json ranks the next
     # purchase, or None to name no build at all. None rather than a default
@@ -772,7 +781,7 @@ class Strategy:
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-shaped. What the store writes and the browser receives."""
-        return {
+        result = {
             "name": self.name,
             "actions": [
                 {
@@ -803,6 +812,9 @@ class Strategy:
             "claims": self.claims.to_dict(),
             "tier_promotion": self.tier_promotion.to_dict(),
         }
+        if self.cards is not None:
+            result["cards"] = self.cards.model_dump(mode="json")
+        return result
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> Strategy:
@@ -842,8 +854,14 @@ class Strategy:
         values = {
             k: raw[k]
             for k in raw
-            if k not in ("actions", "shopping", "autopilot", "claims", "tier_promotion")
+            if k not in ("actions", "shopping", "autopilot", "claims", "tier_promotion", "cards")
         }
+        cards = None
+        if raw.get("cards") is not None:
+            try:
+                cards = parse_program(raw["cards"])
+            except ValueError as exc:
+                raise ControlError("cards", str(exc)) from None
         try:
             return cls(
                 actions=rules,
@@ -851,6 +869,7 @@ class Strategy:
                 autopilot=autopilot,
                 claims=claims,
                 tier_promotion=tier_promotion,
+                cards=cards,
                 **values,
             )
         except ControlError:
@@ -892,6 +911,17 @@ class Strategy:
                 updates["autopilot"] = AutopilotPolicy.from_dict(patch["autopilot"])
             except PolicyError as exc:
                 raise ControlError(exc.field, str(exc)) from None
+        if "cards" in patch:
+            if patch["cards"] is None:
+                updates["cards"] = None
+            else:
+                if not isinstance(patch["cards"], Mapping):
+                    raise ControlError("cards", "cards must be an object or null")
+                raw_cards = self.cards.model_dump(mode="json") if self.cards else {}
+                try:
+                    updates["cards"] = parse_program({**raw_cards, **patch["cards"]})
+                except ValueError as exc:
+                    raise ControlError("cards", str(exc)) from None
         if not updates:
             return self
         try:
@@ -1024,23 +1054,43 @@ class StrategyStore:
             raise ControlError("name", f"{name}.json is not valid JSON: {exc}") from None
         return Strategy.from_dict(raw)
 
-    def save(self, strategy: Strategy) -> None:
-        """Validate, then write atomically.
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Process-safe writer guard; callers acquire Controls.transaction first."""
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with (self.directory / '.lock').open('a+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
-        Temp file in the SAME directory, then os.replace: replace is atomic
-        within a filesystem, and a same-directory temp file is what
-        guarantees there is only one filesystem involved. What this
-        guarantees is that a reader of `name.json` always sees a complete
-        document - either the previous save's or this one's. It does not
-        order concurrent writers: two saves of the same profile still race,
-        and the last replace wins whole.
+    @staticmethod
+    def revision(strategy: Strategy) -> str:
+        return '"' + hashlib.sha256(json.dumps(strategy.to_dict(), sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest() + '"'
 
-        No lock, because the writers that matter are not in one process: the
-        bot runs alongside the web server, so a threading.Lock would guard
-        the half of the problem that is already the smaller half. Making
-        every writer's temp path unique is what keeps the race to "one of
-        the two documents wins" instead of "the two interleave into one".
-        """
+    def save(self, strategy: Strategy, *, expected_revision: str | None = None) -> None:
+        with self.saving(strategy, expected_revision=expected_revision):
+            pass
+
+    @contextmanager
+    def saving(self, strategy: Strategy, *, expected_revision: str | None = None) -> Iterator[None]:
+        """Keep persistence and an optional live replacement under one writer lock."""
+        strategy.validated()
+        validate_name(strategy.name)
+        with self.locked():
+            if expected_revision is not None:
+                try:
+                    revision = self.revision(self.load(strategy.name))
+                except ControlError:
+                    revision = None
+                if revision != expected_revision:
+                    raise ControlError('revision', 'strategy revision changed; reload before saving', 'conflict')
+            self._save_locked(strategy)
+            yield
+
+    def _save_locked(self, strategy: Strategy) -> None:
         strategy.validated()
         # Redundant with path_for()'s own call below, but deliberately kept:
         # this one runs before mkdir, so an invalid name fails before it can

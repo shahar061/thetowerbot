@@ -16,6 +16,25 @@ import config
 from strategy import ActionRule, Claims, ControlError, Strategy
 
 
+def test_card_program_round_trip_and_nested_live_merge() -> None:
+    from control import Controls
+
+    strategy = a_strategy()
+    assert strategy.cards is None
+    assert "cards" not in strategy.to_dict()
+    controls = Controls(strategy)
+    controls.apply({"cards": {"version": 1, "gem_cap": 400,
+        "goals": [{"id": "economy", "kind": "acquire", "targets": [
+            {"card_id": "cards.damage"}]}], "loadouts": []}})
+    controls.apply({"cards": {"gem_cap": 200}})
+    result = controls.strategy
+    assert result.cards is not None
+    assert result.cards.gem_cap == 200
+    assert result.cards.goals[0].targets[0].card_id == "cards.damage"
+    assert Strategy.from_dict(result.to_dict()) == result
+    assert result.merged({"cards": None}).cards is None
+
+
 def a_strategy(**overrides) -> Strategy:
     """A valid Strategy, with named fields overridden per test."""
     base = dict(

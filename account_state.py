@@ -1,6 +1,8 @@
 """Acknowledged permanent account facts, isolated from transient battle observations."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, replace
 import json
 import logging
@@ -8,7 +10,10 @@ import math
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any
+from typing import Any, TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from card_models import CardSnapshot, CardPlanContext
 
 import db
 import ultimate_weapons
@@ -77,6 +82,8 @@ class AccountRevision:
     # never been read, which is not the same account fact as a card
     # collection that is empty - see cards.py.
     cards: tuple[Fact, ...] | None = None
+    cards_equipped: tuple[str, ...] | None = None
+    cards_equipment_evidence: Fact | None = None
     # Kept out of the Fact sections above on purpose. A UW reading holds raw
     # stone quantities and lab-adjusted ones in separately typed collections,
     # and a flat Fact - one concept_id, one value - has nowhere to carry that
@@ -121,6 +128,15 @@ class AccountRepository:
                     Evidence(**{**f['evidence'], 'rect': tuple(f['evidence']['rect'])}),
                     FactScope(**f['scope']) if f.get('scope') else None,
                     f.get('catalog_revision'), f.get('modifier_revision'), f.get('source', 'observed')) for f in value[section])
+        if value.get('cards_equipped') is not None:
+            value['cards_equipped'] = tuple(value['cards_equipped'])
+        if value.get('cards_equipment_evidence') is not None:
+            f = value['cards_equipment_evidence']
+            value['cards_equipment_evidence'] = Fact(
+                f['concept_id'], f['value'], f['status'],
+                Evidence(**{**f['evidence'], 'rect': tuple(f['evidence']['rect'])}),
+                FactScope(**f['scope']) if f.get('scope') else None,
+                f.get('catalog_revision'), f.get('modifier_revision'), f.get('source', 'observed'))
         if value.get('modules') is not None:
             value['modules'] = ModulesInventory.from_payload(value['modules'])
         if value.get('ultimate_weapons') is not None:
@@ -156,6 +172,66 @@ class AccountRepository:
             conn.close()
 
 
+
+def project_card_snapshot(conn: sqlite3.Connection, snapshot: CardSnapshot) -> None:
+    """Project history within CardStore's observation transaction, retaining field provenance.
+
+    The projection is display history. Card action authority comes from per-field
+    CardSnapshot evidence and the live verified scope, never these flat facts.
+    """
+    from card_models import CardFieldEvidence
+    if not conn.in_transaction or db.connection_account(conn) != snapshot.scope.account_id:
+        raise ValueError('card projection requires the bound account write transaction')
+    row = conn.execute('SELECT id,detail FROM account_revisions ORDER BY id DESC LIMIT 1').fetchone()
+    revision = json.loads(row['detail']) if row else asdict(AccountRevision(account_id=snapshot.scope.account_id))
+    if revision.get('account_id') not in (None, snapshot.scope.account_id):
+        raise ValueError('foreign account revision cannot receive card facts')
+    # Legacy lab-first revisions omitted this stamp. The database binding above
+    # supplies identity; an explicit conflicting revision is never reassigned.
+    revision['account_id'] = snapshot.scope.account_id
+    facts = {fact['concept_id']: fact for fact in revision.get('cards') or ()}
+    observed: list[dict[str, Any]] = []
+
+    def fact(key: str, value: float | int | str | bool | None, evidence: CardFieldEvidence) -> dict[str, Any]:
+        source = Evidence(evidence.observed_at, evidence.confidence or 0., key, str(value),
+                          (0, 0, 0, 0), 0, 0, evidence.frame_digest or '', evidence.evidence_ref)
+        return asdict(Fact(key, value, 'observed' if evidence.scope else 'historical', source, evidence.scope))
+
+    for item in snapshot.items:
+        for field in ('ownership', 'level', 'copies', 'copies_needed', 'maxed', 'equipped', 'battle_locked'):
+            value = getattr(item, field)
+            if value is None or field == 'ownership' and value == 'unknown':
+                continue
+            provenance = item.field_evidence.get(field) or CardFieldEvidence(
+                observed_at=item.observed_at, evidence_ref=item.evidence_ref,
+                confidence=item.confidence, frame_digest=item.frame_digest)
+            key = item.card_id if field == 'ownership' else f'{item.card_id}.{field}'
+            candidate = fact(key, value, provenance)
+            old = facts.get(key)
+            if old is None or candidate['evidence']['observed_at'] > old['evidence']['observed_at']:
+                facts[key] = candidate
+                observed.append(candidate)
+    page = CardFieldEvidence(scope=snapshot.scope, visit_id=snapshot.visit_id,
+        observed_at=snapshot.observed_at, evidence_ref=snapshot.frame_digest or snapshot.visit_id,
+        confidence=snapshot.confidence, frame_digest=snapshot.frame_digest)
+    if snapshot.capacity is not None:
+        candidate = fact('cards.slots.capacity', snapshot.capacity, page)
+        facts[candidate['concept_id']] = candidate
+        observed.append(candidate)
+    if snapshot.equipment_complete and snapshot.equipped is not None:
+        candidate = fact('cards.slots.equipped', len(snapshot.equipped), snapshot.equipment_evidence or page)
+        facts[candidate['concept_id']] = candidate
+        observed.append(candidate)
+        revision['cards_equipped'] = list(snapshot.equipped)
+        revision['cards_equipment_evidence'] = candidate
+    revision.update(cards=list(facts.values()), parent_revision_id=row['id'] if row else None,
+                    revision_id=None, created_at=snapshot.observed_at)
+    cursor = conn.execute('INSERT INTO account_revisions(detail) VALUES (?)',
+                          (json.dumps(revision, sort_keys=True, allow_nan=False),))
+    conn.execute('INSERT INTO account_observations(revision_id,detail) VALUES (?,?)',
+                 (cursor.lastrowid, json.dumps(observed, allow_nan=False)))
+
+
 def completed_lab_level(status: Any, value: Any) -> int | None:
     """The one reading of a Lab picker level (Task5 ruling).
 
@@ -174,6 +250,7 @@ def completed_lab_level(status: Any, value: Any) -> int | None:
 class AccountState:
     def __init__(self, repository: AccountRepository | None = None) -> None:
         self.repository = repository
+        self.card_context: Callable[[], CardPlanContext | None] | None = None
         self.screen_readings = ScreenReadings()
         self._scope: FactScope | None = None
         self._identity: IdentityEvidence | None = None
@@ -215,6 +292,17 @@ class AccountState:
     @property
     def verified_scope(self) -> FactScope | None:
         return self._scope if self._identity is not None else None
+
+    @contextmanager
+    def guard_scope(self, expected: FactScope) -> Iterator[None]:
+        """Prevent identity replacement through a scoped control transaction.
+
+        Acquire after runner/route locks and before Controls.transaction.
+        """
+        with self._lock:
+            if self.verified_scope != expected:
+                raise ValueError('cards_preconditions_changed')
+            yield
 
     @property
     def persisted_epoch(self) -> int:
@@ -272,6 +360,19 @@ class AccountState:
                          if f.scope == self._scope and f.status == 'verified'
                          and f.catalog_revision == REGISTRY.registry_version)
 
+    def observe_cards(self, snapshot: CardSnapshot) -> bool:
+        """Persist a verified Cards capture and refresh the shared account revision."""
+        from card_store import CardStore
+        with self._lock:
+            if self.safety_path is None or not self.accepts_capture(snapshot.scope, snapshot.observed_at):
+                return False
+            if not CardStore(self.safety_path).observe(snapshot):
+                return False
+            repository = self.repository or AccountRepository(self.safety_path)
+            self._revision = repository.latest()
+            self._restored, self._error = True, None
+            return True
+
     def observe_balance(self, balance: BalanceInterval) -> bool:
         with self._lock:
             expected = replace(self._scope, run_id=self._run_id) if self._scope and balance.currency == 'cash' else self._scope
@@ -319,7 +420,9 @@ class AccountState:
         reserved = frozenset(t.before['research_id'] for t in pending
                              if t.scope is not None and t.scope.account_id == scope.account_id
                              and isinstance(t.before.get('research_id'), str))
-        return LabFacts(now=now, wallet_coins=balance.lower if balance else None,
+        card_context = getattr(self, 'card_context', None)
+        return LabFacts(card_context=card_context() if card_context is not None else None,
+                        now=now, wallet_coins=balance.lower if balance else None,
                         wallet_gems=self.currencies.available(gems) if gems is not None else None,
                         available_coins=available, completed_levels=completed, slots=slots,
                         running_research=frozenset(r['research_id'] for r in slots.values()

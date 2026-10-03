@@ -403,6 +403,8 @@ class FleetSetupService:
         # on library availability, but cannot invent or rewrite them.
         if route.assignments != self.build_route_store().read().assignments:
             raise ValueError("strategy assignments must be published through the assignment endpoint")
+        if route.card_assignments != self.build_route_store().read().card_assignments:
+            raise ValueError("Cards assignments must be published through the Cards assignment endpoint")
         for name, override in {**route.overrides, **route.assignments}.items():
             registration = registered_worker(self.root / "workers" / name)
             if (registration is None or registration.account_id != override.account_id

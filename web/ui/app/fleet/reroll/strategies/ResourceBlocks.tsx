@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { CardCatalog, CardProgram } from "@/lib/cards";
 import type { BuildRouteDocument } from "@/lib/buildRoute";
 import { appendChild, collectIds, containerFor, findResourceBlock, isAutomated, laneProblems, legacyGemBlocks,
   legacyLabBlocks, mapBlocks, moveWithin, newResourceBlock, type AutomatedBlock, type LabBlock, type LabsReference,
@@ -21,11 +22,12 @@ const LABELS: Record<string, string> = {
 };
 const TYPE_LABELS: Record<ResourceBlock["type"], string> = { slot_track: "Slot track", research: "Research",
   lab_pool: "Lab pool", condition: "Condition", wait: "Wait", unlock_lab_slot: "Unlock lab slot",
-  card_slots: "Card slots", buy_cards: "Buy cards", save_for: "Save for modules", lab_list: "Ranked list" };
+  card_goal: "Cards program goal", card_slots: "Card slots", buy_cards: "Buy cards", save_for: "Save for modules", lab_list: "Ranked list" };
 const LAB_TYPES = ["slot_track", "research", "lab_pool", "condition", "wait"] as const;
-const GEM_TYPES = ["unlock_lab_slot", "card_slots", "buy_cards", "save_for", "wait"] as const;
+const GEM_TYPES = ["card_goal", "unlock_lab_slot", "card_slots", "buy_cards", "save_for", "wait"] as const;
 
 type Props = { kind: Kind; gems: Gems; labs: Labs; onGemsChange: (gems: Gems) => void; onLabsChange: (labs: Labs) => void;
+  cardProgram?: CardProgram | null; cardCatalog?: CardCatalog | null;
   locked?: boolean; automated?: AutomatedBlock[]; catalog?: LabsReference | null;
   // Studio drives gems.spend_limit_pct through the Strategy rules panel (withRules); this steps-mode
   // control is only for standalone callers (FlowBuilder) that never touch RouteRules at all.
@@ -124,6 +126,7 @@ function summary(block: ResourceBlock, labName: (id: string) => string): string 
     case "lab_pool": return `${block.selection ?? "Inherited"} pick of ${block.lab_ids.map(labName).join(", ")}`;
     case "condition": return `If ${block.field.replaceAll("_", " ")} ${block.cmp} ${block.value}`;
     case "unlock_lab_slot": return `Unlock lab slot ${block.slot}`;
+    case "card_goal": return `Cards goal ${block.goal_id || "(choose a goal)"}`;
     case "card_slots": return `Card slots up to ${block.up_to}${block.when_usable_card ? " · when a usable card waits" : ""}`;
     case "buy_cards": return block.purpose === "card_missions" ? "Cards for card-buy missions" : `Cards until ${(block.cards ?? []).join(", ")}`;
     case "save_for": return "Save gems for modules";
@@ -132,7 +135,7 @@ function summary(block: ResourceBlock, labName: (id: string) => string): string 
 }
 
 function BlocksEditor({ kind, gems, labs, onGemsChange, onLabsChange, locked = false, automated = [], catalog = null,
-  rules = null }: Props): React.JSX.Element {
+  rules = null, cardProgram = null, cardCatalog = null }: Props): React.JSX.Element {
   const blocks = ((kind === "gems" ? gems.blocks : labs.blocks) ?? []) as ResourceBlock[];
   const [selected, setSelected] = useState<string | null>(null);
   const block = selected ? findResourceBlock(blocks, selected) : null;
@@ -204,12 +207,13 @@ function BlocksEditor({ kind, gems, labs, onGemsChange, onLabsChange, locked = f
     <div className="flex flex-wrap gap-2" aria-label="Add a block">{(kind === "gems" ? GEM_TYPES : LAB_TYPES).map(type =>
       <button key={type} type="button" aria-label={`Add ${TYPE_LABELS[type]}`} disabled={!canAdd(type)} onClick={() => add(type)}
         className="rounded border border-border px-2 py-1 text-xs disabled:opacity-40">+ {TYPE_LABELS[type]}</button>)}</div>
-    {block && <BlockInspector block={block} locked={locked} catalog={catalog} pinned={pinned(block)} poolRule={poolRule}
+    {block && <BlockInspector cardProgram={cardProgram} cardCatalog={cardCatalog} block={block} locked={locked} catalog={catalog} pinned={pinned(block)} poolRule={poolRule}
       onChange={next => change(mapBlocks(blocks, other => other.id === next.id ? next : other))} />}
   </section>;
 }
 
-function BlockInspector({ block, locked, catalog, pinned, poolRule, onChange }: { block: ResourceBlock; locked: boolean;
+function BlockInspector({ block, locked, catalog, pinned, poolRule, cardProgram, cardCatalog, onChange }: { block: ResourceBlock; locked: boolean;
+  cardProgram: CardProgram | null; cardCatalog: CardCatalog | null;
   catalog: LabsReference | null; pinned: boolean; poolRule: RouteRules["labs"]["pool"] | null;
   onChange: (block: ResourceBlock) => void }): React.JSX.Element {
   const labs = catalog?.labs ?? [];
@@ -217,7 +221,7 @@ function BlockInspector({ block, locked, catalog, pinned, poolRule, onChange }: 
   const optional = (value: string): number | undefined => value === "" ? undefined : Number(value);
   return <div aria-label="Resource block settings" className="grid gap-2 rounded-xl border border-border bg-card p-3 text-xs sm:grid-cols-2">
     <label className="flex flex-col gap-1">Block name<input disabled={locked} maxLength={60} value={block.label ?? ""}
-      onChange={event => { const label = event.target.value; if (label.trim()) set({ label }); else { const { label: _unused, ...rest } = block; onChange(rest as ResourceBlock); } }}
+      onChange={event => { const label = event.target.value; if (label.trim()) set({ label }); else { const rest = { ...block }; delete rest.label; onChange(rest); } }}
       className="rounded border border-border bg-background px-2 py-1" /></label>
     {block.type === "slot_track" && <fieldset className="flex gap-2"><legend>Slots</legend>{[1, 2, 3, 4, 5].map(slot =>
       <label key={slot} className="flex items-center gap-1"><input type="checkbox" disabled={locked || (pinned && slot === 1)} checked={block.slots.includes(slot)}
@@ -305,11 +309,20 @@ function BlockInspector({ block, locked, catalog, pinned, poolRule, onChange }: 
         className="rounded border border-border bg-background px-2 py-1" /></label>
       <label className="flex items-center gap-1"><input type="checkbox" disabled={locked} checked={block.when_usable_card} onChange={event => set({ when_usable_card: event.target.checked })} />Only when a usable card waits</label>
     </>}
+    {(block.type === "card_goal" || block.type === "card_slots" || block.type === "buy_cards") && <label className="flex flex-col gap-1">Cards program goal<select disabled={locked} value={block.type === "card_goal" ? block.goal_id : ""}
+      onChange={event => { if (event.target.value) onChange({ id: block.id, ...(block.label ? { label: block.label } : {}), type: "card_goal", goal_id: event.target.value }); }}>
+      <option value="">Choose a saved program goal</option>
+      {block.type === "card_goal" && block.goal_id && !cardProgram?.goals.some(goal => goal.id === block.goal_id) && <option value={block.goal_id}>Unknown goal: {block.goal_id} — repair reference</option>}
+      {cardProgram?.goals.map(goal => <option key={goal.id} value={goal.id}>{goal.id} · {goal.kind === "slots" ? `${goal.capacity} slots` : goal.targets.map(target => cardCatalog?.cards.find(card => card.card_id === target.card_id)?.name ?? target.card_id).join(", ")}</option>)}
+    </select></label>}
     {block.type === "buy_cards" && <>
       <label className="flex flex-col gap-1">Purpose<select disabled={locked} value={block.purpose} onChange={event => set(event.target.value === "card_missions" ? { purpose: "card_missions", cards: undefined } : { purpose: "until_cards", cards: block.cards ?? [] })}
         className="rounded border border-border bg-background px-2 py-1"><option value="card_missions">Card-buy missions</option><option value="until_cards">Until I have these cards</option></select></label>
-      {block.purpose === "until_cards" && <label className="flex flex-col gap-1">Cards (comma separated)<input disabled={locked} value={(block.cards ?? []).join(", ")}
-        onChange={event => set({ cards: event.target.value.split(",").map(card => card.trim()).filter(Boolean) })} className="rounded border border-border bg-background px-2 py-1" /></label>}
+      {block.purpose === "until_cards" && <label className="flex flex-col gap-1">Target cards<select multiple aria-label="Target cards" disabled={locked} value={block.cards ?? []}
+        onChange={event => set({ cards: Array.from(event.target.selectedOptions, option => option.value) })}>
+        {(block.cards ?? []).filter(id => !cardCatalog?.cards.some(card => card.card_id === id)).map(id => <option key={id} value={id}>Unknown legacy card: {id} — select a replacement</option>)}
+        {cardCatalog?.cards.map(card => <option key={card.card_id} value={card.card_id}>{card.name}</option>)}
+      </select></label>}
       {block.purpose === "until_cards" && !(block.cards ?? []).length && <p role="alert" className="text-danger sm:col-span-2">Pick at least one card.</p>}
     </>}
   </div>;

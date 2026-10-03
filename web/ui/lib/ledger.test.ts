@@ -101,3 +101,33 @@ group("currencyOptions", () => {
     ]);
   });
 });
+
+group('Cards ledger details', () => {
+ it('renders rewards, slots and free assignments', async () => {
+  const { cardLedgerDetails }=await import('./ledger');
+  expect(cardLedgerDetails({kind:'CARD_BUY',detail:{rewards:[{card_id:'cards.damage',quantity:2,level_after:3}]}})).toEqual(expect.arrayContaining(['cards.damage ×2 · Level 3']));
+  expect(cardLedgerDetails({kind:'CARD_SLOT_BUY',detail:{snapshot_before:{capacity:2},snapshot_after:{capacity:3}}})).toEqual(expect.arrayContaining(['Slots: 2 → 3']));
+  expect(cardLedgerDetails({kind:'CARD_ASSIGN',detail:{snapshot_after:{equipped:[]}}})).toEqual(expect.arrayContaining(['Equipment: none (verified clear)']));
+ });
+});
+
+
+group('Cards immutable ledger context', () => {
+ it('shows paid command context alongside its observed reward', async () => {
+  const { cardLedgerDetails } = await import('./ledger');
+  expect(cardLedgerDetails({kind:'CARD_BUY', detail:{quantity:10, source:'manual', program_revision:'rev1', goal_id:'goal1', budget_cycle_id:'cycle1', rewards:[{card_id:'cards.damage',quantity:1}]}})).toEqual(expect.arrayContaining([
+   'Quantity: 10', 'Source: manual', 'Program revision: rev1', 'Goal: goal1', 'Budget cycle: cycle1', 'cards.damage ×1',
+  ]));
+ });
+ it('shows canceled partial equipment with its original request', async () => {
+  const { cardLedgerDetails } = await import('./ledger');
+  expect(cardLedgerDetails({kind:'CARD_ASSIGN', detail:{result:'canceled', loadout_id:'farm', requested_equipped:['cards.damage','cards.health'], snapshot_before:{equipped:[]}, snapshot_after:{equipped:['cards.damage']}}})).toEqual(expect.arrayContaining([
+   'Loadout: farm', 'Requested equipment: cards.damage, cards.health', 'Before equipment: none', 'Equipment: cards.damage', 'Result: canceled (partial application)',
+  ]));
+ });
+ it('does not invent context for historical rows', async () => {
+  const { cardLedgerDetails } = await import('./ledger');
+  const details = cardLedgerDetails({kind:'CARD_BUY',detail:{rewards:[]}});
+  expect(details).toEqual(expect.arrayContaining(['Quantity: unknown', 'Source: unknown', 'Program revision: unknown', 'Goal: unknown', 'Budget cycle: unknown']));
+ });
+});
