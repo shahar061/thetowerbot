@@ -178,7 +178,8 @@ def validate_labs(value: object) -> tuple[dict[str, Any], ...]:
             raise ValueError("the labs lane holds slot tracks")
         block = dict(raw)
         ids.claim(block)
-        _fields(block, {"slots", "children", "paused", "on_blocked", "slot_policies"})
+        _fields(block, {"slots", "children", "paused", "on_blocked", "slot_policies",
+                        "allow_unaffordable_game_speed_fallback"})
         if "paused" in block and type(block["paused"]) is not bool:
             raise ValueError("slot track paused must be a boolean")
         if "on_blocked" in block and (not isinstance(block["on_blocked"], str)
@@ -189,6 +190,10 @@ def validate_labs(value: object) -> tuple[dict[str, Any], ...]:
                 or any(type(slot) is not int or slot not in LAB_SLOTS for slot in slots)
                 or len(set(slots)) != len(slots)):
             raise ValueError("slot track slots must be distinct lab slots 1 to 5")
+        if "allow_unaffordable_game_speed_fallback" in block and (
+                type(block["allow_unaffordable_game_speed_fallback"]) is not bool
+                or slots != [1] or block.get("on_blocked") != "skip"):
+            raise ValueError("Game Speed affordability fallback requires slot 1 with on_blocked skip")
         policies = block.get("slot_policies", {})
         if not isinstance(policies, Mapping) or set(policies) - {str(slot) for slot in slots}:
             raise ValueError("slot policies must name slots in their track")
@@ -719,7 +724,8 @@ def _fact(block: Mapping[str, Any], facts: LabFacts, known: Mapping[str, int]) -
 def _choose(children: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any,
             known: Mapping[str, int], running: Mapping[str, int],
             why: list[str], unavailable: set[str], on_blocked: str,
-            protected_lab: str | None = None) -> tuple[str, SlotNext | None, str | None]:
+            protected_lab: str | None = None,
+            allow_unaffordable_protected: bool = False) -> tuple[str, SlotNext | None, str | None]:
     """First unmet child wins: ("pick", next, block type) | ("wait"|"unknown"|"done", None, None)."""
     for block in children:
         kind = block["type"]
@@ -746,7 +752,8 @@ def _choose(children: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any,
                       "insufficient coins" if option.price > budget else None)
             if reason is not None:
                 why.append(f"{block['id']}: {reason}")
-                if on_blocked == "skip" and lab_id != protected_lab:
+                if (on_blocked == "skip" and (lab_id != protected_lab
+                        or allow_unaffordable_protected and reason == "insufficient coins")):
                     continue
                 if reason in {"already running or reserved", "prerequisite unmet"}:
                     return "wait", None, None
@@ -771,7 +778,7 @@ def _choose(children: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any,
             branch = "then" if COMPARISONS[block["cmp"]](value, block["value"]) else "else"
             why.append(f"{block['id']}: {block['field']} → {branch}")
             outcome = _choose(block[branch], facts, rules, known, running, why, unavailable,
-                              on_blocked, protected_lab)
+                              on_blocked, protected_lab, allow_unaffordable_protected)
             if outcome[0] != "done":
                 return outcome
     return "done", None, None
@@ -972,7 +979,8 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
                 slot_facts = replace(facts, available_coins=remaining_coins)
                 outcome, chosen, kind = _choose(track["children"], slot_facts, rules, known, running,
                                                why, competing, policy.get("on_blocked", track.get("on_blocked", "wait")),
-                                               GAME_SPEED if slot == 1 else None)
+                                               GAME_SPEED if slot == 1 else None,
+                                               slot == 1 and track.get("allow_unaffordable_game_speed_fallback", False))
             if outcome == "done":
                 why.append("Track complete")
         gate = research_gate_for(facts, chosen.lab_id, slot) if chosen is not None else None

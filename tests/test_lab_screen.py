@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
+import numpy as np
 import pytest
 
 import config
@@ -224,13 +226,55 @@ def test_game_speed_confirmation_requires_its_own_coin_price_and_button() -> Non
     assert result.research_point[0] > result.cancel_point[0]
 
 
-def test_confirmation_with_unreadable_price_cannot_spend() -> None:
+def test_confirmation_recovers_price_missing_from_full_frame_ocr() -> None:
     import lab_screen
 
     boxes = tuple(box for box in recorded("menu_labs_game_speed_confirmation")
                   if box.text != "300")
     result = lab_screen.read_confirmation(frame("menu_labs_game_speed_confirmation"), boxes)
     assert result.page
+    assert result.price == 300
+    assert result.research_point is not None
+
+
+def test_confirmation_with_truly_unreadable_price_cannot_spend() -> None:
+    import lab_screen
+
+    boxes = tuple(box for box in recorded("menu_labs_game_speed_confirmation")
+                  if box.text != "300")
+    image = frame("menu_labs_game_speed_confirmation")
+    image[1390:1515, 350:525] = 0
+    result = lab_screen.read_confirmation(image, boxes)
+    assert result.page
+    assert result.price is None
+    assert result.research_point is None
+
+
+def test_confirmation_crop_keeps_a_shifted_leading_digit() -> None:
+    import lab_screen
+
+    image = frame("menu_labs_game_speed_confirmation")
+    height, width = image.shape[:2]
+    shifted = cv2.warpAffine(image, np.float32([[1, 0, -25], [0, 1, 0]]),
+                             (width, height))
+    boxes = tuple(ocr.TextBox(box.text, box.confidence,
+                              config.Rect(box.rect.x - 25, box.rect.y,
+                                          box.rect.w, box.rect.h))
+                  for box in recorded("menu_labs_game_speed_confirmation")
+                  if box.text != "300")
+    result = lab_screen.read_confirmation(shifted, boxes)
+    assert result.price == 300
+
+
+def test_confirmation_crop_rejects_a_number_touching_its_edge() -> None:
+    import lab_screen
+
+    boxes = tuple(box for box in recorded("menu_labs_game_speed_confirmation")
+                  if box.text != "300")
+    clipped = ocr.TextBox("00", .996, config.Rect(21, 65, 71, 48))
+    with patch("lab_screen.ocr.read_region", return_value=(clipped,)):
+        result = lab_screen.read_confirmation(frame("menu_labs_game_speed_confirmation"), boxes)
+    assert result.price is None
     assert result.research_point is None
 
 

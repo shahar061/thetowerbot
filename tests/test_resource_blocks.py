@@ -521,6 +521,26 @@ def test_slot_one_skip_cannot_bypass_unfinished_game_speed() -> None:
     assert plan.slots[0].next is not None and plan.slots[0].next.lab_id == "labs.game-speed"
 
 
+def test_opted_in_slot_one_uses_cheap_research_until_game_speed_is_affordable() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["labs"].update(mode="blocks", blocks=[
+        {"id": "one", "type": "slot_track", "slots": [1], "on_blocked": "skip",
+         "allow_unaffordable_game_speed_fallback": True, "children": [
+             {"id": "gs", "type": "research", "lab_id": "labs.game-speed", "to_level": 7},
+             {"id": "cheap", "type": "research", "lab_id": "labs.attack-speed", "to_level": 10}]}])
+    route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
+
+    def choice(wallet: int) -> str | None:
+        plan = evaluate_lab_plan(route, LabFacts(
+            now=1000., wallet_coins=wallet, available_coins=wallet,
+            slot1=waiting(), slots={1: {"state": "idle", "observed_at": 990., "confirmed": True}},
+            completed_levels={"labs.attack-speed": 0}))
+        return plan.slots[0].next.lab_id if plan.slots[0].next is not None else None
+
+    assert choice(60) == "labs.attack-speed"
+    assert choice(13000) == "labs.game-speed"
+
+
 def test_missing_or_future_slot_time_is_stale() -> None:
     facts = LabFacts(now=1000., slots={1: {"state": "idle", "confirmed": True},
                                        2: {"state": "idle", "confirmed": True,
