@@ -1,3 +1,4 @@
+import type { CardProgram, CardAssignmentState } from "./cards";
 import type { StrategyAssignment, StrategyBlock } from "./strategyStudio";
 import type { GemBlock, LabBlock, RouteRules } from "./labs";
 
@@ -69,10 +70,12 @@ export type BuildRouteDocument = {
     gems: { lab_slot2_reserve: number; spend_limit_pct: number; steps: string[]; mode?: "steps" | "blocks"; blocks?: GemBlock[] };
     labs: { slot1_research: string; steps: string[]; mode?: "steps" | "blocks"; blocks?: LabBlock[] };
     rules?: RouteRules;
+    cards?: CardProgram | null;
   };
   overrides: Record<string, { account_id: string; patches: Record<string, Record<string, unknown>> }>;
   dependencies: Record<string, string[]>;
   assignments?: Record<string, StrategyAssignment>;
+  card_assignments?: Record<string, Omit<CardAssignmentState, "status" | "applied_revision">>;
 };
 
 export type BuildRouteRevisions = { revisions: BuildRouteDocument[] };

@@ -109,3 +109,9 @@ test("the fleet state page gets the fleet shell, not the game account picker", (
   expect(screen.getByText("fleet columns")).toBeInTheDocument();
   expect(screen.queryByLabelText("Game account")).not.toBeInTheDocument();
 });
+test('Cards is readable for an archived account',()=>{
+ state.pathname='/cards/';state.selected={key:'worker:old',account_id:'old',instance:'old',kind:'worker',running:false,dashboard_url:null};
+ render(<AccountShell><p>Archived Cards evidence</p></AccountShell>);
+ expect(screen.getByText('Archived Cards evidence')).toBeInTheDocument();
+ expect(screen.queryByText('No live bot for this account')).not.toBeInTheDocument();
+});

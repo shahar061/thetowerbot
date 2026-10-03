@@ -20,8 +20,8 @@ from __future__ import annotations
 from account_state import AccountRevision, AccountState
 
 import asyncio
-from dataclasses import asdict
-from contextlib import asynccontextmanager
+from dataclasses import asdict, replace
+from contextlib import asynccontextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -449,6 +449,20 @@ def create_app(
         if choice is not None and choice.kind == "worker" and db.bound_account(path) != choice.account_id:
             return None
         return path if path is not None and path.is_file() else None
+
+    def _patch_cards_automation(enabled: bool) -> dict[str, Any]:
+        # Shopping is a replacement field in Strategy.merged: carry the full
+        # existing policy so a Cards toggle cannot reset arming or other lanes.
+        shopping_patch = controls.snapshot().strategy.shopping.to_dict()
+        shopping_patch['cards']['enabled'] = enabled
+        return _apply_control_patch({'shopping': shopping_patch})
+
+    from web.cards_api import register_cards_routes, register_fleet_cards_routes
+    register_fleet_cards_routes(app, service=fleet)
+    register_cards_routes(app, selected=_selected, history_path=_history_path,
+                          running_account=_running_account, runner=runner,
+                          accounts=accounts, db_path=db_path,
+                          patch_automation=_patch_cards_automation if controls is not None else None)
 
     def _live_choice(request: HTTPConnection) -> AccountChoice | None:
         key = request.query_params.get("scope")
@@ -1196,8 +1210,13 @@ def create_app(
             # exclude_none means "absent" and "explicitly null" are the same
             # request, so max_runs cannot be cleared through this route. The
             # strategy page clears it by PUTting the whole profile instead.
-            requested = patch.model_dump(exclude_none=True)
+            return _apply_control_patch(patch.model_dump(exclude_none=True))
 
+        def _apply_control_patch(requested: dict[str, Any]) -> dict:
+            with controls.transaction():
+                return _apply_control_patch_locked(requested)
+
+        def _apply_control_patch_locked(requested: dict[str, Any]) -> dict:
             # Refuse before applying, not after: build_affordability() falls
             # back to brightness on its own, so accepting this and letting the
             # loop pick would leave the browser showing "digits" while the bot
@@ -1339,9 +1358,11 @@ def create_app(
             return {"active": store.active_name(), "names": store.names()}
 
         @app.get("/api/strategies/{name}")
-        def read_strategy(name: str) -> dict:
+        def read_strategy(name: str, response: Response) -> dict:
             try:
-                return store.load(name).to_dict()
+                loaded = store.load(name)
+                response.headers["ETag"] = store.revision(loaded)
+                return loaded.to_dict()
             except ControlError as exc:
                 # A corrupt profile is not a missing one: load() raises
                 # "not_found" for absent and the default "invalid" for
@@ -1351,54 +1372,66 @@ def create_app(
                 ) from exc
 
         @app.put("/api/strategies/{name}")
-        def write_strategy(name: str, body: dict[str, Any]) -> dict:
-            # The URL's name wins. Otherwise a body naming something else
-            # writes a different file and the caller has no way to know
-            # where their profile went.
+        def write_strategy(name: str, body: dict[str, Any], request: Request, response: Response) -> dict:
             try:
                 incoming = Strategy.from_dict({**body, "name": name})
-                store.save(incoming)
-            except ControlError as exc:
-                raise HTTPException(
-                    status_code=422, detail=f"{exc.field}: {exc}"
-                ) from exc
 
-            # Saving the profile the bot is currently running IS a live edit.
-            if controls is not None and name == store.active_name():
-                changed = controls.replace(incoming)
-                if changed:
-                    bus.publish(events.ControlChanged(changed=changed, source="web"))
-            return incoming.to_dict()
+                def persist() -> dict[str, Any]:
+                    # Caller already holds route/account guards when requested.
+                    with controls.transaction() if controls is not None else nullcontext():
+                        if request.headers.get('x-cards-preconditions') is not None:
+                            if name != store.active_name():
+                                raise HTTPException(409, 'active_strategy_changed')
+                        with store.saving(incoming, expected_revision=request.headers.get('if-match')):
+                            if controls is not None and name == store.active_name():
+                                changed = controls.replace(incoming)
+                                if changed:
+                                    bus.publish(events.ControlChanged(changed=changed, source="web"))
+                    return incoming.to_dict()
+
+                header = request.headers.get('x-cards-preconditions')
+                if header is not None:
+                    from web.cards_api import CardPreconditions
+                    try:
+                        expected = CardPreconditions.model_validate_json(header)
+                    except ValidationError as exc:
+                        raise HTTPException(422, str(exc)) from None
+                    if request.headers.get('if-match') is None:
+                        raise HTTPException(422, 'Cards saves require If-Match')
+                    choice = _selected(request)
+                    if runner is None or (choice is not None and not _running_account(choice)):
+                        raise HTTPException(503, 'selected_account_not_running')
+                    context = runner.cards_context()
+                    if context is None:
+                        raise HTTPException(503, 'cards_runtime_unavailable')
+                    expected_scope = replace(context.scope, account_id=expected.expected_account_id,
+                        generation=expected.expected_generation, epoch=expected.expected_epoch)
+                    result = runner.with_cards_authority(scope=expected_scope,
+                        program_revision=expected.expected_program_revision, require_local=True, apply=persist)
+                else:
+                    result = persist()
+                response.headers['ETag'] = store.revision(incoming)
+                return result
+            except ControlError as exc:
+                raise HTTPException(status_code=_STATUS_FOR_CODE.get(exc.code, 422),
+                    detail=f"{exc.field}: {exc}") from exc
+            except RunnerError as exc:
+                raise HTTPException(exc.status_code, str(exc)) from None
 
         @app.post("/api/strategies/{name}/activate")
         def activate_strategy(name: str) -> dict:
             try:
-                # validated(), because this is the one path that puts a
-                # profile straight from the disk into the running loop.
-                # load() only parses; the filesystem half - does every
-                # template still exist, inside TEMPLATE_DIR - is what PUT
-                # gets for free from store.save() and PATCH does by hand
-                # before apply(). Without it, activating a hand-edited
-                # profile whose template was since deleted raises out of
-                # every scan pass forever instead of once, here, as a 422.
-                # Before set_active(), so a profile that cannot run does not
-                # become the one the next launch loads either.
-                loaded = store.load(name).validated()
-                store.set_active(name)
+                with controls.transaction() if controls is not None else nullcontext():
+                    with store.locked():
+                        loaded = store.load(name).validated()
+                        store.set_active(name)
+                        if controls is not None:
+                            changed = controls.replace(loaded)
+                            if changed:
+                                bus.publish(events.ControlChanged(changed=changed, source="web"))
+                return {"active": name, "names": store.names()}
             except ControlError as exc:
-                # load() raises "not_found" for an absent profile but the
-                # default "invalid" for one that exists and is corrupt JSON
-                # - those are different facts, and a present-but-corrupt
-                # profile deserves a 422 that says so, not a 404 that sends
-                # the caller looking for a file that is sitting right there.
-                raise HTTPException(
-                    status_code=_STATUS_FOR_CODE.get(exc.code, 422), detail=str(exc)
-                ) from exc
-            if controls is not None:
-                changed = controls.replace(loaded)
-                if changed:
-                    bus.publish(events.ControlChanged(changed=changed, source="web"))
-            return {"active": name, "names": store.names()}
+                raise HTTPException(status_code=_STATUS_FOR_CODE.get(exc.code, 422), detail=str(exc)) from exc
 
         @app.delete("/api/strategies/{name}")
         def remove_strategy(name: str) -> dict:

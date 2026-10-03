@@ -7,8 +7,62 @@ from threading import Barrier
 
 import pytest
 
-from fleet.build_route import RouteDocument, resolve_route
+from fleet.build_route import RouteBaseline, RouteDocument, resolve_route
 from fleet.strategy_library import StrategyLibrary, LibraryConflict
+
+
+def test_card_program_pinned_to_saved_library_version(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    baseline = library.read()["templates"][0]["baseline"]
+    baseline["cards"] = {"version": 1, "gem_cap": 100, "goals": [], "loadouts": []}
+    saved = library.save(expected_revision=0, name="Cards", source_template="opening",
+                         baseline=baseline)["strategies"][0]
+    baseline["cards"]["gem_cap"] = 200
+    library.save(expected_revision=1, name="Cards", source_template="opening",
+                 baseline=baseline, strategy_id=saved["id"])
+    assert library.version(saved["id"], 1)["baseline"]["cards"]["gem_cap"] == 100
+    assert library.version(saved["id"], 2)["baseline"]["cards"]["gem_cap"] == 200
+
+
+def test_legacy_cards_project_on_read_and_migrate_only_when_saved(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    baseline = library.read()["templates"][0]["baseline"]
+    baseline["gems"].update(mode="blocks", blocks=[
+        {"id": "slot2", "type": "unlock_lab_slot", "slot": 2},
+        {"id": "old", "type": "buy_cards", "purpose": "until_cards", "cards": ["Damage"]},
+    ])
+    projected = RouteBaseline.from_dict(baseline)
+    assert projected.cards is not None
+    assert projected.cards.gem_cap == 0
+    assert projected.gems.blocks[1]["type"] == "buy_cards"
+    saved = library.save(expected_revision=0, name="Old", source_template="opening",
+                         baseline=baseline)["strategies"][0]
+    assert saved["baseline"]["gems"]["blocks"][1] == {
+        "id": "old", "type": "card_goal", "goal_id": "old"}
+    assert saved["baseline"]["cards"]["gem_cap"] == 0
+
+
+def test_card_goal_requires_matching_program_goal() -> None:
+    baseline = RouteDocument.compatibility().baseline.to_dict()
+    baseline["gems"].update(mode="blocks", blocks=[
+        {"id": "slot2", "type": "unlock_lab_slot", "slot": 2},
+        {"id": "card", "type": "card_goal", "goal_id": "absent"},
+    ])
+    with pytest.raises(ValueError, match="goal"):
+        RouteDocument.from_dict({**RouteDocument.compatibility().to_dict(), "baseline": baseline})
+
+
+def test_effective_card_program_uses_assignment_only_for_matching_account() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["cards"] = {"version": 1, "gem_cap": 100, "goals": [], "loadouts": []}
+    assigned = RouteDocument.compatibility().baseline.to_dict()
+    assigned["cards"] = {"version": 1, "gem_cap": 200, "goals": [], "loadouts": []}
+    raw["assignments"] = {"Air_1": {"account_id": "A", "strategy_id": "custom-1",
+        "strategy_version": 1, "strategy_name": "Pinned", "baseline": assigned}}
+    route = RouteDocument.from_dict(raw)
+    assert resolve_route(route, "Air_1", "A").cards.gem_cap == 200
+    assert resolve_route(route, "Air_2", "A").cards.gem_cap == 100
+    assert resolve_route(route, "Air_1", "B").cards is None
 
 
 def test_save_versions_do_not_publish_and_old_version_is_immutable(tmp_path: Path) -> None:

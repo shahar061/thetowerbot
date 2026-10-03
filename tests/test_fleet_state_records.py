@@ -207,3 +207,103 @@ def test_a_database_locked_mid_write_fails_fast(tmp_path: Path) -> None:
     finally:
         locker.rollback()
         locker.close()
+
+
+def test_cards_projection_preserves_partial_facts_and_equipment(tmp_path: Path) -> None:
+    from account_state import AccountRepository
+    from card_models import CardFieldEvidence, CardItem, CardSnapshot
+    from card_store import CardStore
+    from currencies import CurrencyRepository
+    from evidence_scope import FactScope
+    path = _database(tmp_path)
+    scope = FactScope('account-a', 'lease', 'generation', 1)
+    CurrencyRepository(path).bind_scope(scope)
+    store = CardStore(path)
+    evidence = CardFieldEvidence(scope=scope, visit_id='visit', observed_at=10., evidence_ref='frame', confidence=.99)
+    item = CardItem(card_id='cards.damage', ownership='owned', level=3, observed_at=10., evidence_ref='frame',
+                    field_evidence={'level': evidence, 'ownership': evidence})
+    first = CardSnapshot(scope=scope, revision=1, observed_at=10., visit_id='visit', items=(item,), capacity=2,
+                         equipped=('cards.damage',), equipment_evidence=evidence,
+                         collection_complete=False, equipment_complete=True)
+    store.observe(first)
+    store.observe(first.model_copy(update={'revision': 2, 'observed_at': 20., 'items': (),
+                                           'capacity': None, 'equipped': None, 'equipment_complete': False}))
+    revision = AccountRepository(path).latest()
+    facts = {fact.concept_id: fact for fact in revision.cards}
+    assert facts['cards.damage.level'].value == 3
+    assert facts['cards.damage.level'].evidence.observed_at == 10.
+    assert facts['cards.slots.capacity'].value == 2
+    assert facts['cards.slots.capacity'].evidence.observed_at == 10.
+    assert revision.cards_equipped == ('cards.damage',)
+    assert revision.cards_equipment_evidence.evidence.observed_at == 10.
+    records = read_records(path, 'account-a', None)
+    assert records.revision['cards_equipped'] == ['cards.damage']
+    assert any(fact['concept_id'] == 'cards.damage.level' for fact in records.revision['cards'])
+
+
+def test_cards_and_labs_revisions_coexist_through_account_state(tmp_path: Path) -> None:
+    from account_state import AccountRepository, AccountState
+    from card_models import CardSnapshot
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    path = _database(tmp_path)
+    repository = AccountRepository(path)
+    state = AccountState(repository)
+    scope = FactScope('account-a', 'lease', 'generation', 1)
+    state.bind_scope(scope, identity=IdentityEvidence('account-a', 5., 'identity'))
+    snapshot = CardSnapshot(scope=scope, revision=1, observed_at=10., visit_id='visit',
+                            capacity=2, equipped=(), collection_complete=False, equipment_complete=True)
+    assert state.observe_cards(snapshot)
+    assert state.record_labs(slots_owned=3, observed_at=11.)
+    assert repository.latest().cards_equipped == ()
+    assert repository.latest().cards is not None
+    assert state.observe_cards(snapshot.model_copy(update={'observed_at': 12., 'capacity': 3}))
+    assert repository.latest().lab_slots_owned == 3
+
+
+def test_labs_first_cards_projection_uses_bound_account_identity(tmp_path: Path) -> None:
+    from account_state import AccountRepository, AccountState
+    from card_models import CardSnapshot
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    path = _database(tmp_path)
+    repository = AccountRepository(path)
+    state = AccountState(repository)
+    scope = FactScope('account-a', 'lease', 'generation', 1)
+    state.bind_scope(scope, identity=IdentityEvidence('account-a', 5., 'identity'))
+    assert state.record_labs(slots_owned=3, observed_at=6.)
+    assert repository.latest().account_id is None
+    snapshot = CardSnapshot(scope=scope, revision=1, observed_at=10., visit_id='visit',
+                            capacity=2, equipped=(), collection_complete=False, equipment_complete=True)
+    assert state.observe_cards(snapshot)
+    revision = repository.latest()
+    assert revision.account_id == 'account-a'
+    assert revision.lab_slots_owned == 3
+    assert revision.cards_equipped == ()
+    assert state.record_labs(slots_owned=4, observed_at=11.)
+    revision = repository.latest()
+    assert revision.account_id == 'account-a'
+    assert revision.lab_slots_owned == 4
+    assert revision.cards_equipped == ()
+    assert next(f.value for f in revision.cards if f.concept_id == 'cards.slots.capacity') == 2
+
+
+def test_cards_projection_rejects_explicitly_foreign_revision(tmp_path: Path) -> None:
+    from account_state import AccountRepository, AccountRevision, AccountState
+    from card_models import CardSnapshot
+    from card_store import CardStore
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    path = _database(tmp_path)
+    repository = AccountRepository(path)
+    repository.save_account(AccountRevision(account_id='account-other', lab_slots_owned=3), ())
+    state = AccountState(repository)
+    scope = FactScope('account-a', 'lease', 'generation', 1)
+    state.bind_scope(scope, identity=IdentityEvidence('account-a', 5., 'identity'))
+    snapshot = CardSnapshot(scope=scope, revision=1, observed_at=10., visit_id='visit',
+                            capacity=2, equipped=(), collection_complete=False, equipment_complete=True)
+    with pytest.raises(ValueError, match='foreign account revision'):
+        state.observe_cards(snapshot)
+    assert repository.latest().account_id == 'account-other'
+    assert repository.latest().cards is None
+    assert CardStore(path).snapshot() is None

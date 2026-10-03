@@ -136,10 +136,9 @@ describe("ShoppingEditor", () => {
     expect(screen.getByRole("button", { name: /cancel/i })).toHaveFocus();
   });
 
-  it("warns that the gem floor guards a currency with no refund", () => {
+  it("links to the Cards reserve editor", () => {
     render(<ShoppingEditor shopping={policy} onChange={vi.fn()} />);
-    expect(screen.getByLabelText(/gem floor/i)).toBeInTheDocument();
-    expect(screen.getByText(/cannot be earned back quickly/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", {name: /Manage Cards collection/})).toHaveAttribute("href", "/cards/");
   });
 
   it("round-trips a change to the visit frequency", () => {
@@ -172,4 +171,10 @@ describe("ShoppingEditor", () => {
     // reports) would be a lie in this state and must not render.
     expect(screen.queryByText(/navigates to the shop/i)).toBeNull();
   });
+});
+it('summarizes existing Cards policy and links to its single editor',()=>{
+ render(<ShoppingEditor shopping={policy} onChange={vi.fn()}/>);
+ expect(screen.getByRole('link',{name:/Manage Cards collection/})).toHaveAttribute('href','/cards/');
+ expect(screen.queryByLabelText('Gem floor')).not.toBeInTheDocument();
+ expect(screen.getByText(/Reserve 40 gems/)).toBeInTheDocument();
 });

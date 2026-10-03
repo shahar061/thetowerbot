@@ -23,11 +23,12 @@ import logging
 import hashlib
 import math
 import time
+from uuid import uuid4
 from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import config
 import events
@@ -306,6 +307,9 @@ class ShoppingSession:
         # The durable half of every spend. Optional because the visit logic
         # can inspect/navigate without a database. Armed spending requires
         # both this durable journal and verified current account evidence.
+        self.queue_cards: Callable[[str, Any], bool] | None = None
+        self._card_handoff_key = f'shopping-cards:{uuid4().hex}'
+        self._card_handed_off = False
         self.journal = journal
         self.currencies = CurrencyRepository(journal.path) if journal is not None else None
         self.account_state: AccountState | None = None
@@ -500,6 +504,8 @@ class ShoppingSession:
 
         categories = list(shopping.categories_in_priority_order())
         self._visit += 1
+        self._card_handoff_key = f'shopping-cards:{uuid4().hex}'
+        self._card_handed_off = False
         self._categories = categories
         self._taps = 0
         self._bought = 0
@@ -1289,6 +1295,11 @@ class ShoppingSession:
         if self._recover_transaction(reading, screen):
             return
         cards = shopping.cards
+        if shopping.armed and cards.enabled and self.queue_cards is not None:
+            if not self._card_handed_off:
+                self._card_handed_off = self.queue_cards(self._card_handoff_key, cards)
+            self._step = Step.RETURN
+            return
         if not cards.enabled:
             self._step = Step.RETURN
             return
@@ -1358,44 +1369,12 @@ class ShoppingSession:
             self._step = Step.RETURN
             return
 
-        x, y = match.center
-        # Written BEFORE the tap, which is the only ordering that helps: a
-        # journal entry made afterwards is lost by exactly the crash it
-        # exists to survive.
-        try:
-            intent = self._open_intent(
-                item=item, category="CARDS", currency="gems", price=price,
-                wallet_before=gems, armed=shopping.armed, reserve=shopping.cards.gem_floor,
-                before={'observed_at': time.time(), 'frame_digest': hashlib.sha256(screen.tobytes()).hexdigest()},
-            )
-        except CommitmentError as exc:
-            self._bus.publish(events.PurchaseSkipped(
-                item=item, reason=self._commitment_reason(exc), detail=str(exc),
-                gems_before=gems))
-            self._step = Step.RETURN
+        # Rehearsal is a zero-input projection; no legacy paid claim/tap path remains.
+        if self._taps >= shopping.max_taps_per_visit:
+            self._abort(device, shopping, screen, 'tap budget exhausted')
             return
-        self._mark_acted(intent)
-        try:
-            sent = self._try_tap(x, y, device, shopping, screen)
-        except RecoveryPreflightBlocked:
-            self._abandon_intent(intent, "input refused before tap")
-            return
-        if not sent:
-            self._abandon_intent(intent, "the tap was never sent")
-            return
-
-        if shopping.armed:
-            # The tap is now a question, not a result. _confirm_card answers
-            # it off the next frame's gem balance.
-            self._pending_card = PendingCard(
-                item=item, price=price, gems_before=gems,
-                key=intent.key if intent is not None else None,
-            )
-        else:
-            # A rehearsal never tapped, so no balance will ever move and
-            # there is nothing to confirm. Mirrors the workshop path, which
-            # records an unarmed purchase immediately for the same reason.
-            self._record_card(item, price, gems, dry_run=True)
+        self._taps += 1
+        self._record_card(item, price, gems, dry_run=True)
 
     # -- the durable journal ------------------------------------------------
 

@@ -966,3 +966,38 @@ def test_rollout_events_are_not_account_history() -> None:
                   events.LabUnlockHalted(slot=2, reason="Post-tap screen was not understood")):
         assert ledger.classify(event) == ()
         assert event.type not in ledger._REPLAYABLE
+
+
+def test_card_operation_events_exclude_queued_progress_and_rehearsal_spend() -> None:
+    queued = events.CardAssignmentObserved(operation_id='op', account_id='a', result='queued', verified_amount=None)
+    assert ledger.classify(queued) == ()
+    (line,) = ledger.classify(events.CardPurchaseObserved(operation_id='op', account_id='a', result='rehearsed',
+                                                        verified_amount=20, dry_run=True))
+    assert line.delta == 0 and line.dry_run
+
+
+def test_card_operation_enrichment_does_not_rewrite_running_balance(tmp_path: Path) -> None:
+    import json
+    from dataclasses import replace
+    write, conn = writer(tmp_path)
+    event = events.CardPurchaseObserved(operation_id='op', account_id='a', result='reconciliation_required',
+                                       verified_amount=20, gems_before=100, gems_after=80, seq=1)
+    for line in write.lines_for(event):
+        db.insert_ledger(conn, line.as_row())
+    initial = conn.execute("SELECT id,balance_after FROM ledger WHERE kind='CARD_BUY'").fetchone()
+    assert initial[1] == 80
+    for line in write.lines_for(replace(event, seq=2, result='confirmed', rewards=({'position': 0, 'card_id': 'cards.damage', 'quantity': 1},))):
+        db.insert_ledger(conn, line.as_row())
+    lines = conn.execute("SELECT id,balance_after,detail FROM ledger WHERE kind='CARD_BUY'").fetchall()
+    assert len(lines) == 1 and lines[0][0] == initial[0] and lines[0][1] == 80
+    assert json.loads(lines[0][2])['result'] == 'confirmed'
+
+
+def test_legacy_card_events_keep_missing_command_context_unknown() -> None:
+    old = events.CardPurchaseObserved(operation_id='old', account_id='a',
+        result='confirmed', verified_amount=20)
+    (line,) = ledger.classify(old)
+    for key in ('quantity', 'source', 'program_revision', 'goal_id', 'budget_cycle_id',
+                'loadout_id', 'requested_equipped'):
+        assert line.detail[key] is None
+    assert line.delta == -20

@@ -572,38 +572,95 @@ separately. Reordering rows is the only control anyone needs: a tab whose
 rows are all disabled is never opened, because there is nothing on it to
 buy.
 
-Cards work the same way with one difference: a card purchase does not use up
-the row, so the bot keeps buying the configured batch (`x1` or `x10`) until
-it hits a cap rather than until the button disappears. Cards ship disabled
-(`cards.enabled: false` by default) — see "What it never taps" below for
-why. Four numbers bound how often a visit happens and how much it can
-spend:
+### Cards: collection, plans, and operation limits
 
-- **Visit cadence** (`visit_every_n_runs`, default `1`) — how many runs pass
-  between the end of one visit and the start of the next being considered
-  at all. `1` means every run that ends on `MAIN_MENU` is a candidate.
-- **Gem floor** (`cards.gem_floor`, default `40`) — the bot will not spend a
-  gem balance below this floor. Inclusive at zero on purpose: spending down
-  to nothing is a real, permitted choice, unlike a negative floor, which is
-  not a choice at all.
-- **Cards per visit** (`cards.max_per_visit`, default `2`).
-- **Tap budget** (`max_taps_per_visit`, default `40`) — every attempted tap
-  counts against it, armed or not, so a rehearsal hits the same ceiling a
-  real run would.
+Open **Cards** at `/cards/` for the selected running or archived account. Open
+**Fleet → Cards** at `/fleet/reroll/cards/` for account selection, per-account
+results, and configuration assignments. Author fleet programs in the Strategy
+Library's Cards tab. Archived/offline observations remain readable but cannot
+authorize device actions. Unknown collection, level, or equipment fields are
+shown as unknown; a partial scan is not an empty collection.
 
-**What it never taps:** card slots, labs, modules, relics, the shop, and
-Ultimate Weapon selection — all deliberate, not missing features.
+**Draft implementation; live runtime validation remains outstanding.** The compact
+1080×2400 English layout supports measured x1 controls and exact reward wallets,
+settled COMMON-card receipts, and capacity-one assignment when the complete ACTIVE strip and
+required inventory tiles are visible. Recorded full-frame tests exercise the
+actual adapter through the HTTP/runtime/journal/ledger path. Manual capture
+sessions exercised two x1 draws and equip/unequip, but did not exercise the live
+Cards runtime. Other layouts remain observation-only; x10 and slot purchases are
+disabled. Unknown rarity, incomplete equipment, unreadable wallet, unobserved
+levels/copies, and incomplete inventory coverage stop the affected operation.
+Automatic unlock/minimum-level goals remain blocked when those facts are unknown.
 
-- Gem purchases don't touch **lab slots**, even though the community's own
-  gem spend order (see the **Guide** page) puts lab slots *above* cards. The
-  bot cannot see the Labs screen at all — no template, no classifier,
-  nothing — so a bot spending gems on cards while blind to the better
-  purchase would be worse than one spending none.
-- **Ultimate Weapon** picks are irreversible, and each new pick costs more
-  than the last. Permanent plus escalating is exactly the combination a
-  policy read off a priority list should not be trusted with.
-- Card **slots**, **modules**, **relics** and the **shop** are simply out of
-  scope for this feature; nothing about any of them is modelled.
+A private single-account dashboard can be launched with:
+
+```bash
+uv run tower_bot.py --web --idle --web-host 127.0.0.1 --web-port 18882 \
+  --host 127.0.0.1 --port ADB_PORT --game-package com.TechTreeGames.TheTower \
+  --standalone-root /absolute/private/runtime --expected-account ACCOUNT_ID \
+  --strategy PROFILE_NAME --no-telegram
+```
+
+This uses `runtime/standalone/tower_bot.db` and private `strategies`, `evidence`,
+and `checkpoints` directories. Store the selected profile in that `strategies`
+directory. The expected ID is only a comparison target: every Start performs a
+fresh observed account walk before binding the database and Cards scope. Endpoint,
+port, and runtime locks prevent a competing process; this mode does not create a
+fleet controller. Reconnect invalidates identity until it is observed again.
+Standalone recovery across a new generation currently remains conservative:
+unresolved old paid intent is retained and may require reconciliation support
+before further work. This startup path has focused offline coverage, not a live
+canary.
+- **Plan:** ordered acquire goals specify unlocks or minimum levels; slot goals
+  specify capacity and can wait until another usable card exists. Purchases are
+  random draws: targets are stopping conditions, not cards bought directly.
+  Automatic goal buying uses **x1**, refreshes evidence after a purchase, and
+  rechecks goals before another draw. The raw `batch` setting is retained for
+  configuration compatibility; it does not make automatic goal buying use x10.
+  Manual **Buy x1** and **Buy x10** request that exact quantity; unsupported x10
+  is refused without silently falling back to x1.
+- **Enablement:** saving a plan, choosing a loadout, assigning a fleet program,
+  and starting a budget cycle are separate from enabling automation. Automatic
+  work also requires parent Shopping enabled, armed state, current account
+  authority, and supported controls. Manual requests still obey identity,
+  armed/pause/battle, quote, reserve, and budget gates. Work requested during a
+  battle or pause queues for an eligible between-run opportunity.
+- **Allowance:** explicitly start a finite budget cycle for each account. The
+  cycle's original cap persists across restarts, visits, ordinary edits, and
+  fleet reassignment. Neither saving nor reassignment replenishes it. Confirmed
+  spend and unresolved pending spend consume allowance; the plan cap, original
+  cycle cap, reserve, per-visit limit, shared currency commitments, and effective
+  gem route all constrain the next action. Starting a new cycle is an explicit
+  spending authorization, not a reset caused by navigating the page. Replaying
+  a closed cycle does not reactivate it.
+- **Equipment:** named loadouts are bot-managed priority lists, not game preset
+  slots. The server selects usable owned cards in priority order up to observed
+  capacity, falling back past known unavailable choices. Unknown ownership or
+  capacity requires observation. Preview distinguishes missing cards and
+  capacity exclusions and shows additions/removals. Equipment changes happen
+  only between runs. Saving or publishing a selection does not immediately
+  change the equipped set; explicit Apply uses the same execution gates.
+- **Receipts and recovery:** Cards activity shows queued, blocked, confirmed, and
+  reconciliation states with operation IDs and evidence references. Confirmed
+  card/slot purchases appear once in the existing gem ledger; equipment events
+  are non-monetary. Unknown spend is never displayed as zero. After interrupted
+  purchase or equipment input, recovery verifies the prior effect before any
+  further mutation. It retains pending allowance for unresolved spending and
+  enriches the original receipt instead of issuing a second debit. Explicit
+  retry uses the original intent; repeated idempotency keys do not buy again.
+  Cancellation after dispatch cannot undo a purchase or erase recovery work.
+- **Fleet:** assigning an immutable program revision publishes account-owned
+  configuration and preserves each account's own budget and collection. A
+  publication can remain **Pending on worker**, including for offline accounts;
+  **Active on worker** requires acknowledgment of that exact Cards overlay.
+  Bulk refresh/configuration results may partially succeed and show each account's
+  reason. Paid and equipment commands are per-account detail actions; stale
+  account, generation, lease, or program authority is fenced at execution.
+
+The following bail-outs describe the legacy Workshop shopping visit. Cards uses
+its own bounded visit and retains navigation ownership through verified return
+home or an explicit stopped/reconciliation state. Modules, relics, the shop, and
+Ultimate Weapon selection are outside this Cards feature.
 
 **Bail-outs.** Any of the following ends the visit immediately and taps the
 Battle tab on the way out, best-effort, whether or not the tap budget has

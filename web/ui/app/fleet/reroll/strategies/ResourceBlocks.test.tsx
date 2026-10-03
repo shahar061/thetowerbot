@@ -200,3 +200,20 @@ test("an out-of-order gem slot is flagged inline only when rules are supplied", 
   renderLane("gems", { gems: outOfOrder });
   expect(screen.queryByText("Lab slots must unlock in increasing order.")).not.toBeInTheDocument();
 });
+
+test("Cards goal picker retains unresolved IDs and stores stable references", () => {
+  const { onGemsChange } = renderLane("gems", { gems: { ...blockGems, blocks: [{ id: "ref", type: "card_goal", goal_id: "legacy-missing" }] }, cardProgram: { version: 1, gem_cap: 40, goals: [{ id: "damage-goal", kind: "acquire", targets: [{ card_id: "cards.damage", min_level: null }] }], loadouts: [], selected_loadout_id: null } });
+  fireEvent.click(screen.getByRole("button", { name: "Select Cards goal legacy-missing" }));
+  expect(screen.getByRole("option", { name: /Unknown goal: legacy-missing/ })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Cards program goal"), { target: { value: "damage-goal" } });
+  expect(onGemsChange.mock.calls.at(-1)![0].blocks[0]).toEqual({ id: "ref", type: "card_goal", goal_id: "damage-goal" });
+});
+
+test("unknown legacy card names remain selected until deliberately repaired", () => {
+  const { onGemsChange } = renderLane("gems", { gems: { ...blockGems, blocks: [{ id: "old", type: "buy_cards", purpose: "until_cards", cards: ["Old Card Name"] }] }, cardCatalog: { cards: [{ card_id: "cards.damage", name: "Damage", max_level: 7 }], max_gem_slots: 21 } });
+  fireEvent.click(screen.getByRole("button", { name: "Select Cards until Old Card Name" }));
+  expect(screen.getByRole("option", { name: /Unknown legacy card: Old Card Name/ })).toHaveProperty("selected", true);
+  fireEvent.change(screen.getByLabelText("Block name"), { target: { value: "Keep old target" } });
+  expect(onGemsChange.mock.calls.at(-1)![0].blocks[0].cards).toEqual(["Old Card Name"]);
+  expect(screen.queryByLabelText("Cards (comma separated)")).not.toBeInTheDocument();
+});

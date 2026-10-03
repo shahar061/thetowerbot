@@ -1,6 +1,6 @@
 import type { BuildRouteDocument } from "./buildRoute";
 
-export type SpendingLane = "workshop" | "battle" | "gems" | "labs";
+export type SpendingLane = "workshop" | "battle" | "gems" | "labs" | "cards";
 export type ProgramLane = "workshop" | "battle";
 export type LevelCap = { base: number; per_level_of?: string; step?: number };
 type BlockBase = { id: string; label?: string };

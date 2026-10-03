@@ -65,7 +65,7 @@ beforeEach(() => {
   vi.spyOn(window, "prompt").mockReturnValue("copy");
 });
 
-const interval = () => screen.getByLabelText("Scan interval (s)") as HTMLInputElement;
+const interval = () => screen.getByLabelText("Scan interval, in battle (s)") as HTMLInputElement;
 const selector = () => screen.getByLabelText("Strategy") as HTMLSelectElement;
 
 describe("StrategyPage", () => {
@@ -95,8 +95,8 @@ describe("StrategyPage", () => {
 
   it("saving sends the whole profile under the selected name", async () => {
     render(<StrategyPage />);
-    await waitFor(() => screen.getByLabelText("Scan interval (s)"));
-    fireEvent.blur(screen.getByLabelText("Scan interval (s)"), {
+    await waitFor(() => screen.getByLabelText("Scan interval, in battle (s)"));
+    fireEvent.blur(screen.getByLabelText("Scan interval, in battle (s)"), {
       target: { value: "5" },
     });
     fireEvent.click(screen.getByText("Save"));
@@ -116,13 +116,13 @@ describe("StrategyPage", () => {
 
   it("Revert discards local edits without calling the server", async () => {
     render(<StrategyPage />);
-    await waitFor(() => screen.getByLabelText("Scan interval (s)"));
-    fireEvent.blur(screen.getByLabelText("Scan interval (s)"), {
+    await waitFor(() => screen.getByLabelText("Scan interval, in battle (s)"));
+    fireEvent.blur(screen.getByLabelText("Scan interval, in battle (s)"), {
       target: { value: "5" },
     });
     fireEvent.click(screen.getByText("Revert"));
     await waitFor(() =>
-      expect(screen.getByLabelText("Scan interval (s)").getAttribute("value")).toBe("2"),
+      expect(screen.getByLabelText("Scan interval, in battle (s)").getAttribute("value")).toBe("2"),
     );
     expect(api.saveStrategy).not.toHaveBeenCalled();
   });
@@ -130,8 +130,8 @@ describe("StrategyPage", () => {
   it("shows the server's reason when a save is rejected", async () => {
     api.saveStrategy.mockRejectedValue(new Error("interval: must be between 0.1 and 3600"));
     render(<StrategyPage />);
-    await waitFor(() => screen.getByLabelText("Scan interval (s)"));
-    fireEvent.blur(screen.getByLabelText("Scan interval (s)"), {
+    await waitFor(() => screen.getByLabelText("Scan interval, in battle (s)"));
+    fireEvent.blur(screen.getByLabelText("Scan interval, in battle (s)"), {
       target: { value: "9999" },
     });
     fireEvent.click(screen.getByText("Save"));
@@ -192,7 +192,7 @@ describe("StrategyPage", () => {
 
   it("a clean tab converges on a remote change to the profile it is showing", async () => {
     render(<StrategyPage />);
-    await waitFor(() => screen.getByLabelText("Scan interval (s)"));
+    await waitFor(() => screen.getByLabelText("Scan interval, in battle (s)"));
     api.fetchStrategy.mockResolvedValue({ ...strategy, interval: 9 });
 
     sync.onChange!();
@@ -202,7 +202,7 @@ describe("StrategyPage", () => {
 
   it("a dirty tab keeps its draft but re-baselines on what the server holds", async () => {
     render(<StrategyPage />);
-    await waitFor(() => screen.getByLabelText("Scan interval (s)"));
+    await waitFor(() => screen.getByLabelText("Scan interval, in battle (s)"));
     fireEvent.blur(interval(), { target: { value: "5" } });
     await waitFor(() => expect(interval().value).toBe("5"));
 
@@ -221,7 +221,7 @@ describe("StrategyPage", () => {
   it("asks before discarding unsaved edits on a profile switch", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<StrategyPage />);
-    await waitFor(() => screen.getByLabelText("Scan interval (s)"));
+    await waitFor(() => screen.getByLabelText("Scan interval, in battle (s)"));
     fireEvent.blur(interval(), { target: { value: "5" } });
     await waitFor(() => expect(interval().value).toBe("5"));
     api.fetchStrategy.mockClear();
@@ -255,7 +255,7 @@ describe("StrategyPage", () => {
     let release: (v: unknown) => void = () => {};
     api.saveStrategy.mockReturnValue(new Promise((r) => (release = r)));
     render(<StrategyPage />);
-    await waitFor(() => screen.getByLabelText("Scan interval (s)"));
+    await waitFor(() => screen.getByLabelText("Scan interval, in battle (s)"));
     fireEvent.blur(interval(), { target: { value: "5" } });
 
     const save = screen.getByText("Save");

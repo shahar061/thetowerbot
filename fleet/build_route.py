@@ -7,6 +7,7 @@ import re
 from typing import Any, Mapping
 
 import upgrades
+from card_models import CardProgram
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:
@@ -472,11 +473,13 @@ class RouteBaseline:
     gems: GemRoute
     labs: LabRoute
     rules: RouteRules = field(default_factory=RouteRules)
+    cards: CardProgram | None = None
+    _cards_persisted: bool = field(default=True, repr=False, compare=False)
 
     @classmethod
     def from_dict(cls, value: object) -> RouteBaseline:
         raw = _mapping(value, "baseline")
-        _keys(raw, {"workshop", "battle", "gems", "labs", "rules"})
+        _keys(raw, {"workshop", "battle", "gems", "labs", "rules", "cards"})
         workshop_raw = _mapping(raw.get("workshop", {}), "workshop")
         gems_raw = _mapping(raw.get("gems", {}), "gems")
         workshop = WorkshopRoute.from_dict(workshop_raw)
@@ -484,6 +487,16 @@ class RouteBaseline:
         gems = GemRoute.from_dict(gems_raw)
         labs = LabRoute.from_dict(raw.get("labs", {}))
         rules = _migrated_rules(raw.get("rules"), workshop_raw, gems_raw, workshop, gems)
+        from card_program import normalize_legacy_gems, parse_program
+        declared_cards = raw.get("cards")
+        cards = parse_program(declared_cards) if declared_cards is not None else None
+        persisted = cards is not None
+        if cards is None and gems.mode == "blocks":
+            cards, _ = normalize_legacy_gems(list(gems.blocks), None)
+        goals = {goal.id for goal in cards.goals} if cards else set()
+        for block in gems.blocks:
+            if block.get("type") == "card_goal" and block["goal_id"] not in goals:
+                raise ValueError("card goal block references unknown program goal")
         if rules.coins.lab_share.mode == "just_in_time" and not is_lab_list(labs):
             raise ValueError("just_in_time saving needs a ranked lab list in the labs lane")
         from fleet.resource_blocks import check_pool_limits
@@ -491,12 +504,51 @@ class RouteBaseline:
                           max_price_pct=rules.labs.pool.max_price_pct_of_wallet)
         # Dual-write for one release: older workers still read the old fields.
         return cls(replace(workshop, coin_spend_limit_pct=rules.coins.workshop_spend_limit_pct),
-                   battle, replace(gems, spend_limit_pct=rules.gems.spend_limit_pct), labs, rules)
+                   battle, replace(gems, spend_limit_pct=rules.gems.spend_limit_pct), labs,
+                   rules, cards, persisted)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"workshop": _workshop_dict(self.workshop), "battle": asdict(self.battle),
+        result = {"workshop": _workshop_dict(self.workshop), "battle": asdict(self.battle),
                 "gems": asdict(self.gems), "labs": asdict(self.labs),
                 "rules": self.rules.to_dict()}
+        if self.cards is not None and self._cards_persisted:
+            result["cards"] = self.cards.model_dump(mode="json")
+        return result
+
+
+@dataclass(frozen=True)
+class CardAssignment:
+    """Immutable account-owned Cards overlay; worker is only a delivery hint."""
+    account_id: str
+    strategy_id: str
+    strategy_version: int
+    worker: str | None
+    overlay_id: str
+    published_revision: int
+    program: CardProgram
+
+    @classmethod
+    def from_dict(cls, value: object) -> CardAssignment:
+        from card_program import parse_program
+        raw = _mapping(value, "card assignment")
+        _keys(raw, {"account_id", "strategy_id", "strategy_version", "worker",
+                    "overlay_id", "published_revision", "program"})
+        for key in ("account_id", "strategy_id", "overlay_id"):
+            _rule_id(raw.get(key))
+        for key in ("strategy_version", "published_revision"):
+            if type(raw.get(key)) is not int or raw[key] < 1:
+                raise ValueError(f"invalid card assignment {key}")
+        worker = raw.get("worker")
+        if worker is not None and (not isinstance(worker, str) or
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", worker) is None):
+            raise ValueError("invalid card assignment worker")
+        return cls(raw["account_id"], raw["strategy_id"], raw["strategy_version"],
+                   worker, raw["overlay_id"], raw["published_revision"], parse_program(raw.get("program")))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**{key: getattr(self, key) for key in ("account_id", "strategy_id",
+            "strategy_version", "worker", "overlay_id", "published_revision")},
+            "program": self.program.model_dump(mode="json")}
 
 
 @dataclass(frozen=True)
@@ -574,6 +626,7 @@ class RouteDocument:
     overrides: dict[str, AccountOverride]
     dependencies: dict[str, tuple[str, ...]]
     assignments: dict[str, StrategyAssignment] = field(default_factory=dict)
+    card_assignments: dict[str, CardAssignment] = field(default_factory=dict)
 
     @classmethod
     def compatibility(cls) -> RouteDocument:
@@ -591,7 +644,7 @@ class RouteDocument:
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> RouteDocument:
         raw = _mapping(value, "route")
-        _keys(raw, {"schema", "revision", "authored_at", "baseline", "overrides", "dependencies", "assignments"})
+        _keys(raw, {"schema", "revision", "authored_at", "baseline", "overrides", "dependencies", "assignments", "card_assignments"})
         if raw.get("schema") != 1:
             raise ValueError("unsupported route schema")
         revision = raw.get("revision")
@@ -612,6 +665,10 @@ class RouteDocument:
             raise ValueError("invalid route worker name")
         assignments = {worker: StrategyAssignment.from_dict(value)
                        for worker, value in assignments_raw.items()}
+        cards_raw = _mapping(raw.get("card_assignments", {}), "card_assignments")
+        card_assignments = {account: CardAssignment.from_dict(value) for account, value in cards_raw.items()}
+        if any(account != value.account_id for account, value in card_assignments.items()):
+            raise ValueError("card assignment key must match account")
         dependencies_raw = _mapping(raw.get("dependencies", {}), "dependencies")
         dependencies: dict[str, tuple[str, ...]] = {}
         for key, targets in dependencies_raw.items():
@@ -645,7 +702,7 @@ class RouteDocument:
                             _keys(patch, {"priority_ids", "cash_spend_limit_pct",
                                           "draw_chance_pct", "weights", "emergency_survival"})
                             BattlePhase.from_dict({**asdict(phase), **patch})
-        return cls(1, revision, authored_at, baseline, overrides, dependencies, assignments)
+        return cls(1, revision, authored_at, baseline, overrides, dependencies, assignments, card_assignments)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -657,6 +714,7 @@ class RouteDocument:
                           for worker, value in self.overrides.items()},
             "dependencies": {key: list(value) for key, value in self.dependencies.items()},
             "assignments": {worker: value.to_dict() for worker, value in self.assignments.items()},
+            "card_assignments": {account: value.to_dict() for account, value in self.card_assignments.items()},
         }
 
 
@@ -678,9 +736,22 @@ class EffectiveRoute:
     labs: LabRoute
     override_state: str
     rules: RouteRules = field(default_factory=RouteRules)
+    cards: CardProgram | None = None
 
 
 def resolve_route(route: RouteDocument, worker: str, account_id: str) -> EffectiveRoute:
+    effective = _resolve_base_route(route, worker, account_id)
+    overlay = route.card_assignments.get(account_id)
+    if overlay is None:
+        return effective
+    goals = {goal.id for goal in overlay.program.goals}
+    if any(block.get("type") == "card_goal" and block["goal_id"] not in goals
+           for block in effective.gems.blocks):
+        raise ValueError("card overlay incompatible with receiver gem goal references")
+    return replace(effective, cards=overlay.program)
+
+
+def _resolve_base_route(route: RouteDocument, worker: str, account_id: str) -> EffectiveRoute:
     """Apply only a patch proven to belong to this worker's current account."""
     baseline = route.baseline
     assignment = route.assignments.get(worker)
@@ -690,18 +761,18 @@ def resolve_route(route: RouteDocument, worker: str, account_id: str) -> Effecti
         return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
                               baseline.gems, baseline.labs,
                               "assigned" if matches else "inactive_account_changed",
-                              baseline.rules)
+                              baseline.rules, baseline.cards)
     override = route.overrides.get(worker)
     if override is None:
         return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
-                              baseline.gems, baseline.labs, "none", baseline.rules)
+                              baseline.gems, baseline.labs, "none", baseline.rules, baseline.cards)
     if override.account_id != account_id:
         return EffectiveRoute(route.revision, baseline.workshop, baseline.battle,
                               baseline.gems, baseline.labs, "inactive_account_changed",
-                              baseline.rules)
+                              baseline.rules, baseline.cards)
     return apply_rule_patches(base=EffectiveRoute(
         route.revision, baseline.workshop, baseline.battle,
-        baseline.gems, baseline.labs, "active", baseline.rules), patches=override.patches)
+        baseline.gems, baseline.labs, "active", baseline.rules, baseline.cards), patches=override.patches)
 
 
 def apply_rule_patches(base: EffectiveRoute,

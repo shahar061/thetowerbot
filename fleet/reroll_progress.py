@@ -233,7 +233,9 @@ class RerollProgress:
 
     def next_unlock_slot(self) -> int | None:
         """The slot the gem lane unlocks next, from this account's slot record."""
-        return next_unlock_slot(gem_lane_blocks(self._effective_gems()), self.lab_cadence.slot_records())
+        context = getattr(self, 'card_context', None)
+        return next_unlock_slot(gem_lane_blocks(self._effective_gems()), self.lab_cadence.slot_records(),
+                                card_context=context() if context is not None else None)
 
     def speed_target(self) -> float:
         return self.lab_cadence.speed_target()

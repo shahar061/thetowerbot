@@ -311,4 +311,4 @@ def test_the_strategy_routes_are_absent_without_a_store() -> None:
         state=BotState(), sse=SseSink(), bus=EventBus(), db_path=None,
         unknown_dir=config.UNKNOWN_DIR,
     )
-    assert TestClient(app).get("/api/strategies").status_code == 404
+    assert not any(getattr(route, "path", "").startswith("/api/strategies") for route in app.routes)

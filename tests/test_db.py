@@ -630,3 +630,12 @@ def test_buys_and_upgrade_levels(tmp_path: Path) -> None:
     assert runs[1]["buys"] == 2 and runs[2]["buys"] is None
     assert db.run_upgrade_levels(conn, 1) == [{"upgrade_id": "damage", "levels": 2, "spent": 22, "unpriced": 0}]
     assert db.run_upgrade_levels(conn, 2) is None
+
+
+def test_legacy_cards_flow_migration_preserves_row_and_adds_empty_claim(tmp_path: Path) -> None:
+    path = tmp_path / 'legacy.db'
+    with db.connect(path) as conn:
+        conn.execute('ALTER TABLE card_visit_flows DROP COLUMN continuation_claim')
+        conn.execute("INSERT INTO card_visit_flows(operation_id,visit_id,started_at) VALUES('op','visit',1)")
+    with db.connect(path) as conn:
+        assert tuple(conn.execute("SELECT operation_id,visit_id,continuation_claim FROM card_visit_flows").fetchone()) == ('op', 'visit', None)

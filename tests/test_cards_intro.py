@@ -190,3 +190,16 @@ def test_no_committed_page_reads_as_a_popup(name: str) -> None:
 def test_a_pasted_popup_reads_as_one() -> None:
     assert cards_intro.popup_visible(CLAIM, TEMPLATES)
     assert cards_intro.popup_visible(REWARD, TEMPLATES)
+
+
+def test_intro_hands_refresh_to_exclusive_cards_visit() -> None:
+    walk = cards_intro.CardsIntro()
+    requested: list[float] = []
+    walk.queue_refresh = lambda now: requested.append(now) or True
+    walk.visit_owned = lambda: False
+    assert walk.request(now=10.)
+    assert requested == [10.]
+    assert not walk.active
+    walk.visit_owned = lambda: True
+    assert not walk.request(now=11.)
+    assert requested == [10.]

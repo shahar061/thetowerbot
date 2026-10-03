@@ -1,47 +1,14 @@
-"""The recorded Cards page, and everything it deliberately refuses to claim.
-
-One capture exists: menu_cards.png, a 1080x2400 English Cards page on an
-account that owns no card at all. It proves the page identity, the ACTIVE
-"0 / 1" slot band and the locked next slot. It proves nothing about a card
-row, a preset, an in-run lock or a mastery, because none of those are drawn
-on it - so those stay explicitly unknown rather than becoming zero.
-"""
+"""Recorded empty/populated Cards pages preserve explicit unknown coverage."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-import cv2
 import pytest
 
-import config
-import ocr
 
-FIXTURES = Path(__file__).parent / 'fixtures'
-
-
-def recorded(name: str) -> tuple[ocr.TextBox, ...]:
-    return tuple(ocr.TextBox(b['text'], b['confidence'], config.Rect(*b['rect']))
-                 for b in json.loads((FIXTURES / 'ocr' / f'{name}.json').read_text()))
-
-
-def frame(name: str) -> Any:
-    image = cv2.imread(str(FIXTURES / f'{name}.png'))
-    assert image is not None, f'missing fixture: {name}.png'
-    return image
-
-
-def replaced(boxes: tuple[ocr.TextBox, ...], text: str,
-             *, into: str, confidence: float | None = None) -> tuple[ocr.TextBox, ...]:
-    """The recorded boxes with one box's text (and confidence) swapped.
-
-    Geometry is kept exactly where it was measured, so a case only ever
-    changes what the page says - never where the reader believes it sits.
-    """
-    return tuple(ocr.TextBox(into, confidence if confidence is not None else b.confidence, b.rect)
-                 if b.text == text else b for b in boxes)
+from tests.card_fixtures import FIXTURES, frame, recorded, replaced
 
 
 def reading() -> Any:
@@ -211,7 +178,17 @@ def test_the_support_matrix_names_the_cards_evidence_and_its_gaps() -> None:
     assert (FIXTURES / 'ocr' / 'menu_cards.json').exists()
     unsupported = capabilities['unsupported']
     owners = capabilities['unsupported_owners']
-    for scope in ('card_identity_rows', 'card_mastery_ownership', 'card_presets',
+    assert capabilities['card_inventory_evidence'] == [
+        'menu_cards', 'menu_cards_stocked', 'menu_cards_compact_empty',
+        'menu_cards_compact_damage', 'menu_cards_compact_equipped',
+        'menu_cards_compact_restored', 'menu_cards_compact_duplicate',
+    ]
+    for name in capabilities['card_inventory_evidence']:
+        assert (FIXTURES / f'{name}.png').exists()
+        assert (FIXTURES / 'ocr' / f'{name}.json').exists()
+    assert 'card_identity_rows' not in unsupported
+    assert 'cards.identity_on_a_stocked_collection' not in capabilities['unproven']
+    for scope in ('card_mastery_ownership', 'card_presets',
                   'in_run_card_locks'):
         assert scope in unsupported
         assert owners[scope]
@@ -244,3 +221,52 @@ def test_card_fact_keys_can_never_be_mistaken_for_a_catalog_identity() -> None:
     for key in (cards.card_level_key('cards.damage'), cards.card_copies_key('cards.damage')):
         assert key not in ids
         assert key.count('.') == 2
+
+
+def test_stocked_page_is_recognized_without_guessing_hidden_cards() -> None:
+    import cards
+    result = cards.parse_frame(frame("menu_cards_stocked"), recorded("menu_cards_stocked"), now=10.)
+    assert result is not None
+    observed = {item.concept_id: item for item in result.cards}
+    assert observed["cards.damage"].status == "observed"
+    assert observed["cards.damage"].level == 7
+    assert observed["cards.plasma-canon"].status == "unknown"
+    assert result.equipped is None
+    assert cards.effective_stat_inputs(result)["card_bonus"] is None
+
+
+@pytest.mark.parametrize('name,count', [('menu_cards_compact_damage', 0),
+                                      ('menu_cards_compact_equipped', 1)])
+def test_compact_page_legacy_projection_preserves_observation_limits(name: str, count: int) -> None:
+    import cards
+    result = cards.parse_frame(frame(name), recorded(name), now=10.)
+    assert result is not None
+    assert (result.slots.equipped, result.slots.capacity) == (count, 1)
+    observed = {item.concept_id: item for item in result.cards}
+    assert observed['cards.damage'].status == 'observed'
+    assert observed['cards.damage'].level is None and observed['cards.damage'].copies is None
+    assert observed['cards.attack-speed'].status == 'unknown'
+    assert result.equipped == (() if count == 0 else None)
+    assert cards.effective_stat_inputs(result)['card_bonus'] is None
+
+
+def test_stocked_zero_equipment_contradiction_does_not_authorize_a_stat_total() -> None:
+    import cards
+    assert cards.parse_frame(frame('menu_cards_stocked'),
+                             replaced(recorded('menu_cards_stocked'), '14/14', into='0/14'), now=10.) is None
+
+
+def test_negative_timestamp_is_not_a_card_observation() -> None:
+    import cards
+    assert cards.parse_frame(frame('menu_cards_stocked'), recorded('menu_cards_stocked'), now=-1.) is None
+
+
+def test_populated_card_facts_use_card_evidence_instead_of_the_active_counter() -> None:
+    import cards
+    result = cards.parse_frame(frame('menu_cards_stocked'), recorded('menu_cards_stocked'), now=10.)
+    fact = next(f for f in cards.facts(result) if f.concept_id == 'cards.damage.level')
+    assert fact.evidence.raw_name == 'cards.damage'
+    assert fact.evidence.raw_value == '7'
+    assert fact.evidence.rect != result.slots.rect
+    assert fact.evidence.frame_digest == result.frame_digest
+    assert fact.evidence.confidence < result.slots.confidence

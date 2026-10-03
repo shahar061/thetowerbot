@@ -332,6 +332,7 @@ export interface Claims {
 
 /** Mirrors strategy.py's Strategy.to_dict(). */
 export interface Strategy {
+  cards?: import("./cards").CardProgram | null;
   name: string;
   autopilot?: AutopilotPolicy;
   actions: ActionRule[];

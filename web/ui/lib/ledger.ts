@@ -14,6 +14,9 @@ export const LEDGER_EVENTS = new Set([
   "LabResearchStarted",
   "LabSlotUnlocked",
   "Purchased",
+  "CardPurchaseObserved",
+  "CardSlotPurchased",
+  "CardAssignmentObserved",
   "PurchaseSkipped",
   "ShoppingStarted",
   "ShoppingEnded",
@@ -50,6 +53,8 @@ export const FILTER_KINDS = [
   "WORKSHOP_BUY",
   "LAB",
   "CARD_BUY",
+  "CARD_SLOT_BUY",
+  "CARD_ASSIGN",
   "BUY_SKIPPED",
   "CLAIM_SKIPPED",
   "CLAIM_UNCERTAIN",
@@ -170,4 +175,43 @@ export function currencyOptions(
  *  means "not read yet"; for any other currency it means "never tracked". */
 export function balancedCurrencies(payload: LedgerPayload | null): readonly string[] {
   return payload?.balanced ?? DEFAULT_BALANCED;
+}
+
+/** Cards context comes from the durable operation, never the current plan. */
+export function cardLedgerDetails(line: Pick<LedgerLine, "kind" | "detail">): string[] {
+  if (!["CARD_BUY", "CARD_SLOT_BUY", "CARD_ASSIGN"].includes(line.kind)) return [];
+  const detail = line.detail;
+  const object = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const value = (name: string): string =>
+    detail[name] == null || detail[name] === "" ? "unknown" : String(detail[name]);
+  const equipment = (value: unknown): string =>
+    Array.isArray(value) ? value.length ? value.join(", ") : "none" : "unknown";
+  const after = object(detail.snapshot_after), before = object(detail.snapshot_before);
+  const context = [`Source: ${value("source")}`, `Program revision: ${value("program_revision")}`];
+  if (line.kind === "CARD_ASSIGN") {
+    const requested = detail.requested_equipped;
+    const changed = Array.isArray(before.equipped) && Array.isArray(after.equipped)
+      && (before.equipped.length !== after.equipped.length
+        || before.equipped.some(card => !(after.equipped as unknown[]).includes(card)));
+    const partial = detail.result === "canceled" && changed && Array.isArray(requested)
+      && Array.isArray(after.equipped) && (requested.length !== after.equipped.length
+        || requested.some(card => !(after.equipped as unknown[]).includes(card)));
+    const observed = equipment(after.equipped);
+    return [...context, `Loadout: ${value("loadout_id")}`,
+      `Requested equipment: ${equipment(requested)}`,
+      `Before equipment: ${equipment(before.equipped)}`,
+      `Equipment: ${observed === "none" && detail.result !== "canceled" ? "none (verified clear)" : observed}`,
+      `Result: ${value("result")}${partial ? " (partial application)" : ""}`];
+  }
+  const paid = [`Quantity: ${value("quantity")}`, ...context,
+    `Goal: ${value("goal_id")}`, `Budget cycle: ${value("budget_cycle_id")}`];
+  if (line.kind === "CARD_SLOT_BUY") {
+    return [...paid, `Slots: ${before.capacity ?? "?"} → ${after.capacity ?? "?"}`];
+  }
+  const rewards = Array.isArray(detail.rewards) ? detail.rewards.map(item => {
+    const reward = object(item);
+    return `${reward.card_id ?? "Unknown card"} ×${reward.quantity ?? "?"}${reward.level_after != null ? ` · Level ${reward.level_after}` : ""}`;
+  }) : [];
+  return [...paid, ...rewards];
 }

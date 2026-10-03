@@ -15,6 +15,7 @@ export type LabBlock =
   | (Base & { type: "lab_list"; entries: LabListEntry[] })
   | (Base & { type: "wait" });
 export type GemBlock =
+  | (Base & { type: "card_goal"; goal_id: string })
   | (Base & { type: "unlock_lab_slot"; slot: number })
   | (Base & { type: "card_slots"; up_to: number; when_usable_card: boolean })
   | (Base & { type: "buy_cards"; purpose: "card_missions" | "until_cards"; cards?: string[] })
@@ -239,6 +240,7 @@ export function newResourceBlock(type: ResourceBlock["type"], taken: Set<string>
     case "lab_pool": return { id, type, lab_ids: [labId] };
     case "condition": return { id, type, field: "best_tier_1_wave", cmp: "gte", value: 30, then: [], else: [] };
     case "unlock_lab_slot": return { id, type, slot: options.slot ?? 3 };
+    case "card_goal": return { id, type, goal_id: "" };
     case "card_slots": return { id, type, up_to: 10, when_usable_card: true };
     case "buy_cards": return { id, type, purpose: "card_missions" };
     case "save_for": return { id, type, target: "modules" };

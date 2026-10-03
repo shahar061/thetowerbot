@@ -27,6 +27,7 @@ from missions_claim import MissionsClaim
 from missions_screen import MissionsReadings
 from missions_visit import MissionsVisit
 from account_state import AccountState
+from card_models import CardCommand, CardOperation, CardPlanContext
 
 import logging
 import hashlib
@@ -38,6 +39,7 @@ import threading
 import time
 import traceback
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -114,6 +116,7 @@ class BotRunner:
         binding_path: Path | None = None,
         supervisor_path: Path | None = None,
         game_package: str | None = None,
+        standalone_expected_account: str | None = None,
         host_adapter: BlueStacksAdapter | None = None,
         host_instance: str | None = None,
         host_popup_checker: Callable[[str], str] | None = None,
@@ -145,6 +148,12 @@ class BotRunner:
         self._binding_path = binding_path
         self._supervisor_path = supervisor_path
         self._game_package = game_package
+        self._standalone_expected_account = standalone_expected_account
+        if standalone_expected_account is not None and (
+                not standalone_expected_account.strip() or attempt is None
+                or binding_path is None or supervisor_path is None or unknown_dir is None
+                or not game_package or host_adapter is not None):
+            raise ValueError("standalone identity requires a private supervised attempt")
         if (host_adapter is None) != (host_instance is None) or (
             host_adapter is not None and (attempt is None or supervisor_path is None)
         ):
@@ -221,6 +230,9 @@ class BotRunner:
             }
             if self._supervisor is not None:
                 status["recovery"] = asdict(self._supervisor.status())
+            runtime = getattr(self._bot, 'card_runtime', None)
+            if runtime is not None:
+                status['cards'] = runtime.status()
             return status
 
     def identity(self) -> dict[str, str | None]:
@@ -282,6 +294,23 @@ class BotRunner:
         identity_evidence = verify_restart_account(
             device=IdentityWalkDevice(supervisor), observe=observer,
             supervisor=supervisor, expected_account=expected_account)
+        if self._standalone_expected_account is not None:
+            if identity_evidence.account_id != self._standalone_expected_account:
+                supervisor.invalidate_identity("standalone_account_mismatch")
+                raise RecoveryBlocked("standalone account mismatch")
+            try:
+                import db
+                path = self.account_state.safety_path
+                if path is None or self._binding_path is None:
+                    raise ValueError("standalone safety database unavailable")
+                db.bind_account(path, identity_evidence.account_id)
+                if not self._binding_path.exists():
+                    attempt.persist(self._binding_path, identity_evidence)
+                if self._progress is not None:
+                    self._progress.bind_account(identity_evidence.account_id)
+            except Exception:
+                supervisor.invalidate_identity("identity_persist_failed")
+                raise
         self._bind_fact_scope(identity_evidence)
 
     def reverify_identity(self) -> None:
@@ -293,7 +322,7 @@ class BotRunner:
         """
         supervisor = self._supervisor
         expected = supervisor.expected_account if supervisor is not None else None
-        if self._reroll_progress is None or not expected:
+        if (self._reroll_progress is None and self._standalone_expected_account is None) or not expected:
             raise RecoveryBlocked("in-process account re-verification unavailable")
         self._verify_account_walk(expected)
 
@@ -405,6 +434,68 @@ class BotRunner:
                 raise RunnerError("identity incident: first-launch account unverified", 503) from None
         return account
 
+    def cards_context(self) -> CardPlanContext | None:
+        """Read current Cards scope/program without dispatch or implicit budget creation."""
+        with self._lock:
+            runtime = getattr(self._bot, 'card_runtime', None)
+            return runtime.context() if runtime is not None else None
+
+    def request_cards(self, command: CardCommand) -> CardOperation:
+        """Durably queue in battle or pause; execution belongs to the scan scheduler."""
+        with self._lock:
+            runtime = getattr(self._bot, 'card_runtime', None)
+            if not self._running_locked() or runtime is None:
+                raise RunnerError('Start the account bot before requesting Cards work', 409)
+            try:
+                return runtime.request(command)
+            except (ValueError, KeyError) as exc:
+                raise RunnerError(str(exc), 409) from None
+
+    def update_cards_automation(self, *, scope: FactScope, program_revision: str,
+                                apply: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """Check current Cards authority and patch existing strategy controls atomically.
+
+        The callback must not re-enter runner methods. The web control adapter
+        owns validation, persistence, rollback and ControlChanged publication.
+        """
+        return self.with_cards_authority(scope=scope, program_revision=program_revision, apply=apply)
+
+    def with_cards_authority(self, *, scope: FactScope, program_revision: str,
+                             apply: Callable[[], dict[str, Any]], require_local: bool = False) -> dict[str, Any]:
+        """Shared identity/route/control guard. Callback never re-enters the runner."""
+        with self._lock:
+            runtime = getattr(self._bot, 'card_runtime', None)
+            if not self._running_locked() or runtime is None:
+                raise RunnerError('cards_runtime_unavailable', 503)
+            route_runtime = getattr(getattr(self._bot, 'reroll_progress', None), 'route_runtime', None)
+            route_guard = route_runtime.store._locked() if route_runtime is not None else nullcontext()
+            # All mutators participate in these guards. File publication may
+            # change the effective program independently of the runner lock.
+            try:
+                with route_guard, self.account_state.guard_scope(scope), self._controls.transaction():
+                    context = runtime.context()
+                    if (context is None or context.scope != scope
+                            or context.program_revision != program_revision):
+                        raise RunnerError('cards_preconditions_changed', 409)
+                    if require_local and context.config_owner != 'local':
+                        raise RunnerError('cards_configuration_owner_changed', 409)
+                    return apply()
+            except ValueError as exc:
+                raise RunnerError(str(exc), 409) from None
+
+    def start_cards_cycle(self, *, scope: FactScope, program_revision: str,
+                          cycle_id: str, cap: int) -> dict[str, Any]:
+        """Explicit user initiation only; replay never reactivates a closed cycle."""
+        with self._lock:
+            runtime = getattr(self._bot, 'card_runtime', None)
+            if not self._running_locked() or runtime is None:
+                raise RunnerError('Start the account bot before starting a Cards cycle', 409)
+            try:
+                return runtime.start_cycle(scope=scope, program_revision=program_revision,
+                                           cycle_id=cycle_id, cap=cap)
+            except (ValueError, KeyError) as exc:
+                raise RunnerError(str(exc), 409) from None
+
     def request_autopilot(self, command: dict[str, Any]) -> None:
         with self._lock:
             if not self._running_locked() or self._bot is None:
@@ -436,6 +527,8 @@ class BotRunner:
                 raise RunnerError("Collecting stats requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Collecting stats requires a confirmed main menu", 409)
+            if getattr(self._bot, 'card_runtime', None) is not None and self._bot.card_runtime.active:
+                raise RunnerError('A Cards visit owns the menus', 409)
             if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
                 raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.visit.active:
@@ -467,6 +560,8 @@ class BotRunner:
                 raise RunnerError("Visiting missions requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Visiting missions requires a confirmed main menu", 409)
+            if getattr(self._bot, 'card_runtime', None) is not None and self._bot.card_runtime.active:
+                raise RunnerError('A Cards visit owns the menus', 409)
             if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
                 raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.collection.active:
@@ -500,6 +595,8 @@ class BotRunner:
                 raise RunnerError("Claiming missions requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Claiming missions requires a confirmed main menu", 409)
+            if getattr(self._bot, 'card_runtime', None) is not None and self._bot.card_runtime.active:
+                raise RunnerError('A Cards visit owns the menus', 409)
             if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
                 raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.collection.active:
@@ -534,6 +631,8 @@ class BotRunner:
                 raise RunnerError("Claiming milestones requires an unpaused bot", 409)
             if self._bot.screen_state.value != "MAIN_MENU":
                 raise RunnerError("Claiming milestones requires a confirmed main menu", 409)
+            if getattr(self._bot, 'card_runtime', None) is not None and self._bot.card_runtime.active:
+                raise RunnerError('A Cards visit owns the menus', 409)
             if getattr(self._bot, "cards_intro", None) is not None and self._bot.cards_intro.active:
                 raise RunnerError("The first Cards visit is already walking the menus", 409)
             if self.collection.active:
@@ -658,6 +757,11 @@ class BotRunner:
                                             is not None else None),
                         )
                     expected_account = self._verified_account()
+                    if self._standalone_expected_account is not None:
+                        if expected_account not in (None, self._standalone_expected_account):
+                            raise RunnerError("standalone saved account mismatch", 409)
+                        expected_account = self._standalone_expected_account
+                        self.account_state.invalidate_scope("standalone_verification_required")
                     self._supervisor = DeviceSupervisor(
                         path=self._supervisor_path, endpoint=self._attempt.endpoint,
                         connect=connect,
@@ -682,7 +786,7 @@ class BotRunner:
                         if failure.state is RecoveryState.QUARANTINED:
                             raise IdentityError(f"identity incident: {failure.reason}")
                         raise EmulatorError(failure.reason)
-                    if self._reroll_progress is not None:
+                    if self._reroll_progress is not None or self._standalone_expected_account is not None:
                         if self._unknown_dir is None or expected_account is None:
                             raise RecoveryBlocked("reroll account evidence unavailable")
                         self._verify_account_walk(expected_account)
@@ -817,8 +921,8 @@ class BotRunner:
                 bot_kwargs['recovery'] = recovery
             if self._reroll_progress is not None:
                 bot_kwargs["reroll_progress"] = self._reroll_progress
-                if self._supervisor is not None:
-                    bot_kwargs["identity_reverifier"] = self.reverify_identity
+            if (self._reroll_progress is not None or self._standalone_expected_account is not None) and self._supervisor is not None:
+                bot_kwargs["identity_reverifier"] = self.reverify_identity
             bot = self._bot_factory(**bot_kwargs)
 
             self._bot = bot

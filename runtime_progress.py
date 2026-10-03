@@ -278,6 +278,12 @@ class ProgressRecorder:
                                    or current['outcome'] != outcome
                                    or current['evidence_ref'] != evidence_ref))
 
+    def observe_cards(self, status: dict[str, Any]) -> None:
+        """Cards freshness/ownership shares the existing capability heartbeat."""
+        outcome = 'actionable_unknown' if status.get('active') else 'progress' if status.get('fresh') else 'waiting'
+        self.observe_capability('cards', outcome,
+            str(status.get('operation_id') or status.get('reason') or 'inventory_unobserved'), 120)
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             self._now()

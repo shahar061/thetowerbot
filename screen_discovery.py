@@ -109,10 +109,10 @@ _REPLAY_GAPS = {
 # What remains out of scope, and who owns it. An entry with no owner is a
 # standing property of the design rather than work someone will pick up.
 _UNSUPPORTED_OWNERS = {
-    # A stocked v29.0.2 Cards page now shows identity rows and presets, but
-    # the current reader refuses its changed heading geometry. The captures
-    # are study material, not evidence that those rows are actionable.
-    'card_identity_rows': 'B08',
+    # Populated identity rows are read; scroll endpoints and action sequences are not.
+    'card_collection_coverage': 'B08',
+    'card_reward_sequences': 'C02',
+    'card_equipment_toggles': 'C02',
     'card_mastery_ownership': 'B08',
     'card_presets': 'B08',
     'in_run_card_locks': 'B08',
@@ -161,15 +161,15 @@ _MISSIONS_TITLE_TO_COUNT = (385, 425)
 # slash, and "2/8 Missions" would become indistinguishable from "28 missions".
 _MISSIONS_COUNT = re.compile(r'(\d+)\s*/\s*(\d+)\s*missions', re.I)
 
-# Three independent anchors measured on the recorded Cards capture: the page
-# title at (30, 246, 174, 45), the ACTIVE heading at (436, 504, 208, 52) and
-# the equipped band beneath it at (502, 555, 77, 45). The capture also shows
-# BUY NEW CARD, INVENTORY and an Unlock New Slot tile; those corroborate the
-# page for the cards reader but are not part of its identity, because a
-# scrolled or later-stage page may not draw all of them.
-_CARDS_TITLE_Y = (226, 266)
-_CARDS_ACTIVE_Y = (484, 524)
-_CARDS_SLOTS_Y = (535, 575)
+# Matched profiles of title/ACTIVE/count bands from real captures. The
+# compact layout shares the stocked title position but not its other bands;
+# accepting a union of coordinates would allow unrecorded mixed layouts.
+# INVENTORY is optional because a scrolled page may not draw it.
+_CARDS_LAYOUTS = {
+    'cards.empty.1080x2400.en': ((226, 266), (484, 524), (535, 575)),
+    'cards.stocked.1080x2400.en': ((91, 131), (484, 524), (535, 575)),
+    'cards.compact.1080x2400.en': ((91, 131), (351, 391), (400, 440)),
+}
 _CARDS_SLOTS = re.compile(r'(\d+)\s*/\s*(\d+)')
 
 # The MILESTONES ladder. Measured on menu_milestones_claimable, which - like
@@ -329,16 +329,39 @@ def missions_count(boxes: tuple[ocr.TextBox, ...]) -> tuple[int, int] | None:
     return (shown, offered) if shown <= offered else None
 
 
+def _cards_profile(boxes: tuple[ocr.TextBox, ...]) -> tuple[str, ocr.TextBox] | None:
+    """One coherent measured layout, including its unique slot band."""
+    titles = [b for b in boxes if tiles.normalise(b.text) == 'cards'
+              and .9 <= b.confidence <= 1.]
+    active = [b for b in boxes if tiles.normalise(b.text) == 'active'
+              and .9 <= b.confidence <= 1.]
+    if len(titles) != 1 or len(active) != 1 or not 0 <= titles[0].rect.x <= 70:
+        return None
+    for layout, (title_y, active_y, slots_y) in _CARDS_LAYOUTS.items():
+        if not (title_y[0] <= titles[0].rect.y <= title_y[1]
+                and active_y[0] <= active[0].rect.y <= active_y[1]):
+            continue
+        matches = [b for b in boxes if .9 <= b.confidence <= 1.
+                   and slots_y[0] <= b.rect.y <= slots_y[1]
+                   and _CARDS_SLOTS.fullmatch(b.text.strip())]
+        if len(matches) == 1:
+            return layout, matches[0]
+    return None
+
+
+def cards_layout_id(boxes: tuple[ocr.TextBox, ...]) -> str | None:
+    profile = _cards_profile(boxes)
+    return profile[0] if profile is not None else None
+
+
 def cards_slot_band(boxes: tuple[ocr.TextBox, ...]) -> ocr.TextBox | None:
     """The one trusted "N / M" box under the ACTIVE heading, or None.
 
     Matched against the raw text for the same reason the missions band is:
     tiles.normalise strips the slash, and "0/1" would become "01".
     """
-    matches = [b for b in boxes if b.confidence >= .9
-               and _CARDS_SLOTS_Y[0] <= b.rect.y <= _CARDS_SLOTS_Y[1]
-               and _CARDS_SLOTS.fullmatch(b.text.strip())]
-    return matches[0] if len(matches) == 1 else None
+    profile = _cards_profile(boxes)
+    return profile[1] if profile is not None else None
 
 
 def cards_slots(boxes: tuple[ocr.TextBox, ...]) -> tuple[int, int] | None:
@@ -359,12 +382,8 @@ def _discover_cards(boxes: tuple[ocr.TextBox, ...]) -> ScreenDiscovery:
     # as a card collection would put slot counts on a purchase grid.
     if any(_is_upgrade_heading(b) for b in boxes):
         return ScreenDiscovery(None, False, 'unsupported_layout')
-    title = _single(boxes, 'cards', _CARDS_TITLE_Y)
-    active = _single(boxes, 'active', _CARDS_ACTIVE_Y)
-    if title is None or active is None or cards_slots(boxes) is None:
+    if cards_slots(boxes) is None:
         return ScreenDiscovery(None, False, 'ambiguous_or_unreadable_heading')
-    if not 0 <= title.rect.x <= 70:
-        return ScreenDiscovery(None, False, 'unsupported_layout')
     return ScreenDiscovery('cards.inventory', True, 'recorded_layout')
 
 
@@ -487,6 +506,10 @@ def capabilities() -> dict[str, Any]:
         'resolution': [1080, 2400],
         'locale': 'en',
         'readers': dict(_RECORDED_READERS),
+        'card_inventory_evidence': ['menu_cards', 'menu_cards_stocked',
+                                    'menu_cards_compact_empty', 'menu_cards_compact_damage',
+                                    'menu_cards_compact_equipped', 'menu_cards_compact_restored',
+                                    'menu_cards_compact_duplicate'],
         'recorded_verified': [reader for reader, _ in _RECORDED_READERS],
         'existing_runtime_supported': [],
         'recorded_unlock_stages': {screen: list(names)
@@ -538,11 +561,10 @@ def capabilities() -> dict[str, Any]:
             # its context outright instead of guessing at anchors.
             'modules_screen_layout', 'modules_banner_pity_state',
             'module_upgrade_merge_actions',
-            # The recorded Cards page is an account with an empty collection:
-            # its slot band reads exactly, and every tile below it is a
-            # padlock. So the page is supported and the collection is not,
-            # and those two facts have to stay visibly separate.
-            'card_identity_rows', 'card_mastery_ownership', 'card_presets',
+            # Twelve complete populated tiles are readable; partial rows do not
+            # establish collection coverage or calibrated action sequences.
+            'card_collection_coverage', 'card_reward_sequences', 'card_equipment_toggles',
+            'card_mastery_ownership', 'card_presets',
             'in_run_card_locks', 'card_passive_or_active_classification',
             'card_slot_purchase_actions',
             # Not "no capture exists" for the page - one does - but "no
@@ -561,14 +583,6 @@ def capabilities() -> dict[str, Any]:
                 'rectangles, which shows the reader does not key off row '
                 'index but is not a second recorded ordering. A multi-mission '
                 'capture of the same set reordered would settle it.',
-            'cards.identity_on_a_stocked_collection':
-                'The one recorded Cards page belongs to an account with an '
-                'empty collection. Its title and ACTIVE band are read where '
-                'they were measured, and nothing shows that those anchors '
-                'stay put once rows, presets and a scrollable inventory are '
-                'drawn under them. A capture of a stocked collection would '
-                'settle it, and would also be the first evidence a card row '
-                'reader could be built on.',
             'game_over.result.low_confidence_title_refusal':
                 'parse_frame() refuses the whole modal - screen_id None, no '
                 'fields - when the GAMESTATS title is not found at trusted '

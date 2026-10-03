@@ -294,6 +294,38 @@ class Purchased(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class CardPurchaseObserved(Event):
+    operation_id: str
+    account_id: str
+    result: str
+    verified_amount: int | None
+    gems_before: int | None = None
+    gems_after: int | None = None
+    dry_run: bool = False
+    transaction_key: str | None = None
+    rewards: tuple[dict[str, Any], ...] = ()
+    snapshot_before: dict[str, Any] | None = None
+    snapshot_after: dict[str, Any] | None = None
+    quantity: int | None = None
+    source: str | None = None
+    program_revision: str | None = None
+    goal_id: str | None = None
+    budget_cycle_id: str | None = None
+    loadout_id: str | None = None
+    requested_equipped: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class CardSlotPurchased(CardPurchaseObserved):
+    pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class CardAssignmentObserved(CardPurchaseObserved):
+    pass
+
+
+@dataclass(frozen=True, kw_only=True)
 class PurchaseSkipped(Event):
     """One thing not bought, and why.
 

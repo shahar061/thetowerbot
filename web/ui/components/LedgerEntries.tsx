@@ -3,7 +3,7 @@
 import { CurrencyAmount } from "@/components/CurrencyAmount";
 import { CurrencyGlyph } from "@/components/CurrencyGlyph";
 import { clock } from "@/lib/format";
-import type { LedgerEntry } from "@/lib/ledger";
+import { cardLedgerDetails, type LedgerEntry } from "@/lib/ledger";
 import type { LedgerLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -111,6 +111,7 @@ export function LedgerEntries({ entries, balanced = ["coins", "gems"], kind, onK
                     </td>
                     <td className="py-1.5 pr-3">
                       {head.item ?? "—"}
+                      {cardLedgerDetails(head).map((detail,index)=><p key={index} className="text-xs text-muted-foreground">{detail}</p>)}
                       {rehearsal ? (
                         <span className="ml-1.5 text-xs text-muted-foreground">
                           rehearsal

@@ -308,7 +308,7 @@ export async function patchControl(
 
 type Capability = "control" | "lifecycle" | "strategies" | "autopilot" | "advisor" | "fleet" | "telegram";
 
-function mutationHeaders(): Record<string, string> {
+export function mutationHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "X-Tower-Api-Version": "1",
     "X-Tower-Backend-Hash": process.env.NEXT_PUBLIC_BACKEND_HASH ?? "",
@@ -413,3 +413,13 @@ export const claimMissions = () =>
  *  above for the shared contract. */
 export const claimMilestones = () =>
   send<ClaimSnapshot>("/api/milestones/claim", "POST", undefined, "lifecycle");
+
+/** Revision-aware Cards save; legacy fetchStrategy/saveStrategy remain unchanged. */
+export async function fetchStrategyRevision(context: import("./cards").CardClientContext, name: string, signal?: AbortSignal) {
+  const { cardRequest } = await import("./cards");
+  return cardRequest<Strategy>(context, `/api/strategies/${encodeURIComponent(name)}`, {signal});
+}
+export async function saveStrategyRevision(context: import("./cards").CardClientContext, name: string, body: Strategy, etag: string, signal?: AbortSignal, cardsPreconditions?: import("./cards").CardPreconditions) {
+  const { cardWrite } = await import("./cards");
+  return cardWrite<Strategy>(context, `/api/strategies/${encodeURIComponent(name)}`, body, signal, "PUT", {"If-Match": etag, ...(cardsPreconditions ? {"X-Cards-Preconditions": JSON.stringify(cardsPreconditions)} : {})});
+}

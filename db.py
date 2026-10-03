@@ -121,6 +121,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS ledger_receipt_currency_idx
 CREATE UNIQUE INDEX IF NOT EXISTS ledger_receipt_unknown_idx
     ON ledger(json_extract(detail, '$.receipt_key'))
     WHERE json_extract(detail, '$.receipt_key') IS NOT NULL AND currency IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_card_operation_idx
+    ON ledger(json_extract(detail, '$.card_operation_id'))
+    WHERE json_extract(detail, '$.card_operation_id') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ledger_ts_idx   ON ledger(ts);
 CREATE INDEX IF NOT EXISTS ledger_kind_idx ON ledger(kind);
 
@@ -148,6 +151,90 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 CREATE INDEX IF NOT EXISTS transactions_stage_idx ON transactions(stage);
 CREATE INDEX IF NOT EXISTS transactions_ts_idx    ON transactions(ts);
+
+CREATE TABLE IF NOT EXISTS card_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    observed_at REAL NOT NULL,
+    detail TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS card_observation_account ON card_observations(account_id, id);
+CREATE TABLE IF NOT EXISTS card_operations (
+    operation_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    program_revision TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    budget_cycle_id TEXT NOT NULL,
+    action_sequence INTEGER NOT NULL DEFAULT 0,
+    transaction_key TEXT UNIQUE,
+    status TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    detail TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS card_operation_request
+    ON card_operations(account_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS card_operation_cycle ON card_operations(budget_cycle_id, status);
+CREATE TABLE IF NOT EXISTS card_assignment_intents (
+    operation_id TEXT PRIMARY KEY REFERENCES card_operations(operation_id),
+    detail TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS card_runtime_visit (
+    account_id TEXT PRIMARY KEY,
+    visit_id TEXT NOT NULL,
+    in_run INTEGER NOT NULL DEFAULT 0,
+    captured_at REAL
+);
+CREATE TABLE IF NOT EXISTS card_queue_policies (
+    account_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    policy TEXT NOT NULL,
+    PRIMARY KEY (account_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS card_visit_flows (
+    operation_id TEXT PRIMARY KEY REFERENCES card_operations(operation_id),
+    visit_id TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    home_observed INTEGER NOT NULL DEFAULT 0,
+    stopped_reason TEXT,
+    continuation_claim TEXT
+);
+CREATE TABLE IF NOT EXISTS card_visit_inputs (
+    visit_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('scan','home')),
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    operation_id TEXT NOT NULL REFERENCES card_operations(operation_id),
+    claimed_at REAL NOT NULL,
+    captured_at REAL NOT NULL,
+    frame_digest TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    PRIMARY KEY (visit_id, kind, sequence)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS card_visit_scan_content
+    ON card_visit_inputs(visit_id, frame_digest) WHERE kind='scan';
+CREATE TABLE IF NOT EXISTS card_assignment_steps (
+    operation_id TEXT NOT NULL REFERENCES card_operations(operation_id),
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    verified_at REAL,
+    detail TEXT NOT NULL,
+    PRIMARY KEY (operation_id, sequence)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS card_assignment_unresolved
+    ON card_assignment_steps(operation_id) WHERE verified_at IS NULL;
+CREATE TABLE IF NOT EXISTS card_budget_cycles (
+    cycle_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    cap INTEGER NOT NULL CHECK(cap >= 0),
+    created_at REAL NOT NULL,
+    closed_at REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS card_active_cycle
+    ON card_budget_cycles(account_id) WHERE closed_at IS NULL;
+
 """
 
 
@@ -159,6 +246,9 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    card_flow_columns = {row['name'] for row in conn.execute('PRAGMA table_info(card_visit_flows)')}
+    if 'continuation_claim' not in card_flow_columns:
+        conn.execute('ALTER TABLE card_visit_flows ADD COLUMN continuation_claim TEXT')
     # The index this replaced keyed a ledger line on seq alone, which let only
     # the first line of a multi-currency event in. Idempotent: it exists on a
     # database written before the fix and on nothing created since.
@@ -226,7 +316,8 @@ def bind_account(path: Path | str, account_id: str) -> None:
                     raise ValueError("worker database is bound to another account")
                 return
             for table in ("runs", "events", "ledger", "transactions",
-                          "account_revisions", "account_observations", "run_observations"):
+                          "account_revisions", "account_observations", "run_observations",
+                          "card_observations", "card_operations", "card_budget_cycles"):
                 if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
                     raise ValueError("worker database has unattributed history")
             conn.execute("INSERT INTO account_identity(id, account_id) VALUES (1, ?)",
@@ -673,6 +764,28 @@ def insert_ledger(conn: sqlite3.Connection, row: dict[str, Any], *, commit: bool
     same line, and replacing it would rewrite a balance_after that later
     lines were already computed against.
     """
+    detail = json.loads(row.get("detail") or '{}')
+    operation_id = detail.get('card_operation_id')
+    if operation_id:
+        existing = conn.execute("SELECT id,delta,currency,dry_run,detail FROM ledger WHERE json_extract(detail,'$.card_operation_id')=?",
+                                (operation_id,)).fetchone()
+        if existing is not None:
+            if (existing[1], existing[2], existing[3]) != (row['delta'], row['currency'], row['dry_run']):
+                raise ValueError('conflicting card ledger debit')
+            prior = json.loads(existing[4] or '{}')
+            rewards = {item['position']: item for item in prior.get('rewards', ())}
+            for item in detail.get('rewards', ()):
+                if item['position'] in rewards and rewards[item['position']] != item:
+                    raise ValueError('conflicting card ledger reward')
+                rewards[item['position']] = item
+            merged = {**prior, **{k: v for k, v in detail.items() if v is not None}}
+            merged['rewards'] = [rewards[k] for k in sorted(rewards)]
+            if prior.get('result') == 'confirmed':
+                merged['result'] = 'confirmed'
+            conn.execute('UPDATE ledger SET detail=? WHERE id=?', (json.dumps(merged), existing[0]))
+            if commit:
+                conn.commit()
+            return
     conn.execute(
         """INSERT OR IGNORE INTO ledger
                (seq, ts, kind, item, category, currency, delta, price,

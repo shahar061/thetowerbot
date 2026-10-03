@@ -8,7 +8,7 @@ import { EmulatorRecovery } from "./EmulatorRecovery";
 import { RemoteDeviceView } from "./RemoteDeviceView";
 import { useAccountSelection } from "@/lib/AccountSelection";
 
-const HISTORY = new Set(["/runs/", "/stats/", "/errors/", "/ledger/", "/account/"]);
+const HISTORY = new Set(["/runs/", "/stats/", "/errors/", "/ledger/", "/account/", "/cards/"]);
 
 export function AccountShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -54,6 +54,7 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
           <p className="text-sm text-muted-foreground">Open this worker&apos;s dashboard for its live data and Strategy controls.</p>
           <div className="flex flex-wrap gap-3">
             <a href={selected.dashboard_url!} className="w-fit rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">Open worker dashboard</a>
+            <a href={new URL("cards/", selected.dashboard_url!).href} className="w-fit rounded-md border px-4 py-2 text-sm">Open worker Cards</a>
             <a href={new URL("strategy/", selected.dashboard_url!).href} className="w-fit rounded-md border px-4 py-2 text-sm">Open worker Strategy</a>
           </div>
         </main>

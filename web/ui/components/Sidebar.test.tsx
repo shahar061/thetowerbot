@@ -69,3 +69,7 @@ test("phone menu names the current page, toggles the list, and closes on navigat
   view.rerender(<Sidebar />);
   expect(screen.getByRole("button", { name: "Open menu" })).toHaveAttribute("aria-expanded", "false");
 });
+test('single account navigation exposes Cards',()=>{
+ state.pathname='/cards/';render(<Sidebar/>);
+ expect(screen.getByRole('link',{name:'Cards'})).toHaveAttribute('href','/cards/');
+});
