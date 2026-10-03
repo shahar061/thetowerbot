@@ -275,6 +275,8 @@ def _battle_template(policy: str) -> list[dict[str, Any]]:
         starters = {'defense_absolute': 10, 'thorns': 11, 'damage': 12, 'attack_speed': 1.10, 'health': 20}
         return [
             _pool('opening.battle.starters', list(starters), label='Survival starters', targets=starters),
+            _pool('opening.battle.cheap_defense', ['defense_percent'], label='Cheap Defense %',
+                  targets={'defense_percent': 51}, wallet_share_pct=20),
             _pool('opening.battle.priorities', [*economy, 'defense_absolute', 'thorns', 'health',
                   'coins_per_wave', 'damage', 'attack_speed'],
                   label='Battle priorities', targets={**economy, 'thorns': 51, 'coins_per_wave': 10}),
@@ -311,7 +313,9 @@ def _battle_template(policy: str) -> list[dict[str, Any]]:
          'field': 'wave', 'op': 'lte', 'relative': relative(50, 5, 20),
          'then': [_pool('turtle.battle.economy', list(economy), targets=economy)], 'else': []},
         thorns,
-        _pool('turtle.battle.survival', ['health', 'defense_percent', 'health_regen', 'damage', 'attack_speed'],
+        _pool('turtle.battle.cheap_defense', ['defense_percent'], label='Cheap Defense %',
+              targets={'defense_percent': 53}, wallet_share_pct=10),
+        _pool('turtle.battle.survival', ['health', 'health_regen', 'damage', 'attack_speed'],
               label='Survival'),
     ]
 
