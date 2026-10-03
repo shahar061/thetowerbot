@@ -14,6 +14,7 @@ import config
 from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading,
                         read_confirmation, read_home, read_picker)
 from lab_plan import LabVisitOptions
+from fleet.resource_blocks import LabAction
 from lab_visit import LabVisit
 import ocr
 from supervisor import RecoveryState
@@ -106,6 +107,27 @@ def test_read_only_slot_observer_receives_all_five_slots_with_wall_clock() -> No
     assert observed[0].strip_read()
     assert len(observed[0].jobs) == 5
     assert visit.last_tap is None
+
+
+def test_inspection_selects_idle_slot_after_fresh_strip_confirmation(secured_visit) -> None:
+    planned = LabAction(2, 'labs.health', 1, 'start', 74, 'confirmed idle slot')
+    seen: list[float] = []
+
+    def plan_action(now: float) -> LabAction:
+        seen.append(now)
+        return planned
+
+    visit = secured_visit(plan_action=plan_action)
+    visit.worker = 'worker'
+    visit.request(options=LabVisitOptions(direct_start=True))
+    device = Device()
+    with patch('lab_visit.tap', side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), device, 600.)
+        assert visit.active and visit.selected_action is None and device.taps == []
+        visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), device, 601.)
+    assert seen == [601.]
+    assert visit.selected_action == planned
+    assert visit.last_tap is not None and visit.last_tap[0] == 'open_lab_2'
 
 
 def affordable(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:

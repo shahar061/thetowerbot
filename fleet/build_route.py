@@ -390,12 +390,13 @@ class LabRules:
     idle_fill: str = "leave_idle"
     saving: LabSavingRule = field(default_factory=LabSavingRule)
     filler: LabFillerRule = field(default_factory=LabFillerRule)
+    direct_start: bool = False
     native_repeat: str = "unchanged"
 
     @classmethod
     def from_dict(cls, value: object) -> LabRules:
         raw = _mapping(value, "labs rules")
-        _keys(raw, {"auto_start", "pool", "idle_fill", "saving", "filler", "native_repeat"})
+        _keys(raw, {"auto_start", "pool", "idle_fill", "saving", "filler", "direct_start", "native_repeat"})
         idle_fill = raw.get("idle_fill", "leave_idle")
         if idle_fill not in IDLE_FILLS:
             raise ValueError("unknown idle_fill")
@@ -405,7 +406,8 @@ class LabRules:
         return cls(_flag(raw.get("auto_start", True), "auto_start"),
                    LabPoolRule.from_dict(raw.get("pool", {})), idle_fill,
                    LabSavingRule.from_dict(raw.get("saving", {})),
-                   LabFillerRule.from_dict(raw.get("filler", {})), native_repeat)
+                   LabFillerRule.from_dict(raw.get("filler", {})),
+                   _flag(raw.get("direct_start", False), "direct_start"), native_repeat)
 
 
 @dataclass(frozen=True)

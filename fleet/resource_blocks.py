@@ -43,7 +43,8 @@ def research_gate_for(facts: "LabFacts | None", lab_id: str, slot: int):
     """The starter gate for this worker and account; legacy Game Speed only without facts."""
     from lab_starter_rollout import starter_gate
     return starter_gate(getattr(facts, "starter", None), slot, lab_id,
-                        getattr(facts, "worker", None), getattr(facts, "account_id", None))
+                        getattr(facts, "worker", None), getattr(facts, "account_id", None),
+                        direct_start=getattr(facts, "direct_start", False))
 
 
 def research_automated(lab_id: str, slot: int, facts: "LabFacts | None" = None) -> bool:
@@ -462,6 +463,7 @@ class LabFacts:
     worker: str | None = None
     # The fleet's lab-starter rollout (lab_starter_rollout.StarterState); None on a solo bot.
     starter: Any = None
+    direct_start: bool = False
 
 
 @dataclass(frozen=True)
@@ -664,6 +666,9 @@ def _pool_choice(block: Mapping[str, Any], facts: LabFacts, pool: Any,
                 and facts.best_tier_1_wave < requirement):
             continue
         level = _next_level(lab_id, known, running)
+        if level is None and facts.direct_start:
+            # The picker still verifies this exact level and price before a purchase.
+            level = 1
         cap = caps.get(lab_id, entry.max_level)
         if level is not None and cap is not None and level > cap:
             continue
@@ -933,6 +938,7 @@ def _capabilities(slot: int, automated: bool, now: SlotNow, facts: LabFacts,
 def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
     """Pure: per-slot Now/Next and the next gem step. No reads, writes or clocks."""
     rules = route.rules
+    facts = replace(facts, direct_start=rules.labs.direct_start)
     lab_blocks = (route.labs.blocks if route.labs.mode == "blocks"
                   else legacy_lab_blocks(route.labs.steps))
     gem_blocks = gem_lane_blocks(route.gems)
@@ -970,8 +976,8 @@ def evaluate_lab_plan(route: Any, facts: LabFacts) -> LabPlan:
             if outcome == "done":
                 why.append("Track complete")
         gate = research_gate_for(facts, chosen.lab_id, slot) if chosen is not None else None
-        automated = gate is not None and kind == "research" and gate.enabled
-        rehearse = gate is not None and kind == "research" and gate.mode == "rehearse"
+        automated = gate is not None and kind in {"research", "lab_pool"} and gate.enabled
+        rehearse = gate is not None and kind in {"research", "lab_pool"} and gate.mode == "rehearse"
         if gate is not None and not gate.enabled:
             why.append(gate.reason)
         if (automated or rehearse) and not rules.labs.auto_start:

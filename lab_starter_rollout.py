@@ -220,9 +220,18 @@ def _blocked(reason: str) -> StarterGate:
 
 
 def starter_gate(state: StarterState | None, slot: int, lab_id: str, worker: str | None,
-                 account_id: str | None) -> StarterGate:
+                 account_id: str | None, *, direct_start: bool = False) -> StarterGate:
     if (slot, lab_id) == LEGACY:
         return StarterGate("start", "", "legacy_fixture_regression")
+    if direct_start:
+        if not worker or not account_id:
+            return _blocked("worker/account scope unavailable")
+        lab = state.lab(lab_id) if state is not None else None
+        if lab is not None and lab.status == "unfindable":
+            return _blocked(f"{_name(lab_id)} not found in picker")
+        if lab is not None and lab.status == "needs_review":
+            return _blocked(f"{_name(lab_id)} price needs review")
+        return StarterGate("start", "", "strategy_direct_start")
     if state is None:
         return _blocked("no fleet lab starter record")
     lab = state.lab(lab_id)

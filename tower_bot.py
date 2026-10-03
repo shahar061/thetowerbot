@@ -245,9 +245,11 @@ class TowerBot:
         self.lab_route_pending: tuple[str, ...] = ()
         # Last armed planned Lab start: (key, slot evidence, backoff-until).
         self._lab_action_last: tuple[tuple, tuple | None, float] | None = None
+        self._lab_followup_due = False
         self.lab_visit: LabVisit | None = (LabVisit(templates, journal=safety_journal,
             account_state=account_state, slot_observer=self._observe_lab_runtime,
-            authorize=self._authorize_lab, event_sink=self.bus.publish)
+            authorize=self._authorize_lab, event_sink=self.bus.publish,
+            plan_action=self._plan_lab_action_during_visit)
             if reroll_progress is not None or account_state is not None and safety_journal is not None else None)
         self.lab_state: LabsState | None = (LabsState(account_state)
                                           if self.lab_visit is not None else None)
@@ -1462,6 +1464,28 @@ class TowerBot:
                 self.bus.publish(events.Skipped(action='labs', reason='lab_route_calibration_required',
                                                 detail='; '.join(pending)))
 
+    def _plan_lab_action_during_visit(self, now: float) -> Any | None:
+        """Use the confirmed strip before its spend evidence expires."""
+        if self.reroll_progress is None or self.lab_visit is None or self.lab_runtime is None:
+            return None
+        action = self._plan_lab_action(now)
+        if action is None:
+            return None
+        options = self.reroll_progress.lab_visit_options()
+        if self.lab_visit.gate(action.slot, action.research, options=options).mode != action.operation:
+            return None
+        key = (action.slot, action.research, action.target_level,
+               action.strategy_revision, action.operation)
+        record = next((r for r in self.lab_runtime.snapshot().slots
+                       if getattr(r, 'slot', None) == action.slot), None)
+        evidence = ((record.state, record.research_id, record.transaction_id)
+                    if record is not None else None)
+        last = self._lab_action_last
+        if last is not None and last[0] == key and last[1] == evidence and now < last[2]:
+            return None
+        self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
+        return action
+
     def _request_planned_lab_visit(self, now: float, due: bool) -> bool:
         """Arm a Labs visit on the safe menu: the gated planned action, else the legacy check.
 
@@ -1490,22 +1514,29 @@ class TowerBot:
                         if record is not None else None)
             last = self._lab_action_last
             repeat = last is not None and last[0] == key and last[1] == evidence
-            if not (repeat and (now < last[2] or not due)):
+            if not (repeat and (now < last[2] or (not due and not options.direct_start))):
                 if self.lab_visit.request(action, options=options):
                     # Pessimistic: only a verified start clears the backoff.
                     self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
+                    self._lab_followup_due = False
                     return True
                 # The gate refused between plan and request (e.g. another
                 # worker moved the starter rollout this scan): no backoff is
                 # set, so fall through to the legacy check rather than
                 # refusing the whole scan and retrying every pass.
-        return due and self.lab_visit.request(None, options=options)
+        if (due or getattr(self, '_lab_followup_due', False)) and self.lab_visit.request(None, options=options):
+            self._lab_followup_due = False
+            return True
+        return False
 
     def _settle_planned_lab_attempt(self, result: Any) -> None:
         """A verified start ends the backoff; the due requirement still applies."""
         last = self._lab_action_last
         if last is not None and self.lab_visit.selected_action is not None and result.status == 'started':
             self._lab_action_last = (last[0], last[1], 0.)
+            if (self.reroll_progress is not None
+                    and self.reroll_progress.lab_visit_options().direct_start):
+                self._lab_followup_due = True
 
     def _finish_lab_visit(self, result: Any) -> None:
         """Record only verified research and lab-slot purchases."""

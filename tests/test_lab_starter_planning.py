@@ -55,6 +55,16 @@ def test_an_idle_slot_at_dry_run_plans_a_rehearsal(tmp_path: Path) -> None:
     assert action is not None and (action.slot, action.operation) == (2, "rehearse")
 
 
+def test_direct_start_strategy_plans_a_start_without_rehearsals(tmp_path: Path) -> None:
+    route = _ListRoute(rules={"labs": {"direct_start": True}})
+    facts = replace(list_facts(), starter=LabStarterRollout(tmp_path).state(), worker="Air_1")
+    plan = evaluate_lab_plan(route, facts)
+    slot2 = plan.slots[1]
+    assert slot2.automated and not slot2.rehearse and slot2.capabilities["execute"]
+    action = choose_lab_action(plan, runtime_for(facts), available_coins=facts.available_coins)
+    assert action is not None and (action.slot, action.operation) == (2, "start")
+
+
 def test_a_fleet_slot_with_a_rehearsed_lab_plans_a_start(tmp_path: Path) -> None:
     rollout = LabStarterRollout(tmp_path)
     facts = replace(list_facts(), worker="Air_1")
