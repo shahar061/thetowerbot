@@ -130,6 +130,34 @@ def test_inspection_selects_idle_slot_after_fresh_strip_confirmation(secured_vis
     assert visit.last_tap is not None and visit.last_tap[0] == 'open_lab_2'
 
 
+def test_selected_idle_card_waits_for_a_complete_strip_before_tapping(secured_visit) -> None:
+    from lab_visit import read_selected_home as actual_selected_home
+
+    planned = LabAction(3, 'labs.coins-wave', 1, 'start', 74, 'confirmed idle slot')
+    visit = secured_visit(plan_action=lambda _now: planned)
+    visit.worker = 'worker'
+    visit.request(options=LabVisitOptions(direct_start=True))
+    device = Device()
+    selected_reads = 0
+
+    def selected_home(screen: object, text: tuple[ocr.TextBox, ...], *,
+                      slot: int, observed_at: float) -> LabHomeReading:
+        nonlocal selected_reads
+        reading = actual_selected_home(screen, text, slot=slot, observed_at=observed_at)
+        selected_reads += 1
+        return replace(reading, slot_point=None) if selected_reads == 1 else reading
+
+    with (patch('lab_visit.read_selected_home', side_effect=selected_home),
+          patch('lab_visit.tap', side_effect=lambda _device, x, y: device.taps.append((x, y)))):
+        visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), device, 600.)
+        visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), device, 601.)
+        assert visit.selected_action == planned
+        assert visit._state == 'home' and device.taps == []
+        visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), device, 602.)
+    assert selected_reads >= 2
+    assert visit.last_tap is not None and visit.last_tap[0] == 'open_lab_3'
+
+
 def affordable(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:
     reading = read_picker(screen, text)
     if not reading.page:
@@ -329,6 +357,35 @@ def test_changed_confirmation_price_cancels_without_spending() -> None:
     assert visit.last_tap is not None
     assert visit.last_tap[0] == "cancel_confirmation"
     assert len(device.taps) == 3  # Lab 1, row, Cancel; never Research.
+
+
+def test_dialog_retries_an_unread_price_before_confirming(secured_visit) -> None:
+    reads = 0
+
+    def intermittent(screen: object, text: tuple[ocr.TextBox, ...]) -> LabConfirmationReading:
+        nonlocal reads
+        reading = read_confirmation(screen, text)
+        if not reading.page:
+            return reading
+        reads += 1
+        return replace(reading, price=None, research_point=None) if reads == 1 else reading
+
+    visit = secured_visit(confirmation_reader=intermittent)
+    device = Device()
+    visit.request()
+    with patch('lab_visit.tap', side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        visit.advance(frame('menu_labs_slot1_affordable'), boxes('menu_labs_slot1_affordable'), device, 10.)
+        for stamp in (11., 12.):
+            visit.advance(frame('menu_labs_game_speed_affordable'),
+                          boxes('menu_labs_game_speed_affordable'), device, stamp)
+        visit.advance(frame('menu_labs_game_speed_confirmation'),
+                      boxes('menu_labs_game_speed_confirmation'), device, 13.)
+        assert visit._state == 'dialog' and len(device.taps) == 2
+        for stamp in (14., 15.):
+            visit.advance(frame('menu_labs_game_speed_confirmation'),
+                          boxes('menu_labs_game_speed_confirmation'), device, stamp)
+    assert reads == 3
+    assert visit.last_tap is not None and visit.last_tap[0] == 'confirm_game_speed'
 
 
 def test_research_tap_without_running_job_times_out_and_cancels(secured_visit) -> None:
