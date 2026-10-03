@@ -80,7 +80,8 @@ def decide(slot: LabHomeReading, row: LabPickerReading | None, *,
         return LabDecision("wait_coins", price=price, wallet_coins=wallet,
                            game_speed_level=entry.level)
     if entry.status != "available" or row.buy_point is None:
-        return LabDecision("unknown", price=price, wallet_coins=wallet)
+        return LabDecision("unknown", price=price, wallet_coins=wallet,
+                           game_speed_level=entry.level)
     return LabDecision("start", price=price, wallet_coins=wallet,
                        game_speed_level=entry.level)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -246,6 +247,25 @@ def test_pool_selection_and_limits() -> None:
     raw["baseline"]["labs"]["blocks"][1]["children"][0]["max_seconds"] = 600
     route = resolve_route(RouteDocument.from_dict(raw), "Air_38", "a1")
     assert evaluate_lab_plan(route, facts).slots[1].next.lab_id == "labs.coins-wave"
+
+
+def test_pool_uses_another_research_when_picker_blocks_its_first_choice() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw['baseline']['rules']['labs'].update(auto_start=True, direct_start=True)
+    raw['baseline']['labs'].update(mode='blocks', blocks=[
+        {'id': 'one', 'type': 'slot_track', 'slots': [1], 'children': [
+            {'id': 'speed', 'type': 'research', 'lab_id': 'labs.game-speed', 'to_level': 7}]},
+        {'id': 'two', 'type': 'slot_track', 'slots': [2], 'children': [
+            {'id': 'pool', 'type': 'lab_pool', 'selection': 'ordered',
+             'lab_ids': ['labs.health', 'labs.cash-bonus']}]}])
+    route = resolve_route(RouteDocument.from_dict(raw), 'Air_38', 'a1')
+    facts = LabFacts(now=1000., wallet_coins=20000, available_coins=20000,
+                     slots={2: {'state': 'idle', 'confirmed': True, 'observed_at': 990.}},
+                     slot_ownership={2: {'status': 'owned'}},
+                     worker='Air_38', account_id='a1')
+    assert evaluate_lab_plan(route, facts).slots[1].next.lab_id == 'labs.health'
+    blocked = replace(facts, reserved_research=frozenset({'labs.health'}))
+    assert evaluate_lab_plan(route, blocked).slots[1].next.lab_id == 'labs.cash-bonus'
 
 
 def test_pool_containing_a_lab_with_a_list_unlock_does_not_raise() -> None:

@@ -129,6 +129,7 @@ _FAILED_MILESTONES_RETRY_SECONDS = 60.
 # A planned Lab start that ended without a verified start is not re-armed for
 # the same (slot, research, level, revision) and slot evidence until this passes.
 LAB_ACTION_BACKOFF_SECONDS = 900.
+LAB_DIRECT_CHECK_SECONDS = 300.
 
 
 def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
@@ -246,6 +247,8 @@ class TowerBot:
         # Last armed planned Lab start: (key, slot evidence, backoff-until).
         self._lab_action_last: tuple[tuple, tuple | None, float] | None = None
         self._lab_followup_due = False
+        self._lab_unavailable: dict[tuple[str | None, int | None, str], float] = {}
+        self._lab_direct_check: tuple[tuple[str | None, int | None], float] | None = None
         self.lab_visit: LabVisit | None = (LabVisit(templates, journal=safety_journal,
             account_state=account_state, slot_observer=self._observe_lab_runtime,
             authorize=self._authorize_lab, event_sink=self.bus.publish,
@@ -1416,7 +1419,9 @@ class TowerBot:
         facts = self.account_state.lab_facts(snapshot, now=now)
         if facts is None:
             return False
-        plan = self.reroll_progress.lab_strategy_plan(snapshot, available_coins=facts.available_coins, now=now)
+        plan = self.reroll_progress.lab_strategy_plan(
+            snapshot, available_coins=facts.available_coins, now=now,
+            excluded_research=self._excluded_lab_research(now))
         action = self.account_state.lab_action(plan, snapshot, revision=revision, now=now) if plan else None
         return (action is not None and action.operation == 'start' and action.slot == slot
                 and action.research == research and action.target_level == target
@@ -1440,7 +1445,9 @@ class TowerBot:
         facts = self.account_state.lab_facts(snapshot, now=now)
         if facts is None:
             return None
-        plan = self.reroll_progress.lab_strategy_plan(snapshot, available_coins=facts.available_coins, now=now)
+        plan = self.reroll_progress.lab_strategy_plan(
+            snapshot, available_coins=facts.available_coins, now=now,
+            excluded_research=self._excluded_lab_research(now))
         if plan is None:
             return None
         self._note_lab_route_pending(plan)
@@ -1531,12 +1538,73 @@ class TowerBot:
 
     def _settle_planned_lab_attempt(self, result: Any) -> None:
         """A verified start ends the backoff; the due requirement still applies."""
+        selected = self.lab_visit.selected_action if self.lab_visit is not None else None
+        if (selected is not None and result.reason == 'research_unavailable'
+                and result.decision.research_id == selected.research
+                and result.decision.target_level == selected.target_level
+                and result.decision.price is not None
+                and result.decision.wallet_coins is not None
+                and result.decision.wallet_coins >= result.decision.price):
+            account_id = self._lab_account_id()
+            revision = selected.strategy_revision
+            self._lab_unavailable[(account_id, revision, selected.research)] = time.time() + LAB_ACTION_BACKOFF_SECONDS
+            self._lab_followup_due = True
         last = self._lab_action_last
         if last is not None and self.lab_visit.selected_action is not None and result.status == 'started':
             self._lab_action_last = (last[0], last[1], 0.)
             if (self.reroll_progress is not None
                     and self.reroll_progress.lab_visit_options().direct_start):
                 self._lab_followup_due = True
+
+    def _lab_account_id(self) -> str | None:
+        scope = getattr(self.account_state, 'verified_scope', None)
+        return getattr(scope, 'account_id', None)
+
+    def _excluded_lab_research(self, now: float) -> frozenset[str]:
+        blocked = getattr(self, '_lab_unavailable', {})
+        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        revision = route_runtime.current().revision if route_runtime is not None else None
+        account_id = self._lab_account_id()
+        return frozenset(research for (account, route, research), expiry in blocked.items()
+                         if account == account_id and route == revision and now < expiry)
+
+    def _direct_lab_visit_due(self, now: float) -> bool:
+        """Inspect owned labs after game over if a direct-start slot may be free."""
+        if self.reroll_progress is None or self.lab_runtime is None:
+            return False
+        options = self.reroll_progress.lab_visit_options()
+        if not (options.start_research and options.direct_start):
+            return False
+        if not self.reroll_progress.lab_unlocked():
+            return False
+        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        revision = route_runtime.current().revision if route_runtime is not None else None
+        key = (self._lab_account_id(), revision)
+        last_check = getattr(self, '_lab_direct_check', None)
+        if last_check is not None and last_check[0] == key and now < last_check[1]:
+            return False
+        snapshot = self.lab_runtime.snapshot()
+        owned = snapshot.slots_owned
+        if type(owned) is not int or owned < 1:
+            self._lab_direct_check = (key, now + LAB_DIRECT_CHECK_SECONDS)
+            self._lab_followup_due = True
+            return True
+        stale = (snapshot.observed_at is None
+                 or now - snapshot.observed_at >= LAB_DIRECT_CHECK_SECONDS)
+        for slot in range(1, owned + 1):
+            record = next((row for row in snapshot.slots if row.slot == slot), None)
+            if (record is None or not record.confirmed or record.state != 'researching'
+                    or record.expected_finish is None or record.expected_finish <= now):
+                self._lab_direct_check = (key, now + LAB_DIRECT_CHECK_SECONDS)
+                self._lab_followup_due = True
+                return True
+        if stale:
+            # A projected completion is only a forecast; refresh an old strip
+            # even when every retained job still claims to be running.
+            self._lab_direct_check = (key, now + LAB_DIRECT_CHECK_SECONDS)
+            self._lab_followup_due = True
+            return True
+        return False
 
     def _finish_lab_visit(self, result: Any) -> None:
         """Record only verified research and lab-slot purchases."""
@@ -2881,6 +2949,8 @@ class TowerBot:
             # taken when the visit it exists for will actually start.
             if not (state is screens.ScreenState.MAIN_MENU
                     and self._advance_tier(settings)):
+                lab_direct_due = (state is screens.ScreenState.GAME_OVER
+                                  and self._direct_lab_visit_due(time.time()))
                 self.navigator.maybe_navigate(
                     self.screen,
                     state,
@@ -2905,7 +2975,8 @@ class TowerBot:
                                  and self.reroll_progress.stats_due())
                              or (state is screens.ScreenState.GAME_OVER
                                  and self.reroll_progress is not None
-                                 and self.reroll_progress.lab_due())),
+                                 and self.reroll_progress.lab_due())
+                             or lab_direct_due),
                     # The way off a menu page. NAV_BUTTONS is keyed by
                     # ScreenState, which has no member for one, so the bot could
                     # neither act on the workshop (the loop above gates on

@@ -226,6 +226,8 @@ class LabVisit:
         self._scans = 0
         self._picker_signature = None
         self._picker_reads = 0
+        self._unavailable_signature = None
+        self._unavailable_reads = 0
         self._picker_name = None
         self._dialog_signature = None
         self._dialog_reads = 0
@@ -1255,13 +1257,39 @@ class LabVisit:
             if selected is not None:
                 decision = replace(decision, slot=selected.slot, research_id=selected.research,
                                    strategy_revision=selected.strategy_revision)
-                if (picker.entry is None or picker.entry.concept_id != selected.research
-                        or picker.entry.level != selected.target_level):
+                if (picker.entry is not None
+                        and (picker.entry.concept_id != selected.research
+                             or picker.entry.level != selected.target_level)):
                     self._return(LabVisitResult('failed', 'selected_research_mismatch', decision))
                     return None
             if decision.kind != "start":
+                self._picker_signature, self._picker_reads = None, 0
+                entry = picker.entry
+                unavailable = (selected is not None and entry is not None
+                               and entry.concept_id == selected.research
+                               and entry.level == selected.target_level
+                               and entry.status == 'unavailable'
+                               and decision.price is not None
+                               and decision.wallet_coins is not None
+                               and decision.wallet_coins >= decision.price)
+                if unavailable:
+                    signature = (selected.research, selected.target_level,
+                                 decision.price, decision.wallet_coins)
+                    if signature != self._unavailable_signature:
+                        self._unavailable_signature, self._unavailable_reads = signature, 1
+                    else:
+                        self._unavailable_reads += 1
+                    if self._unavailable_reads >= 2:
+                        self._return(LabVisitResult('observed', 'research_unavailable', decision))
+                    return None
+                self._unavailable_signature, self._unavailable_reads = None, 0
+                if decision.kind == 'unknown':
+                    # OCR and card visibility can flicker. Stay in the picker
+                    # until the bounded stage timeout instead of aborting on one frame.
+                    return None
                 self._return(LabVisitResult("observed", decision.kind, decision))
                 return None
+            self._unavailable_signature, self._unavailable_reads = None, 0
             assert picker.buy_point is not None
             assert decision.price is not None and decision.wallet_coins is not None
             signature = (decision.price, decision.wallet_coins, picker.buy_point,

@@ -245,7 +245,8 @@ class RerollProgress:
         self.lab_cadence.note_failed(time.time() if now is None else now)
 
     def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None,
-                          wallet_gems: int | None = None, now: float | None = None) -> LabPlan | None:
+                          wallet_gems: int | None = None, now: float | None = None,
+                          excluded_research: frozenset[str] = frozenset()) -> LabPlan | None:
         """Plan from this account's assigned revision and scoped slot observations."""
         if self.route_runtime is None or getattr(getattr(runtime, "scope", None), "account_id", None) != self.account_id:
             return None
@@ -270,6 +271,7 @@ class RerollProgress:
                         jar=self.coin_jar.amount(quiet=True),
                         coins_per_hour=coins_per_hour(self.root, self.account_id),
                         best_waves=best_waves(self.root / "tower_bot.db") or None,
+                        reserved_research=facts.reserved_research | excluded_research,
                         slot_ownership=self.lab_cadence.slot_records(),
                         owned_floor=(getattr(runtime, "slots_owned", None)
                                      if type(getattr(runtime, "slots_owned", None)) is int else None),

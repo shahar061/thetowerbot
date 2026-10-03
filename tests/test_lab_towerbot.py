@@ -4,6 +4,7 @@ Fakes stand in for the plan/account seams; LabVisit and the route gates are real
 """
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -47,7 +48,9 @@ class FakeProgress:
     def lab_visit_options(self) -> LabVisitOptions:
         return self._options
 
-    def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None, now: float) -> Any:
+    def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None, now: float,
+                          excluded_research: frozenset[str] = frozenset()) -> Any:
+        self.excluded_research = excluded_research
         return self._plan
 
 
@@ -69,6 +72,7 @@ def bot(planned: LabAction | None, *, plan: Any = None, options: LabVisitOptions
     instance.lab_route_pending = ()
     instance._lab_visit_revision = REVISION
     instance._lab_action_last = None
+    instance._lab_unavailable = {}
     return instance
 
 
@@ -90,6 +94,25 @@ def test_nothing_due_and_no_gated_action_arms_nothing() -> None:
     assert not b.lab_visit.active
     assert b._request_planned_lab_visit(1000., due=True)  # legacy observation visit
     assert b.lab_visit.selected_action is None
+
+
+def test_unavailable_research_is_excluded_from_next_plan_and_authorization() -> None:
+    from lab_visit import LabVisitResult
+
+    b = bot(action(research='labs.coins-kill-bonus', level=1),
+            options=LabVisitOptions(direct_start=True))
+    b.lab_visit.selected_action = action(research='labs.coins-kill-bonus', level=1)
+    b._settle_planned_lab_attempt(LabVisitResult(
+        'observed', 'research_unavailable',
+        LabDecision('unknown', price=50, wallet_coins=20000, game_speed_level=1,
+                    slot=1, research_id='labs.coins-kill-bonus', strategy_revision=REVISION)))
+    b._plan_lab_action(time.time())
+    assert b.reroll_progress.excluded_research == frozenset({'labs.coins-kill-bonus'})
+    assert b._lab_followup_due
+    expiry = next(iter(b._lab_unavailable.values()))
+    assert not b._excluded_lab_research(expiry + 1)
+    b.account_state.verified_scope = SimpleNamespace(account_id='different-account')
+    assert not b._excluded_lab_research(time.time())
 
 
 def test_repeat_preference_reconciles_when_start_is_off_then_backs_off() -> None:
