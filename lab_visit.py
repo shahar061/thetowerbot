@@ -1056,6 +1056,22 @@ class LabVisit:
             # An unsettled unlock tap keeps its hold without halting the slot; the
             # next visit's recovery settles it (and promotes a canary's slot).
             if pending is not None:
+                # A scoped, post-tap inspection can prove the Lab changed while
+                # abbreviated wallet text cannot prove the exact debit. The
+                # journal only releases that reservation when it has recorded
+                # the inspection; leave the spend unknown rather than inventing
+                # the picker price as a ledger amount.
+                if (self.journal is not None and pending.operation == 'lab_start'
+                        and pending.scope is not None
+                        and pending.reconciliation.get('effect_changed') is True):
+                    self.journal.close_unproven(
+                        pending.key, reason='lab verification timed out after inspection',
+                        now=self.wall_clock())
+                if self.pending_transaction is None:
+                    self.recovery_status = 'lab_reconciliation_closed_unproven'
+                    return self._finish(LabVisitResult(
+                        'observed', 'lab_reconciliation_unproven', LabDecision('unknown'),
+                        transaction_key=pending.key))
                 self.recovery_status = 'lab_reconciliation_route_unavailable'
             return self._finish(self._outcome or LabVisitResult(
                 "failed", "visit_timeout", LabDecision("unknown")))

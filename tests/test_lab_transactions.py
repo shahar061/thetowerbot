@@ -423,6 +423,63 @@ def test_wrong_lab_semantics_or_wallet_retains_shared_reservation(tmp_path: Path
         assert conn.execute('SELECT amount FROM currency_commitments').fetchone()[0] == 300
 
 
+@pytest.mark.parametrize('effect_changed,settled', [(True, True), (False, False)])
+def test_lab_recovery_timeout_only_releases_confirmed_rounded_debit(
+        tmp_path: Path, effect_changed: bool, settled: bool) -> None:
+    account, journal, scope = authority(tmp_path)
+    intent = Intent(item='Cash Bonus', category='LABS', currency='coins', price=81,
+        wallet_before=14510, ts=10., operation='lab_start',
+        before={'slot': 2, 'research_id': 'labs.cash-bonus', 'source_level': 1,
+                'target_level': 2, 'evidence_digest': 'before'})
+    balance = BalanceInterval.from_reading('coins', 14510, scope, 10., 'before')
+    txn = journal.prepare(intent, scope=scope, balance=balance)
+    assert txn is not None
+    journal.record_action(txn.key, at=11.)
+    proof = RecoveryEvidence(category='LABS', currency='coins', wallet_after=14430,
+        effect_changed=effect_changed, observed_at=12., frame_digest='after', scope=scope,
+        operation='lab_start', slot=2, research_id='labs.cash-bonus', target_level=2)
+    assert journal.reconcile(txn.key, proof, now=12.).verdict == Verdict.UNPROVEN
+
+    runtime = LabRuntime(tmp_path, 'account-a', lease_id='lease', generation='generation')
+    visit = LabVisit(vision.TemplateCache(Path('templates')), journal=journal,
+        account_state=account, runtime=runtime, wall_clock=lambda: 102.)
+    assert visit.request(LabVisitOptions(start_research=False))
+    visit._started_at = 11.
+    visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), Device(), 102.,
+                  observed_at=102., capture_scope=scope)
+
+    if settled:
+        assert journal.open_transactions() == ()
+    else:
+        assert journal.open_transactions()[0].key == txn.key
+    assert journal._require(txn.key).stage == (Stage.RESOLVED if settled else Stage.ACTED)
+    with db.reader(journal.path) as conn:
+        assert conn.execute(
+            "SELECT json_extract(detail, '$.inspected_at') FROM transactions WHERE key=?",
+            (txn.key,)).fetchone()[0] == 12.
+        if settled:
+            assert tuple(conn.execute(
+                'SELECT outcome, spent FROM transactions WHERE key=?', (txn.key,)).fetchone()) == (
+                    Verdict.UNPROVEN.value, None)
+        assert conn.execute("SELECT COUNT(*) FROM ledger WHERE kind='LAB'").fetchone()[0] == 0
+
+
+def test_lab_recovery_timeout_keeps_uninspected_spend_reserved(tmp_path: Path) -> None:
+    account, journal, scope = authority(tmp_path)
+    txn = prepared(journal, scope)
+    runtime = LabRuntime(tmp_path, 'account-a', lease_id='lease', generation='generation')
+    visit = LabVisit(vision.TemplateCache(Path('templates')), journal=journal,
+        account_state=account, runtime=runtime, wall_clock=lambda: 102.)
+    assert visit.request(LabVisitOptions(start_research=False))
+    visit._started_at = 11.
+
+    visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), Device(), 102.,
+                  observed_at=102., capture_scope=scope)
+
+    assert journal.open_transactions()[0].key == txn.key
+    assert journal.currencies.committed('coins') == 300
+
+
 def _unlanded(scope: FactScope, **overrides: object) -> RecoveryEvidence:
     return RecoveryEvidence(**{"category": "LABS", "currency": "gems", "wallet_after": 613,
         "effect_changed": False, "observed_at": 13., "frame_digest": "after", "scope": scope,
