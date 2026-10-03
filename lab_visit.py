@@ -1106,8 +1106,7 @@ class LabVisit:
                             or gem_dialog.price != pending.price
                             or gem_dialog.gem_balance != pending.wallet_before
                             or gem_dialog.confirm_point is None or scope is None
-                            or pending.scope != scope
-                            or not self.account_state.identity_fresh(now=self.wall_clock())):
+                            or pending.scope != scope):
                         return self._unlock_uncertain(pending, slot,
                                                       'gem confirmation did not match pending unlock')
                     if self._unlock_confirmation_tapped:

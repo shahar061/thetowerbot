@@ -229,6 +229,36 @@ def test_lab_three_gem_dialog_is_confirmed_once_then_settled_by_debit(
     assert not h.of(events.LabUnlockHalted)
 
 
+def test_lab_three_gem_dialog_confirms_after_identity_ages_during_visit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    start_lab_three_unlock(h)
+    h.time += 31
+    assert not h.account.identity_fresh(now=h.time)
+
+    dialog = boxes("menu_labs_gem_confirmation")
+    h.scan(dialog, "menu_labs_gem_confirmation")
+    assert not h.of(events.LabUnlockHalted)
+    h.scan(dialog, "menu_labs_gem_confirmation")
+    assert h.device.taps.count((728, 1301)) == 1
+    assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+    assert h.rollout.slot(3).stage == "canary"
+
+
+def test_lab_three_gem_dialog_does_not_confirm_after_identity_invalidation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    start_lab_three_unlock(h)
+    h.account.invalidate_scope("account identity changed")
+
+    h.scan(boxes("menu_labs_gem_confirmation"), "menu_labs_gem_confirmation")
+    assert h.device.taps.count((728, 1301)) == 0
+    assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+    assert h.rollout.slot(3).stage == "halted"
+
+
 @pytest.mark.parametrize("price_text, gems_before", [
     ("401 gems to unlock this lab?", "557"),
     ("400 gems to unlock this lab?", "556"),
