@@ -194,6 +194,59 @@ def test_one_transitional_frame_after_the_tap_does_not_halt(tmp_path, monkeypatc
     assert h.rollout.slot(2).stage == "fleet" and not h.of(events.LabUnlockHalted)
 
 
+def start_lab_three_unlock(h: UnlockHarness, gems: str = "557") -> None:
+    for stamp in (9.1, 9.2):
+        h.runtime.observe(read_slots(frame(IMAGE), owned_boxes(gems), observed_at=stamp))
+    h.rollout.note_dry_run(3, "Air_1", 400, int(gems), 0., account_id="account-a")
+    h.rollout.note_dry_run(3, "Air_1", 400, int(gems), 700., account_id="account-a")
+    h.open(LabVisitOptions(start_research=False, unlock_slots=(3,)))
+    for _ in range(8):
+        h.scan(owned_boxes(gems))
+        if h.visit.last_tap and h.visit.last_tap[0] == "unlock_lab_slot_3":
+            break
+    else:
+        pytest.fail("Lab 3 unlock was not attempted")
+
+
+def test_lab_three_gem_dialog_is_confirmed_once_then_settled_by_debit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    start_lab_three_unlock(h)
+    dialog = boxes("menu_labs_gem_confirmation")
+    h.scan(dialog, "menu_labs_gem_confirmation")
+    assert h.visit.last_tap is None
+    h.scan(dialog, "menu_labs_gem_confirmation")
+    assert h.visit.last_tap is not None and h.visit.last_tap[0] == "confirm_lab_slot_3"
+    assert h.device.taps.count((728, 1301)) == 1
+    h.scan(dialog, "menu_labs_gem_confirmation")
+    assert h.device.taps.count((728, 1301)) == 1
+
+    h.scan(three_owned_boxes("157"))
+    h.scan(three_owned_boxes("157"))
+    assert h.journal.open_transactions() == ()
+    assert h.rollout.slot(3).stage == "fleet"
+    assert not h.of(events.LabUnlockHalted)
+
+
+@pytest.mark.parametrize("price_text, gems_before", [
+    ("401 gems to unlock this lab?", "557"),
+    ("400 gems to unlock this lab?", "556"),
+])
+def test_mismatched_gem_dialog_never_confirms_an_unlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, price_text: str, gems_before: str
+) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    start_lab_three_unlock(h, gems_before)
+    dialog = tuple(ocr.TextBox(price_text, box.confidence, box.rect)
+                   if box.text == "400 gems to unlock this lab?" else box
+                   for box in boxes("menu_labs_gem_confirmation"))
+    h.scan(dialog, "menu_labs_gem_confirmation")
+    assert h.device.taps.count((728, 1301)) == 0
+    assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+    assert h.rollout.slot(3).stage == "halted"
+
+
 def test_a_tap_that_did_not_land_is_not_charged_and_a_second_miss_halts(tmp_path, monkeypatch) -> None:
     h = UnlockHarness(tmp_path, monkeypatch)
     promote_canary(h.rollout)

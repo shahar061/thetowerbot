@@ -21,7 +21,7 @@ from lab_plan import LabDecision, LabVisitOptions, decide
 from fleet.resource_blocks import LabAction
 from lab_picker import PickerSearch, SWIPE_SECONDS
 from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading, LockedSlot,
-                        read_confirmation, read_home, read_picker, read_slots,
+                        read_confirmation, read_gem_unlock_confirmation, read_home, read_picker, read_slots,
                         read_picker_page, read_selected_home, read_selected_picker,
                         read_repeat_controls)
 import ocr
@@ -172,6 +172,9 @@ class LabVisit:
         self._unlock_strikes = 0
         self._debit_strike = False
         self._unlanded_signature: tuple[int, LockedSlot, int] | None = None
+        self._unlock_dialog_signature: tuple[int, int, tuple[int, int]] | None = None
+        self._unlock_dialog_reads = 0
+        self._unlock_confirmation_tapped = False
         self._options = LabVisitOptions()
         self.selected_action: LabAction | None = None
         self.pending_action: LabAction | None = None
@@ -237,6 +240,9 @@ class LabVisit:
         self._unlock_scans = 0
         self._unlock_strikes = 0
         self._unlanded_signature = None
+        self._unlock_dialog_signature = None
+        self._unlock_dialog_reads = 0
+        self._unlock_confirmation_tapped = False
         self._boxes = ()
         self._search = None
         self._search_frames = []
@@ -799,6 +805,9 @@ class LabVisit:
         self._unlock_scans = self._unlock_strikes = 0
         self._debit_strike = False
         self._unlanded_signature = None
+        self._unlock_dialog_signature = None
+        self._unlock_dialog_reads = 0
+        self._unlock_confirmation_tapped = False
         self._tap(device, locked.point, f"unlock_lab_slot_{locked.slot}")
         self._state = "confirm_slot"
         return True
@@ -1087,6 +1096,39 @@ class LabVisit:
         pending = self.pending_transaction
         if pending is not None:
             if self._unlock_tap is not None and pending.key == self._unlock_tap[0]:
+                gem_dialog = read_gem_unlock_confirmation(screen, boxes)
+                if gem_dialog.page:
+                    slot = self._unlock_tap[1]
+                    if len(self._unlock_frames) < _UNLOCK_SCANS + 1:
+                        self._unlock_frames.append(screen)
+                    scope = self._scope()
+                    if (pending.operation != 'lab_unlock' or pending.before['slot'] != slot
+                            or gem_dialog.price != pending.price
+                            or gem_dialog.gem_balance != pending.wallet_before
+                            or gem_dialog.confirm_point is None or scope is None
+                            or pending.scope != scope
+                            or not self.account_state.identity_fresh(now=self.wall_clock())):
+                        return self._unlock_uncertain(pending, slot,
+                                                      'gem confirmation did not match pending unlock')
+                    if self._unlock_confirmation_tapped:
+                        self._unlock_scans += 1
+                        if self._unlock_scans >= _UNLOCK_STRIKES:
+                            return self._unlock_uncertain(pending, slot,
+                                                          'gem confirmation remained after tap')
+                        return None
+                    signature = (gem_dialog.price, gem_dialog.gem_balance,
+                                 gem_dialog.confirm_point)
+                    if signature != self._unlock_dialog_signature:
+                        self._unlock_dialog_signature, self._unlock_dialog_reads = signature, 1
+                        return None
+                    self._unlock_dialog_reads += 1
+                    if self._unlock_dialog_reads >= 2:
+                        self._tap(device, gem_dialog.confirm_point, f'confirm_lab_slot_{slot}')
+                        self._unlock_confirmation_tapped = self.last_tap is not None
+                        if self._unlock_confirmation_tapped:
+                            self._unlock_scans = self._unlock_strikes = 0
+                    return None
+                self._unlock_dialog_signature, self._unlock_dialog_reads = None, 0
                 return self._settle_own_unlock(pending, home, screen)
             if self._start_tap is not None and pending.key == self._start_tap[0]:
                 self._start_frames.append(screen)

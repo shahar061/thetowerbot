@@ -92,6 +92,15 @@ class LabConfirmationReading:
 
 
 @dataclass(frozen=True)
+class LabGemConfirmationReading:
+    page: bool
+    price: int | None
+    gem_balance: int | None
+    confirm_point: tuple[int, int] | None
+    cancel_point: tuple[int, int] | None
+
+
+@dataclass(frozen=True)
 class PickerCard:
     lab_id: str | None
     raw_name: str
@@ -618,3 +627,41 @@ def read_confirmation(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabConfi
              button.rect.y + button.rect.h // 2)
     return LabConfirmationReading(True, name, balance, amounts[0], point,
                                   cancel_point)
+
+
+def read_gem_unlock_confirmation(
+    screen: Image, boxes: tuple[ocr.TextBox, ...]
+) -> LabGemConfirmationReading:
+    """Read only the Lab unlock's exact gem-spend dialog and its Yes/No labels."""
+    height, width = screen.shape[:2]
+    empty = LabGemConfirmationReading(False, None, None, None, None)
+    if not supported_frame(width, height):
+        return empty
+    shift = (height - 2400) // 2
+    trusted = [box for box in boxes if _trusted(box)]
+    lab_titles = [box for box in trusted if box.text.strip().upper() == "LAB"
+                  and box.rect.x < width * .2 and box.rect.y < height * .1]
+    headings = [box for box in trusted if box.text.strip().upper() == "CONFIRMATION"
+                and 250 < box.rect.x < 550 and 900 + shift < box.rect.y < 990 + shift]
+    prompts = [box for box in trusted
+               if _normalized(box.text) == "AREYOUSURETHATYOUWANTTOSPEND"
+               and 100 < box.rect.x < 350 and 1000 + shift < box.rect.y < 1080 + shift]
+    prices = [match for box in trusted
+              if 180 < box.rect.x < 400 and 1050 + shift < box.rect.y < 1160 + shift
+              if (match := re.fullmatch(r"([0-9][0-9,]*)GEMSTOUNLOCKTHISLAB\?",
+                                        _normalized(box.text))) is not None]
+    cancels = [box for box in trusted if box.text.strip().lower() == "no"
+               and 180 < box.rect.x < 480 and 1230 + shift < box.rect.y < 1350 + shift]
+    confirms = [box for box in trusted if box.text.strip().lower() == "yes"
+                and 570 < box.rect.x < 900 and 1230 + shift < box.rect.y < 1350 + shift]
+    if not all(len(group) == 1 for group in
+               (lab_titles, headings, prompts, prices, cancels, confirms)):
+        return empty
+    balance = _gem_balance(screen, boxes, width, height)
+    if balance is None:
+        return empty
+    confirm, cancel = confirms[0], cancels[0]
+    return LabGemConfirmationReading(
+        True, int(prices[0].group(1).replace(",", "")), balance,
+        (confirm.rect.x + confirm.rect.w // 2, confirm.rect.y + confirm.rect.h // 2),
+        (cancel.rect.x + cancel.rect.w // 2, cancel.rect.y + cancel.rect.h // 2))

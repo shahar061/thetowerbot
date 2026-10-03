@@ -43,6 +43,34 @@ def test_idle_slot_one_is_read_without_treating_lab_two_as_owned() -> None:
     assert 300 < result.slot_point[1] < 620
 
 
+def test_recorded_gem_unlock_confirmation_names_price_wallet_and_buttons() -> None:
+    from lab_screen import read_gem_unlock_confirmation
+
+    result = read_gem_unlock_confirmation(
+        frame("menu_labs_gem_confirmation"), recorded("menu_labs_gem_confirmation"))
+    assert result.page
+    assert result.price == 400
+    assert result.gem_balance == 557
+    assert result.confirm_point == (728, 1301)
+    assert result.cancel_point == (351, 1300)
+
+
+def test_gem_unlock_reader_refuses_a_price_or_button_outside_the_dialog() -> None:
+    from lab_screen import read_gem_unlock_confirmation
+
+    image = frame("menu_labs_gem_confirmation")
+    original = recorded("menu_labs_gem_confirmation")
+    wrong_price = tuple(ocr.TextBox("400 gems for cards?", box.confidence, box.rect)
+                        if box.text == "400 gems to unlock this lab?" else box
+                        for box in original)
+    assert not read_gem_unlock_confirmation(image, wrong_price).page
+
+    misplaced_yes = tuple(ocr.TextBox(box.text, box.confidence,
+                        config.Rect(20, 150, box.rect.w, box.rect.h))
+                          if box.text == "Yes" else box for box in original)
+    assert not read_gem_unlock_confirmation(image, misplaced_yes).page
+
+
 def test_active_slot_one_is_not_mistaken_for_idle() -> None:
     import lab_screen
 
