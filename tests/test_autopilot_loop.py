@@ -162,6 +162,70 @@ def test_reroll_game_over_only_goes_home_when_the_target_may_be_affordable(
     bot.run_once()
     assert asked == [worthwhile]
 
+
+@pytest.mark.parametrize(('states', 'expected'), [
+    (('idle', 'researching', 'researching'), True),
+    (('researching', 'researching', 'researching'), False),
+])
+def test_game_over_detours_for_an_idle_direct_start_lab(
+    states: tuple[str, str, str], expected: bool,
+) -> None:
+    from tests.conftest import _shopping_bot
+    from lab_plan import LabVisitOptions
+
+    class Progress:
+        def lab_visit_options(self) -> LabVisitOptions:
+            return LabVisitOptions(direct_start=True)
+
+        def lab_unlocked(self) -> bool:
+            return True
+
+        def lab_due(self) -> bool:
+            return False
+
+        def stats_due(self) -> bool:
+            return False
+
+    bot = _shopping_bot('game_over', state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True)
+    bot.reroll_progress = Progress()
+    snapshot = SimpleNamespace(
+        slots_owned=3, observed_at=time.time(),
+        slots=tuple(SimpleNamespace(state=state, confirmed=True,
+            slot=index, expected_finish=time.time() + 3600)
+            for index, state in enumerate(states, 1)))
+    bot.lab_runtime = SimpleNamespace(snapshot=lambda: snapshot)
+    bot._update_maintenance = lambda *args: None
+    asked: list[bool] = []
+    navigate = bot.navigator.maybe_navigate
+    bot.navigator.maybe_navigate = lambda *args, **kwargs: (
+        asked.append(kwargs['go_home']), navigate(*args, **kwargs))[1]
+    bot.run_once()
+    assert asked == [expected]
+    assert bot._lab_followup_due is expected
+
+
+def test_direct_lab_detour_paces_idle_and_stale_running_checks() -> None:
+    from tests.conftest import _shopping_bot
+    from lab_plan import LabVisitOptions
+
+    bot = _shopping_bot('game_over', state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True)
+    bot.reroll_progress = SimpleNamespace(
+        lab_visit_options=lambda: LabVisitOptions(direct_start=True),
+        lab_unlocked=lambda: True, route_runtime=None)
+    slot = SimpleNamespace(slot=1, state='idle', confirmed=True, expected_finish=None)
+    snapshot = SimpleNamespace(slots_owned=1, observed_at=1000., slots=(slot,))
+    bot.lab_runtime = SimpleNamespace(snapshot=lambda: snapshot)
+    assert bot._direct_lab_visit_due(1000.)
+    assert not bot._direct_lab_visit_due(1001.)
+    assert bot._direct_lab_visit_due(1301.)
+    slot.state, slot.expected_finish = 'researching', 5000.
+    snapshot.observed_at = 1301.
+    assert not bot._direct_lab_visit_due(1302.)
+    assert bot._direct_lab_visit_due(1602.)  # old running proof must be refreshed
+    assert not bot._direct_lab_visit_due(1603.)
+
 # -- Claim cadence in the loop ---------------------------------------------
 def test_a_due_claim_is_armed_from_the_main_menu(bot_on_main_menu: Callable[..., TowerBot]) -> None:
     """The same frame shopping.begin() reserves, and only when it declined.

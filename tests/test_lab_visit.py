@@ -140,6 +140,56 @@ def affordable(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReadin
                    buy_point=(290, 719))
 
 
+def test_uncertain_picker_read_recovers_without_closing_the_visit() -> None:
+    reads = 0
+
+    def intermittent(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:
+        nonlocal reads
+        reading = affordable(screen, text)
+        if not reading.page:
+            return reading
+        reads += 1
+        return replace(reading, buy_point=None, game_speed=None) if reads == 1 else reading
+
+    visit = LabVisit(vision.TemplateCache(Path('templates')), picker_reader=intermittent)
+    device = Device()
+    visit.request()
+    with patch('lab_visit.tap', side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        visit.advance(frame('menu_labs_slot1_idle'), boxes('menu_labs_slot1_idle'), device, 10.)
+        for stamp in (11., 12., 13.):
+            visit.advance(frame('menu_labs_game_speed_picker'),
+                          boxes('menu_labs_game_speed_picker'), device, stamp)
+    assert reads == 3
+    assert visit.last_tap is not None and visit.last_tap[0] == 'start_game_speed'
+    assert visit._state == 'dialog'
+
+
+def test_repeated_affordable_but_unavailable_row_reports_a_fallback_reason() -> None:
+    def unavailable(screen: object, text: tuple[ocr.TextBox, ...]) -> LabPickerReading:
+        reading = affordable(screen, text)
+        if not reading.page:
+            return reading
+        assert reading.game_speed is not None
+        return replace(reading, buy_point=None,
+                       game_speed=replace(reading.game_speed, status='unavailable'))
+
+    visit = LabVisit(vision.TemplateCache(Path('templates')), picker_reader=unavailable)
+    device = Device()
+    visit.request()
+    visit.selected_action = LabAction(1, 'labs.game-speed', 1, 'start', 74, 'idle')
+    with patch('lab_visit.tap', side_effect=lambda _device, x, y: device.taps.append((x, y))):
+        visit.advance(frame('menu_labs_slot1_idle'), boxes('menu_labs_slot1_idle'), device, 10.)
+        visit.advance(frame('menu_labs_game_speed_picker'),
+                      boxes('menu_labs_game_speed_picker'), device, 11.)
+        assert visit._state == 'picker'
+        visit.advance(frame('menu_labs_game_speed_picker'),
+                      boxes('menu_labs_game_speed_picker'), device, 12.)
+    assert visit._outcome is not None
+    assert visit._outcome.reason == 'research_unavailable'
+    assert visit._outcome.decision.research_id == 'labs.game-speed'
+    assert all(tap != (290, 719) for tap in device.taps)
+
+
 def test_unaffordable_recorded_row_is_not_tapped_and_visit_returns() -> None:
     visit, device = setup()
     visit.request()
