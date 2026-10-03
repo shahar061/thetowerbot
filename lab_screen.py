@@ -197,19 +197,29 @@ def _gem_balance(screen: Image, boxes: tuple[ocr.TextBox, ...], width: int, heig
 def _card_border(screen: Image, name: ocr.TextBox) -> str:
     """The frame colour just above-left of a card's name: white, red, or unknown.
 
-    Measured on the recorded picker: an unaffordable card has a pink-red frame
-    (BGR about 138,138,255), an affordable one a bright white frame. Anything
-    else is unknown and never read as affordable.
+    The border shifts a few pixels vertically between picker rows. Require a
+    continuous colour segment beside the title; a single bright pixel is not
+    enough to authorize a purchase.
     """
-    x, y = name.rect.x - 26, name.rect.y - 30
-    if not (0 <= x < screen.shape[1] and 0 <= y < screen.shape[0]):
+    x = name.rect.x - 26
+    if not 0 <= x < screen.shape[1]:
         return "unknown"
-    blue, green, red = (int(channel) for channel in screen[y, x])
-    if min(blue, green, red) >= 215:
-        return "white"
-    if red >= 200 and red - max(blue, green) >= 80:
-        return "red"
-    return "unknown"
+    white_run = red_run = 0
+    seen: set[str] = set()
+    for offset in range(-35, -14):
+        y = name.rect.y + offset
+        if not 0 <= y < screen.shape[0]:
+            continue
+        blue, green, red = (int(channel) for channel in screen[y, x])
+        colour = ("white" if min(blue, green, red) >= 215 else
+                  "red" if red >= 200 and red - max(blue, green) >= 80 else "unknown")
+        white_run = white_run + 1 if colour == "white" else 0
+        red_run = red_run + 1 if colour == "red" else 0
+        if white_run >= 3:
+            seen.add("white")
+        if red_run >= 3:
+            seen.add("red")
+    return next(iter(seen)) if len(seen) == 1 else "unknown"
 
 
 def _lab_title_and_headers(boxes: Sequence[ocr.TextBox], width: int, height: int

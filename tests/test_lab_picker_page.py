@@ -37,6 +37,16 @@ def test_selection_is_a_lookup_on_the_page_and_needs_a_white_border() -> None:
     assert cash.entry.status == "available" and cash.buy_point is not None
 
 
+def test_lower_picker_row_uses_its_visible_white_border() -> None:
+    image, text = frame("menu_labs_slot3_available"), boxes("menu_labs_slot3_available")
+    for research_id in ("labs.coins-kill-bonus", "labs.coins-wave"):
+        selected = lab_screen.read_selected_picker(image, text, research_id=research_id)
+        assert selected.entry is not None
+        assert (selected.entry.level, selected.entry.cost, selected.entry.status) == (
+            1, 40., "available")
+        assert selected.buy_point is not None
+
+
 def test_the_signature_changes_when_the_list_moves() -> None:
     before = page()
     shifted = lab_screen.PickerPage(before.open, before.balance, before.viewport, tuple(

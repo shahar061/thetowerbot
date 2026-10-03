@@ -1058,12 +1058,11 @@ class LabVisit:
             if pending is not None:
                 # A scoped, post-tap inspection can prove the Lab changed while
                 # abbreviated wallet text cannot prove the exact debit. The
-                # journal only releases that reservation when it has recorded
-                # the inspection; leave the spend unknown rather than inventing
-                # the picker price as a ledger amount.
+                # journal retains that inspection even if the job has since
+                # finished; it releases only inspected reservations, leaving
+                # the spend unknown rather than inventing a ledger amount.
                 if (self.journal is not None and pending.operation == 'lab_start'
-                        and pending.scope is not None
-                        and pending.reconciliation.get('effect_changed') is True):
+                        and pending.scope is not None):
                     self.journal.close_unproven(
                         pending.key, reason='lab verification timed out after inspection',
                         now=self.wall_clock())

@@ -304,6 +304,29 @@ def test_direct_start_can_plan_affordable_pool_lab_with_unread_level() -> None:
     assert slot.automated is True
 
 
+def test_direct_start_can_probe_direct_research_with_unread_level() -> None:
+    raw = RouteDocument.compatibility().to_dict()
+    raw['baseline']['rules']['labs'].update(auto_start=True, direct_start=True)
+    raw['baseline']['labs'].update(mode='blocks', blocks=[
+        {'id': 'one', 'type': 'slot_track', 'slots': [1], 'children': [
+            {'id': 'gs', 'type': 'research', 'lab_id': 'labs.game-speed', 'to_level': 7}]},
+        {'id': 'three', 'type': 'slot_track', 'slots': [3], 'on_blocked': 'skip', 'children': [
+            {'id': 'coins-wave', 'type': 'research', 'lab_id': 'labs.coins-wave', 'to_level': 10},
+            {'id': 'fallback', 'type': 'lab_pool', 'selection': 'ordered',
+             'lab_ids': ['labs.coins-kill-bonus']}]}])
+    route = resolve_route(RouteDocument.from_dict(raw), 'Air_38', 'a1')
+    facts = LabFacts(now=1000., wallet_coins=14430, available_coins=14430,
+                     slot1=waiting(), slots={3: {'state': 'idle', 'confirmed': True,
+                                                   'observed_at': 990.}},
+                     slot_ownership={3: {'status': 'owned'}}, worker='Air_38', account_id='a1')
+
+    slot = evaluate_lab_plan(route, facts).slots[2]
+
+    assert slot.next is not None and (slot.next.lab_id, slot.next.level) == (
+        'labs.coins-wave', 1)
+    assert slot.automated is True
+
+
 def test_gem_path_have_need_and_keep() -> None:
     locked = {"status": "locked", "wallet_gems": 60, "observed_at": 900.}
     plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., wallet_gems=60, slot2=locked))
