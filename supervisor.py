@@ -494,6 +494,20 @@ class GuardedDevice:
             self.supervisor.disconnected()
             raise RecoveryBlocked("screencap failed") from exc
 
+    def ad_window_state(self) -> str:
+        """Read only the foreground window for rewarded-ad exit detection."""
+        device = self.supervisor.device
+        if device is None:
+            raise RecoveryBlocked("device unavailable")
+        return device.shell("dumpsys window")
+
+    def ad_accessibility_hierarchy(self) -> str:
+        """Read the current ad's labelled controls without exposing ADB input."""
+        device = self.supervisor.device
+        if device is None:
+            raise RecoveryBlocked("device unavailable")
+        return device.shell("uiautomator dump /dev/tty")
+
     def click(self, x: int, y: int) -> None:
         self.supervisor.tap(x, y)
 

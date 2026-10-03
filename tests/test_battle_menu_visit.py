@@ -399,6 +399,33 @@ def test_daily_ad_closes_detected_end_card_after_playing():
 
 
 @pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_daily_ad_uses_accessible_close_on_dark_reward_pill():
+    class AdDevice(Device):
+        def shell(self, command: str) -> str:
+            if command.startswith("dumpsys window"):
+                return ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
+                        "com.google.android.gms.ads.AdActivity}")
+            if command.startswith("uiautomator dump"):
+                return ('<hierarchy><node text="Reward granted" />'
+                        '<node text="Close" clickable="true" '
+                        'bounds="[981,33][1050,99]" /></hierarchy>')
+            raise AssertionError(command)
+
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    visitor_state, device = visitor(state), AdDevice()
+    step(visitor_state, device, "collapsed_badged", 0)
+    step(visitor_state, device, "open_badged", 1)
+    step(visitor_state, device, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
+    end_card = cv2.imread(str(Path(__file__).parent / "fixtures/in_game_ad"
+                              / "ad_reward_granted_dark_82.jpg"))
+    result = visitor_state.observe(screen=end_card, boxes=lambda: (), device=device,
+                                   policy=POLICY, now=45, in_run=True)
+    assert result is Outcome.TAPPED
+    assert device.taps[-1] == (1015, 66)
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
 def test_daily_ad_closes_meta_skip_and_landing_then_claims():
     state = BattleMenuState(None)
     state.handled("event", battle_menu.Badge("blue"), now=0)

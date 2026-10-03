@@ -1645,6 +1645,11 @@ class TowerBot:
         reads = ocr.FrameReads(self.screen,
                                reuse=reading.state is not screens.ScreenState.IN_RUN
                                and not acting)
+        late_ad_reward = (
+            reading.state is screens.ScreenState.UNKNOWN
+            and self.in_game_ad.may_claim_late_reward(time.time(), self.runs.current_id)
+            and battle_menu.ad_reward_claim(
+                self.screen, reads.full(), amount=6) is not None)
         self._battle_backstop_scan = False
         tutorial_claim = None
         unlocked = None
@@ -1712,6 +1717,8 @@ class TowerBot:
                         # readers authorize only specific taps on it.
                         observed_screen = "BATTLE_AD"
                 if self.in_game_ad.active and observed_screen == "UNKNOWN":
+                    observed_screen = "BATTLE_AD"
+                if late_ad_reward and observed_screen == "UNKNOWN":
                     observed_screen = "BATTLE_AD"
                 # The Free Ticket offer covers the main menu without hiding
                 # its anchors, so it is looked for on MAIN_MENU too; its
@@ -1899,7 +1906,7 @@ class TowerBot:
                     action="reroll:workshop_tutorial_claim", x=tutorial_claim[0],
                     y=tutorial_claim[1], score=1.0))
                 return True
-        if self.in_game_ad.active and not settings.paused:
+        if (self.in_game_ad.active or late_ad_reward) and not settings.paused:
             if self.in_game_ad.observe(
                     self.screen, reading.cash_top_left,
                     self.device, settings.strategy, time.time(),

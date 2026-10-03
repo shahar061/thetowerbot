@@ -708,9 +708,11 @@ BATTLE_MENU_TEMPLATES: dict[str, str] = {
     "ad_end_close_circle": "battle_menu/ad_end_close_circle.png",
     "ad_end_close_meta_skip": "battle_menu/ad_end_close_meta_skip.png",
     "ad_end_close_meta_landing": "battle_menu/ad_end_close_meta_landing.png",
+    "ad_end_close_reward_granted": "battle_menu/ad_end_close_reward_granted.png",
 }
 BATTLE_MENU_AD_CLOSE_VARIANTS = (
     "ad_end_close_circle", "ad_end_close_meta_skip", "ad_end_close_meta_landing",
+    "ad_end_close_reward_granted",
 )
 # The badge sits on the icon frame's top-left corner, outside the inner crop,
 # and overlaps the crop itself by only a few pixels. Offsets are from the

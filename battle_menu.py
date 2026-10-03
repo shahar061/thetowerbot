@@ -296,4 +296,9 @@ def ad_end_card_close(screen: Image, templates: TemplateCache) -> tuple[int, int
             return None
         if target.status == "located":
             found.append(target.point)
-    return found[0] if len(found) == 1 else None
+    if not found:
+        return None
+    first = found[0]
+    # Different crops of one X are supporting evidence, not two buttons.
+    return first if all(abs(x - first[0]) <= 24 and abs(y - first[1]) <= 24
+                        for x, y in found[1:]) else None
