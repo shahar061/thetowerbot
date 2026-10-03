@@ -1222,6 +1222,11 @@ class LabVisit:
                 self._slot = home
                 self._tap(device, home.slot_point, "open_lab_one" if selected is None or selected.slot == 1 else f"open_lab_{selected.slot}")
                 self._state = "picker"
+            elif decision.kind == "inspect" and selected is not None and self._options.start_research:
+                # The selected card can be readable while another card makes
+                # this frame's owned strip incomplete. Retry for a fresh safe
+                # tap target within the existing home-stage timeout.
+                return None
             else:
                 self._return(LabVisitResult("observed", decision.kind, decision,
                                              confirmed_job=home.job))
@@ -1313,14 +1318,25 @@ class LabVisit:
                 return None
             purchase = self._purchase
             # OCR may read one name with inner spaces and the other without.
-            if (purchase is None or _squash(confirmation.name) != _squash(self._picker_name)
-                    or confirmation.research_id != purchase.research_id
-                    or confirmation.target_level != purchase.target_level
-                    or confirmation.price != purchase.price
-                    or confirmation.coin_balance != purchase.wallet_coins
-                    or confirmation.research_point is None):
+            if (purchase is None or confirmation.name is not None
+                    and _squash(confirmation.name) != _squash(self._picker_name)
+                    or confirmation.research_id is not None
+                    and confirmation.research_id != purchase.research_id
+                    or confirmation.target_level is not None
+                    and confirmation.target_level != purchase.target_level
+                    or confirmation.price is not None and confirmation.price != purchase.price
+                    or confirmation.coin_balance is not None
+                    and confirmation.coin_balance != purchase.wallet_coins):
                 self._return(LabVisitResult("failed", "confirmation_mismatch",
                                              LabDecision("unknown")))
+                return None
+            if (confirmation.name is None or confirmation.research_id is None
+                    or confirmation.target_level is None or confirmation.price is None
+                    or confirmation.coin_balance is None or confirmation.research_point is None):
+                # A missing OCR field is not a contradictory confirmation.
+                # Keep reading until the bounded dialog timeout; never tap on
+                # an incomplete frame.
+                self._dialog_signature, self._dialog_reads = None, 0
                 return None
             assert confirmation.price is not None and confirmation.coin_balance is not None
             signature = (confirmation.name, confirmation.price,
