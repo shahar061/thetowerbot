@@ -76,7 +76,8 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
             elif kind == 'pool':
                 allowed |= {'upgrade_ids', 'selection', 'weights', 'discount_pct', 'reference_upgrade_id',
                             'max_purchases', 'count_scope', 'decay_pct', 'weight_floor',
-                            'targets', 'level_caps', 'price_cap', 'wallet_share_pct'}
+                            'targets', 'level_caps', 'price_cap', 'wallet_share_pct',
+                            'wallet_share_basis', 'cheaper_than_upgrade_ids'}
                 ids = block.get('upgrade_ids')
                 if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
                     raise ValueError('pool requires 1 to 30 upgrades')
@@ -106,6 +107,16 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     uid(reference)
                 if 'reference_upgrade_id' in block and 'discount_pct' not in block:
                     raise ValueError('price reference requires a discount')
+                if 'cheaper_than_upgrade_ids' in block:
+                    references = block['cheaper_than_upgrade_ids']
+                    if (not isinstance(references, (list, tuple)) or not 1 <= len(references) <= 30
+                            or any(not isinstance(item, str) for item in references)
+                            or len(set(references)) != len(references)):
+                        raise ValueError('strict price references require distinct upgrades')
+                    block['cheaper_than_upgrade_ids'] = [uid(item) for item in references]
+                if 'wallet_share_basis' in block:
+                    if block['wallet_share_basis'] not in ('total', 'spendable') or 'wallet_share_pct' not in block:
+                        raise ValueError('wallet share basis requires a share and total or spendable')
                 targets = block.get('targets', {})
                 if not isinstance(targets, dict) or set(targets) - set(ids):
                     raise ValueError('pool targets must name pool upgrades')
@@ -182,8 +193,8 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 block['goal'] = list(walk(block.get('goal', []), depth + 1))
                 if len(block['goal']) != 1 or block['goal'][0]['type'] not in {'buy', 'pool'}:
                     raise ValueError('save for goal needs exactly one buy or pool block')
-                if 'discount_pct' in block['goal'][0]:
-                    raise ValueError('a saving goal cannot be a discount pool')
+                if any(key in block['goal'][0] for key in ('discount_pct', 'cheaper_than_upgrade_ids')):
+                    raise ValueError('a saving goal cannot be a price-comparison pool')
             elif kind == 'while_saving':
                 allowed |= {'upgrade_id', 'blocks'}
                 if 'upgrade_id' in block and (not isinstance(block['upgrade_id'], str)
@@ -349,6 +360,7 @@ def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
             result.append(block["upgrade_id"])
         elif kind == "pool":
             result.extend(block["upgrade_ids"])
+            result.extend(block.get("cheaper_than_upgrade_ids", ()))
             reference = block.get("reference_upgrade_id")
             if reference and reference != "priority":
                 result.append(reference)
@@ -414,6 +426,8 @@ def swap_kill_bonus(program: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any]
         for key in ('upgrade_id', 'reference_upgrade_id'):
             if block.get(key) == KILL_BONUS and block['type'] != 'condition':
                 block[key] = PER_WAVE
+        if 'cheaper_than_upgrade_ids' in block:
+            block['cheaper_than_upgrade_ids'] = _swap_ids(block['cheaper_than_upgrade_ids'])
         for key in ('then', 'else', 'blocks', 'goal'):
             if isinstance(block.get(key), (list, tuple)):
                 block[key] = list(swap_kill_bonus(tuple(block[key])))
@@ -699,11 +713,17 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 rejected.append(f'{identity}: {uid} over price cap')
                 continue
             # Wallet share is a funds limit, so a saving goal may exceed it.
+            share_wallet = (min(spendable_wallet(wallet, jar), ceiling)
+                            if block.get('wallet_share_basis') == 'spendable' else wallet)
             if (not ignore_funds and 'wallet_share_pct' in block
-                    and price * 100 > wallet * block['wallet_share_pct']):
+                    and price * 100 > share_wallet * block['wallet_share_pct']):
                 rejected.append(f'{identity}: {uid} over wallet share')
                 continue
-            if 'discount_pct' in block and not observed_quote(uid):
+            if any(key in block for key in ('discount_pct', 'cheaper_than_upgrade_ids')) and not observed_quote(uid):
+                continue
+            comparisons = [price_for(ref, reference=True) for ref in block.get('cheaper_than_upgrade_ids', ())]
+            if any(reference is None or price >= reference for reference in comparisons):
+                rejected.append(f'{identity}: {uid} not strictly cheaper than every reference')
                 continue
             if reference_price is not None and price * 100 > reference_price * (100 - block['discount_pct']):
                 rejected.append(f'{identity}: {uid} over discount limit')
@@ -877,6 +897,15 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         if observation is not None:
                             return observation
                         continue
+                references = block.get('cheaper_than_upgrade_ids', ())
+                if lane == 'workshop' and any(not available(ref, workshop_owned) for ref in references):
+                    rejected.append(f'{identity}: strict price reference is locked')
+                    continue
+                if any(not observed_quote(ref) for ref in references):
+                    rejected.append(f'{identity}: strict reference price unverified')
+                    if observation := observe_prices(identity, [*references, *block['upgrade_ids']]):
+                        return observation
+                    continue
                 candidates = pool_candidates(block, identity, reference_price)
                 if lane == 'battle':
                     # A priority pick only needs the stale rows ranked above it;
@@ -887,7 +916,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     if observation := observe_prices(identity, ids):
                         return observation
                 if not candidates:
-                    if 'discount_pct' in block:
+                    if any(key in block for key in ('discount_pct', 'cheaper_than_upgrade_ids')):
                         observation = observe_prices(identity, block['upgrade_ids'])
                         if observation is not None:
                             return observation

@@ -619,6 +619,19 @@ def read_confirmation(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabConfi
     cancel_point = (cancel.rect.x + cancel.rect.w // 2,
                     cancel.rect.y + cancel.rect.h // 2)
     name = names[0].text if len(names) == 1 else None
+    if not amounts and name is not None:
+        # The full-frame detector can miss the short coin price even when the
+        # modal is otherwise complete. Read only its price area, away from the
+        # duration and wallet, and still require one unambiguous number.
+        region = Rect(int(width * .25), int(height * .58),
+                      int(width * .25), int(height * .05))
+        edge = ocr.CROP_PADDING + 4
+        amounts = [value for box in ocr.read_region(screen, region)
+                   if _trusted(box)
+                   if (box.rect.x > edge and box.rect.y > edge
+                       and box.rect.x + box.rect.w < ocr.CROP_PADDING + region.w - 4
+                       and box.rect.y + box.rect.h < ocr.CROP_PADDING + region.h - 4)
+                   if (value := ocr.parse_number(box.text)) is not None]
     if len(amounts) != 1 or name is None:
         return LabConfirmationReading(True, name, balance, None, None,
                                       cancel_point)
