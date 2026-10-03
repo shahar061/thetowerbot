@@ -184,6 +184,31 @@ def test_opening_battle_promotes_survival_starters() -> None:
     assert result.decision.upgrade_id == 'defense_absolute' and result.decision.target == 10
 
 
+def test_opening_battle_buys_one_cheap_defense_percent_point_after_starters() -> None:
+    result = run('opening', 'battle', battle(15, defense_percent=(50., 10)))
+    assert result.trace.matched_rule_id == 'opening.battle.cheap_defense'
+    assert result.decision.upgrade_id == 'defense_percent'
+    assert result.decision.target == 51
+
+    expensive = run('opening', 'battle', battle(15, defense_percent=(50., 21)))
+    assert expensive.decision.upgrade_id != 'defense_percent'
+
+
+def test_turtle_battle_buys_more_defense_percent_only_when_cheaper() -> None:
+    result = run('turtle', 'battle', battle(50, defense_percent=(50., 10)))
+    assert result.trace.matched_rule_id == 'turtle.battle.cheap_defense'
+    assert result.decision.upgrade_id == 'defense_percent'
+    assert result.decision.target == 53
+
+    expensive = run('turtle', 'battle', battle(50, defense_percent=(50., 11), health=(100., 500)))
+    assert expensive.decision.upgrade_id != 'defense_percent'
+
+
+def test_turtle_battle_stops_defense_percent_at_small_target() -> None:
+    result = run('turtle', 'battle', battle(50, defense_percent=(53., 1), health=(100., 500)))
+    assert result.decision.upgrade_id != 'defense_percent'
+
+
 def test_template_blocks_carry_readable_labels() -> None:
     assert blocks.template_program('turtle', 'workshop')[4]['label'] == 'Cheap defense'
     assert blocks.template_program('opening', 'workshop')[0]['label'] == 'Survival starter'
