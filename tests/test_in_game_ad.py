@@ -84,6 +84,40 @@ def test_live_ad_variant_closes_only_after_maturity() -> None:
         gems_before=164, gems_after=170, delta=6, run_id=7)]
 
 
+def test_reward_granted_end_card_closes_after_maturity() -> None:
+    bus, device = Bus(), Device()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164]), sleep=lambda _: None)
+    end_card = cv2.imread(str(ROOT / "tests" / "fixtures" / "battle_menu"
+                              / "ad_reward_granted.png"))
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    assert claim.observe(end_card, None, device, POLICY, 20, 7, False)
+    assert device.taps == [(200, 1368)]
+    assert claim.observe(end_card, None, device, POLICY, 31, 7, False)
+    assert device.taps[-1] == (1014, 64)
+
+
+@pytest.mark.parametrize("emulator", [82, 83])
+def test_dark_reward_pill_closes_on_both_live_ad_creatives(emulator: int) -> None:
+    class AdDevice(Device):
+        def shell(self, command: str) -> str:
+            if command.startswith("dumpsys window"):
+                return ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
+                        "com.google.android.gms.ads.AdActivity}")
+            if command.startswith("uiautomator dump"):
+                return ('<hierarchy><node text="Reward granted" />'
+                        '<node text="Close" clickable="true" '
+                        'bounds="[981,33][1050,99]" /></hierarchy>')
+            raise AssertionError(command)
+
+    bus, device = Bus(), AdDevice()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164]), sleep=lambda _: None)
+    end_card = cv2.imread(str(FIX / f"ad_reward_granted_dark_{emulator}.jpg"))
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    assert claim.observe(end_card, None, device, POLICY, 31, 7, False)
+    assert device.taps[-1] == (1015, 66)
+    assert claim.active
+
+
 def test_unconfirmed_balance_is_uncertain_and_tile_is_not_retapped() -> None:
     bus, device = Bus(), Device()
     claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 164, 164]), sleep=lambda _: None)
@@ -96,6 +130,45 @@ def test_unconfirmed_balance_is_uncertain_and_tile_is_not_retapped() -> None:
     assert isinstance(bus.events[0], events.ClaimUncertain)
     assert not claim.observe(frame("battle_available"), (30, 35), device, POLICY, 60, 7, True)
     assert len(device.taps) == 2
+
+
+def test_late_six_gem_reward_is_claimed_after_ad_timeout() -> None:
+    bus, device = Bus(), Device()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 170]), sleep=lambda _: None)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY,
+                         181, 7, True)
+    assert not claim.active
+
+    assert claim.observe(frame("reward"), None, device, POLICY, 184, 7, False)
+    assert claim.active
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY,
+                         186, 7, True)
+    assert device.taps == [(200, 1368), (541, 1891)]
+    assert any(isinstance(event, events.InGameAdGemClaimed) for event in bus.events)
+
+
+def test_ad_timeout_backs_out_of_foreground_ad_then_claims_reward() -> None:
+    class AdDevice(Device):
+        def shell(self, command: str) -> str:
+            if command.startswith("dumpsys window"):
+                return ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
+                        "com.google.android.gms.ads.AdActivity}")
+            if command.startswith("uiautomator dump"):
+                return "<hierarchy></hierarchy>"
+            raise AssertionError(command)
+
+    bus, device = Bus(), AdDevice()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 170]), sleep=lambda _: None)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    dark_end_card = cv2.imread(str(FIX / "ad_reward_granted_dark_82.jpg"))
+    assert claim.observe(dark_end_card, None, device, POLICY, 181, 7, False)
+    assert device.backs == 1
+    assert claim.active
+    assert claim.observe(frame("reward"), None, device, POLICY, 184, 7, False)
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 186, 7, True)
+    assert not claim.active
+    assert any(isinstance(event, events.InGameAdGemClaimed) for event in bus.events)
 
 
 def test_scan_loop_starts_video_before_menu_or_upgrades(bot_with_frames: Any) -> None:
@@ -142,5 +215,37 @@ def test_ad_walk_claims_across_unclassified_frames(
 
     assert len(hardware.taps) == 3
     assert not bot.in_game_ad.active
+    assert any(isinstance(event, events.InGameAdGemClaimed)
+               for event in bot.bus.published)
+
+
+@pytest.mark.parametrize("supervised", [False, True])
+def test_scan_loop_claims_reward_after_ad_timeout(
+        bot_with_frames: Any, tmp_path: Path, supervised: bool) -> None:
+    from tests.test_battle_menu_loop import _supervised
+    import config
+
+    bot = bot_with_frames(["in_run_early"], battle_menu_opt_in=True)
+    images = [frame(name) for name in (
+        "battle_available", "end_card", "reward", "battle_claimed")]
+    index = 0
+
+    def refresh() -> Image:
+        nonlocal index
+        bot._screen = images[min(index, len(images) - 1)]
+        index += 1
+        return bot._screen
+
+    bot.refresh_screen = refresh
+    bot.gem.observe = lambda **kwargs: False
+    hardware = _supervised(bot, tmp_path) if supervised else bot.device
+    assert bot.run_once()
+    bot.in_game_ad._started -= config.BATTLE_MENU_AD_TIMEOUT + 1
+    bot.in_game_ad._closes = 3
+    assert bot.run_once()
+    assert not bot.in_game_ad.active
+    assert bot.run_once()
+    assert bot.run_once()
+    assert len(hardware.taps) == 2
     assert any(isinstance(event, events.InGameAdGemClaimed)
                for event in bot.bus.published)

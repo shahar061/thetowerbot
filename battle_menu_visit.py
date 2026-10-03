@@ -6,6 +6,7 @@ import random
 from enum import Enum, auto
 from typing import Any, Callable
 
+import ad_exit
 import battle_menu
 import config
 import events
@@ -187,7 +188,7 @@ class BattleMenuVisit:
                 return Outcome.TAPPED
         if (now - self._ad_started >= config.BATTLE_MENU_AD_CLOSE_MIN_SECONDS
                 and self._ad_end_close_count < 3 and now - self._ad_last_close >= 3):
-            close = battle_menu.ad_end_card_close(screen, self._templates)
+            close = ad_exit.find_close(screen, self._templates, device)
             if close is not None:
                 self._tap(device, policy, close)
                 self._ad_end_close_count += 1

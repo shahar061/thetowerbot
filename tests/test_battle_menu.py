@@ -9,6 +9,7 @@ import pytest
 import battle_menu
 import config
 import ocr
+from account_screens import ControlTarget
 from vision import TemplateCache
 
 FIX = Path(__file__).parent / "fixtures"
@@ -90,6 +91,25 @@ def test_ad_end_card_close_is_located_on_screen_not_at_a_fixed_point(templates):
         frame("battle_menu/ad_meta_complete"), templates) == (982, 180)
     assert battle_menu.ad_end_card_close(
         frame("battle_menu/ad_meta_landing"), templates) == (77, 75)
+    assert battle_menu.ad_end_card_close(
+        frame("battle_menu/ad_reward_granted"), templates) == (1014, 64)
+    assert battle_menu.ad_end_card_close(
+        frame("in_run_early"), templates) is None
+
+
+def test_ad_close_variants_at_same_button_are_one_target(monkeypatch, templates):
+    variants = config.BATTLE_MENU_AD_CLOSE_VARIANTS
+
+    def locate(screen, cache, name):
+        if name == variants[0]:
+            return ControlTarget(name, (1014, 64), "located")
+        if name == variants[1]:
+            return ControlTarget(name, (1016, 65), "located")
+        return ControlTarget(name, None, "absent")
+
+    monkeypatch.setattr(battle_menu, "_locate", locate)
+    assert battle_menu.ad_end_card_close(
+        frame("battle_menu/ad_reward_granted"), templates) == (1014, 64)
 
 
 def test_close_point_only_when_open(templates):
