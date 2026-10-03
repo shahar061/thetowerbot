@@ -22,6 +22,22 @@ def test_old_rules_load_with_defaults() -> None:
     assert rules.labs.saving.window_hours == DEFAULT_WINDOW_HOURS
     assert (rules.labs.filler.enabled, rules.labs.filler.max_price_pct_of_wallet,
             rules.labs.filler.min_hours) == (True, 10, 1.0)
+    assert rules.labs.native_repeat == "unchanged"
+
+
+@pytest.mark.parametrize("mode", ["unchanged", "enabled", "disabled"])
+def test_native_repeat_round_trips_without_changing_bot_auto_start(mode: str) -> None:
+    rules = RouteRules.from_dict({"labs": {"native_repeat": mode, "auto_start": False}})
+    assert rules.labs.native_repeat == mode
+    restored = RouteRules.from_dict(rules.to_dict())
+    assert restored.labs.native_repeat == mode
+    assert restored.labs.auto_start is False
+
+
+@pytest.mark.parametrize("mode", ["on", "", None, True, 1, [], {}])
+def test_native_repeat_rejects_unsupported_modes(mode: object) -> None:
+    with pytest.raises(ValueError, match="native_repeat"):
+        RouteRules.from_dict({"labs": {"native_repeat": mode}})
 
 
 def test_saving_and_filler_round_trip() -> None:

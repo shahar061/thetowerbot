@@ -73,6 +73,13 @@ export function StrategyRules({ rules, locked, rows, labList, onChange }: {
         <legend className="px-1 text-sm font-semibold">Labs</legend>
         <label className="flex min-h-11 items-center gap-2 text-xs"><input type="checkbox" aria-label="Start labs automatically" checked={labs.auto_start}
           onChange={event => set({ ...rules, labs: { ...labs, auto_start: event.target.checked } })} />Start labs automatically<Tag live /></label>
+        <label className={field}><span>Auto research next level<Tag live /></span>
+          <select aria-label="Auto research next level" value={labs.native_repeat ?? "unchanged"} className={input}
+            onChange={event => set({ ...rules, labs: { ...labs, native_repeat: event.target.value as RouteRules["labs"]["native_repeat"] } })}>
+            <option value="unchanged">Leave game setting unchanged</option><option value="enabled">On</option><option value="disabled">Off</option>
+          </select>
+          <span className="text-muted-foreground">Applies at the next lab visit. On repeats the same research and spends coins automatically, which can continue beyond this strategy’s target level or research order.</span>
+        </label>
         <label className={field}><span>Pool selection<Tag live={false} /></span><select aria-label="Pool selection" value={labs.pool.selection} className={input}
           onChange={event => set({ ...rules, labs: { ...labs, pool: { ...labs.pool, selection: event.target.value as RouteRules["labs"]["pool"]["selection"] } } })}>
           <option value="cheapest">Cheapest</option><option value="ordered">In order</option><option value="shortest">Shortest</option></select></label>

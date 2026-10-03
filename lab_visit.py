@@ -16,12 +16,14 @@ import lab_catalog
 import transactions
 
 from device import AdbDevice, Image, tap
+from geometry import anchored_point, supported_frame
 from lab_plan import LabDecision, LabVisitOptions, decide
 from fleet.resource_blocks import LabAction
 from lab_picker import PickerSearch, SWIPE_SECONDS
 from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading, LockedSlot,
                         read_confirmation, read_gem_unlock_confirmation, read_home, read_picker, read_slots,
-                        read_picker_page, read_selected_home, read_selected_picker)
+                        read_picker_page, read_selected_home, read_selected_picker,
+                        read_repeat_controls)
 import ocr
 import pages
 import vision
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Body lines unique to the first-visit LABS info popup, whitespace removed.
 _INTRO_LINES = ("LABSGRANTYOU", "GEMRUSHEFFICIENCY")
+_NEW_RESEARCH_LINES = ("NEWRESEARCHES", "NEWRESEARCHESAVAILABLE")
 
 
 @dataclass(frozen=True)
@@ -179,6 +182,12 @@ class LabVisit:
         self._stage_scans = 0
         self._stage_started = 0.
         self.last_tap: tuple[str, int, int] | None = None
+        self._repeat_seen: tuple | None = None
+        self._repeat_pending: tuple | None = None
+        self._repeat_reads = 0
+        self._repeat_scans = 0
+        self._repeat_at = float('-inf')
+        self._repeat_failed = False
 
     @property
     def active(self) -> bool:
@@ -205,6 +214,10 @@ class LabVisit:
         self.selected_action = action
         self._rehearsing = action is not None and action.operation == 'rehearse'
         self._options = options or LabVisitOptions()
+        self._repeat_seen = self._repeat_pending = None
+        self._repeat_reads = self._repeat_scans = 0
+        self._repeat_at = float('-inf')
+        self._repeat_failed = False
         self._stage_name, self._stage_scans, self._stage_started = 'idle', 0, 0.
         self._state = "open"
         self._started_at = 0.
@@ -524,7 +537,7 @@ class LabVisit:
             if point is not None:
                 self._tap(device, point, 'close_picker')
         elif pages.classify_page(screen, self.templates).page == 'MAIN_MENU' and self.tab_unlocked(screen):
-            point = self._match(screen, 'nav/tab_labs.png')
+            point = self._unlocked_tab_match(screen)
             if point is not None:
                 self._tap(device, point, 'inspect_pending_lab')
         else:
@@ -536,11 +549,31 @@ class LabVisit:
 
     def tab_status(self, screen: Image) -> str:
         """Read Labs as locked, unlocked, or unknown without tapping it."""
-        unlocked = self._match(screen, "nav/tab_labs.png") is not None
+        unlocked = self._unlocked_tab_match(screen) is not None
         locked = self._locked_tab_match(screen)
         if unlocked == locked:
             return "unknown"
         return "unlocked" if unlocked else "locked"
+
+    def _unlocked_tab_match(self, screen: Image) -> tuple[int, int] | None:
+        """Match the flask's rim and neck, above the game's New! overlay.
+
+        The completion badge sits above the icon. Both badges leave its top
+        35 pixels intact. Restrict this smaller shape to the known Labs tab
+        so a similar detail elsewhere cannot authorize navigation.
+        """
+        height, width = screen.shape[:2]
+        template = self.templates.get("nav/tab_labs.png")
+        template_height, template_width = template.shape[:2]
+        if not supported_frame(width, height):
+            return None
+        x, y = anchored_point(screen, (765, 2264), 'bottom')
+        region = screen[y:y + template_height, x:x + template_width]
+        if region.shape[:2] != (template_height, template_width):
+            return None
+        if vision.locate_template(region[:35], template[:35], .94) is None:
+            return None
+        return x + template_width // 2, y + template_height // 2
 
     def _locked_tab_match(self, screen: Image) -> bool:
         """Check the locked flask slot only, not other locked menu tabs."""
@@ -585,6 +618,58 @@ class LabVisit:
         self._state = "idle"
         self._outcome = outcome
         return outcome
+
+    def _reconcile_repeat(self, screen: Image, device: AdbDevice) -> bool:
+        """Read twice, set once, verify twice; an uncertain toggle is never retried."""
+        desired = self._options.native_repeat
+        if desired == 'unchanged' or self._repeat_failed:
+            return False
+        if self._capture_at <= self._repeat_at:
+            return True
+        self._repeat_at = self._capture_at
+        controls = read_repeat_controls(screen, self._boxes)
+        jobs = {job.slot: job for job in self._reading.jobs} if self._reading is not None else {}
+        if self._repeat_pending is not None:
+            slot, research, level, point = self._repeat_pending
+            job = jobs.get(slot)
+            observed = next((c for c in controls if c.slot == slot and c.point == point), None)
+            same = job is not None and job.concept_id == research and job.target_level == level
+            self._repeat_scans += 1
+            self._repeat_reads = self._repeat_reads + 1 if same and observed is not None and observed.state == desired else 0
+            if self._repeat_reads >= 2:
+                self._repeat_pending = self._repeat_seen = None
+                self._repeat_reads = 0
+                self.recovery_status = 'lab_repeat_verified'
+            elif self._repeat_scans >= 6:
+                self._repeat_failed = True
+                self.recovery_status = 'lab_repeat_unverified'
+                logger.warning("Lab %s auto research %s was not verified; no repeat tap", slot, desired)
+                return False
+            else:
+                return True
+        for control in controls:
+            job = jobs.get(control.slot)
+            if (control.state == desired or job is None or job.status != 'researching'
+                    or job.concept_id is None or job.target_level is None):
+                continue
+            key = (control.slot, job.concept_id, job.target_level, control.point)
+            signature = (*key, control.state)
+            if self._repeat_seen != signature:
+                self._repeat_seen = signature
+                return True
+            decision = LabDecision(desired, slot=control.slot, research_id=job.concept_id,
+                                   game_speed_level=job.target_level)
+            if (self._scope() is None or self.authorize is None
+                    or not self.authorize('lab_repeat', decision, self.wall_clock())):
+                self._repeat_failed = True
+                self.recovery_status = 'lab_repeat_authorization_refused'
+                return False
+            self._tap(device, control.point, f'lab_repeat_{desired}_{control.slot}')
+            self._repeat_pending = key
+            self._repeat_reads = self._repeat_scans = 0
+            return True
+        self._repeat_seen = None
+        return False
 
     def _return(self, outcome: LabVisitResult) -> None:
         if self._home_seen is not None:
@@ -921,6 +1006,25 @@ class LabVisit:
         return self._finish(self._unlock_outcome('failed', 'lab_unlock_uncertain', slot_status=(),
                                                  gems_before=txn.wallet_before))
 
+    @staticmethod
+    def _new_research_notice_point(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> tuple[int, int] | None:
+        """Only the unique, centered OK below both new-research notice lines."""
+        labels = (*_NEW_RESEARCH_LINES, "OK")
+        matches = {label: [box for box in boxes if "".join(box.text.upper().split()) == label]
+                   for label in labels}
+        if any(len(found) != 1 or not .9 <= found[0].confidence <= 1.
+               for found in matches.values()):
+            return None
+        title, body, ok = (matches[label][0] for label in labels)
+        height, width = screen.shape[:2]
+        x, y, w, h = ok.rect
+        center = x + w // 2, y + h // 2
+        if (not title.rect.y < body.rect.y < y or w <= 0 or h <= 0
+                or not .35 * width <= center[0] <= .65 * width
+                or not .4 * height <= center[1] <= .75 * height):
+            return None
+        return center
+
     def advance(
         self, screen: Image, boxes: tuple[ocr.TextBox, ...],
         device: AdbDevice, now: float,
@@ -954,9 +1058,12 @@ class LabVisit:
             self._unsafe_tap = False
             return self._finish(LabVisitResult('failed', 'unsafe_tap_target', LabDecision('unknown')))
 
-        # The first Labs visit opens an info popup over a still-readable Lab 1
-        # card; close it before any reader can act on the dimmed page.
-        if any("".join(box.text.upper().split()).startswith(_INTRO_LINES) for box in boxes):
+        # Both informational notices cover still-readable slot cards. Hold
+        # the whole frame until the notice is safely dismissed.
+        new_research_notice = any("".join(box.text.upper().split()) in _NEW_RESEARCH_LINES
+                                  for box in boxes)
+        if new_research_notice or any("".join(box.text.upper().split()).startswith(_INTRO_LINES)
+                                      for box in boxes):
             pending = self.pending_transaction
             scope = self._scope()
             if pending is not None and (scope is None or not self.account_state.identity_fresh(now=self.wall_clock())
@@ -964,9 +1071,11 @@ class LabVisit:
                         self.account_state.continuity(pending.scope, now=self.wall_clock()) is None)):
                 self.recovery_status = 'lab_scope_continuity_unavailable'
                 return None
-            point = self._match(screen, "nav/labs_close.png")
+            point = (self._new_research_notice_point(screen, boxes) if new_research_notice
+                     else self._match(screen, "nav/labs_close.png"))
             if point is not None:
-                self._tap(device, point, "close_labs_intro")
+                self._tap(device, point, "dismiss_new_researches" if new_research_notice
+                          else "close_labs_intro")
             return None
 
         self._reading = read_slots(screen, boxes, observed_at=capture_at)
@@ -1033,7 +1142,10 @@ class LabVisit:
         self._stage_scans += 1
         searching = self._search is not None
         budget = 6 if self._state == 'return' else 24 if self._state == 'picker' and searching else 8
-        if self._stage_scans > budget or now - self._stage_started > (60 if searching else 30):
+        if self._options.native_repeat != 'unchanged' and self._state in {'home', 'return'}:
+            budget = 32
+        repeat_stage = self._options.native_repeat != 'unchanged' and self._state in {'home', 'return'}
+        if self._stage_scans > budget or now - self._stage_started > (60 if searching or repeat_stage else 30):
             outcome = self._outcome or LabVisitResult('failed',
                 f'{self._state}_stage_timeout', LabDecision('unknown'))
             if self._state == 'return' or not (home.page or picker.page or confirmation.page):
@@ -1044,7 +1156,7 @@ class LabVisit:
             if home.page:
                 self._state = "home"
             elif pages.classify_page(screen, self.templates).page == "MAIN_MENU":
-                point = self._match(screen, "nav/tab_labs.png")
+                point = self._unlocked_tab_match(screen)
                 if point is not None:
                     self._tap(device, point, "open_labs")
                     self._state = "home"
@@ -1054,6 +1166,8 @@ class LabVisit:
 
         if self._state == "home":
             if not home.page:
+                return None
+            if self._reconcile_repeat(screen, device):
                 return None
             decision = decide(home, None)
             if selected is not None:
@@ -1196,6 +1310,8 @@ class LabVisit:
                     self._tap(device, point, "close_picker")
                 return None
             if home.page:
+                if self._reconcile_repeat(screen, device):
+                    return None
                 if self._unlock_slot(home, screen, device):
                     return None if self.active else self._outcome
                 point = self._match(screen, "nav/tab_battle.png")

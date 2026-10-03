@@ -53,7 +53,7 @@ export function LabSlotPlanner({ labs, reference, automated, observed, locked, f
     <div className="min-w-0 space-y-2 text-sm">
       <h3 className="font-semibold">Plan all five labs</h3>
       {focusSlot && <p className="font-medium">Planning Lab {focusSlot} · the other slot plans remain visible below.</p>}
-      <p>Repeat each research one level at a time until its target, then use the next queued target. Running jobs are never replaced; native repeat stays unchanged.</p>
+      <p>Repeat each research one level at a time until its target, then use the next queued target. Running jobs are never replaced. Auto research next level is controlled in Strategy rules.</p>
       <p className="text-xs text-muted-foreground">Draft only. Save a version, then assign it separately. Base catalog estimates may differ from actual cost and time.</p>
       {!reference && <p role="status">Research catalog unavailable. Existing choices are preserved; additions are disabled.</p>}
       {!blocks && <p>Legacy lab program preserved. Load the catalog before editing slots.</p>}

@@ -18,6 +18,7 @@ Usage:
 """
 
 from __future__ import annotations
+from dataclasses import replace
 
 from account_collection import StatsCollection, at_home
 from cards_intro import CardsIntro, popup_visible as cards_popup_visible
@@ -1379,6 +1380,10 @@ class TowerBot:
         if revision != self._lab_visit_revision:
             return False
         options = self.reroll_progress.lab_visit_options()
+        if operation == 'lab_repeat':
+            return (self.lab_visit is not None and decision is not None
+                    and options.native_repeat in {'enabled', 'disabled'}
+                    and decision.kind == options.native_repeat == self.lab_visit._options.native_repeat)
         if operation == 'lab_unlock':
             # The rollout decides who may tap: fleet stage, or this worker's own
             # canary while it still plays the account it was promoted on.
@@ -1466,6 +1471,16 @@ class TowerBot:
         armed, BATTLE navigation proceeds normally.
         """
         options = self.reroll_progress.lab_visit_options()
+        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        revision = route_runtime.current().revision if route_runtime is not None else None
+        repeat_key = (revision, options.native_repeat)
+        previous_repeat = getattr(self, '_lab_repeat_check', None)
+        if (options.native_repeat != 'unchanged'
+                and (previous_repeat is None or previous_repeat[0] != repeat_key
+                     or now - previous_repeat[1] >= 600)
+                and self.lab_visit.request(None, options=replace(options, start_research=False, unlock_slots=()))):
+            self._lab_repeat_check = (repeat_key, now)
+            return True
         action = self._plan_lab_action(now)
         if action is not None:
             key = (action.slot, action.research, action.target_level, action.strategy_revision, action.operation)

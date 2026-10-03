@@ -97,7 +97,7 @@ def test_all_five_recorded_slots_are_read_with_an_explicit_clock() -> None:
     assert first.remaining_s == 5 * 86400 + 18 * 3600 + 11 * 60 + 13
     assert first.completes_at == 1000. + first.remaining_s
     assert (first.source_level, first.target_level) == (86, 87)
-    assert first.native_repeat == "unknown"
+    assert first.native_repeat == "enabled"
     assert first.speed_multiplier is None
 
 

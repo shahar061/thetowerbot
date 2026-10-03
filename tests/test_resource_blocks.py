@@ -168,6 +168,24 @@ def test_researching_slot_never_shows_a_negative_timer() -> None:
     assert stale.now.stale is True
 
 
+@pytest.mark.parametrize(("value", "expected"), [
+    ("enabled", "enabled"), ("disabled", "disabled"), ("unknown", "unknown"),
+    (None, "unknown"), ("on", "unknown"), ([], "unknown"),
+])
+def test_lab_plan_preserves_observed_repeat_state_without_guessing(value: object, expected: str) -> None:
+    record = {"state": "researching", "research_id": "labs.game-speed", "target_level": 3,
+              "observed_at": 900., "expected_finish": 5000., "native_repeat": value, "confirmed": True}
+    plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., slots={1: record}))
+    assert plan.slots[0].now.native_repeat == expected
+
+
+def test_legacy_lab_observation_has_unknown_repeat_state() -> None:
+    running = {"kind": "wait_running", "game_speed_level": 3, "observed_at": 900.,
+               "job_completes_at": 5000.}
+    plan = evaluate_lab_plan(template_route(), LabFacts(now=1000., slot1=running))
+    assert plan.slots[0].now.native_repeat == "unknown"
+
+
 def test_slot_two_and_the_inferred_later_slots() -> None:
     locked = evaluate_lab_plan(template_route(), LabFacts(
         now=1000., slot2={"status": "locked", "wallet_gems": 60, "observed_at": 900.}))
