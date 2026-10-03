@@ -1337,9 +1337,12 @@ class TowerBot:
                 or not 0 <= time.time() - observed_at <= 30):
             return
         observation = lab_screen.read_slots(self.screen, boxes, observed_at=observed_at)
-        picker = lab_screen.read_picker(self.screen, boxes)
-        if picker.page and picker.game_speed is not None:
-            observation = dataclasses.replace(observation, entries=(picker.game_speed,))
+        visit = getattr(self, 'lab_visit', None)
+        selected = visit.selected_action if visit is not None else None
+        picker = (lab_screen.read_selected_picker(self.screen, boxes, research_id=selected.research)
+                  if selected is not None else lab_screen.read_picker(self.screen, boxes))
+        if picker.page and picker.entry is not None:
+            observation = dataclasses.replace(observation, entries=(picker.entry,))
         self.lab_state.observe(observation, scope=scope, catalog_revision=_catalog_revision())
 
     def _bind_lab_runtime(self) -> None:
