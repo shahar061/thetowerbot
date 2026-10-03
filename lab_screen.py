@@ -603,7 +603,9 @@ def read_confirmation(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> LabConfi
     height, width = screen.shape[:2]
     names = [box for box in boxes if _trusted(box)
              and _research_identity(box.text) is not None
-             and width * .2 < box.rect.x < width * .4
+             and width * .1 < box.rect.x
+             and box.rect.x + box.rect.w < width * .9
+             and width * .35 < box.rect.x + box.rect.w / 2 < width * .65
              and height * .32 < box.rect.y < height * .4]
     cancels = [box for box in boxes if _trusted(box)
                and box.text.strip().lower() == "cancel"

@@ -226,6 +226,19 @@ def test_game_speed_confirmation_requires_its_own_coin_price_and_button() -> Non
     assert result.research_point[0] > result.cancel_point[0]
 
 
+def test_long_research_title_is_read_in_centered_confirmation() -> None:
+    import lab_screen
+
+    result = lab_screen.read_confirmation(frame("menu_labs_coins_kill_confirmation"),
+                                           recorded("menu_labs_coins_kill_confirmation"))
+    assert result.page
+    assert result.name == "Coins / Kill Bonus Lv.1"
+    assert (result.research_id, result.target_level) == ("labs.coins-kill-bonus", 1)
+    assert (result.coin_balance, result.price) == (12670, 40)
+    assert result.research_point is not None
+    assert result.cancel_point is not None
+
+
 def test_confirmation_recovers_price_missing_from_full_frame_ocr() -> None:
     import lab_screen
 
