@@ -423,9 +423,8 @@ def test_wrong_lab_semantics_or_wallet_retains_shared_reservation(tmp_path: Path
         assert conn.execute('SELECT amount FROM currency_commitments').fetchone()[0] == 300
 
 
-@pytest.mark.parametrize('effect_changed,settled', [(True, True), (False, False)])
-def test_lab_recovery_timeout_only_releases_confirmed_rounded_debit(
-        tmp_path: Path, effect_changed: bool, settled: bool) -> None:
+def test_lab_recovery_timeout_uses_earlier_inspection_after_research_finishes(
+        tmp_path: Path) -> None:
     account, journal, scope = authority(tmp_path)
     intent = Intent(item='Cash Bonus', category='LABS', currency='coins', price=81,
         wallet_before=14510, ts=10., operation='lab_start',
@@ -436,31 +435,33 @@ def test_lab_recovery_timeout_only_releases_confirmed_rounded_debit(
     assert txn is not None
     journal.record_action(txn.key, at=11.)
     proof = RecoveryEvidence(category='LABS', currency='coins', wallet_after=14430,
-        effect_changed=effect_changed, observed_at=12., frame_digest='after', scope=scope,
+        effect_changed=True, observed_at=12., frame_digest='after', scope=scope,
         operation='lab_start', slot=2, research_id='labs.cash-bonus', target_level=2)
     assert journal.reconcile(txn.key, proof, now=12.).verdict == Verdict.UNPROVEN
+    finished = replace(proof, effect_changed=False, observed_at=13., frame_digest='finished')
+    assert journal.reconcile(txn.key, finished, now=13.).verdict == Verdict.UNPROVEN
+    assert journal._require(txn.key).reconciliation['effect_changed'] is False
 
-    runtime = LabRuntime(tmp_path, 'account-a', lease_id='lease', generation='generation')
+    restarted_scope = FactScope('account-a', 'lease', 'next-generation', 0)
+    account.bind_scope(restarted_scope,
+                       identity=IdentityEvidence('account-a', 14., 'restart-identity'))
+    runtime = LabRuntime(tmp_path, 'account-a', lease_id='lease', generation='next-generation')
     visit = LabVisit(vision.TemplateCache(Path('templates')), journal=journal,
         account_state=account, runtime=runtime, wall_clock=lambda: 102.)
     assert visit.request(LabVisitOptions(start_research=False))
     visit._started_at = 11.
     visit.advance(frame('menu_labs_active'), boxes('menu_labs_active'), Device(), 102.,
-                  observed_at=102., capture_scope=scope)
+                  observed_at=102., capture_scope=restarted_scope)
 
-    if settled:
-        assert journal.open_transactions() == ()
-    else:
-        assert journal.open_transactions()[0].key == txn.key
-    assert journal._require(txn.key).stage == (Stage.RESOLVED if settled else Stage.ACTED)
+    assert journal.open_transactions() == ()
+    assert journal._require(txn.key).stage == Stage.RESOLVED
     with db.reader(journal.path) as conn:
         assert conn.execute(
             "SELECT json_extract(detail, '$.inspected_at') FROM transactions WHERE key=?",
             (txn.key,)).fetchone()[0] == 12.
-        if settled:
-            assert tuple(conn.execute(
-                'SELECT outcome, spent FROM transactions WHERE key=?', (txn.key,)).fetchone()) == (
-                    Verdict.UNPROVEN.value, None)
+        assert tuple(conn.execute(
+            'SELECT outcome, spent FROM transactions WHERE key=?', (txn.key,)).fetchone()) == (
+                Verdict.UNPROVEN.value, None)
         assert conn.execute("SELECT COUNT(*) FROM ledger WHERE kind='LAB'").fetchone()[0] == 0
 
 

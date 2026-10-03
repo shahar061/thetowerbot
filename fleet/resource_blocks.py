@@ -737,6 +737,10 @@ def _choose(children: Sequence[Mapping[str, Any]], facts: LabFacts, rules: Any,
             entry = lab_catalog.lab(lab_id)
             assert entry is not None
             level = _next_level(lab_id, known, running)
+            if level is None and facts.direct_start:
+                # A direct start can probe Lv.1 just like a pool choice; the
+                # picker must still confirm this exact level before any tap.
+                level = 1
             if level is not None and level > block["to_level"]:
                 why.append(f"{block['id']}: {entry.name} reached {block['to_level']}")
                 continue
