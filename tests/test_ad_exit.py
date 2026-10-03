@@ -9,6 +9,7 @@ import cv2
 import pytest
 
 import ad_exit
+import ocr
 from supervisor import GuardedDevice
 from vision import TemplateCache
 
@@ -22,6 +23,10 @@ FOCUSED_AD = (
 FOCUSED_GAME = (
     "mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
     "com.unity3d.player.UnityPlayerActivity}"
+)
+FOCUSED_PLAY_OVERLAY = (
+    "mCurrentFocus=Window{8dc4b2c u0 com.android.vending/"
+    "com.google.android.finsky.transparentmainactivity.HsdpAlias}"
 )
 END_CARD = """<hierarchy>
   <node text="Reward granted" clickable="false" bounds="[731,33][968,99]" />
@@ -89,3 +94,40 @@ def test_supervised_worker_can_read_ad_close_without_a_general_shell() -> None:
     guarded = GuardedDevice(SimpleNamespace(device=hardware))
     assert not hasattr(guarded, "shell")
     assert ad_exit.find_close(screen, TEMPLATES, guarded) == (1015, 66)
+
+
+def test_play_store_overlay_from_emulator_83_has_a_witnessed_close() -> None:
+    screen = cv2.imread(str(ROOT / "tests/fixtures/in_game_ad"
+                            / "play_store_overlay_83.jpg"))
+    device = Device(FOCUSED_PLAY_OVERLAY, "")
+
+    assert ad_exit.ad_foreground(device)
+    assert ad_exit.find_close(screen, TEMPLATES, device) == (1000, 940)
+
+
+def test_play_store_close_requires_the_exact_overlay_activity() -> None:
+    screen = cv2.imread(str(ROOT / "tests/fixtures/in_game_ad"
+                            / "play_store_overlay_83.jpg"))
+    ordinary_store = Device(
+        "mCurrentFocus=Window{123 u0 com.android.vending/"
+        "com.google.android.finsky.activities.MainActivity}", "")
+
+    assert not ad_exit.ad_foreground(ordinary_store)
+    assert ad_exit.find_close(screen, TEMPLATES, ordinary_store) is None
+    stale_game = cv2.imread(str(ROOT / "tests/fixtures/in_game_ad" / "battle_available.jpg"))
+    assert ad_exit.find_close(stale_game, TEMPLATES,
+                              Device(FOCUSED_PLAY_OVERLAY, "")) is None
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_game_return_dialogs_from_emulator_83_have_specific_safe_actions() -> None:
+    fixtures = ROOT / "tests/fixtures/in_game_ad"
+    resume = cv2.imread(str(fixtures / "ad_return_resume_83.jpg"))
+    cloud = cv2.imread(str(fixtures / "ad_return_cloud_83.jpg"))
+    game = Device(FOCUSED_GAME, "")
+    play = Device(FOCUSED_PLAY_OVERLAY, "")
+
+    assert ad_exit.return_dialog(resume, ocr.read(resume), game) == ("resume", (722, 1425))
+    assert ad_exit.return_dialog(cloud, ocr.read(cloud), game) == ("maybe_later", (539, 1638))
+    assert ad_exit.return_dialog(resume, ocr.read(resume), play) is None
+    assert ad_exit.return_dialog(cloud, ocr.read(cloud), play) is None

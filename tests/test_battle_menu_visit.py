@@ -366,10 +366,19 @@ def test_daily_ad_claims_only_after_reward_screen_and_verified_balance():
 
 
 @pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
-def test_daily_ad_timeout_backs_once_and_records_failure():
+def test_daily_ad_timeout_backs_once_and_records_failure() -> None:
+    class AdDevice(Device):
+        def shell(self, command: str) -> str:
+            if command.startswith("dumpsys window"):
+                return ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
+                        "com.google.android.gms.ads.AdActivity}")
+            if command.startswith("uiautomator dump"):
+                return "<hierarchy></hierarchy>"
+            raise AssertionError(command)
+
     state = BattleMenuState(None)
     state.handled("event", battle_menu.Badge("blue"), now=0)
-    v, d = visitor(state), Device()
+    v, d = visitor(state), AdDevice()
     step(v, d, "collapsed_badged", 0)
     step(v, d, "open_badged", 1)
     step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
@@ -382,6 +391,47 @@ def test_daily_ad_timeout_backs_once_and_records_failure():
     assert any(isinstance(e, events.ClaimUncertain) and e.target == "daily_ad_gems"
                for e in v._bus.published)
     assert d.backs == 1
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_daily_ad_play_overlay_return_resumes_battle_and_settles_uncertain() -> None:
+    class PlayDevice(Device):
+        focus = ""
+
+        def shell(self, command: str) -> str:
+            assert command.startswith("dumpsys window")
+            return self.focus
+
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    v, d = visitor(state), PlayDevice()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
+    ad_dir = Path(__file__).parent / "fixtures/in_game_ad"
+
+    def ad_step(name: str, now: float, boxes: tuple[ocr.TextBox, ...] = (),
+                *, in_run: bool = False) -> Outcome:
+        screen = cv2.imread(str(ad_dir / f"{name}.jpg"))
+        return v.observe(screen=screen, boxes=lambda: boxes, device=d,
+                         policy=POLICY, now=now, in_run=in_run)
+
+    d.focus = ("mCurrentFocus=Window{8dc4b2c u0 com.android.vending/"
+               "com.google.android.finsky.transparentmainactivity.HsdpAlias}")
+    assert ad_step("play_store_overlay_83", 34) is Outcome.TAPPED
+    d.focus = ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
+               "com.unity3d.player.UnityPlayerActivity}")
+    resume = cv2.imread(str(ad_dir / "ad_return_resume_83.jpg"))
+    cloud = cv2.imread(str(ad_dir / "ad_return_cloud_83.jpg"))
+    assert ad_step("ad_return_resume_83", 38, ocr.read(resume)) is Outcome.TAPPED
+    assert ad_step("ad_return_cloud_83", 42, ocr.read(cloud)) is Outcome.TAPPED
+    assert step(v, d, "collapsed_badged", 46) is Outcome.IDLE
+
+    assert d.taps[-3:] == [(1000, 940), (722, 1425), (539, 1638)]
+    assert d.backs == 0
+    assert not v.active
+    assert any(isinstance(event, events.ClaimUncertain)
+               and event.target == "daily_ad_gems" for event in v._bus.published)
 
 
 @pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")

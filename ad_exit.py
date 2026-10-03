@@ -8,40 +8,112 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from typing import Any
 
 import cv2
 
 import battle_menu
+from ocr import TextBox
 from device import Image
 from vision import TemplateCache
 
 
 _BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 _AD_ACTIVITY = ("adactivity", "rewardedactivity", "interstitialactivity")
+_PLAY_STORE_OVERLAY = (
+    "com.android.vending/com.google.android.finsky.transparentmainactivity.hsdpalias"
+)
 _CLOSE_LABELS = {"close", "close ad", "close video", "dismiss", "dismiss ad"}
 _TOP_LEFT_TEMPLATE = "in_game_ad/end_close_top_left.png"
+_PLAY_STORE_CLOSE_TEMPLATE = "in_game_ad/play_store_close.png"
+_GAME_ACTIVITY = "com.techtreegames.thetower/com.unity3d.player.unityplayeractivity"
+
+
+def _focus_line(window_dump: str) -> str:
+    return next((line.lower() for line in window_dump.splitlines()
+                 if "mCurrentFocus=" in line), "")
 
 
 def _ad_has_focus(window_dump: str) -> bool:
     """Require the foreground window to belong to an ad Activity."""
-    focus = next((line.lower() for line in window_dump.splitlines()
-                  if "mCurrentFocus=" in line), "")
-    return any(name in focus for name in _AD_ACTIVITY)
+    focus = _focus_line(window_dump)
+    return (any(name in focus for name in _AD_ACTIVITY)
+            or _PLAY_STORE_OVERLAY in focus)
 
 
-def ad_foreground(device: Any) -> bool:
-    """Whether Android reports a full-screen ad above the game."""
+def _play_store_overlay_has_focus(window_dump: str) -> bool:
+    return _PLAY_STORE_OVERLAY in _focus_line(window_dump)
+
+
+def _window_state(device: Any) -> str:
     read_window = getattr(device, "ad_window_state", None)
     if not callable(read_window):
         shell = getattr(device, "shell", None)
         if not callable(shell):
-            return False
+            return ""
         read_window = lambda: shell("dumpsys window")
     try:
-        return _ad_has_focus(read_window())
-    except Exception:  # noqa: BLE001 - an ADB failure is not evidence of an ad
-        return False
+        return read_window()
+    except Exception:  # noqa: BLE001 - an ADB failure is not focus evidence
+        return ""
+
+
+def ad_foreground(device: Any) -> bool:
+    """Whether Android reports a full-screen ad above the game."""
+    return _ad_has_focus(_window_state(device))
+
+
+def play_store_overlay_foreground(device: Any) -> bool:
+    """Whether the rewarded ad opened Google Play's transparent product sheet."""
+    return _play_store_overlay_has_focus(_window_state(device))
+
+
+def game_foreground(device: Any) -> bool:
+    """Whether The Tower, rather than an ad or Play, owns the current window."""
+    return _GAME_ACTIVITY in _focus_line(_window_state(device))
+
+
+def _play_store_close(screen: Image, templates: TemplateCache) -> tuple[int, int] | None:
+    """Locate the X witnessed on the Play product sheet at native resolution."""
+    if screen.shape[:2] != (2400, 1080):
+        return None
+    template = templates.get(_PLAY_STORE_CLOSE_TEMPLATE)
+    if template is None:
+        return None
+    region = screen[480:1560, 790:1080]
+    _, score, _, (x, y) = cv2.minMaxLoc(
+        cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED))
+    if score < .9:
+        return None
+    return (790 + x + template.shape[1] // 2,
+            480 + y + template.shape[0] // 2)
+
+
+def return_dialog(screen: Image, boxes: Sequence[TextBox],
+                  device: Any) -> tuple[str, tuple[int, int]] | None:
+    """Locate only the game dialogs witnessed after closing the Play overlay."""
+    if screen.shape[:2] != (2400, 1080) or not game_foreground(device):
+        return None
+    trusted = [box for box in boxes if box.confidence >= .9]
+    names = {re.sub(r"[^a-z0-9]", "", box.text.lower()) for box in trusted}
+    if {"welcomeback", "resumepreviousround"} <= names and any(
+            name.startswith("resumesremaining") for name in names):
+        action, label = "resume", "resume"
+    elif ({"cloud", "createaccount", "maybelater"} <= names
+          and any(name.startswith("cloudsaveisnow") for name in names)):
+        action, label = "maybe_later", "maybelater"
+    else:
+        return None
+    candidates = [box for box in trusted
+                  if re.sub(r"[^a-z0-9]", "", box.text.lower()) == label
+                  and 200 <= box.rect.x < box.rect.x + box.rect.w <= 880
+                  and 1080 <= box.rect.y < box.rect.y + box.rect.h <= 1920
+                  and box.rect.h <= 150]
+    if len(candidates) != 1:
+        return None
+    rect = candidates[0].rect
+    return action, (rect.x + rect.w // 2, rect.y + rect.h // 2)
 
 
 def _accessible_close(hierarchy: str, screen: Image) -> tuple[str, tuple[int, int] | None]:
@@ -91,6 +163,8 @@ def _accessible_close(hierarchy: str, screen: Image) -> tuple[str, tuple[int, in
 
 def find_close(screen: Image, templates: TemplateCache, device: Any) -> tuple[int, int] | None:
     """Return one witnessed close button, or None when evidence is unclear."""
+    if play_store_overlay_foreground(device):
+        return _play_store_close(screen, templates)
     read_hierarchy = getattr(device, "ad_accessibility_hierarchy", None)
     if not callable(read_hierarchy):
         shell = getattr(device, "shell", None)

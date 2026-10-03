@@ -115,7 +115,12 @@ class InGameAdClaim:
             return True
 
         if self._phase == "watching":
-            claim = battle_menu.ad_reward_claim(screen, ocr.read(screen), amount=6)
+            boxes = ocr.read(screen)
+            dialog = ad_exit.return_dialog(screen, boxes, device)
+            if dialog is not None:
+                self._tap(device, policy, dialog[1])
+                return True
+            claim = battle_menu.ad_reward_claim(screen, boxes, amount=6)
             if claim is not None:
                 self._tap(device, policy, claim)
                 self._claimed_at = now
@@ -142,7 +147,12 @@ class InGameAdClaim:
             return True
 
         if self._phase == "recovering":
-            claim = battle_menu.ad_reward_claim(screen, ocr.read(screen), amount=6)
+            boxes = ocr.read(screen)
+            dialog = ad_exit.return_dialog(screen, boxes, device)
+            if dialog is not None:
+                self._tap(device, policy, dialog[1])
+                return True
+            claim = battle_menu.ad_reward_claim(screen, boxes, amount=6)
             if claim is not None:
                 self._tap(device, policy, claim)
                 self._claimed_at = now
