@@ -124,6 +124,39 @@ def test_towerbot_capture_reader_tags_actual_lab_facts_without_recounting_frame(
     assert account.snapshot()['revision']['lab_levels'][0]['evidence']['observed_at'] == 1010.
 
 
+def test_towerbot_capture_reader_relearns_selected_research_level_after_scope_change(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from account_state import AccountRepository, AccountState
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    from fleet.resource_blocks import LabAction
+    from lab_runtime import LabRuntimeSnapshot, LabScope
+    from tower_bot import TowerBot
+    import labs
+    import tower_bot
+
+    account = AccountState(AccountRepository(tmp_path / 'state.db'))
+    scope = FactScope('acct', 'lease', 'new-generation', 0)
+    account.bind_scope(scope, identity=IdentityEvidence('acct', 900., 'identity'))
+    bot = TowerBot.__new__(TowerBot)
+    bot.account_state, bot.lab_state = account, labs.LabsState(account)
+    bot.lab_visit = types.SimpleNamespace(selected_action=LabAction(
+        2, 'labs.health', 1, 'start', 7, 'route next'))
+    bot._screen = cv2.imread(str(FIXTURES / 'menu_labs_game_speed_affordable.png'))
+    bot._screen_fact_scope, bot._screen_captured_at = scope, 1000.
+    boxes = tuple(ocr.TextBox('Health Lv.2' if box.text == 'Health Lv.1' else box.text,
+                              box.confidence, box.rect)
+                  for box in recorded('menu_labs_game_speed_affordable'))
+    monkeypatch.setattr(tower_bot.time, 'time', lambda: bot._screen_captured_at + 1)
+
+    bot._observe_labs_capture(boxes)
+    bot._screen_captured_at = 1010.
+    bot._observe_labs_capture(boxes)
+
+    runtime = LabRuntimeSnapshot(LabScope('acct', 'lease', 'new-generation', 0), ())
+    assert account.lab_facts(runtime, now=1011.).completed_levels == {'labs.health': 1}
+
+
 def test_identity_comes_from_the_catalog_and_stops_at_its_edge() -> None:
     """Success: the module names the catalog's labs and refuses everything else."""
     import labs
