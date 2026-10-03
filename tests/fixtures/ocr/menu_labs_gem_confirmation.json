@@ -1,0 +1,142 @@
+[
+  {
+    "text": "20.47K",
+    "confidence": 0.9956672489643097,
+    "rect": [
+      87,
+      27,
+      183,
+      45
+    ]
+  },
+  {
+    "text": "557",
+    "confidence": 0.9996660749117533,
+    "rect": [
+      377,
+      24,
+      163,
+      54
+    ]
+  },
+  {
+    "text": "LAB",
+    "confidence": 0.9921258687973022,
+    "rect": [
+      25,
+      108,
+      111,
+      49
+    ]
+  },
+  {
+    "text": "Lab 1",
+    "confidence": 0.9079819083213806,
+    "rect": [
+      25,
+      262,
+      95,
+      39
+    ]
+  },
+  {
+    "text": "Lab Offline",
+    "confidence": 0.9486575343392112,
+    "rect": [
+      392,
+      442,
+      293,
+      51
+    ]
+  },
+  {
+    "text": "Lab 2",
+    "confidence": 0.8800028562545776,
+    "rect": [
+      25,
+      654,
+      99,
+      39
+    ]
+  },
+  {
+    "text": "CONFIRMATION",
+    "confidence": 0.9953439086675644,
+    "rect": [
+      326,
+      932,
+      427,
+      44
+    ]
+  },
+  {
+    "text": "Are you sure that you want to spend",
+    "confidence": 0.9820120368685041,
+    "rect": [
+      171,
+      1029,
+      737,
+      43
+    ]
+  },
+  {
+    "text": "Lab",
+    "confidence": 0.9741813143094381,
+    "rect": [
+      24,
+      1045,
+      83,
+      38
+    ]
+  },
+  {
+    "text": "400 gems to unlock this lab?",
+    "confidence": 0.9983879945107869,
+    "rect": [
+      243,
+      1075,
+      594,
+      58
+    ]
+  },
+  {
+    "text": "No",
+    "confidence": 0.9995580017566681,
+    "rect": [
+      312,
+      1272,
+      79,
+      56
+    ]
+  },
+  {
+    "text": "Yes",
+    "confidence": 0.9996836185455322,
+    "rect": [
+      682,
+      1276,
+      93,
+      51
+    ]
+  },
+  {
+    "text": "Don't show Gem spend confirmations",
+    "confidence": 0.9651742034098681,
+    "rect": [
+      282,
+      1404,
+      617,
+      39
+    ]
+  },
+  {
+    "text": "again this session",
+    "confidence": 0.9929034213225046,
+    "rect": [
+      279,
+      1445,
+      299,
+      45
+    ]
+  }
+]
