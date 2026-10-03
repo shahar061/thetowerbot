@@ -27,8 +27,8 @@ def route_gates() -> dict[str, dict[str, object]]:
         'general_research': asdict(RouteGate(True, 'starter_rollout',
             'Per-slot dry run → canary → fleet, plus one clean rehearsal per lab '
             '(lab-starter-rollout.json)')),
-        'native_repeat': asdict(RouteGate(False, 'missing_recorded_sequence',
-            'Repeat controls and persisted on/off state are uncalibrated')),
+        'native_repeat': asdict(RouteGate(True, 'recorded_on_off_sequence',
+            'Recorded native-repeat On/Off controls; fresh slot-bound reads and verified toggle readback')),
         **{f'in_battle_{page}': asdict(RouteGate(False, 'missing_recorded_sequence',
             'Pending work waits for MAIN_MENU/GAME_OVER; no calibrated return to the same run'))
            for page in ('labs', 'missions')},

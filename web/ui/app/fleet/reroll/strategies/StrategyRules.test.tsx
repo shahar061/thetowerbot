@@ -14,7 +14,7 @@ test("four sections, each rule tagged Live or Planned, safety rules locked", () 
   render(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} labList={false} onChange={vi.fn()} />);
   for (const name of ["Coins: Workshop vs Labs", "Labs", "Gems", "Fixed safety rules"])
     expect(screen.getByRole("group", { name })).toBeInTheDocument();
-  expect(within(screen.getByRole("group", { name: "Coins: Workshop vs Labs" })).getAllByText("Live").length).toBe(2);
+  expect(within(screen.getByRole("group", { name: "Coins: Workshop vs Labs" })).getAllByText("Live").length).toBe(3);
   expect(within(screen.getByRole("group", { name: "Labs" })).getAllByText("Planned").length).toBeGreaterThan(0);
   expect(screen.getByRole("group", { name: "Fixed safety rules" })).toHaveTextContent("Never rush a lab with gems");
 });
@@ -28,10 +28,24 @@ test("changing the sharing mode reports new rules and keeps the rest", () => {
   expect(onChange.mock.calls.at(-1)![0].labs.auto_start).toBe(false);
 });
 
+test("game auto research can be enabled or disabled without changing the bot start policy", () => {
+  const onChange = vi.fn();
+  const rules = { ...DEFAULT_RULES, labs: { ...DEFAULT_RULES.labs, auto_start: false } };
+  render(<StrategyRules rules={rules} locked={false} rows={[]} labList={false} onChange={onChange} />);
+  const control = screen.getByRole("combobox", { name: "Auto research next level" });
+  expect(control).toHaveValue("unchanged");
+  expect(within(control).getByRole("option", { name: "Leave game setting unchanged" })).toBeInTheDocument();
+  fireEvent.change(control, { target: { value: "enabled" } });
+  expect(onChange).toHaveBeenLastCalledWith({ ...rules, labs: { ...rules.labs, native_repeat: "enabled" } });
+  fireEvent.change(control, { target: { value: "disabled" } });
+  expect(onChange).toHaveBeenLastCalledWith({ ...rules, labs: { ...rules.labs, native_repeat: "disabled" } });
+});
+
 test("a template's rules are read-only", () => {
   render(<StrategyRules rules={DEFAULT_RULES} locked rows={[]} labList={false} onChange={vi.fn()} />);
   expect(screen.getByLabelText("Lab share mode")).toBeDisabled();
   expect(screen.getByLabelText("Keep gems")).toBeDisabled();
+  expect(screen.getByRole("combobox", { name: "Auto research next level" })).toBeDisabled();
 });
 
 test("previews the wallet split for the selected emulator", () => {

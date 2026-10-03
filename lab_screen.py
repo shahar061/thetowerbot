@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 import hashlib
 import math
+from pathlib import Path
 import re
 import time
+
+import cv2
 
 from config import Rect
 from device import Image
@@ -24,6 +28,14 @@ _ORDINALS = {2: ("2ND", "ZND"), 3: ("3RD",), 4: ("4TH",), 5: ("5TH",)}
 # One Labs card spans about 392 px of a 2400 px frame. It bounds the last
 # visible tile when no header follows it.
 _TILE_PITCH = .165
+
+
+@dataclass(frozen=True)
+class LabRepeatControl:
+    """One calibrated on/off control belonging to a visible running lab."""
+    slot: int
+    state: str
+    point: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -210,6 +222,76 @@ def _lab_title_and_headers(boxes: Sequence[ocr.TextBox], width: int, height: int
     return headers
 
 
+@lru_cache(maxsize=2)
+def _repeat_template(state: str) -> Image | None:
+    path = Path(__file__).resolve().parent / "templates" / "nav" / f"lab_repeat_{state}.png"
+    return cv2.imread(str(path), cv2.IMREAD_COLOR)
+
+
+def read_repeat_controls(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> tuple[LabRepeatControl, ...]:
+    """Read recorded repeat icons; unknown, dimmed and ambiguous controls have no target.
+
+    The timer anchors the search inside its own lab card. Absolute-intensity
+    matching distinguishes the dim Off icon from On; a bright page title also
+    rejects modal dimming, which must never be mistaken for an Off control.
+    """
+    height, width = screen.shape[:2]
+    if not supported_frame(width, height) or screen.ndim != 3 or screen.shape[2] != 3:
+        return ()
+    valid = tuple(box for box in boxes if math.isfinite(box.confidence) and .9 <= box.confidence <= 1
+                  and box.rect.w > 0 and box.rect.h > 0
+                  and 0 <= box.rect.x < box.rect.x + box.rect.w <= width
+                  and 0 <= box.rect.y < box.rect.y + box.rect.h <= height)
+    headers = _lab_title_and_headers(valid, width, height)
+    if not headers or any(len(headings) != 1 for headings in headers.values()):
+        return ()
+    title = next(box for box in valid if box.text.strip().upper() == "LAB"
+                 and box.rect.x < width * .2 and box.rect.y < height * .1)
+    crop = screen[title.rect.y:title.rect.y + title.rect.h, title.rect.x:title.rect.x + title.rect.w]
+    if (crop.min(axis=2) >= 215).mean() < .15:
+        return ()
+    controls: list[LabRepeatControl] = []
+    for slot, headings in sorted(headers.items()):
+        heading = headings[0]
+        bottom = min((items[0].rect.y for items in headers.values() if items[0].rect.y > heading.rect.y),
+                     default=min(height, heading.rect.y + int(width * .4)))
+        within = [box for box in valid if heading.rect.y + heading.rect.h <= box.rect.y
+                  and box.rect.y + box.rect.h < bottom]
+        names = [box for box in within if _NAME_LEVEL.fullmatch(box.text.strip())]
+        timers = [box for box in within if _duration_seconds(box.text) is not None]
+        if (len(names) != 1 or len(timers) != 1 or _research_identity(names[0].text) is None
+                or any(_normalized(box.text) == "LABOFFLINE" for box in within)):
+            continue
+        name = _NAME_LEVEL.fullmatch(names[0].text.strip())
+        if name is None or int(name["level"]) < 1:
+            continue
+        timer = timers[0]
+        if timer.rect.x <= 130 or timer.rect.y < names[0].rect.y + names[0].rect.h:
+            continue
+        center_y = timer.rect.y + timer.rect.h // 2
+        left, top, right, lower = 20, center_y - 48, 130, center_y + 48
+        if top < heading.rect.y + heading.rect.h or lower >= bottom:
+            continue
+        region = screen[top:lower, left:right]
+        matches: list[LabRepeatControl] = []
+        for state, asset in (("enabled", "on"), ("disabled", "off")):
+            template = _repeat_template(asset)
+            if template is None or any(a < b for a, b in zip(region.shape[:2], template.shape[:2])):
+                continue
+            scores = cv2.matchTemplate(region, template, cv2.TM_SQDIFF_NORMED)
+            components, _ = cv2.connectedComponents((scores <= .02).astype("uint8"))
+            if components != 2:  # Background plus exactly one matching location cluster.
+                continue
+            _, _, point, _ = cv2.minMaxLoc(scores)
+            point = (left + point[0] + template.shape[1] // 2,
+                     top + point[1] + template.shape[0] // 2)
+            if 67 <= point[0] <= 83 and abs(point[1] - center_y) <= 8:
+                matches.append(LabRepeatControl(slot, state, point))
+        if len(matches) == 1:
+            controls.append(matches[0])
+    return tuple(controls)
+
+
 def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
                observed_at: float) -> LabsReading:
     """Read owned cards independently; this observer never supplies tap targets.
@@ -231,6 +313,7 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
     headers = _lab_title_and_headers(valid, width, height)
     if not headers:
         return empty
+    repeats = {control.slot: control.state for control in read_repeat_controls(screen, valid)}
 
     jobs: list[LabJob] = []
     locked: list[int] = []
@@ -274,7 +357,8 @@ def read_slots(screen: Image, boxes: tuple[ocr.TextBox, ...], *,
             jobs.append(LabJob(slot, identity, name.text, observed_at + seconds,
                                seconds, None, "unknown", "researching",
                                min(name.confidence, timer.confidence), rect,
-                               source_level=target - 1, target_level=target))
+                               source_level=target - 1, target_level=target,
+                               native_repeat=repeats.get(slot, "unknown")))
         else:
             jobs.append(unknown)
 

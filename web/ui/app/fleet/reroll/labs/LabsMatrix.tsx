@@ -44,6 +44,9 @@ function SlotCell({ slot, at, hidePlanned }: { slot: SlotPlan; at: number; hideP
     className={`min-w-0 space-y-1 rounded-md border p-2 text-xs [overflow-wrap:anywhere] ${tone === "ready" ? "border-amber-500 bg-amber-500/10" : "border-border"}`}>
     <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Now</p>
     <p>{nowText(slot.now, at)}</p>
+    {slot.now.state === "researching" && <p className="text-muted-foreground">Auto next level: {slot.now.native_repeat === "enabled" ? "On"
+      : slot.now.native_repeat === "disabled" ? "Off" : "Unknown"}
+      {slot.now.stale || slot.now.evidence_status === "historical" ? " · last observed" : ""}</p>}
     <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Next</p>
     <NextTier slot={slot} hidePlanned={hidePlanned} />
     {!!slot.why.length && <p className="text-muted-foreground">Plan path: {slot.why.join(" → ")}</p>}
