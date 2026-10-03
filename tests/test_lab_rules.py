@@ -23,6 +23,13 @@ def test_old_rules_load_with_defaults() -> None:
     assert (rules.labs.filler.enabled, rules.labs.filler.max_price_pct_of_wallet,
             rules.labs.filler.min_hours) == (True, 10, 1.0)
     assert rules.labs.native_repeat == "unchanged"
+    assert rules.labs.direct_start is False
+
+
+def test_direct_start_round_trips_as_opt_in() -> None:
+    rules = RouteRules.from_dict({"labs": {"direct_start": True}})
+    assert rules.labs.direct_start is True
+    assert RouteRules.from_dict(rules.to_dict()).labs.direct_start is True
 
 
 @pytest.mark.parametrize("mode", ["unchanged", "enabled", "disabled"])

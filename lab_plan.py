@@ -24,6 +24,7 @@ class LabVisitOptions:
     start_research: bool = True
     unlock_slots: tuple[int, ...] = ()
     keep_gems: int = 0
+    direct_start: bool = False
     native_repeat: str = "unchanged"
 
 

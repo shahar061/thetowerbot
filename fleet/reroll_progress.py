@@ -159,6 +159,7 @@ class RerollProgress:
         return LabVisitOptions(start_research=rules.labs.auto_start,
                                unlock_slots=(slot,) if slot is not None else (),
                                keep_gems=rules.gems.keep,
+                               direct_start=rules.labs.direct_start,
                                native_repeat=rules.labs.native_repeat)
 
     def note_lab_coin_debit(self, now: float | None = None) -> None:

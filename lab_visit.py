@@ -119,6 +119,7 @@ class LabVisit:
         worker: str | None = None,
         evidence_dir: Path | None = None,
         starter: LabStarterRollout | None = None,
+        plan_action: Callable[[float], LabAction | None] | None = None,
     ) -> None:
         self.templates = templates
         self.home_reader = home_reader
@@ -130,6 +131,7 @@ class LabVisit:
         self.authorize, self.event_sink = authorize, event_sink
         self.rollout, self.worker, self.evidence_dir = rollout, worker, evidence_dir
         self.starter = starter
+        self.plan_action = plan_action
         self._canary_sweep_at = float('-inf')
         self._boxes: tuple[ocr.TextBox, ...] = ()
         self._rehearsing = False
@@ -207,7 +209,7 @@ class LabVisit:
                 return False
             self.pending_action = action
             self.release_stale_canaries((action.slot,))
-            gate = self.gate(action.slot, action.research)
+            gate = self.gate(action.slot, action.research, options=options)
             if gate.mode == 'blocked' or (action.operation == 'start' and not gate.enabled):
                 self.recovery_status = 'starter_gate_refused'
                 return False
@@ -294,10 +296,11 @@ class LabVisit:
         self._canary_sweep_at = now + 60.
         self.release_stale_canaries()
 
-    def gate(self, slot: int, research: str) -> StarterGate:
+    def gate(self, slot: int, research: str, *, options: LabVisitOptions | None = None) -> StarterGate:
         """This worker's gate right now. The file is re-read on every call."""
         state = self.starter.state() if self.starter is not None else None
-        return starter_gate(state, slot, research, self.worker, self._account())
+        return starter_gate(state, slot, research, self.worker, self._account(),
+                            direct_start=(options or self._options).direct_start)
 
     def _account(self) -> str | None:
         scope = self.account_state.verified_scope if self.account_state else None
@@ -1087,6 +1090,24 @@ class LabVisit:
         selected = self.selected_action
         home = (read_selected_home(screen, boxes, slot=selected.slot, observed_at=capture_at)
                 if selected is not None and selected.slot != 1 else self.home_reader(screen, boxes))
+        if (selected is None and self.plan_action is not None
+                and self._state in {'open', 'home'} and home.page
+                and self._options.start_research and self._options.native_repeat == 'unchanged'
+                and not self._unlock_done and self.pending_transaction is None
+                and self.runtime is not None):
+            snapshot = self.runtime.snapshot()
+            if snapshot.strip_complete and snapshot.observed_at == capture_at:
+                candidate = self.plan_action(capture_at)
+                if (candidate is not None and candidate.operation in {'start', 'rehearse'}
+                        and type(candidate.slot) is int and candidate.slot in range(1, 6)
+                        and type(candidate.target_level) is int and candidate.target_level >= 1
+                        and type(candidate.strategy_revision) is int
+                        and self.gate(candidate.slot, candidate.research).mode == candidate.operation):
+                    self.selected_action = self.pending_action = selected = candidate
+                    self._rehearsing = candidate.operation == 'rehearse'
+                    if selected.slot != 1:
+                        home = read_selected_home(screen, boxes, slot=selected.slot,
+                                                  observed_at=capture_at)
         picker = (read_selected_picker(screen, boxes, research_id=selected.research)
                   if selected is not None and selected.research != 'labs.game-speed'
                   else self.picker_reader(screen, boxes))
@@ -1168,6 +1189,12 @@ class LabVisit:
                 return None
             if self._reconcile_repeat(screen, device):
                 return None
+            if (selected is None and self.plan_action is not None
+                    and self._options.start_research and self._options.native_repeat == 'unchanged'
+                    and self.runtime is not None):
+                snapshot = self.runtime.snapshot()
+                if not snapshot.strip_complete or snapshot.observed_at != capture_at:
+                    return None
             decision = decide(home, None)
             if selected is not None:
                 # The selected slot's card was read: its result must not pass for Lab 1's.

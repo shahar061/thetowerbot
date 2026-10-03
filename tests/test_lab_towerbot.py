@@ -237,6 +237,28 @@ def test_failed_planned_visit_does_not_rearm_every_menu_pass() -> None:
     assert armed == 1
 
 
+def test_confirmed_start_checks_remaining_slots_without_waiting_for_game_speed_due() -> None:
+    b = bot(action(), options=LabVisitOptions(direct_start=True))
+    b.lab_runtime = SimpleNamespace(snapshot=lambda: SimpleNamespace(slots=(), scope=None))
+    assert b._request_planned_lab_visit(1000., due=False)
+    end_visit(b, status='started')
+    b.account_state.planned = None
+    assert b._request_planned_lab_visit(1001., due=False)
+    assert b.lab_visit.selected_action is None
+    b.lab_visit.cancel('test')
+    assert not b._request_planned_lab_visit(1002., due=False)
+
+
+def test_direct_start_retries_after_backoff_even_when_game_speed_is_not_due() -> None:
+    import tower_bot
+    b = bot(action(), options=LabVisitOptions(direct_start=True))
+    assert b._request_planned_lab_visit(1000., due=False)
+    end_visit(b)
+    assert not b._request_planned_lab_visit(1001., due=False)
+    later = 1000. + tower_bot.LAB_ACTION_BACKOFF_SECONDS + 1
+    assert b._request_planned_lab_visit(later, due=False)
+
+
 def test_backoff_keeps_legacy_due_path_but_never_the_failed_action() -> None:
     b = bot(action())
     assert b._request_planned_lab_visit(1000., due=False)
