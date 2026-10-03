@@ -148,12 +148,16 @@ def test_late_six_gem_reward_is_claimed_after_ad_timeout() -> None:
     assert any(isinstance(event, events.InGameAdGemClaimed) for event in bus.events)
 
 
-def test_ad_timeout_backs_out_of_foreground_ad_then_claims_reward() -> None:
+@pytest.mark.parametrize("focused_activity", [
+    "com.TechTreeGames.TheTower/com.google.android.gms.ads.AdActivity",
+    "com.android.vending/com.google.android.finsky.transparentmainactivity.HsdpAlias",
+])
+def test_ad_timeout_backs_out_of_foreground_ad_then_claims_reward(
+        focused_activity: str) -> None:
     class AdDevice(Device):
         def shell(self, command: str) -> str:
             if command.startswith("dumpsys window"):
-                return ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
-                        "com.google.android.gms.ads.AdActivity}")
+                return f"mCurrentFocus=Window{{123 u0 {focused_activity}}}"
             if command.startswith("uiautomator dump"):
                 return "<hierarchy></hierarchy>"
             raise AssertionError(command)
@@ -169,6 +173,36 @@ def test_ad_timeout_backs_out_of_foreground_ad_then_claims_reward() -> None:
     assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 186, 7, True)
     assert not claim.active
     assert any(isinstance(event, events.InGameAdGemClaimed) for event in bus.events)
+
+
+def test_play_store_overlay_exit_resumes_the_game_from_recorded_dialogs() -> None:
+    class PlayDevice(Device):
+        focus = ""
+
+        def shell(self, command: str) -> str:
+            assert command.startswith("dumpsys window")
+            return self.focus
+
+    bus, device = Bus(), PlayDevice()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164]), sleep=lambda _: None)
+    device.focus = ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
+                    "com.unity3d.player.UnityPlayerActivity}")
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+
+    device.focus = ("mCurrentFocus=Window{8dc4b2c u0 com.android.vending/"
+                    "com.google.android.finsky.transparentmainactivity.HsdpAlias}")
+    assert claim.observe(frame("play_store_overlay_83"), None, device, POLICY, 31, 7, False)
+    device.focus = ("mCurrentFocus=Window{123 u0 com.TechTreeGames.TheTower/"
+                    "com.unity3d.player.UnityPlayerActivity}")
+    assert claim.observe(frame("ad_return_resume_83"), None, device, POLICY, 34, 7, False)
+    assert claim.observe(frame("ad_return_cloud_83"), None, device, POLICY, 37, 7, False)
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 41, 7, True)
+
+    assert device.taps == [(200, 1368), (1000, 940), (722, 1425), (539, 1638)]
+    assert device.backs == 0
+    assert not claim.active
+    assert any(isinstance(event, events.ClaimUncertain)
+               and event.target == "in_game_ad_gems" for event in bus.events)
 
 
 def test_scan_loop_starts_video_before_menu_or_upgrades(bot_with_frames: Any) -> None:

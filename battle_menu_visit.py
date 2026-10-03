@@ -64,6 +64,7 @@ class BattleMenuVisit:
         self._ad_last_close = float("-inf")
         self._ad_recorded = False
         self._ad_uncertain_recorded = False
+        self._ad_returning = False
 
     @property
     def active(self) -> bool:
@@ -102,10 +103,13 @@ class BattleMenuVisit:
         if (self._step not in (Step.AD_PLAYING, Step.AD_CLAIMED, Step.AD_RECOVER)
                 and self._waited > config.BATTLE_MENU_STEP_FRAMES):
             return self._bail(screen, boxes, device, policy, now)
+        if self._step is Step.AD_PLAYING:
+            return self._ad_playing(screen, boxes, device, policy, now, in_run)
+        if self._step is Step.AD_RECOVER:
+            return self._ad_recover(screen, boxes, device, policy, now, in_run)
         handler = {Step.OPENING: self._opening, Step.IN_PAGE: self._in_page,
                    Step.RETURNING: self._returning, Step.CLOSING: self._closing,
-                   Step.AD_PLAYING: self._ad_playing, Step.AD_CLAIMED: self._ad_claimed,
-                   Step.AD_RECOVER: self._ad_recover}[self._step]
+                   Step.AD_CLAIMED: self._ad_claimed}[self._step]
         return handler(screen, boxes, device, policy, now)
 
     # -- steps -----------------------------------------------------------------
@@ -157,6 +161,7 @@ class BattleMenuVisit:
                     self._ad_last_close = float("-inf")
                     self._ad_recorded = False
                     self._ad_uncertain_recorded = False
+                    self._ad_returning = False
                     self._go(Step.AD_PLAYING)
                     return Outcome.TAPPED
             if battle_menu.free_gem_tile(screen, boxes()) is not None:
@@ -172,8 +177,16 @@ class BattleMenuVisit:
         return Outcome.TAPPED
 
     def _ad_playing(self, screen: Image, boxes: Callable[[], tuple], device: Any,
-                    policy: Any, now: float) -> Outcome:
+                    policy: Any, now: float, in_run: bool) -> Outcome:
         text = boxes()
+        if self._ad_returning:
+            dialog = ad_exit.return_dialog(screen, text, device)
+            if dialog is not None:
+                self._tap(device, policy, dialog[1])
+                return Outcome.TAPPED
+            if in_run:
+                return self._ad_fail(screen, boxes, device, policy, now,
+                                     "ad_returned_without_store")
         claim = battle_menu.ad_reward_claim(screen, text)
         if claim is not None:
             self._tap(device, policy, claim)
@@ -190,14 +203,20 @@ class BattleMenuVisit:
                 and self._ad_end_close_count < 3 and now - self._ad_last_close >= 3):
             close = ad_exit.find_close(screen, self._templates, device)
             if close is not None:
+                returning = ad_exit.play_store_overlay_foreground(device)
                 self._tap(device, policy, close)
+                self._ad_returning = returning
                 self._ad_end_close_count += 1
                 self._ad_last_close = now
                 return Outcome.TAPPED
         if now - self._ad_started >= config.BATTLE_MENU_AD_TIMEOUT:
-            device.press_back()
-            self._go(Step.AD_RECOVER)
-            return Outcome.TAPPED
+            if ad_exit.ad_foreground(device):
+                returning = ad_exit.play_store_overlay_foreground(device)
+                device.press_back()
+                self._ad_returning = returning
+                self._go(Step.AD_RECOVER)
+                return Outcome.TAPPED
+            return self._ad_fail(screen, boxes, device, policy, now, "ad_timeout")
         return Outcome.HOLD
 
     def _ad_claimed(self, screen: Image, boxes: Callable[[], tuple], device: Any,
@@ -225,7 +244,16 @@ class BattleMenuVisit:
         return Outcome.HOLD
 
     def _ad_recover(self, screen: Image, boxes: Callable[[], tuple], device: Any,
-                    policy: Any, now: float) -> Outcome:
+                    policy: Any, now: float, in_run: bool) -> Outcome:
+        if self._ad_returning:
+            dialog = ad_exit.return_dialog(screen, boxes(), device)
+            if dialog is not None:
+                self._tap(device, policy, dialog[1])
+                self._waited = 0
+                return Outcome.TAPPED
+            if in_run:
+                return self._ad_fail(screen, boxes, device, policy, now,
+                                     "ad_returned_without_store")
         if battle_menu.read_page(boxes()).page == "store":
             return self._ad_fail(screen, boxes, device, policy, now, "ad_timeout")
         if self._waited >= config.BATTLE_MENU_STEP_FRAMES:
