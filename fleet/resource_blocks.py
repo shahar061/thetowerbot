@@ -476,6 +476,7 @@ class SlotNow:
     research_name: str | None = None
     owned: bool | None = None
     evidence_status: str = "unknown"
+    native_repeat: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -602,13 +603,16 @@ def _observed_now(record: Mapping[str, Any], now: float) -> SlotNow:
     catalog = lab_catalog.lab(research_id) if isinstance(research_id, str) else None
     if catalog is None:
         research_id = None
+    repeat = record.get("native_repeat")
+    native_repeat = (repeat if isinstance(repeat, str) and repeat in {"enabled", "disabled"}
+                     and state == "researching" else "unknown")
     return SlotNow(state, level, finish, overdue, read_at,
                    read_at is None or read_at > now or now - read_at > STALE_SECONDS,
                    research_id, catalog.name if catalog else None,
                    True if state in {"researching", "idle", "owned_unread"} else
                    False if state == "locked" else None,
                    "current" if record.get("confirmed") is True and not record.get("preview_only")
-                   else "historical" if state != "unknown" else "unknown")
+                   else "historical" if state != "unknown" else "unknown", native_repeat)
 
 
 def _known_levels(record: Mapping[str, Any] | None) -> tuple[dict[str, int], dict[str, int]]:

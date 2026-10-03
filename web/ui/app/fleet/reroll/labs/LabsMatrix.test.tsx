@@ -49,6 +49,25 @@ describe("LabsMatrix", () => {
     expect(table().getByTestId("slot-1")).toHaveTextContent("Should have finished ~2h ago");
   });
 
+  it.each([
+    ["enabled", "On"], ["disabled", "Off"], ["unknown", "Unknown"], [undefined, "Unknown"],
+  ] as const)("shows the observed native repeat state %s", (native_repeat, label) => {
+    render(<LabsMatrix rows={[row("Air_1", { now: { state: "researching", level: 3, completes_at: AT + 7200,
+      overdue_seconds: null, read_at: AT - 60, stale: false, native_repeat } })]}
+      reference={reference} focus={null} at={AT} />);
+    expect(table().getByTestId("slot-1")).toHaveTextContent(`Auto next level: ${label}`);
+    expect(within(screen.getByRole("article", { name: "Labs for Air_1" })).getByRole("region", { name: "Lab 1" }))
+      .toHaveTextContent(`Auto next level: ${label}`);
+    expect(table().getByTestId("slot-2")).not.toHaveTextContent("Auto next level");
+  });
+
+  it("marks stale native repeat settings as last observed", () => {
+    render(<LabsMatrix rows={[row("Air_1", { now: { state: "researching", level: 3, completes_at: AT + 7200,
+      overdue_seconds: null, read_at: AT - 90000, stale: true, native_repeat: "enabled" } })]}
+      reference={reference} focus={null} at={AT} />);
+    expect(table().getByTestId("slot-1")).toHaveTextContent("Auto next level: On · last observed");
+  });
+
   it("hides planned steps on request and focuses one worker", () => {
     render(<LabsMatrix rows={[row("Air_1"), row("Air_2")]} reference={reference} focus="Air_2" at={AT} />);
     expect(table().getAllByRole("row", { name: /Air_/ })).toHaveLength(1);

@@ -92,6 +92,27 @@ def test_nothing_due_and_no_gated_action_arms_nothing() -> None:
     assert b.lab_visit.selected_action is None
 
 
+def test_repeat_preference_reconciles_when_start_is_off_then_backs_off() -> None:
+    b = bot(None, options=LabVisitOptions(start_research=False, native_repeat='enabled', unlock_slots=(3,)))
+    assert b._request_planned_lab_visit(1000., due=False)
+    assert b.lab_visit._options.native_repeat == 'enabled'
+    assert not b.lab_visit._options.start_research and not b.lab_visit._options.unlock_slots
+    b.lab_visit.cancel('test')
+    assert not b._request_planned_lab_visit(1001., due=False)
+    b.reroll_progress._options = LabVisitOptions(start_research=False, native_repeat='disabled')
+    assert b._request_planned_lab_visit(1002., due=False)
+
+
+def test_repeat_authorization_rejects_changed_strategy_and_preference() -> None:
+    b = bot(None, options=LabVisitOptions(native_repeat='enabled'))
+    b.lab_visit.request(LabVisitOptions(native_repeat='enabled'))
+    wanted = LabDecision('enabled', slot=2, research_id='labs.health', game_speed_level=3)
+    assert b._authorize_lab('lab_repeat', wanted, 1000.)
+    assert not b._authorize_lab('lab_repeat', LabDecision('disabled'), 1000.)
+    b._lab_visit_revision = REVISION - 1
+    assert not b._authorize_lab('lab_repeat', wanted, 1000.)
+
+
 def test_uncalibrated_planned_action_is_never_requested() -> None:
     # Defensive: even if a plan seam returned an uncalibrated slot-2 start,
     # _plan_lab_action no longer duplicates the gate (LabVisit.gate is the

@@ -26,7 +26,7 @@ export type LabShareMode = "when_affordable" | "save_pct" | "labs_first" | "just
 export type RouteRules = {
   coins: { lab_share: { mode: LabShareMode; pct: number }; workshop_spend_limit_pct: number;
     kill_bonus_min_best_wave: number };
-  labs: { auto_start: boolean; idle_fill: "leave_idle" | "shortest_under_30m";
+  labs: { auto_start: boolean; native_repeat?: "unchanged" | "enabled" | "disabled"; idle_fill: "leave_idle" | "shortest_under_30m";
     pool: { selection: "cheapest" | "ordered" | "shortest"; max_price_pct_of_wallet: number | null; max_seconds: number | null };
     saving: { income_margin_pct: number; window_hours: Record<LabTier, number> };
     filler: { enabled: boolean; max_price_pct_of_wallet: number; min_hours: number } };
@@ -35,7 +35,7 @@ export type RouteRules = {
 /** Mirrors RouteRules() in fleet/build_route.py: today's behavior. */
 export const DEFAULT_RULES: RouteRules = {
   coins: { lab_share: { mode: "when_affordable", pct: 25 }, workshop_spend_limit_pct: 100, kill_bonus_min_best_wave: 60 },
-  labs: { auto_start: true, idle_fill: "leave_idle", pool: { selection: "ordered", max_price_pct_of_wallet: null, max_seconds: null },
+  labs: { auto_start: true, native_repeat: "unchanged", idle_fill: "leave_idle", pool: { selection: "ordered", max_price_pct_of_wallet: null, max_seconds: null },
     saving: { income_margin_pct: 75, window_hours: { "S+": 72, S: 24, A: 12, B: 4, C: 0 } },
     filler: { enabled: true, max_price_pct_of_wallet: 10, min_hours: 1 } },
   gems: { auto_unlock_lab_slots: true, spend_limit_pct: 100, keep: 0 },
@@ -47,6 +47,7 @@ export type AutomatedBlock = { lane: "labs" | "gems"; type: string; lab_id?: str
 export type SlotNow = { state: "researching" | "idle" | "locked" | "owned_unread" | "unknown"; level: number | null;
   completes_at: number | null; overdue_seconds: number | null; read_at: number | null; stale: boolean;
   research_id?: string | null; research_name?: string | null; owned?: boolean | null;
+  native_repeat?: "unknown" | "enabled" | "disabled";
   evidence_status?: "unknown" | "historical" | "current" };
 export type SlotNext = { lab_id: string; name: string; level: number | null; price: number | null; seconds: number | null };
 export type SlotPlan = { slot: number; now: SlotNow; next: SlotNext | null; covered: boolean | null; automated: boolean;

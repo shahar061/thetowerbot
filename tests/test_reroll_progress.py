@@ -11,6 +11,7 @@ import db
 import pytest
 from account_state import AccountState
 from fleet.build_route_runtime import BuildRouteRuntime
+from fleet.build_route import RouteDocument
 from fleet.reroll_planner import RerollFacts, choose_next
 from fleet.reroll_progress import RerollProgress
 from lab_plan import LabDecision
@@ -43,6 +44,19 @@ def test_lab_checks_wait_for_account_bound_unlock_observation(tmp_path: Path) ->
     restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState())
     assert not restarted.lab_due(now=1100., wallet_coins=122, wallet_gems=65)
     assert restarted.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
+
+
+def test_lab_visit_applies_saved_repeat_preference_when_bot_starts_are_off(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    route = RouteDocument.compatibility().to_dict()
+    route["baseline"]["rules"]["labs"].update(native_repeat="enabled", auto_start=False)
+    (tmp_path / "build-route.json").write_text(json.dumps(route))
+    progress.route_runtime = BuildRouteRuntime(tmp_path, progress.root.name, "ACCOUNT-A")
+
+    options = progress.lab_visit_options()
+
+    assert options.native_repeat == "enabled"
+    assert options.start_research is False
 
 
 def test_lab_unlock_is_bound_to_the_current_account(tmp_path: Path) -> None:
