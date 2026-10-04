@@ -320,6 +320,11 @@ def _reread_prices(screen: Image, observation: Observation, *,
         top = rect.y + int(rect.h * config.TILE_PRICE_TOP_FRACTION) + 1
         band = config.Rect(rect.x, top, rect.w, rect.y + rect.h - top)
         boxes = [b for b in ocr.read_region(screen, band) if price_number(b.text) is not None]
+        if observation.context == "battle" and not any(b.confidence >= .9 for b in boxes):
+            # Enlarging small cash digits can lower recognition confidence.
+            # Retry their actual pixels before leaving the model uncalibrated.
+            boxes = [b for b in ocr.read_region(screen, band, upscale=False)
+                     if price_number(b.text) is not None]
         if len(boxes) == 1:
             box = boxes[0]
             found.append(replace(box, rect=config.Rect(

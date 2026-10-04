@@ -173,6 +173,16 @@ def test_pause_is_unknown_on_a_frame_that_never_identified_itself() -> None:
     assert result.paused is None  # not False: nothing was read
 
 
+def test_battle_price_recovery_reads_native_digits_when_enlargement_loses_confidence() -> None:
+    from perception import observe_frame
+    frame = cv2.imread(str(FIXTURES / "battle_reader/defense_price20_native.png"))
+    observation = observe_frame(frame, "battle", reads=ocr.FrameReads(frame))
+    row = next(row for row in observation.rows if row.upgrade_id == "defense_percent")
+    assert row.value == 8.5
+    assert row.price == 20
+    assert row.status == "available"
+
+
 def test_a_single_digit_value_the_frame_read_misses_is_re_read_off_a_crop() -> None:
     """Damage "9" gets no box from a whole-frame read, and a row without a
     value is never bought - so a fresh account's battles bought only Attack
