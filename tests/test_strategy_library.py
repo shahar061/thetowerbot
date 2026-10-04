@@ -8,6 +8,7 @@ from threading import Barrier
 import pytest
 
 from fleet.build_route import RouteBaseline, RouteDocument, resolve_route
+from fleet.build_route_store import RouteUnavailable
 from fleet.strategy_library import StrategyLibrary, LibraryConflict
 
 
@@ -210,6 +211,46 @@ def test_save_stamps_saved_at_and_old_rows_without_it_still_load(tmp_path: Path)
     latest = saved["strategies"][0]
     assert latest["version"] == 2 and before <= latest["saved_at"] <= time.time()
     assert "saved_at" not in library.version("strategy-old", 1)
+
+
+def test_invalid_historical_baseline_does_not_hide_a_valid_latest_version(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    baseline = library.read()["templates"][0]["baseline"]
+    baseline["labs"].update(mode="blocks", blocks=[
+        {"id": "lab.track", "type": "slot_track", "slots": [1], "children": [
+            {"id": "lab.speed", "type": "research", "lab_id": "labs.game-speed", "to_level": 7},
+            {"id": "lab.pool", "type": "lab_pool", "lab_ids": ["labs.coins-wave"]}]}])
+    first = library.save(expected_revision=0, name="Saved", source_template="scratch",
+                         baseline=baseline)["strategies"][0]
+    library.save(expected_revision=1, name="Saved", source_template="scratch",
+                 strategy_id=first["id"], baseline=baseline)
+
+    state = json.loads(library.path.read_text(encoding="utf-8"))
+    state["versions"][0]["baseline"]["labs"]["blocks"][0]["children"][1]["max_price"] = 100
+    library.path.write_text(json.dumps(state), encoding="utf-8")
+
+    loaded = library.read()
+    assert loaded["revision"] == 2
+    assert [(row["id"], row["version"]) for row in loaded["strategies"]] == [(first["id"], 2)]
+    assert library.version(first["id"], 2)["version"] == 2
+    with pytest.raises(RouteUnavailable, match="strategy version unavailable"):
+        library.version(first["id"], 1)
+    saved = library.save(expected_revision=2, name="Saved", source_template="scratch",
+                         strategy_id=first["id"], baseline=baseline)
+    assert saved["strategies"][0]["version"] == 3
+    assert "max_price" in library.path.read_text(encoding="utf-8")
+
+
+def test_invalid_latest_baseline_still_blocks_library_read(tmp_path: Path) -> None:
+    library = StrategyLibrary(tmp_path)
+    baseline = library.read()["templates"][0]["baseline"]
+    library.save(expected_revision=0, name="Saved", source_template="opening", baseline=baseline)
+    state = json.loads(library.path.read_text(encoding="utf-8"))
+    state["versions"][0]["baseline"]["rules"]["coins"]["workshop_spend_limit_pct"] = "all"
+    library.path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(RouteUnavailable, match="strategy library unavailable"):
+        library.read()
 
 
 def test_common_labs_and_gems_template_is_protected_and_copyable(tmp_path: Path) -> None:
