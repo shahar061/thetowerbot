@@ -1797,7 +1797,10 @@ class TowerBot:
         acting = self._any_walk_active() or self.shopping.active or self.battle_menu.active
         reads = ocr.FrameReads(self.screen,
                                reuse=reading.state is not screens.ScreenState.IN_RUN
-                               and not acting)
+                               and not acting,
+                               battle_reader=(lambda frame_reads: self.autopilot.read_battle(
+                                   frame_reads, self.run_identity(settings)))
+                               if reading.state is screens.ScreenState.IN_RUN and not acting else None)
         late_ad_reward = (
             reading.state is screens.ScreenState.UNKNOWN
             and self.in_game_ad.may_claim_late_reward(time.time(), self.runs.current_id)
@@ -2846,11 +2849,12 @@ class TowerBot:
                         self._last_wave_progress = (self.runs.current_id, wave_number)
                     battle_policy = (self.reroll_progress.battle_policy(
                         settings.strategy.autopilot,
-                        self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)),
+                        {**self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)),
+                         **{row.upgrade_id: row.payload() for row in observation.rows}},
                         run_id=self.runs.current_id,
                         wave=(int(value) if (value := combat.get("wave")) is not None else None),
                         cash=self.wallet,
-                        combat=combat)
+                        combat=combat, pending_purchase=self.autopilot.pending is not None)
                                      if self.reroll_progress is not None else settings.strategy.autopilot)
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
                                                    cash=self.wallet, observation=observation,

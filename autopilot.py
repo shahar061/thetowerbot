@@ -165,9 +165,14 @@ class BattleAutopilot:
         # through it, which is what stops a dropped wallet read from becoming
         # a zero balance or a stale one from becoming a purchase.
         self.context = CombatContext()
+        from battle_reader import BattleReader
+        self.battle_reader = BattleReader()
         self.account_state = account_state
         self.bus = bus
         self.pending: tuple[ObservedUpgrade, float] | None = None
+        self._pending_modeled = False
+        self._pending_wave: int | None = None
+        self._pending_next_price: int | None = None
         self._pending_decision_token: str | None = None
         self._completed_decision_token: str | None = None
         self.search: Search | None = None
@@ -317,6 +322,16 @@ class BattleAutopilot:
             if box["name"] == row.name:
                 box["tapped"] = True
 
+    def read_battle(self, reads: ocr.FrameReads, identity: RunIdentity) -> tuple[ocr.TextBox, ...]:
+        policy = self._policy
+        if policy is None or not policy.modeled_pool or self._manual or self.search:
+            return reads._read_battle()
+        target = self.pending[0].upgrade_id if self.pending else (
+            policy.rules[0].upgrade_id if len(policy.rules) == 1 else None)
+        quote = dict(policy.battle_price_quote or {}, verify_price=True) if self.pending else policy.battle_price_quote
+        return self.battle_reader.read(reads, target=target, quote=quote,
+                                       scope=identity)
+
     def step(self, screen: Image, device: Any, policy: AutopilotPolicy, *,
              cash: int | None = None, observation: Observation | None = None,
              run_id: int | None = None, cooldown: float = .75,
@@ -382,11 +397,26 @@ class BattleAutopilot:
             after = visible.get(before.upgrade_id)
             if now <= sent_at:
                 return False
+            price_receipt = False
+            if self._pending_modeled and after and self._pending_next_price is not None and after.raw_price:
+                from fleet.battle_prices import price_matches
+                from perception import price_number
+                price_receipt = (price_number(after.raw_price) == after.price
+                    and price_matches(self._pending_next_price, after.price, after.raw_price)
+                    and not price_matches(before.price, after.price, after.raw_price))
             confirmed = after and (
+                price_receipt or
                 after.status == "maxed" or
-                (after.price is not None and before.price is not None and after.price > before.price) or
+                (not self._pending_modeled and after.price is not None and before.price is not None and after.price > before.price) or
                 (after.value is not None and before.value is not None and after.value != before.value)
             )
+            if self._pending_modeled and observation.combat.get('wave') != self._pending_wave:
+                # A wave transition may have granted a free upgrade. Reconcile
+                # instead of calling that change a paid purchase receipt.
+                self.pending = None
+                self._manual = None
+                self._decide("observing", "Wave changed during purchase; reconciling")
+                return False
             # A manual buy is one purchase; the policy above is still its
             # single-rule stand-in, so falling through would buy it again.
             was_manual = self._manual is not None
@@ -439,6 +469,18 @@ class BattleAutopilot:
                     self._decide("manual", "Scan complete; unseen upgrades remain unknown")
             return moved
         cached = self.state.rows("battle", now, identity)
+        quote = policy.battle_price_quote if not self._manual else None
+        if quote is not None:
+            if (quote.get('run_id') != run_id or quote.get('source') != 'model'
+                    or not quote.get('verified') or quote.get('status') != 'available'
+                    or not policy.single_purchase or not policy.decision_token
+                    or not policy.decision_token.startswith(str(quote.get('account_id')) + ':')
+                    or quote.get('wave') != observation.combat.get('wave')
+                    or type(quote.get('price')) is not int or quote['price'] <= 0):
+                self._decide("blocked", "Battle price quote requires current run evidence")
+                return False
+            uid = quote['upgrade_id']
+            cached[uid] = dict(status='available', price=quote['price'], value=quote.get('value'))
         enabled = [r for r in policy.effective_rules() if r.enabled and self._blocked.get(r.upgrade_id, 0) <= now]
         if not enabled:
             self._decide("waiting", "No eligible rules; enable upgrades or wait for a fresh scan")
@@ -474,6 +516,16 @@ class BattleAutopilot:
             # No independently validated battle catalog model is enabled.
             self.state.decision("blocked", "Price domain: catalog quote cannot authorize battle cash")
             return False
+        if quote is not None and target == quote['upgrade_id']:
+            from fleet.battle_prices import price_matches
+            if (row.status not in {'available', 'unreadable'} or row.confidence < .9
+                    or row.value is None or row.value != quote.get('value')
+                    or row.price is not None and not price_matches(quote['price'], row.price, row.raw_price)):
+                self._decide("observing", "Upgrade changed; reconciling the cash curve", target)
+                return False
+            row = replace(row, price=quote['price'], status='available',
+                          tap=row.tap or (row.rect.x + round(row.rect.w * .75),
+                                          row.rect.y + round(row.rect.h * .82)))
         if row.status != "available" or row.price is None or row.tap is None:
             return False
         if policy.observe_only:
@@ -497,6 +549,15 @@ class BattleAutopilot:
         tap(device, *row.tap)
         self._mark_tapped(row)
         self.pending = (row, now)
+        self._pending_modeled = quote is not None
+        self._pending_wave = int(observation.combat["wave"]) if quote is not None else None
+        self._pending_next_price = None
+        if quote is not None:
+            from fleet.battle_prices import catalog
+            curve = catalog()['curves'].get(target, ())
+            index = quote.get('index')
+            if type(index) is int and 0 <= index + 1 < len(curve):
+                self._pending_next_price = curve[index + 1]
         self._pending_decision_token = policy.decision_token if policy.single_purchase else None
         self._last_action = now
         self._decide("verifying", f"Checking {row.name} purchase", target)

@@ -67,6 +67,7 @@ class RouteFacts:
     run_purchases: Mapping[str, int] | None = None
     price_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     lab_coin_jar: int = 0
+    battle_price_quotes: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class BattleDecision:
     battle_cash: int | None
     reason: str
     target: float | None = None
+    price_source: str = "observed"
 
 
 @dataclass(frozen=True)

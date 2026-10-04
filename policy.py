@@ -145,6 +145,9 @@ class AutopilotPolicy:
     single_purchase: bool = False
     decision_token: str | None = None
     max_purchase_price: int | None = None
+    # Runtime-only authorization, never loaded from saved policy JSON.
+    modeled_pool: bool = False
+    battle_price_quote: Mapping[str, Any] | None = None
     max_scrolls: int = 8
     purpose: Literal["farm", "milestone"] = "farm"
 
@@ -224,7 +227,7 @@ class AutopilotPolicy:
     def from_dict(cls, raw: Mapping[str, Any]) -> AutopilotPolicy:
         if not isinstance(raw, Mapping):
             raise PolicyError("autopilot", "autopilot must be a mapping")
-        known = {field.name for field in dataclasses.fields(cls)}
+        known = {field.name for field in dataclasses.fields(cls)} - {"modeled_pool", "battle_price_quote"}
         for key in raw:
             if key not in known:
                 raise PolicyError(key, f"unknown autopilot field {key!r}")

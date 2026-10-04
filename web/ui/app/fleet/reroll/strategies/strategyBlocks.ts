@@ -77,6 +77,7 @@ export function blockDetail(block: StrategyBlock): string {
   if (block.type === "pool") return [block.discount_pct !== undefined ? `At least ${block.discount_pct}% cheaper` : "Filter eligible upgrades",
     block.max_purchases !== undefined ? `Max ${block.max_purchases} confirmed buys / upgrade` : "One purchase, then evaluate again",
     block.selection === "weighted" ? `${block.decay_pct ?? 0}% weight reduction / buy` : block.selection === "cheapest" ? "Lowest affordable price" : "First eligible item",
+    block.price_source === "model" ? "Tracked battle prices · verify each purchase" : null,
     block.hold_until_capped ? "Wait until available upgrades reach their purchase caps" : null,
     block.price_cap !== undefined ? `≤ ${block.price_cap} coins` : null,
     block.wallet_share_pct !== undefined ? `≤ ${block.wallet_share_pct}% of wallet` : null].filter(Boolean).join(" · ");

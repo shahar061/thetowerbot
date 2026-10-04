@@ -77,7 +77,7 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 allowed |= {'upgrade_ids', 'selection', 'weights', 'discount_pct', 'reference_upgrade_id',
                             'max_purchases', 'count_scope', 'decay_pct', 'weight_floor',
                             'targets', 'level_caps', 'price_cap', 'wallet_share_pct',
-                            'wallet_share_basis', 'cheaper_than_upgrade_ids', 'hold_until_capped'}
+                            'wallet_share_basis', 'cheaper_than_upgrade_ids', 'hold_until_capped', 'price_source'}
                 ids = block.get('upgrade_ids')
                 if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
                     raise ValueError('pool requires 1 to 30 upgrades')
@@ -89,6 +89,14 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     raise ValueError('unknown pool selection')
                 if lane == 'workshop' and block.get('selection') == 'cheapest':
                     raise ValueError('cheapest selection requires Battle price evidence')
+                if block.get('price_source', 'observed') not in {'observed', 'model'}:
+                    raise ValueError('unknown pool price source')
+                if block.get('price_source') == 'model':
+                    from fleet.battle_prices import supported_ids
+                    if lane != 'battle' or block.get('selection') != 'cheapest':
+                        raise ValueError('modeled prices require a cheapest Battle pool')
+                    if set(ids) - supported_ids():
+                        raise ValueError('modeled pool requires a cash curve for every upgrade')
                 expected_scope = 'account' if lane == 'workshop' else 'run'
                 if block.get('count_scope', expected_scope) != expected_scope:
                     raise ValueError(f'{lane} purchase counts must use {expected_scope} scope')
@@ -395,6 +403,11 @@ def child_lists(block: Mapping[str, Any]) -> tuple[list[dict[str, Any]], ...]:
     return ()
 
 
+def uses_modeled_prices(program: tuple[dict[str, Any], ...]) -> bool:
+    return any(block.get('price_source') == 'model' or any(
+        uses_modeled_prices(tuple(children)) for children in child_lists(block)) for block in program)
+
+
 def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
     """Rows the observer may inspect even before a block can recommend a buy."""
     result: list[str] = []
@@ -495,6 +508,7 @@ class _Choice:
     next_phase_id: str | None = None
     transition_reason: str | None = None
     save_price: int | None = None
+    price_source: str = "observed"
 
 
 def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
@@ -540,7 +554,17 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         rejected.append(f'Coins / Wave replaces Coins / Kill Bonus until best Tier 1 wave '
                         f'{kill_bonus_wave} (best {best})')
 
-    def price_for(uid: str, *, reference: bool = False) -> int | None:
+    def model_quote(uid: str) -> Mapping[str, Any]:
+        quote = facts.battle_price_quotes.get(uid, {})
+        if (quote.get('account_id') == facts.account_id and quote.get('run_id') == facts.run_id
+                and quote.get('source') == 'model'):
+            return quote
+        return {}
+
+    def price_for(uid: str, *, reference: bool = False, source: str = 'observed') -> int | None:
+        if source == 'model' and (quote := model_quote(uid)):
+            price = quote.get('price')
+            return price if quote.get('status') == 'available' and type(price) is int and price > 0 else None
         if lane == 'workshop':
             price = facts.prices.get(uid)
         else:
@@ -562,7 +586,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     # waiting cannot end, because only a Workshop visit reads a price.
     unpriced: list[str] = []
 
-    def eligible(uid: str, *, ignore_funds: bool = False) -> bool:
+    def eligible(uid: str, *, ignore_funds: bool = False, source: str = "observed") -> bool:
         if uid == KILL_BONUS and kill_bonus_wave is not None:
             rejected.append(f'{uid}: held until best Tier 1 wave {kill_bonus_wave}')
             return False
@@ -572,7 +596,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if lane == 'workshop' and not available(uid, workshop_owned):
             rejected.append(f'{uid}: Workshop upgrade is not unlocked or the next unlock')
             return False
-        price = price_for(uid, reference=ignore_funds)
+        price = price_for(uid, reference=ignore_funds, source=source)
         if price is None and lane == 'workshop' and not owned_unlock(uid):
             unpriced.append(uid)
         if price is None or (not ignore_funds and price > ceiling):
@@ -736,6 +760,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     def pool_candidates(block: Mapping[str, Any], identity: str, reference_price: int | None,
                         *, ignore_funds: bool = False) -> dict[str, float]:
         candidates: dict[str, float] = {}
+        source = block.get('price_source', 'observed')
         for uid in block['upgrade_ids']:
             count = (counts or {}).get(uid, 0)
             if 'max_purchases' in block and count >= block['max_purchases']:
@@ -759,9 +784,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 elif upgrades.target_reached(uid, value, float(target)):
                     rejected.append(f'{identity}: {uid} target reached')
                     continue
-            if not eligible(uid, ignore_funds=ignore_funds):
+            if not eligible(uid, ignore_funds=ignore_funds, source=source):
                 continue
-            price = price_for(uid, reference=ignore_funds)
+            price = price_for(uid, reference=ignore_funds, source=source)
             if 'price_cap' in block and price > block['price_cap']:
                 rejected.append(f'{identity}: {uid} over price cap')
                 continue
@@ -953,6 +978,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 if lane == 'battle' and (observation := observe_prices(identity, [block['upgrade_id']])):
                     return observation
             elif kind == 'pool':
+                source = block.get('price_source', 'observed')
                 needs_counts = 'max_purchases' in block or 'level_caps' in block or block.get('decay_pct', 0) > 0
                 if needs_counts and counts is None:
                     rejected.append(f'{identity}: confirmed purchase counts unavailable')
@@ -995,7 +1021,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     ids = list(block['upgrade_ids'])
                     if block.get('hold_until_capped'):
                         ids = [uid for uid in ids if (counts or {}).get(uid, 0) < block['level_caps'][uid]['base']]
-                    if candidates and block.get('selection') == 'cheapest':
+                    if source == 'model':
+                        ids = [uid for uid in ids if not model_quote(uid)]
+                    elif candidates and block.get('selection') == 'cheapest':
                         ids = []
                     if candidates and block.get('selection', 'priority') == 'priority':
                         ids = ids[:ids.index(next(iter(candidates)))]
@@ -1019,7 +1047,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 chosen = next(iter(candidates))
                 selected = None
                 if block.get('selection', 'priority') == 'cheapest':
-                    chosen = min(candidates, key=lambda uid: (price_for(uid), block['upgrade_ids'].index(uid)))
+                    chosen = min(candidates, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
+                    if source == 'model' and (quote := model_quote(chosen)) and not quote.get('verified'):
+                        return _Choice(identity, chosen, 'Reconcile the cheapest candidate after a wave change',
+                                       observation_ids=(chosen,), price_source='model')
                 elif block.get('selection', 'priority') == 'weighted':
                     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
                     matches = (pending is not None and pending.account_id == facts.account_id
@@ -1042,7 +1073,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             chosen, None, candidates, identity)
                 return _Choice(identity, chosen, 'Eligible pool after price, cap and affordability filters',
                                weights=candidates if selected else None, pending=selected,
-                               target=block.get('targets', {}).get(chosen))
+                               target=block.get('targets', {}).get(chosen),
+                               price_source='model' if source == 'model' and model_quote(chosen) else 'observed')
         return None
 
     choice = evaluate(program) or saving or waiting_native
@@ -1063,7 +1095,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     weights = choice.weights or {}
     odds = {uid: weight / sum(weights.values()) for uid, weight in weights.items()}
     trace = DecisionTrace(choice.block_id, choice.reason, age,
-        'worker price evidence' if lane == 'workshop' else 'cached same-run battle rows (up to 60s)', facts.variant,
+        'model' if choice.price_source == 'model' else ('worker price evidence' if lane == 'workshop' else 'cached same-run battle rows (up to 60s)'), facts.variant,
         tuple(rejected), ceiling, phase_id=choice.phase_id, phase_state=choice.phase_state,
         next_phase_id=choice.next_phase_id, transition_reason=choice.transition_reason,
         eligible_odds=odds, observation_ids=choice.observation_ids)
@@ -1095,7 +1127,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             facts.lifetime_coins, choice.reason)
     else:
         decision = BattleDecision(facts.account_id, 'battle', 'buy', upgrade.id, upgrade.name,
-            upgrade.category, price_for(upgrade.id), wallet, choice.reason, target=choice.target)
+            upgrade.category, price_for(upgrade.id, source=choice.price_source), wallet, choice.reason,
+            target=choice.target, price_source=choice.price_source)
     status = 'observed' if lane == 'battle' or facts.screen == 'workshop' else 'projected'
     return RouteEvaluation(facts.account_id, route.revision, status, decision, trace,
                            facts.observed_at, choice.pending)

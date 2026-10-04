@@ -520,3 +520,13 @@ test("Cards authoring saves through immutable library revisions and preserves ot
   expect(api.save.mock.calls[0][0].baseline).toMatchObject({ workshop: baseline.workshop, labs: baseline.labs, cards: { version: 1, gem_cap: 60, goals: [], loadouts: [] } });
   expect(api.assign).not.toHaveBeenCalled();
 });
+
+
+test("Battle cheapest pool exposes modeled cash prices without adding purchase caps", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "cheapest" }} lane="battle"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Prices"), { target: { value: "model" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ price_source: "model" }));
+  expect(onChange.mock.calls[0][0].level_caps).toBeUndefined();
+});
