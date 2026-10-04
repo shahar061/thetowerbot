@@ -1071,7 +1071,7 @@ def test_battle_cheapest_pool_uses_lowest_affordable_fresh_price() -> None:
     assert blocks.evaluate_program(route(program, lane='battle'), sample, None, 'battle').decision.upgrade_id == 'health'
     stale = replace(sample, upgrade_rows={**sample.upgrade_rows,
         'attack_speed': {'status': 'unknown', 'value': None, 'price': None, 'observed_at': 30}})
-    assert blocks.evaluate_program(route(program, lane='battle'), stale, None, 'battle').trace.observation_ids == ('attack_speed',)
+    assert blocks.evaluate_program(route(program, lane='battle'), stale, None, 'battle').decision.upgrade_id == 'health'
     with pytest.raises(ValueError, match='Battle price evidence'):
         blocks.validate_program(program, 'workshop')
 
@@ -1101,6 +1101,18 @@ def test_battle_economy_pool_holds_until_available_skills_have_twenty_buys() -> 
     capped_stale = replace(complete, upgrade_rows={**complete.upgrade_rows,
         'cash_bonus': {'status': 'unknown', 'value': None, 'price': None, 'observed_at': 30}})
     assert blocks.evaluate_program(route(program, lane='battle'), capped_stale, None, 'battle').decision.upgrade_id == 'health'
+
+
+def test_battle_economy_with_unreadable_prices_uses_affordable_combat_fallback() -> None:
+    program = [
+        {'id': 'economy', 'type': 'pool', 'selection': 'cheapest',
+         'upgrade_ids': ['cash_bonus'], 'level_caps': {'cash_bonus': {'base': 20}},
+         'hold_until_capped': True},
+        {'id': 'combat', 'type': 'pool', 'selection': 'cheapest', 'upgrade_ids': ['health']}]
+    sample = battle_facts(cash_bonus={'status': 'unreadable', 'value': 1.2,
+                                      'price': None, 'observed_at': 100})
+    result = blocks.evaluate_program(route(program, lane='battle'), sample, None, 'battle')
+    assert result.decision.upgrade_id == 'health'
 
 
 def held(program: list[dict[str, Any]], min_wave: int = 60) -> SimpleNamespace:

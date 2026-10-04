@@ -32,7 +32,8 @@ def configure_battle(baseline: Mapping[str, Any]) -> dict[str, Any]:
         {"id": "blender.battle.combat", "type": "pool", "label": "Cheapest Blender upgrade",
          "selection": "cheapest", "upgrade_ids": list(COMBAT_IDS)},
     ])
-    return RouteBaseline.from_dict(updated).to_dict()
+    RouteBaseline.from_dict(updated)
+    return updated
 
 
 async def update_saved_blender(base_url: str, *, apply: bool = False) -> dict[str, Any]:
