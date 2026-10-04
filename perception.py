@@ -291,7 +291,8 @@ def _reread_values(screen: Image, observation: Observation) -> tuple[ocr.TextBox
     return tuple(found)
 
 
-def _reread_prices(screen: Image, observation: Observation) -> tuple[ocr.TextBox, ...]:
+def _reread_prices(screen: Image, observation: Observation, *,
+                   battle_bands: bool = False) -> tuple[ocr.TextBox, ...]:
     """Price boxes the whole-frame read dropped, re-read off padded crops.
 
     A whole-frame read can score a plain price just under the confidence
@@ -303,12 +304,12 @@ def _reread_prices(screen: Image, observation: Observation) -> tuple[ocr.TextBox
     Boxes come back in frame coordinates, inside the band parse_frame takes
     a price from.
 
-    Not on battle frames: the scan reads those from two bands, which already
-    price what a whole-frame read drops (test_battle_parity pins it), and
-    battle is the hot path.
+    Battle bands can also lose a small price while the tile name and value
+    remain readable. Only re-read that tile's price crop on the shared band
+    path; the full-frame reader keeps its original behavior.
     """
     found: list[ocr.TextBox] = []
-    if observation.context == "battle":
+    if observation.context == "battle" and not battle_bands:
         return ()
     for row in observation.rows:
         if row.status != "unreadable" or row.price is not None or upgrades.by_id(row.upgrade_id) is None:
@@ -359,11 +360,14 @@ def observe_frame(screen: Image, context: str, *, locale: str = 'en',
         return parse_frame(screen, (), context, digest=digest)
     observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
     # Prices first: a value is only re-read for a priced row.
-    for reread in (_reread_prices, _reread_values):
-        recovered = reread(screen, observation)
-        if recovered:
-            boxes += recovered
-            observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
+    recovered_prices = _reread_prices(screen, observation, battle_bands=reads is not None)
+    if recovered_prices:
+        boxes += recovered_prices
+        observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
+    recovered_values = _reread_values(screen, observation)
+    if recovered_values:
+        boxes += recovered_values
+        observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
     return observation
 
 

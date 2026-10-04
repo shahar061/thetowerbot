@@ -104,3 +104,19 @@ def test_recorded_unreadable_price_replay_compares_baseline_ocr_calls(monkeypatc
     assert outcome(optimized[-1])[:3] == ('available',586,9.76)
     print('Unreadable fixture OCR baseline=',baseline_calls,'candidate=',calls,
           'verified observations=2; no spending performed')
+
+
+def test_battle_price_crop_recovers_a_price_dropped_by_band_ocr() -> None:
+    screen = frame('in_run_utility')
+    reads = ocr.FrameReads(screen)
+    original = reads.battle()
+    target = next(row for row in perception.observe_frame(screen, 'battle', reads=reads).rows
+                  if row.upgrade_id == 'cash_bonus')
+    dropped = tuple(box for box in original if not (
+        perception.contains(target.rect, box.rect)
+        and box.rect.y >= target.rect.y + target.rect.h * config.TILE_PRICE_TOP_FRACTION
+        and perception.price_number(box.text) is not None))
+    reads._battle = dropped
+    recovered = perception.observe_frame(screen, 'battle', reads=reads)
+    row = next(row for row in recovered.rows if row.upgrade_id == 'cash_bonus')
+    assert row.status == 'available' and row.price == 10 and row.tap is not None

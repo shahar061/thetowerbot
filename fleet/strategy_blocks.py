@@ -990,10 +990,13 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         return observation
                 if lane == 'battle':
                     # A priority pick only needs the stale rows ranked above it;
-                    # cheapest and weighted selections depend on every member.
+                    # A cheapest pick can act on verified affordable rows now;
+                    # it discovers unread rows when none can be bought.
                     ids = list(block['upgrade_ids'])
                     if block.get('hold_until_capped'):
                         ids = [uid for uid in ids if (counts or {}).get(uid, 0) < block['level_caps'][uid]['base']]
+                    if candidates and block.get('selection') == 'cheapest':
+                        ids = []
                     if candidates and block.get('selection', 'priority') == 'priority':
                         ids = ids[:ids.index(next(iter(candidates)))]
                     if observation := observe_prices(identity, ids):
@@ -1004,6 +1007,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             uid not in excluded
                             and facts.upgrade_rows.get(uid, {}).get('status') not in {'locked', 'maxed'}
                             and (counts or {}).get(uid, 0) < block['level_caps'][uid]['base']
+                            and price_for(uid, reference=True) is not None
                             for uid in block['upgrade_ids'])
                         if incomplete:
                             return _Choice(identity, reason='Waiting for available pool upgrades to reach their purchase caps', wait=True)
