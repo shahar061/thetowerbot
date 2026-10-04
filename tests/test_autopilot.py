@@ -63,6 +63,28 @@ def test_route_observation_mode_keeps_rows_without_tapping() -> None:
                bot.state.snapshot()["observations"])
 
 
+@pytest.mark.parametrize("status, should_navigate", [("unreadable", True), ("locked", False)])
+def test_model_refresh_seeks_unreadable_target_without_waiting_for_cache_expiry(
+    status: str, should_navigate: bool,
+) -> None:
+    from policy import UpgradeRule
+    bot, device, frame, observation, policy = parts()
+    target = next(row for row in observation.rows if row.upgrade_id == "attack_speed")
+    bot.state.observe(replace(observation, rows=(replace(target, status=status, price=None),)))
+    defense = replace(target, upgrade_id="health", category="DEFENSE")
+    observation = replace(observation, observed_at=101, category="DEFENSE", rows=(defense,))
+    policy = replace(policy, rules=(UpgradeRule("attack_speed"),),
+                     observe_only=True, modeled_pool=True)
+
+    bot.step(frame, device, policy, cash=100, observation=observation)
+
+    assert bool(device.actions) is should_navigate
+    if should_navigate:
+        assert device.actions[0][:2] == ("tap", 180)  # Attack tab, not a purchase
+    assert bot.pending is None
+    assert bot.state.snapshot()["verified_purchases"] == 0
+
+
 def test_route_cash_share_is_checked_again_at_tap() -> None:
     bot, device, frame, observation, policy = parts()
     row = next(row for row in observation.rows if row.upgrade_id == "damage")

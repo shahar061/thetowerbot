@@ -22,12 +22,18 @@ COMBAT_IDS = (
 
 
 def configure_battle(baseline: Mapping[str, Any]) -> dict[str, Any]:
-    """Buy the cheapest available economy or Blender upgrade until game MAX."""
+    """Buy economy before wave 20, then the cheapest Blender combat upgrade."""
     updated = deepcopy(dict(baseline))
     updated["battle"].update(mode="blocks", branches=[], blocks=[
-        {"id": "blender.battle.pool", "type": "pool", "label": "Cheapest economy and Blender upgrade",
-         "selection": "cheapest", "price_source": "model",
-         "upgrade_ids": list(ECONOMY_IDS + COMBAT_IDS)},
+        {"id": "blender.battle.wave20", "type": "condition", "field": "wave", "op": "lt", "value": 20,
+         "then": [
+             {"id": "blender.battle.economy", "type": "pool", "label": "Economy before wave 20",
+              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(ECONOMY_IDS)},
+         ],
+         "else": [
+             {"id": "blender.battle.combat", "type": "pool", "label": "Blender combat from wave 20",
+              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(COMBAT_IDS)},
+         ]},
     ])
     RouteBaseline.from_dict(updated)
     return updated

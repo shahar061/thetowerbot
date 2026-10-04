@@ -494,8 +494,12 @@ class BattleAutopilot:
         actual_cash = int(wallet.value) if wallet.known and isinstance(wallet.value, (int, float)) else None
         decision = choose(replace(policy, rules=tuple(enabled)), cached, combat)
         # Discover the configured inventory even when a guide must wait for stats.
+        # Model reconciliation must revisit an unreadable off-screen target
+        # immediately; waiting for the row's cache expiry stalls the pool.
         missing = next((r.upgrade_id for r in enabled if r.upgrade_id not in cached
-                        or cached[r.upgrade_id]["status"] == "unknown"), None)
+                        or cached[r.upgrade_id]["status"] == "unknown"
+                        or (policy.modeled_pool and policy.observe_only
+                            and cached[r.upgrade_id]["status"] == "unreadable")), None)
         if missing and missing not in visible and decision.phase != "survival":
             moved = self._seek(missing, observation, screen, device, policy)
             if moved:
