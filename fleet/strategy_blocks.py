@@ -222,6 +222,22 @@ def native_template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...
 _ECONOMY_WEIGHTS = {'unlock_cash_bonuses': 100, 'cash_per_wave': 200, 'unlock_coin_bonuses': 80,
                     'coins_per_kill_bonus': 150, 'cash_bonus': 60}
 _FILLER_CAPS = {'cash_per_wave': 5, 'coins_per_kill_bonus': 5, 'cash_bonus': 5, 'damage': 3, 'attack_speed': 3}
+_BLENDER_PRIORITY = (
+    'attack_speed',
+    'unlock_defense_upgrades', 'unlock_thorns', 'unlock_lifesteal',
+    'unlock_knockback', 'unlock_orbs',
+    'knockback_force',
+    'unlock_range_upgrades', 'unlock_multishot',
+    'multishot_chance', 'multishot_targets',
+    'knockback_chance', 'orbs',
+    'unlock_rapid_fire', 'unlock_bounce_shot',
+    'bounce_shot_chance', 'bounce_shot_targets', 'bounce_shot_range',
+)
+_OLDER_BUILTIN_WORKSHOP_IDS = {
+    'opening': ('opening.starter', 'opening.economy', 'opening.objectives', 'opening.filler'),
+    'turtle': ('turtle.economy', 'turtle.attack', 'turtle.objectives',
+               'turtle.unlock_filler', 'turtle.cheap_defense', 'turtle.filler'),
+}
 
 
 def _pool(identity: str, ids: list[str], **extra: Any) -> dict[str, Any]:
@@ -282,6 +298,24 @@ def _workshop_template(policy: str) -> list[dict[str, Any]]:
     ]
 
 
+def _blender_workshop_template(policy: str) -> dict[str, Any]:
+    return {'id': f'{policy}.blender.wave450', 'type': 'condition',
+            'label': 'Blender after best wave 450',
+            'field': 'best_tier_1_wave', 'op': 'gte', 'value': 450,
+            'then': [
+                _pool(f'{policy}.blender.priorities', list(_BLENDER_PRIORITY),
+                      label='Blender Workshop priorities'),
+                {'id': f'{policy}.blender.wait', 'type': 'wait',
+                 'label': 'Wait for an affordable Blender upgrade'},
+            ], 'else': _workshop_template(policy)}
+
+
+def _older_builtin_workshop_shape(program: tuple[dict[str, Any], ...], policy: str) -> bool:
+    """Recognize pinned copies from before the affordable-priority template."""
+    return (tuple(block.get('id') for block in program) == _OLDER_BUILTIN_WORKSHOP_IDS[policy]
+            and next(block for block in program if block['id'] == f'{policy}.objectives')['type'] == 'save_for')
+
+
 def _battle_template(policy: str) -> list[dict[str, Any]]:
     economy = {'cash_per_wave': 10, 'coins_per_kill_bonus': 1.25, 'cash_bonus': 1.25}
     if policy == 'opening':
@@ -337,7 +371,8 @@ def template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...]:
     """Built-in strategies as ordinary, readable blocks."""
     if policy not in {'opening', 'turtle'}:
         raise ValueError('unknown template policy')
-    program = _workshop_template(policy) if lane == 'workshop' else _battle_template(policy)
+    program = ([_blender_workshop_template(policy)] if lane == 'workshop'
+               else _battle_template(policy))
     return validate_program(program, lane)
 
 
@@ -472,6 +507,15 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     if lane == 'battle' and (facts.run_id is None or facts.wave is None or facts.wave < 1):
         return RouteEvaluation.unknown('Live run and wave are unverified', facts)
     program = route.workshop.blocks if lane == 'workshop' else route.battle.blocks
+    if lane == 'workshop' and facts.best_tier_1_wave is not None and facts.best_tier_1_wave >= 450:
+        # Existing assignments pin their block snapshots, including the older
+        # save_for layout. Recognize the two built-in shapes at this wave.
+        for policy in ('opening', 'turtle'):
+            if (program == validate_program(_workshop_template(policy), 'workshop')
+                    or program == native_template_program(policy, 'workshop')
+                    or _older_builtin_workshop_shape(program, policy)):
+                program = template_program(policy, 'workshop')
+                break
     kill_bonus_wave = kill_bonus_hold(route, facts.best_tier_1_wave)
     if kill_bonus_wave is not None:
         program = swap_kill_bonus(program)
