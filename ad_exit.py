@@ -21,6 +21,9 @@ from vision import TemplateCache
 
 _BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 _AD_ACTIVITY = ("adactivity", "rewardedactivity", "interstitialactivity")
+_META_AD_ACTIVITY = (
+    "com.techtreegames.thetower/com.facebook.ads.audiencenetworkactivity"
+)
 _PLAY_STORE_OVERLAY = (
     "com.android.vending/com.google.android.finsky.transparentmainactivity.hsdpalias"
 )
@@ -39,6 +42,7 @@ def _ad_has_focus(window_dump: str) -> bool:
     """Require the foreground window to belong to an ad Activity."""
     focus = _focus_line(window_dump)
     return (any(name in focus for name in _AD_ACTIVITY)
+            or any(token.rstrip("}") == _META_AD_ACTIVITY for token in focus.split())
             or _PLAY_STORE_OVERLAY in focus)
 
 

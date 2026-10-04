@@ -1,0 +1,1 @@
+mCurrentFocus=Window{d66516b u0 com.TechTreeGames.TheTower/com.facebook.ads.AudienceNetworkActivity}

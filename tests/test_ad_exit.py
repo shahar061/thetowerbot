@@ -48,6 +48,31 @@ class Device:
         raise AssertionError(command)
 
 
+def test_meta_audience_network_uses_its_labelled_close() -> None:
+    fixtures = ROOT / "tests/fixtures/in_game_ad"
+    screen = cv2.imread(str(fixtures / "meta_audience_network_end_82.png"))
+    device = Device((fixtures / "meta_audience_network_focus_82.txt").read_text(),
+                    (fixtures / "meta_audience_network_end_82.xml").read_text())
+
+    assert ad_exit.ad_foreground(device)
+    assert ad_exit.find_close(screen, TEMPLATES, device) == (77, 77)
+
+
+@pytest.mark.parametrize("component", [
+    "com.other.game/com.facebook.ads.AudienceNetworkActivity",
+    "com.TechTreeGames.TheTower/com.facebook.ads.AudienceNetworkActivityHelper",
+    "com.TechTreeGames.TheTower/com.unity3d.player.UnityPlayerActivity",
+])
+def test_meta_close_requires_its_exact_foreground_activity(component: str) -> None:
+    fixtures = ROOT / "tests/fixtures/in_game_ad"
+    screen = cv2.imread(str(fixtures / "meta_audience_network_end_82.png"))
+    device = Device(f"mCurrentFocus=Window{{123 u0 {component}}}",
+                    (fixtures / "meta_audience_network_end_82.xml").read_text())
+
+    assert not ad_exit.ad_foreground(device)
+    assert ad_exit.find_close(screen, TEMPLATES, device) is None
+
+
 @pytest.mark.parametrize("emulator", [82, 83])
 def test_live_dark_reward_pill_uses_accessible_close_across_ad_artwork(
         emulator: int) -> None:
