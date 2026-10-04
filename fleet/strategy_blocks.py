@@ -77,7 +77,7 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 allowed |= {'upgrade_ids', 'selection', 'weights', 'discount_pct', 'reference_upgrade_id',
                             'max_purchases', 'count_scope', 'decay_pct', 'weight_floor',
                             'targets', 'level_caps', 'price_cap', 'wallet_share_pct',
-                            'wallet_share_basis', 'cheaper_than_upgrade_ids'}
+                            'wallet_share_basis', 'cheaper_than_upgrade_ids', 'hold_until_capped'}
                 ids = block.get('upgrade_ids')
                 if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
                     raise ValueError('pool requires 1 to 30 upgrades')
@@ -85,8 +85,10 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 if len(set(ids)) != len(ids):
                     raise ValueError('duplicate pool upgrade')
                 block['upgrade_ids'] = ids
-                if block.get('selection', 'priority') not in {'priority', 'weighted'}:
+                if block.get('selection', 'priority') not in {'priority', 'weighted', 'cheapest'}:
                     raise ValueError('unknown pool selection')
+                if lane == 'workshop' and block.get('selection') == 'cheapest':
+                    raise ValueError('cheapest selection requires Battle price evidence')
                 expected_scope = 'account' if lane == 'workshop' else 'run'
                 if block.get('count_scope', expected_scope) != expected_scope:
                     raise ValueError(f'{lane} purchase counts must use {expected_scope} scope')
@@ -137,6 +139,11 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                         number(cap.get('step', 1), 'level cap step', 1, 1000)
                     elif 'step' in cap:
                         raise ValueError('level cap step requires per_level_of')
+                if 'hold_until_capped' in block:
+                    if (lane != 'battle' or block['hold_until_capped'] is not True
+                            or set(caps) != set(ids)
+                            or any('per_level_of' in cap for cap in caps.values())):
+                        raise ValueError('hold_until_capped requires fixed Battle caps for every pool upgrade')
                 if 'price_cap' in block:
                     number(block['price_cap'], 'price_cap', 1, 1000000000000)
                 if 'wallet_share_pct' in block:
@@ -644,7 +651,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             # A row locked in the Workshop is the exception: it cannot unlock
             # mid-run, and the autopilot drops it when the run changes.
             stale = [uid for uid in dict.fromkeys(ids) if uid not in excluded
-                     and facts.upgrade_rows.get(uid, {}).get('status') != 'locked' and not (
+                     and facts.upgrade_rows.get(uid, {}).get('status') not in {'locked', 'maxed'} and not (
                 isinstance(seen := facts.upgrade_rows.get(uid, {}).get('observed_at'), (float, int))
                 and 0 <= facts.now - seen <= 60)]
             return (_Choice(identity, stale[0], 'Observe stale battle rows before later blocks',
@@ -983,13 +990,23 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         return observation
                 if lane == 'battle':
                     # A priority pick only needs the stale rows ranked above it;
-                    # a weighted draw depends on every member.
+                    # cheapest and weighted selections depend on every member.
                     ids = list(block['upgrade_ids'])
+                    if block.get('hold_until_capped'):
+                        ids = [uid for uid in ids if (counts or {}).get(uid, 0) < block['level_caps'][uid]['base']]
                     if candidates and block.get('selection', 'priority') == 'priority':
                         ids = ids[:ids.index(next(iter(candidates)))]
                     if observation := observe_prices(identity, ids):
                         return observation
                 if not candidates:
+                    if block.get('hold_until_capped'):
+                        incomplete = any(
+                            uid not in excluded
+                            and facts.upgrade_rows.get(uid, {}).get('status') not in {'locked', 'maxed'}
+                            and (counts or {}).get(uid, 0) < block['level_caps'][uid]['base']
+                            for uid in block['upgrade_ids'])
+                        if incomplete:
+                            return _Choice(identity, reason='Waiting for available pool upgrades to reach their purchase caps', wait=True)
                     if any(key in block for key in ('discount_pct', 'cheaper_than_upgrade_ids')):
                         observation = observe_prices(identity, block['upgrade_ids'])
                         if observation is not None:
@@ -997,7 +1014,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     continue
                 chosen = next(iter(candidates))
                 selected = None
-                if block.get('selection', 'priority') == 'weighted':
+                if block.get('selection', 'priority') == 'cheapest':
+                    chosen = min(candidates, key=lambda uid: (price_for(uid), block['upgrade_ids'].index(uid)))
+                elif block.get('selection', 'priority') == 'weighted':
                     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
                     matches = (pending is not None and pending.account_id == facts.account_id
                         and pending.revision == route.revision and pending.visit_id == visit
