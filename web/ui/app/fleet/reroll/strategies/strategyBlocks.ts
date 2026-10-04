@@ -69,14 +69,15 @@ export function blockTitle(block: StrategyBlock, names: Map<string, string>): st
     case "save_for": return "Save for goal";
     case "while_saving": return block.upgrade_id ? `While saving for ${names.get(block.upgrade_id) ?? block.upgrade_id}` : "While saving";
     case "wait": return "Save & wait";
-    case "pool": return block.selection === "weighted" ? "Draw with evolving weights" : block.discount_pct !== undefined ? "Buy one from a cheap pool" : "Capped upgrade pool";
+    case "pool": return block.hold_until_capped ? "Buy until purchase caps" : block.selection === "weighted" ? "Draw with evolving weights" : block.selection === "cheapest" ? "Buy cheapest available" : block.discount_pct !== undefined ? "Buy one from a cheap pool" : "Capped upgrade pool";
   }
 }
 export function blockDetail(block: StrategyBlock): string {
   if (block.type === "native") return nativeDetails[block.phase][1];
   if (block.type === "pool") return [block.discount_pct !== undefined ? `At least ${block.discount_pct}% cheaper` : "Filter eligible upgrades",
     block.max_purchases !== undefined ? `Max ${block.max_purchases} confirmed buys / upgrade` : "One purchase, then evaluate again",
-    block.selection === "weighted" ? `${block.decay_pct ?? 0}% weight reduction / buy` : "First eligible item",
+    block.selection === "weighted" ? `${block.decay_pct ?? 0}% weight reduction / buy` : block.selection === "cheapest" ? "Lowest affordable price" : "First eligible item",
+    block.hold_until_capped ? "Wait until available upgrades reach their purchase caps" : null,
     block.price_cap !== undefined ? `≤ ${block.price_cap} coins` : null,
     block.wallet_share_pct !== undefined ? `≤ ${block.wallet_share_pct}% of wallet` : null].filter(Boolean).join(" · ");
   if (block.type === "condition") return "Known facts choose the branch. Unknown facts stop this decision.";

@@ -107,10 +107,12 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
           <div className={styles.fieldHeading}>Eligible upgrades <span>{block.upgrade_ids.length} in pool</span></div>
           <div className={styles.poolChoices}>{available.map(item => <button type="button" key={item.id} aria-pressed={block.upgrade_ids.includes(item.id)} onClick={() => {
             const ids = block.upgrade_ids.includes(item.id) ? block.upgrade_ids.filter(id => id !== item.id) : [...block.upgrade_ids, item.id];
-            onChange({ ...block, upgrade_ids: ids, weights: Object.fromEntries(ids.map(id => [id, block.weights?.[id] ?? 1])) });
+            onChange({ ...block, upgrade_ids: ids, weights: Object.fromEntries(ids.map(id => [id, block.weights?.[id] ?? 1])),
+              level_caps: block.level_caps && Object.fromEntries(ids.filter(id => block.hold_until_capped || block.level_caps?.[id])
+                .map(id => [id, block.level_caps?.[id] ?? { base: 20 }])) });
           }}>{item.name}</button>)}</div>
           {!block.upgrade_ids.length && <p role="alert">Choose at least one upgrade.</p>}
-          <label>Selection<select value={block.selection} onChange={event => onChange({ ...block, selection: event.target.value as Pool["selection"] })}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option></select></label>
+          <label>Selection<select value={block.selection} onChange={event => onChange({ ...block, selection: event.target.value as Pool["selection"] })}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
           <div className={styles.orderedPool}>{block.upgrade_ids.map((id, index) => <div key={id}>
             <span>{index + 1}. {names.get(id) ?? id}</span><button type="button" disabled={index === 0} aria-label={`Prioritize ${names.get(id) ?? id}`} onClick={() => { const ids = [...block.upgrade_ids]; [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]]; onChange({ ...block, upgrade_ids: ids }); }}>↑</button>
             {block.selection === "weighted" && <input aria-label={`Weight for ${names.get(id) ?? id}`} type="number" min={1} max={10000} step={1} value={block.weights?.[id] ?? 1} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, weights: { ...block.weights, [id]: value } }); }} />}
@@ -120,7 +122,7 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
             {block.level_caps?.[id] === undefined
               ? <button type="button" aria-label={`Add level cap for ${names.get(id) ?? id}`} onClick={() => onChange({ ...block, level_caps: { ...block.level_caps, [id]: { base: 1 } } })}>Cap</button>
               : <><input aria-label={`Level cap for ${names.get(id) ?? id}`} type="number" min={0} step={1} value={block.level_caps[id].base} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, level_caps: { ...block.level_caps, [id]: { ...block.level_caps![id], base: value } } }); }} />
-                <select aria-label={`Cap grows with for ${names.get(id) ?? id}`} value={block.level_caps[id].per_level_of ?? ""} onChange={event => {
+                <select aria-label={`Cap grows with for ${names.get(id) ?? id}`} disabled={block.hold_until_capped} value={block.level_caps[id].per_level_of ?? ""} onChange={event => {
                   const cap = block.level_caps![id];
                   const perLevelOf = event.target.value;
                   onChange({ ...block, level_caps: { ...block.level_caps, [id]: perLevelOf ? { base: cap.base, per_level_of: perLevelOf } : { base: cap.base } } });
@@ -142,6 +144,8 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
           <div className={styles.fieldHeading}>Purchase cap<button type="button" onClick={() => onChange({ ...block, max_purchases: block.max_purchases === undefined ? 8 : undefined })}>{block.max_purchases === undefined ? "Add cap" : "Remove"}</button></div>
           {block.max_purchases !== undefined && <label>Maximum confirmed purchases per upgrade<input type="number" min={1} max={100000} step={1} value={block.max_purchases} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, max_purchases: value }); }} /></label>}
           {(block.max_purchases !== undefined || block.selection === "weighted") && <p className={styles.hint}>Counts confirmed buys {lane === "workshop" ? "across this account’s recorded history" : "in the current run"}. Displayed upgrade levels are separate.</p>}
+          {lane === "battle" && <label><input type="checkbox" checked={block.hold_until_capped ?? false} onChange={event => onChange({ ...block, hold_until_capped: event.target.checked || undefined,
+            level_caps: event.target.checked ? Object.fromEntries(block.upgrade_ids.map(id => [id, { base: block.level_caps?.[id]?.base ?? 20 }])) : block.level_caps })} />Wait for every available upgrade to reach its purchase cap</label>}
           {block.selection === "weighted" && <>
             <label>Reduce weight after each buy (%)<input type="number" min={0} max={100} step={1} value={block.decay_pct ?? 0} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, decay_pct: value }); }} /></label>
             <label>Minimum weight<input type="number" min={1} step={1} value={block.weight_floor ?? 1} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, weight_floor: value }); }} /></label>

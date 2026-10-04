@@ -1060,6 +1060,49 @@ def test_a_battle_row_locked_this_run_is_not_observed_again() -> None:
     assert blocks.evaluate_program(route(program, lane='battle'), locked, None, 'battle').decision.upgrade_id == 'health'
 
 
+def test_battle_cheapest_pool_uses_lowest_affordable_fresh_price() -> None:
+    program = [{'id': 'combat', 'type': 'pool', 'selection': 'cheapest',
+                'upgrade_ids': ['attack_speed', 'health', 'thorns']}]
+    blocks.validate_program(program, 'battle')
+    sample = battle_facts(
+        attack_speed={'status': 'available', 'value': 1, 'price': 25, 'observed_at': 100},
+        health={'status': 'available', 'value': 1, 'price': 8, 'observed_at': 100},
+        thorns={'status': 'unaffordable', 'value': 1, 'price': 150, 'observed_at': 100})
+    assert blocks.evaluate_program(route(program, lane='battle'), sample, None, 'battle').decision.upgrade_id == 'health'
+    stale = replace(sample, upgrade_rows={**sample.upgrade_rows,
+        'attack_speed': {'status': 'unknown', 'value': None, 'price': None, 'observed_at': 30}})
+    assert blocks.evaluate_program(route(program, lane='battle'), stale, None, 'battle').trace.observation_ids == ('attack_speed',)
+    with pytest.raises(ValueError, match='Battle price evidence'):
+        blocks.validate_program(program, 'workshop')
+
+
+def test_battle_economy_pool_holds_until_available_skills_have_twenty_buys() -> None:
+    program = [
+        {'id': 'economy', 'type': 'pool', 'selection': 'cheapest',
+         'upgrade_ids': ['cash_bonus', 'cash_per_wave', 'coins_per_kill_bonus', 'coins_per_wave'],
+         'level_caps': {uid: {'base': 20} for uid in
+                        ('cash_bonus', 'cash_per_wave', 'coins_per_kill_bonus', 'coins_per_wave')},
+         'hold_until_capped': True},
+        {'id': 'combat', 'type': 'pool', 'selection': 'cheapest', 'upgrade_ids': ['health']}]
+    blocks.validate_program(program, 'battle')
+    sample = battle_facts(
+        cash_bonus={'status': 'available', 'value': 1, 'price': 12, 'observed_at': 100},
+        cash_per_wave={'status': 'available', 'value': 1, 'price': 10, 'observed_at': 100},
+        coins_per_kill_bonus={'status': 'locked', 'value': None, 'price': None, 'observed_at': 100},
+        coins_per_wave={'status': 'maxed', 'value': 1, 'price': None, 'observed_at': 100})
+    chosen = blocks.evaluate_program(route(program, lane='battle'), sample, None, 'battle')
+    assert chosen.decision.upgrade_id == 'cash_per_wave'
+    waiting = replace(sample, upgrade_rows={**sample.upgrade_rows,
+        'cash_bonus': {'status': 'unaffordable', 'value': 1, 'price': 120, 'observed_at': 100},
+        'cash_per_wave': {'status': 'unaffordable', 'value': 1, 'price': 130, 'observed_at': 100}})
+    assert blocks.evaluate_program(route(program, lane='battle'), waiting, None, 'battle').status == 'blocked'
+    complete = replace(sample, run_purchases={'cash_bonus': 20, 'cash_per_wave': 20})
+    assert blocks.evaluate_program(route(program, lane='battle'), complete, None, 'battle').decision.upgrade_id == 'health'
+    capped_stale = replace(complete, upgrade_rows={**complete.upgrade_rows,
+        'cash_bonus': {'status': 'unknown', 'value': None, 'price': None, 'observed_at': 30}})
+    assert blocks.evaluate_program(route(program, lane='battle'), capped_stale, None, 'battle').decision.upgrade_id == 'health'
+
+
 def held(program: list[dict[str, Any]], min_wave: int = 60) -> SimpleNamespace:
     result = route(program)
     result.rules = RouteRules(coins=CoinRules(kill_bonus_min_best_wave=min_wave))

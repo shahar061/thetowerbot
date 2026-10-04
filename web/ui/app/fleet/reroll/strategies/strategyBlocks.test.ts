@@ -40,6 +40,14 @@ test("a block label overrides the generated title", () => {
   expect(blockTitle({ id: "x", type: "wait", label: "Keep coins" }, new Map())).toBe("Keep coins");
 });
 
+test("cheapest Battle pool and capped economy phase explain their purchase rules", () => {
+  const combat: StrategyBlock = { id: "combat", type: "pool", selection: "cheapest", upgrade_ids: ["health"] };
+  const economy: StrategyBlock = { id: "economy", type: "pool", selection: "cheapest", upgrade_ids: ["cash_bonus"],
+    level_caps: { cash_bonus: { base: 20 } }, hold_until_capped: true };
+  expect(blockTitle(combat, new Map())).toBe("Buy cheapest available");
+  expect(blockTitle(economy, new Map())).toBe("Buy until purchase caps");
+});
+
 test("relative wave conditions title and limit", () => {
   const block: StrategyBlock = { id: "c", type: "condition", field: "wave", op: "lte",
     relative: { pct: 50, floor: 5, cap: 30 }, then: [], else: [] };
