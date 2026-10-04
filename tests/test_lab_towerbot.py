@@ -444,6 +444,9 @@ class CadenceProgress:
         self.failures += 1
         self.lab_cadence.note_failed(1000.)
 
+    def note_other_lab_research(self) -> None:
+        self.lab_cadence.note_other_research(1000.)
+
 
 def finishing_bot(tmp_path: Path) -> Any:
     b = bot(None)
@@ -500,12 +503,18 @@ def test_other_research_in_lab_one_does_not_overwrite_game_speed_cadence(tmp_pat
     from lab_screen import LabHomeReading
 
     b = finishing_bot(tmp_path)
-    before = (tmp_path / 'lab-slot1-cadence.json').read_text()
+    before = b.reroll_progress.lab_cadence._record()
     job = slot_job(1, 'labs.damage', 9000.)
     decision = decide(LabHomeReading(True, 'researching', job, None), None)
     b._finish_lab_visit(LabVisitResult('observed', 'wait_running', decision,
                                        confirmed_job=job))
-    assert (tmp_path / 'lab-slot1-cadence.json').read_text() == before
+    record = b.reroll_progress.lab_cadence._record()
+    assert (record['kind'], record['price'], record['game_speed_level']) == (
+        before['kind'], before['price'], before['game_speed_level'])
+    # The saved Game Speed observation stays intact, but this completed check
+    # must not send the bot straight back into Labs on the next menu scan.
+    assert not b.reroll_progress.lab_cadence.due(1001., wallet_coins=500)
+    assert b.reroll_progress.lab_cadence.due(1300., wallet_coins=500)
     assert b._research_until is None
 
 

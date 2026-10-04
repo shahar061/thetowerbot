@@ -1696,6 +1696,10 @@ class TowerBot:
                 # slot, but research never began: it must not be observed as
                 # a start or as any other cadence/state-changing observation.
                 self.reroll_progress.note_lab_observation(decision)
+        if (decision.slot == 1 and decision.research_id != 'labs.game-speed'
+                and result.status in ('started', 'observed')
+                and decision.kind != 'unknown' and result.reason != 'research_rehearsed'):
+            self.reroll_progress.note_other_lab_research()
         logger.info("Lab %s visit ended: %s (%s)%s", decision.slot, result.status, result.reason,
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
 

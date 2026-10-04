@@ -101,6 +101,24 @@ def test_unidentified_busy_slot_does_not_claim_game_speed() -> None:
     assert decision.research_id == ""
 
 
+def test_other_research_check_persists_without_hiding_slot_unlock(tmp_path: Path) -> None:
+    from lab_plan import LabCadence, LabDecision
+
+    cadence = LabCadence(tmp_path, "ACCOUNT-A")
+    cadence.note(LabDecision("wait_coins", price=500, wallet_coins=100,
+                             game_speed_level=3), now=900.)
+    cadence.note_slots({2: "locked"}, 84, now=900.)
+    cadence.note_other_research(now=1000.)
+
+    resumed = LabCadence(tmp_path, "ACCOUNT-A")
+    record = resumed._record()
+    assert (record["kind"], record["price"], record["game_speed_level"]) == (
+        "wait_coins", 500, 3)
+    assert not resumed.due(now=1299., wallet_coins=500)
+    assert resumed.due(now=1300., wallet_coins=500)
+    assert resumed.slot_due(2, now=1100., wallet_gems=100, min_gems=100)
+
+
 def test_unaffordable_game_speed_reserves_slot_one_without_blocking_workshop() -> None:
     from lab_plan import decide
 
