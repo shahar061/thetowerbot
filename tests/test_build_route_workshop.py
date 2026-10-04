@@ -21,10 +21,11 @@ def _route(*, banned: list[str] | None = None, priorities: list[str] | None = No
 
 
 def _facts() -> RouteFacts:
+    prices = {"damage": 30, "attack_speed": 12, "defense_absolute": 8}
     return RouteFacts("a1", "Air_38", "workshop", 100, 101, 1,
-                      wallet_coins=140, prices={"damage": 30,
-                                                "attack_speed": 12,
-                                                "defense_absolute": 8},
+                      wallet_coins=140, prices=prices,
+                      price_evidence={uid: {"source": "observed", "observed_at": 100}
+                                      for uid in prices},
                       utility_spent_coins=0)
 
 
@@ -73,6 +74,67 @@ def test_spend_limit_rejects_costly_starter_and_uses_cheaper_candidate() -> None
     assert evaluation.decision is not None
     assert evaluation.decision.upgrade_id == "attack_speed"
     assert evaluation.decision.price == 12
+
+
+def test_route_priorities_buy_the_first_affordable_listed_upgrade() -> None:
+    route = resolve_route(_route(priorities=["attack_speed", "damage"]), "Air_38", "a1")
+    first = evaluate_workshop(route, _facts(), None)
+    assert first.decision is not None
+    assert (first.decision.state, first.decision.upgrade_id) == ("buy", "attack_speed")
+
+    remaining = replace(_facts(), wallet_coins=20,
+                        prices={"attack_speed": 25, "damage": 10})
+    second = evaluate_workshop(route, remaining, None)
+    assert second.decision is not None
+    assert (second.decision.state, second.decision.upgrade_id) == ("buy", "damage")
+
+
+def test_route_priorities_do_not_buy_unlisted_upgrades() -> None:
+    route = resolve_route(_route(priorities=["attack_speed"]), "Air_38", "a1")
+    result = evaluate_workshop(route, replace(_facts(), wallet_coins=10,
+        prices={"attack_speed": 12, "damage": 5}), None)
+    assert result.status == "blocked"
+    assert result.decision is None
+
+
+def test_explicit_priority_is_not_stopped_by_legacy_build_level_cap() -> None:
+    route = resolve_route(_route(priorities=["damage"]), "Air_38", "a1")
+    account = replace(_facts(), purchases={"damage": 10},
+                      prices={"damage": 10})
+    result = evaluate_workshop(route, account, None)
+    assert result.decision is not None
+    assert (result.decision.state, result.decision.upgrade_id) == ("buy", "damage")
+
+
+def test_higher_priority_with_unknown_price_is_read_before_lower_purchase() -> None:
+    route = resolve_route(_route(priorities=["attack_speed", "damage"]), "Air_38", "a1")
+    result = evaluate_workshop(route, replace(_facts(), prices={"damage": 10}), None)
+    assert result.decision is not None
+    assert result.decision.state == "observe_price"
+    assert result.trace.observation_ids == ("attack_speed",)
+
+
+def test_catalog_estimate_is_checked_before_skipping_higher_priority() -> None:
+    route = resolve_route(_route(priorities=["attack_speed", "damage"]), "Air_38", "a1")
+    account = replace(_facts(), wallet_coins=100,
+                      prices={"attack_speed": 200, "damage": 10},
+                      price_evidence={"attack_speed": {"source": "catalog_estimate"},
+                                      "damage": {"source": "observed", "observed_at": 100}})
+    result = evaluate_workshop(route, account, None)
+    assert result.decision is not None
+    assert result.decision.state == "observe_price"
+    assert result.trace.observation_ids == ("attack_speed",)
+
+
+def test_missing_price_provenance_is_checked_before_skipping_higher_priority() -> None:
+    route = resolve_route(_route(priorities=["attack_speed", "damage"]), "Air_38", "a1")
+    account = replace(_facts(), wallet_coins=100,
+                      prices={"attack_speed": 200, "damage": 10},
+                      price_evidence={"damage": {"source": "observed", "observed_at": 100}})
+    result = evaluate_workshop(route, account, None)
+    assert result.decision is not None
+    assert result.decision.state == "observe_price"
+    assert result.trace.observation_ids == ("attack_speed",)
 
 
 def test_unknown_wallet_cannot_authorize_percentage_spend() -> None:

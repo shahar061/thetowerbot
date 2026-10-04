@@ -536,6 +536,52 @@ def test_save_for_buys_goal_when_affordable() -> None:
     assert blocks.evaluate_program(route([save_goal(['thorns'])]), rich, None, 'workshop').decision.upgrade_id == 'thorns'
 
 
+def test_saved_priority_goal_buys_affordable_lower_item() -> None:
+    sample = replace(facts(), wallet_coins=100,
+                     prices={'damage': 120, 'attack_speed': 40})
+    result = blocks.evaluate_program(route([save_goal(['damage', 'attack_speed'])]),
+                                     sample, None, 'workshop')
+    assert result.decision is not None
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'attack_speed')
+
+
+def test_saved_priority_goal_can_buy_after_an_earlier_saving_goal() -> None:
+    first = save_goal(['thorns'])
+    second = {**save_goal(['damage', 'attack_speed']), 'id': 'later'}
+    sample = replace(facts(), wallet_coins=90)
+    result = blocks.evaluate_program(route([first, second]), sample, None, 'workshop')
+    assert result.decision is not None
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'damage')
+
+
+def test_saved_builtin_fallback_spends_without_a_saving_goal() -> None:
+    filler_ids = ['cash_per_wave', 'coins_per_kill_bonus', 'cash_bonus',
+                  'damage', 'attack_speed']
+    legacy_fallback = {'id': 'opening.filler', 'type': 'while_saving',
+        'label': 'Filler while saving', 'blocks': [
+            {'id': 'opening.filler.pool', 'type': 'pool', 'selection': 'priority',
+             'upgrade_ids': filler_ids, 'wallet_share_pct': 20,
+             'level_caps': {uid: {'base': cap} for uid, cap in zip(
+                 filler_ids, [5, 5, 5, 3, 3])}}]}
+    sample = replace(facts(), wallet_coins=100,
+                     purchases={**facts().purchases, 'unlock_cash_bonuses': 1},
+                     prices={'cash_per_wave': 120, 'coins_per_kill_bonus': 120,
+                             'cash_bonus': 40})
+    result = blocks.evaluate_program(route([legacy_fallback]), sample, None, 'workshop')
+    assert result.decision is not None
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'cash_bonus')
+
+    held_sample = replace(sample, prices={**sample.prices, 'coins_per_wave': 120})
+    during_hold = blocks.evaluate_program(held([legacy_fallback]), held_sample, None, 'workshop')
+    assert during_hold.decision is not None
+    assert (during_hold.decision.state, during_hold.decision.upgrade_id) == ('buy', 'cash_bonus')
+
+    edited = {**legacy_fallback, 'blocks': [{**legacy_fallback['blocks'][0],
+                                            'wallet_share_pct': 30}]}
+    restricted = blocks.evaluate_program(route([edited]), sample, None, 'workshop')
+    assert restricted.decision is None
+
+
 def test_save_for_records_intent_and_lower_block_buys() -> None:
     program = [save_goal(['thorns']), {'id': 'cheap', 'type': 'buy', 'upgrade_id': 'damage'}]
     result = blocks.evaluate_program(route(program), facts(), None, 'workshop')  # wallet 100, thorns 100 → affordable
@@ -551,6 +597,31 @@ def test_save_for_result_when_nothing_else_buys() -> None:
     assert result.status == 'blocked'
     assert result.decision.state == 'save_coins' and result.decision.upgrade_id == 'thorns'
     assert result.decision.price == 100 and 'Saving for' in result.decision.reason
+
+
+def test_builtin_turtle_buys_affordable_lower_priority_attack() -> None:
+    sample = replace(facts(), wallet_coins=100,
+                     prices={'damage': 120, 'attack_speed': 40, 'thorns': 200})
+    program = blocks.template_program('turtle', 'workshop')
+    result = blocks.evaluate_program(route(list(program)), sample, None, 'workshop')
+    assert result.decision is not None
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'attack_speed')
+
+
+def test_builtin_opening_spends_on_affordable_fallback_after_objectives() -> None:
+    purchases = {'damage': 5, 'attack_speed': 5, 'health': 1,
+                 'unlock_defense_upgrades': 1, 'defense_absolute': 5,
+                 'unlock_thorns': 1, 'unlock_cash_bonuses': 1,
+                 'unlock_coin_bonuses': 1, 'coins_per_wave': 3}
+    sample = replace(facts(), wallet_coins=100, utility_spent_coins=350,
+                     purchases=purchases, confirmed_purchases=purchases,
+                     values={'thorns': 51},
+                     prices={'cash_per_wave': 120, 'coins_per_kill_bonus': 120,
+                             'cash_bonus': 40})
+    program = blocks.template_program('opening', 'workshop')
+    result = blocks.evaluate_program(route(list(program)), sample, None, 'workshop')
+    assert result.decision is not None
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'cash_bonus')
 
 
 def test_only_one_goal_saves_at_a_time() -> None:

@@ -232,51 +232,53 @@ def _capped(base: int) -> dict[str, int]:
     return {'base': base}
 
 
+def _legacy_saving_filler(block: Mapping[str, Any]) -> bool:
+    """Only untouched pinned built-in filler blocks lose their old share cap."""
+    identity = block['id']
+    if identity not in {'opening.filler', 'turtle.filler'}:
+        return False
+    policy = identity.split('.')[0]
+    expected = {'id': identity, 'type': 'while_saving', 'label': 'Filler while saving',
+                'blocks': [_pool(f'{policy}.filler.pool', list(_FILLER_CAPS), wallet_share_pct=20,
+                                 level_caps={uid: _capped(cap) for uid, cap in _FILLER_CAPS.items()})]}
+    return block == expected or block == swap_kill_bonus((expected,))[0]
+
+
 def _workshop_template(policy: str) -> list[dict[str, Any]]:
     economy = {'id': f'{policy}.economy', 'type': 'budget', 'label': 'Early economy', 'metric': 'utility_spent',
                'target': 350, 'ceiling': 400,
                'blocks': [{'id': f'{policy}.economy.goal', 'type': 'save_for', 'label': 'Save for utility', 'goal': [
                    _pool(f'{policy}.economy.pool', list(_ECONOMY_WEIGHTS), selection='weighted', weights=_ECONOMY_WEIGHTS,
                          level_caps={'cash_per_wave': _capped(2), 'coins_per_kill_bonus': _capped(3)})]}]}
-    filler = {'id': f'{policy}.filler', 'type': 'while_saving', 'label': 'Filler while saving', 'blocks': [
-        _pool(f'{policy}.filler.pool', list(_FILLER_CAPS), wallet_share_pct=20,
-              level_caps={uid: _capped(cap) for uid, cap in _FILLER_CAPS.items()})]}
+    fallback = _pool(f'{policy}.filler', list(_FILLER_CAPS), label='Affordable fallback',
+                     level_caps={uid: _capped(cap) for uid, cap in _FILLER_CAPS.items()})
     if policy == 'opening':
         attack_cap = {'base': 2, 'per_level_of': 'coins_per_wave'}
         return [
             _pool('opening.starter', ['damage', 'attack_speed', 'health', 'unlock_defense_upgrades', 'defense_absolute'],
                   label='Survival starter', price_cap=75, max_purchases=1),
             economy,
-            {'id': 'opening.objectives', 'type': 'save_for', 'label': 'Objectives', 'goal': [_pool('opening.objectives.pool',
+            _pool('opening.objectives',
                 ['damage', 'attack_speed', 'unlock_defense_upgrades', 'unlock_cash_bonuses', 'unlock_coin_bonuses',
                  'coins_per_wave', 'defense_absolute', 'unlock_thorns', 'thorns'],
+                label='Objectives',
                 level_caps={'damage': attack_cap, 'attack_speed': attack_cap,
                             'coins_per_wave': _capped(3), 'defense_absolute': _capped(2)},
-                targets={'thorns': 51})]},
-            filler,
+                targets={'thorns': 51}),
+            fallback,
         ]
     return [
         economy,
         # Defense only keeps the tower alive; until Thorns is unlocked Damage
         # is the only way to kill, so a minimum attack comes before defense.
-        {'id': 'turtle.attack', 'type': 'save_for', 'label': 'Minimum attack', 'goal': [
-            _pool('turtle.attack.pool', ['damage', 'attack_speed'],
-                  level_caps={'damage': _capped(3), 'attack_speed': _capped(3)})]},
-        {'id': 'turtle.objectives', 'type': 'save_for', 'label': 'Objectives', 'goal': [_pool('turtle.objectives.pool',
+        _pool('turtle.attack', ['damage', 'attack_speed'], label='Minimum attack',
+              level_caps={'damage': _capped(3), 'attack_speed': _capped(3)}),
+        _pool('turtle.objectives',
             ['unlock_defense_upgrades', 'defense_absolute', 'unlock_thorns', 'thorns',
              'cash_bonus', 'coins_per_kill_bonus', 'health'],
-            level_caps={'defense_absolute': _capped(5)}, targets={'thorns': 51})]},
-        # Half the wallet alone would re-check after every buy and never let
-        # the savings grow; a quarter of the unlock price ends the filler once
-        # levels outgrow it.
-        {'id': 'turtle.unlock_filler', 'type': 'while_saving', 'label': 'Cheap filler for Thorns unlock',
-         'upgrade_id': 'unlock_thorns', 'blocks': [
-             _pool('turtle.unlock_filler.pool', ['defense_absolute', 'attack_speed', 'damage',
-                   'cash_per_wave', 'coins_per_kill_bonus', 'cash_bonus'],
-                   wallet_share_pct=50, discount_pct=75, reference_upgrade_id='unlock_thorns')]},
-        {'id': 'turtle.cheap_defense', 'type': 'while_saving', 'label': 'Cheap defense', 'upgrade_id': 'thorns', 'blocks': [
-            _pool('turtle.cheap_defense.pool', ['defense_absolute'], discount_pct=20, reference_upgrade_id='thorns')]},
-        filler,
+            label='Objectives', level_caps={'defense_absolute': _capped(5)},
+            targets={'thorns': 51}),
+        fallback,
     ]
 
 
@@ -775,10 +777,19 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 if choice is not None:
                     return choice
             elif kind == 'save_for':
+                goal = block['goal'][0]
+                if (lane == 'workshop' and goal['type'] == 'pool'
+                        and goal.get('selection', 'priority') == 'priority'
+                        and len(goal['upgrade_ids']) > 1):
+                    # Saved strategy versions still wrap their ordered
+                    # Workshop lists in save_for. Try every affordable item
+                    # before holding coins for the list's top item.
+                    choice = evaluate(block['goal'], (items, *ancestors))
+                    if choice is not None:
+                        return choice
                 if saving is not None:
                     rejected.append(f'{identity}: another goal is already saving')
                     continue
-                goal = block['goal'][0]
                 weighted = goal['type'] == 'pool' and goal.get('selection', 'priority') == 'weighted'
                 if weighted:
                     choice = evaluate(block['goal'], (items, *ancestors))
@@ -808,6 +819,16 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
                                  wait=True, save_price=price)
             elif kind == 'while_saving':
+                if lane == 'workshop' and _legacy_saving_filler(block):
+                    # Pinned built-in strategies carry the old 20%-wallet
+                    # fallback. Keep the same ordered rows and level caps,
+                    # but let them use every coin left after earlier blocks.
+                    fallback = [{key: value for key, value in child.items()
+                                 if key != 'wallet_share_pct'} for child in block['blocks']]
+                    choice = evaluate(fallback, (items, *ancestors))
+                    if choice is not None:
+                        return choice
+                    continue
                 if saving is None or block.get('upgrade_id', saving.upgrade_id) != saving.upgrade_id:
                     continue
                 choice = evaluate(block['blocks'], (items, *ancestors))
@@ -906,7 +927,16 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     if observation := observe_prices(identity, [*references, *block['upgrade_ids']]):
                         return observation
                     continue
+                before_unpriced = len(unpriced)
                 candidates = pool_candidates(block, identity, reference_price)
+                if lane == 'workshop' and block.get('selection', 'priority') == 'priority':
+                    ordered = list(block['upgrade_ids'])
+                    if candidates:
+                        ordered = ordered[:ordered.index(next(iter(candidates)))]
+                    if observation := observe_prices(
+                            identity, [uid for uid in ordered
+                                       if uid in unpriced[before_unpriced:] and price_for(uid) is None]):
+                        return observation
                 if lane == 'battle':
                     # A priority pick only needs the stale rows ranked above it;
                     # a weighted draw depends on every member.

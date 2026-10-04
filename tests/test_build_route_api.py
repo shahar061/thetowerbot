@@ -358,7 +358,9 @@ def test_preview_respects_pending_choice_and_simulates_the_next_revision(tmp_pat
     saved = service.build_route_store().publish(RouteDocument.from_dict(raw), 0, "test")
     now = time.time()
     facts = RouteFacts("ACCOUNT-A", "Air_38", "workshop", now, now, wallet_coins=100,
-                       prices={"damage": 10, "attack_speed": 10}, visit_id="visit-1")
+                       prices={"damage": 10, "attack_speed": 10}, visit_id="visit-1",
+                       price_evidence={uid: {"source": "observed", "observed_at": now}
+                                       for uid in ("damage", "attack_speed")})
     current = evaluate_workshop(resolve_route(saved, "Air_38", "ACCOUNT-A"), facts, None)
     assert current.pending is not None
     runtime = BuildRouteRuntime(tmp_path, "Air_38", "ACCOUNT-A")
