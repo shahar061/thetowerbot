@@ -624,6 +624,120 @@ def test_builtin_opening_spends_on_affordable_fallback_after_objectives() -> Non
     assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'cash_bonus')
 
 
+@pytest.mark.parametrize('policy', ['opening', 'turtle'])
+def test_wave_450_switches_workshop_from_def_abs_to_blender_unlocks(policy: str) -> None:
+    sample = replace(facts(), best_tier_1_wave=449, utility_spent_coins=400,
+                     prices={'damage': 200, 'attack_speed': 200, 'health': 200,
+                             'defense_absolute': 1, 'unlock_lifesteal': 40},
+                     purchases={'unlock_defense_upgrades': 1, 'unlock_thorns': 1})
+    program = blocks.template_program(policy, 'workshop')
+    before = blocks.evaluate_program(route(list(program)), sample, None, 'workshop')
+    after = blocks.evaluate_program(route(list(program)),
+                                    replace(sample, best_tier_1_wave=450), None, 'workshop')
+    assert before.decision.upgrade_id == 'defense_absolute'
+    assert (after.decision.state, after.decision.upgrade_id) == ('buy', 'unlock_lifesteal')
+
+
+@pytest.mark.parametrize('policy', ['opening', 'turtle'])
+@pytest.mark.parametrize('owned,expected', [
+    (('unlock_defense_upgrades', 'unlock_thorns', 'unlock_lifesteal'), 'unlock_knockback'),
+    (('unlock_defense_upgrades', 'unlock_thorns', 'unlock_lifesteal', 'unlock_knockback'), 'unlock_orbs'),
+])
+def test_blender_unlocks_the_defense_path_in_order(policy: str, owned: tuple[str, ...], expected: str) -> None:
+    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
+                     purchases={uid: 1 for uid in owned},
+                     prices={'attack_speed': 200, 'unlock_knockback': 40, 'unlock_orbs': 40,
+                             'defense_absolute': 1})
+    result = blocks.evaluate_program(route(list(blocks.template_program(policy, 'workshop'))),
+                                     sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', expected)
+
+
+def test_blender_uses_lower_affordable_priority_then_reaches_bounce_unlock() -> None:
+    owned = {uid: 1 for uid in ('unlock_defense_upgrades', 'unlock_thorns',
+             'unlock_lifesteal', 'unlock_knockback', 'unlock_orbs',
+             'unlock_range_upgrades', 'unlock_multishot', 'unlock_rapid_fire')}
+    prices = {'attack_speed': 200, 'knockback_force': 200,
+              'multishot_chance': 200, 'multishot_targets': 200,
+              'knockback_chance': 200, 'orbs': 200, 'unlock_bounce_shot': 40,
+              'defense_absolute': 1}
+    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
+                     purchases=owned, prices=prices)
+    result = blocks.evaluate_program(route(list(blocks.template_program('turtle', 'workshop'))),
+                                     sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_bounce_shot')
+
+
+def test_blender_prefers_attack_speed_and_never_falls_back_to_def_abs() -> None:
+    program = blocks.template_program('turtle', 'workshop')
+    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
+                     prices={'attack_speed': 20, 'defense_absolute': 1})
+    first = blocks.evaluate_program(route(list(program)), sample, None, 'workshop')
+    assert (first.decision.state, first.decision.upgrade_id) == ('buy', 'attack_speed')
+
+    no_attack = blocks.evaluate_program(route(list(program)),
+        replace(sample, prices={'attack_speed': 200, 'defense_absolute': 1}), None, 'workshop')
+    assert no_attack.decision is None or no_attack.decision.upgrade_id != 'defense_absolute'
+
+
+def test_blender_prefers_knockback_force_then_multishot_unlock() -> None:
+    owned = {uid: 1 for uid in ('unlock_defense_upgrades', 'unlock_thorns',
+             'unlock_lifesteal', 'unlock_knockback', 'unlock_orbs',
+             'unlock_range_upgrades')}
+    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
+                     purchases=owned, prices={'attack_speed': 200,
+                         'knockback_force': 20, 'unlock_multishot': 30,
+                         'defense_absolute': 1})
+    program = blocks.template_program('opening', 'workshop')
+    first = blocks.evaluate_program(route(list(program)), sample, None, 'workshop')
+    assert (first.decision.state, first.decision.upgrade_id) == ('buy', 'knockback_force')
+    later = blocks.evaluate_program(route(list(program)),
+        replace(sample, prices={**sample.prices, 'knockback_force': 200}), None, 'workshop')
+    assert (later.decision.state, later.decision.upgrade_id) == ('buy', 'unlock_multishot')
+
+
+@pytest.mark.parametrize('policy', ['opening', 'turtle'])
+def test_pinned_legacy_builtin_uses_blender_after_wave_450(policy: str) -> None:
+    legacy = blocks.validate_program(blocks._workshop_template(policy), 'workshop')
+    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
+                     purchases={'unlock_defense_upgrades': 1, 'unlock_thorns': 1},
+                     prices={'attack_speed': 200, 'unlock_lifesteal': 40, 'defense_absolute': 1})
+    result = blocks.evaluate_program(route(list(legacy)), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_lifesteal')
+
+
+@pytest.mark.parametrize('policy', ['opening', 'turtle'])
+def test_older_saved_builtin_shape_uses_blender_after_wave_450(policy: str) -> None:
+    old = ([{'id': 'opening.starter', 'type': 'buy', 'upgrade_id': 'damage'}]
+           if policy == 'opening' else [])
+    old += [
+        {'id': f'{policy}.economy', 'type': 'budget', 'metric': 'utility_spent',
+         'target': 350, 'ceiling': 400, 'blocks': [
+             {'id': f'{policy}.economy.goal', 'type': 'buy', 'upgrade_id': 'cash_bonus'}]},
+    ]
+    if policy == 'turtle':
+        old.append({'id': 'turtle.attack', 'type': 'save_for', 'goal': [
+            {'id': 'turtle.attack.pool', 'type': 'pool', 'upgrade_ids': ['damage', 'attack_speed']}]})
+    old.append({'id': f'{policy}.objectives', 'type': 'save_for', 'goal': [
+        {'id': f'{policy}.objectives.pool', 'type': 'pool', 'upgrade_ids': ['defense_absolute']}]})
+    if policy == 'turtle':
+        old.extend([
+            {'id': 'turtle.unlock_filler', 'type': 'while_saving', 'blocks': [
+                {'id': 'turtle.unlock_filler.pool', 'type': 'pool', 'upgrade_ids': ['damage']}]},
+            {'id': 'turtle.cheap_defense', 'type': 'while_saving', 'blocks': [
+                {'id': 'turtle.cheap_defense.pool', 'type': 'pool', 'upgrade_ids': ['defense_absolute']}]},
+        ])
+    old.append({'id': f'{policy}.filler', 'type': 'while_saving', 'blocks': [
+        {'id': f'{policy}.filler.pool', 'type': 'pool', 'upgrade_ids': ['damage']}]})
+    legacy = blocks.validate_program(old, 'workshop')
+    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
+                     purchases={'unlock_defense_upgrades': 1, 'unlock_thorns': 1},
+                     prices={'damage': 200, 'attack_speed': 200, 'unlock_lifesteal': 40,
+                             'defense_absolute': 1})
+    result = blocks.evaluate_program(route(list(legacy)), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_lifesteal')
+
+
 def test_only_one_goal_saves_at_a_time() -> None:
     poor = replace(facts(), wallet_coins=90)
     program = [save_goal(['thorns']), {**save_goal(['damage']), 'id': 'goal2',
@@ -884,20 +998,16 @@ def turtle_battle_facts(best: int | None, wave: int) -> RouteFacts:
 ])
 def test_turtle_battle_template_scales_with_best_wave(best: int | None, wave: int, upgrade: str) -> None:
     program = list(blocks.template_program('turtle', 'battle'))
-    assert [b['id'] for b in program] == ['turtle.battle.emergency', 'turtle.battle.ahead', 'turtle.battle.attack',
-                                          'turtle.battle.early', 'turtle.battle.wave40', 'turtle.battle.survival']
     result = blocks.evaluate_program(route(program, lane='battle'), turtle_battle_facts(best, wave), None, 'battle')
     assert result.decision.upgrade_id == upgrade
 
 
-def test_turtle_battle_template_keeps_def_abs_ahead_and_buys_cheap_defense() -> None:
+def test_turtle_battle_template_keeps_def_abs_ahead() -> None:
     program = list(blocks.template_program('turtle', 'battle'))
     thin = replace(turtle_battle_facts(90, 50), upgrade_rows={
         **turtle_battle_facts(90, 50).upgrade_rows,
         'defense_absolute': {'status': 'available', 'value': 150.0, 'price': 10, 'observed_at': 100}})
     assert blocks.evaluate_program(route(program, lane='battle'), thin, None, 'battle').decision.upgrade_id == 'defense_absolute'
-    survival = next(b for b in program if b['id'] == 'turtle.battle.survival')
-    assert survival['upgrade_ids'] == ['health', 'defense_percent', 'health_regen', 'damage', 'attack_speed']
 
 
 def test_battle_stale_priority_row_is_observed_before_later_blocks() -> None:

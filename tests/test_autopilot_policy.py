@@ -33,7 +33,7 @@ def test_catalog_contains_every_standard_upgrade_and_known_unlock_tile() -> None
         category: [upgrade for upgrade in CATALOG if upgrade.category == category]
         for category in ("ATTACK", "DEFENSE", "UTILITY")
     }
-    assert len(by_category["ATTACK"]) == 20
+    assert len(by_category["ATTACK"]) == 21
     assert len(by_category["DEFENSE"]) == 23
     assert len(by_category["UTILITY"]) == 16
     assert by_id("rend_armor_mult") is not None
@@ -41,6 +41,7 @@ def test_catalog_contains_every_standard_upgrade_and_known_unlock_tile() -> None
     assert by_id("enemy_health_level_skip") is not None
     assert {upgrade.id for upgrade in CATALOG if upgrade.unlock} == {
         "unlock_cash_bonuses",
+        "unlock_bounce_shot",
         "unlock_coin_bonuses",
         "unlock_defense_upgrades",
         "unlock_free_upgrades",
@@ -71,6 +72,7 @@ def test_catalog_contains_every_standard_upgrade_and_known_unlock_tile() -> None
         ("Unlock Free Upgrade", None, "unlock_free_upgrades"),
         ("Unlock Multi Shot", None, "unlock_multishot"),
         ("Unlock Rapidfire", None, "unlock_rapid_fire"),
+        ("Unlock Bounce Shot Upgrades", "ATTACK", "unlock_bounce_shot"),
     ],
 )
 def test_resolve_accepts_game_labels_guide_names_and_ocr_variants(
@@ -100,6 +102,7 @@ def test_sequential_cash_and_coin_unlocks_have_distinct_identities() -> None:
         ("unlock_range_upgrades", ("range", "damage_per_meter")),
         ("unlock_multishot", ("multishot_chance", "multishot_targets")),
         ("unlock_rapid_fire", ("rapid_fire_chance", "rapid_fire_duration")),
+        ("unlock_bounce_shot", ("bounce_shot_chance", "bounce_shot_targets", "bounce_shot_range")),
         ("unlock_defense_upgrades", ("defense_percent", "defense_absolute")),
         ("unlock_thorns", ("thorns",)),
         ("unlock_lifesteal", ("lifesteal",)),
