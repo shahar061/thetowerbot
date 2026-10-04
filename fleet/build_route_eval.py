@@ -352,21 +352,49 @@ def evaluate_workshop(route: EffectiveRoute, facts: RouteFacts,
     spend_ceiling = workshop_ceiling(route, facts.wallet_coins, jar)
     limit = workshop_limit_pct(route)
     edited = route.workshop.mode == "priorities"
-    decision = choose_next(RerollFacts(
-        facts.account_id, facts.best_tier_1_wave, facts.purchases,
-        facts.values, spendable_wallet(facts.wallet_coins, jar), facts.lifetime_coins,
-        facts.prices,
-        spend_fraction=(limit / 100 if edited or limit < 100 else None),
-        draw_sharpness=None if edited else DRAW_SHARPNESS,
-        variant=facts.variant,
-        utility_spent_coins=facts.utility_spent_coins,
-    ), banned_upgrade_ids=route.workshop.banned_upgrade_ids,
-        priority_ids=route.workshop.priority_ids if edited else ())
+    if edited:
+        candidates = _weighted_candidates(route, facts, spend_ceiling)
+        first_candidate = (route.workshop.priority_ids.index(candidates[0][0])
+                           if candidates else len(route.workshop.priority_ids))
+        missing = _unpriced_priorities(route, facts, first_candidate)
+        if missing:
+            upgrade = upgrades.by_id(missing[0])
+            assert upgrade is not None
+            reason = "Read higher-priority Workshop prices before spending coins"
+            decision = RerollDecision(facts.account_id, "strategy_observe", "Follow route priorities",
+                                      "observe_price", upgrade.id, upgrade.name, upgrade.category,
+                                      None, facts.wallet_coins, facts.lifetime_coins, reason)
+            trace = DecisionTrace(route.workshop.id, reason, age, "unknown", facts.variant,
+                                  spend_ceiling=spend_ceiling, observation_ids=tuple(missing))
+            return RouteEvaluation(facts.account_id, route.revision, "projected", decision,
+                                   trace, facts.observed_at)
+        if not candidates:
+            reason = "No affordable upgrade remains in the Workshop priority list"
+            trace = DecisionTrace(route.workshop.id, reason, age, "worker price evidence",
+                                  facts.variant, spend_ceiling=spend_ceiling)
+            return RouteEvaluation(facts.account_id, route.revision, "blocked", None,
+                                   trace, facts.observed_at)
+        chosen = candidates[0][0]
+        upgrade = upgrades.by_id(chosen)
+        assert upgrade is not None
+        decision = RerollDecision(facts.account_id, "strategy", "Follow route priorities", "buy",
+                                  chosen, upgrade.name, upgrade.category, facts.prices[chosen],
+                                  facts.wallet_coins, facts.lifetime_coins,
+                                  f"First affordable Workshop priority: {upgrade.name}")
+    else:
+        decision = choose_next(RerollFacts(
+            facts.account_id, facts.best_tier_1_wave, facts.purchases,
+            facts.values, spendable_wallet(facts.wallet_coins, jar), facts.lifetime_coins,
+            facts.prices,
+            spend_fraction=(limit / 100 if limit < 100 else None),
+            draw_sharpness=DRAW_SHARPNESS,
+            variant=facts.variant,
+            utility_spent_coins=facts.utility_spent_coins,
+        ), banned_upgrade_ids=route.workshop.banned_upgrade_ids)
     selected_pending: PendingDecision | None = None
     draw_gate: int | None = None
     odds: dict[str, float] = {}
-    if edited and route.workshop.draw_chance_pct > 0 and decision.state != "needs_operator":
-        candidates = _weighted_candidates(route, facts, spend_ceiling)
+    if edited and route.workshop.draw_chance_pct > 0:
         if candidates:
             total = sum(weight for _, weight in candidates)
             odds = {uid: weight / total for uid, weight in candidates}
@@ -431,15 +459,11 @@ def evaluate_workshop(route: EffectiveRoute, facts: RouteFacts,
 
 def _weighted_candidates(route: EffectiveRoute, facts: RouteFacts,
                          spend_ceiling: int) -> list[tuple[str, int]]:
-    """Only observed, affordable, unlocked, uncapped priority rows enter odds."""
+    """Priced, affordable, unlocked route priorities in their listed order."""
     excluded = _ban_closure(route.workshop.banned_upgrade_ids)
     owned = {uid for uid, count in facts.purchases.items() if count > 0}
     groups = _owned_groups(facts.purchases, facts.values)
     prerequisites = builds.prerequisites()
-    stage = "turtle" if (facts.best_tier_1_wave or 0) >= 20 else "opening"
-    build = builds.by_id(stage)
-    caps = build.variant(facts.variant).level_caps if build is not None and build.variant(facts.variant) else (
-        build.level_caps if build is not None else {})
     candidates: list[tuple[str, int]] = []
     for uid in route.workshop.priority_ids:
         if uid in excluded:
@@ -452,11 +476,35 @@ def _weighted_candidates(route: EffectiveRoute, facts: RouteFacts,
         upgrade = upgrades.by_id(uid)
         if upgrade is None or (upgrade.unlock and uid in owned):
             continue
-        cap = caps.get(uid)
-        if cap is not None and facts.purchases.get(uid, 0) >= cap.allowance(facts.purchases):
-            continue
         price = facts.prices.get(uid)
-        if price is None or price < 0 or price > spend_ceiling or price > facts.wallet_coins:
+        if type(price) is not int or price < 0 or price > spend_ceiling or price > facts.wallet_coins:
             continue
         candidates.append((uid, route.workshop.weights.get(uid, 1)))
     return candidates
+
+
+def _unpriced_priorities(route: EffectiveRoute, facts: RouteFacts,
+                         before: int) -> list[str]:
+    """Read unknown higher priorities before treating them as unaffordable."""
+    excluded = _ban_closure(route.workshop.banned_upgrade_ids)
+    owned = {uid for uid, count in facts.purchases.items() if count > 0}
+    groups = _owned_groups(facts.purchases, facts.values)
+    prerequisites = builds.prerequisites()
+    missing = []
+    for uid in route.workshop.priority_ids[:before]:
+        upgrade = upgrades.by_id(uid)
+        gate = prerequisites.get(uid)
+        if (uid in excluded or not available(uid, groups)
+                or (gate is not None and gate not in owned and gate not in groups)
+                or upgrade is None or (upgrade.unlock and uid in owned)):
+            continue
+        price = facts.prices.get(uid)
+        evidence = facts.price_evidence.get(uid)
+        source = evidence.get("source") if evidence is not None else None
+        observed_at = evidence.get("observed_at") if evidence is not None else None
+        verified = (source == "observed" and type(observed_at) in {int, float}
+                    and 0 <= observed_at <= facts.now)
+        fixed_unlock = source == "catalog_estimate" and upgrade.unlock
+        if type(price) is not int or price < 0 or not (verified or fixed_unlock):
+            missing.append(uid)
+    return missing
