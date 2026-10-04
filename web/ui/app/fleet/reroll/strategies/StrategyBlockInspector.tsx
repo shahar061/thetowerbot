@@ -112,7 +112,10 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
                 .map(id => [id, block.level_caps?.[id] ?? { base: 20 }])) });
           }}>{item.name}</button>)}</div>
           {!block.upgrade_ids.length && <p role="alert">Choose at least one upgrade.</p>}
-          <label>Selection<select value={block.selection} onChange={event => onChange({ ...block, selection: event.target.value as Pool["selection"] })}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
+          <label>Selection<select value={block.selection} onChange={event => onChange({ ...block, selection: event.target.value as Pool["selection"], price_source: event.target.value === "cheapest" ? block.price_source : undefined })}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
+          {lane === "battle" && block.selection === "cheapest" && <label>Prices<select value={block.price_source ?? "observed"} onChange={event => onChange({ ...block, price_source: event.target.value as "observed" | "model" })}>
+            <option value="observed">Read displayed prices</option><option value="model">Track battle cash prices</option>
+          </select></label>}
           <div className={styles.orderedPool}>{block.upgrade_ids.map((id, index) => <div key={id}>
             <span>{index + 1}. {names.get(id) ?? id}</span><button type="button" disabled={index === 0} aria-label={`Prioritize ${names.get(id) ?? id}`} onClick={() => { const ids = [...block.upgrade_ids]; [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]]; onChange({ ...block, upgrade_ids: ids }); }}>↑</button>
             {block.selection === "weighted" && <input aria-label={`Weight for ${names.get(id) ?? id}`} type="number" min={1} max={10000} step={1} value={block.weights?.[id] ?? 1} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, weights: { ...block.weights, [id]: value } }); }} />}

@@ -444,3 +444,57 @@ def test_a_locked_row_outlives_the_sixty_second_expiry_within_its_run() -> None:
     state.observe(observation, run)
     assert state.rows("battle", 500, run)["cash_bonus"]["status"] == "locked"
     assert state.rows("battle", 500, RunIdentity(run_id=8))["cash_bonus"]["status"] == "unknown"
+
+
+def test_modeled_price_buys_unreadable_price_but_never_confirms_itself() -> None:
+    from policy import UpgradeRule
+    bot, device, frame, observation, policy = parts()
+    row = next(r for r in observation.rows if r.upgrade_id == 'attack_speed')
+    quote = dict(account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+                 status='available', verified=True, price=5, value=row.value,
+                 wave=int(observation.combat['wave']))
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+                     decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=quote)
+    unreadable = replace(row, price=None, status='unreadable', tap=None)
+    obs = replace(observation, rows=(unreadable,))
+    bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
+    assert len(device.actions) == 1
+    # A price change alone is not an independent receipt for modeled buying.
+    changed = replace(obs, observed_at=101, rows=(replace(unreadable, price=7, observed_at=101),))
+    bot.step(frame, device, policy, cash=95, observation=changed, run_id=7)
+    assert bot.state.snapshot()['verified_purchases'] == 0
+    changed = replace(obs, observed_at=102, rows=(replace(unreadable, value=row.value + .05, observed_at=102),))
+    bot.step(frame, device, policy, cash=95, observation=changed, run_id=7)
+    assert bot.state.snapshot()['verified_purchases'] == 1
+    bot.step(frame, device, policy, cash=95, observation=replace(changed, observed_at=103), run_id=7)
+    assert len(device.actions) == 1
+
+
+def test_modeled_quote_needs_current_run_value_and_cash() -> None:
+    from policy import UpgradeRule
+    for overrides, cash in [({'run_id': 8}, 100), ({'value': -1}, 100), ({}, 4), ({}, None)]:
+        bot, device, frame, obs, policy = parts()
+        row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+        quote = dict(account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+                     status='available', verified=True, price=5, value=row.value, wave=int(obs.combat['wave']))
+        quote.update(overrides)
+        policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+                         decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=quote)
+        bot.step(frame, device, policy, cash=cash, observation=obs, run_id=7)
+        assert device.actions == []
+
+
+def test_model_confirms_rounded_stat_from_independent_next_price_read() -> None:
+    from policy import UpgradeRule
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    quote = dict(account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+                 status='available', verified=True, price=5, index=0, value=row.value,
+                 wave=int(obs.combat['wave']))
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+                     decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=quote)
+    bot.step(frame, device, policy, cash=100, observation=replace(obs, rows=(replace(row, price=5, raw_price='5'),)), run_id=7)
+    assert len(device.actions) == 1
+    receipt = replace(obs, observed_at=102, rows=(replace(row, price=7, raw_price='7', observed_at=102),))
+    bot.step(frame, device, policy, cash=95, observation=receipt, run_id=7)
+    assert bot.state.snapshot()['verified_purchases'] == 1

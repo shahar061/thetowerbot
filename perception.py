@@ -72,6 +72,7 @@ class ObservedUpgrade:
     raw_name: str = ""
     raw_value: str | None = None
     price_quote: PriceQuote | None = None
+    raw_price: str | None = None
 
     @property
     def concept_id(self) -> str | None:
@@ -80,7 +81,7 @@ class ObservedUpgrade:
 
     def payload(self) -> dict:
         return {k: getattr(self, k) for k in (
-            "upgrade_id", "concept_id", "name", "category", "context", "value", "price", "status", "observed_at"
+            "upgrade_id", "concept_id", "name", "category", "context", "value", "price", "status", "observed_at", "raw_price"
         )}
 
 
@@ -200,6 +201,7 @@ def parse_frame(
             confidence=min([*(() if heading_confidence is None else (heading_confidence,)),
                             *(b.confidence for b in raw_boxes if contains(rect, b.rect))]),
             raw_name=raw_name, raw_value=value_boxes[0].text if len(value_boxes) == 1 else None,
+            raw_price=price_box.text if price_box else None,
         ))
     counts = Counter(row.upgrade_id for row in rows)
     rows = [replace(row, status="unreadable", tap=None, price=None, confidence=0.)
@@ -359,6 +361,8 @@ def observe_frame(screen: Image, context: str, *, locale: str = 'en',
     if not discovery.readable and not colour_only:
         return parse_frame(screen, (), context, digest=digest)
     observation = parse_frame(screen, boxes, context, digest=digest, tab_colour=tab_colour)
+    if reads is not None and reads.battle_targeted:
+        return observation
     # Prices first: a value is only re-read for a priced row.
     recovered_prices = _reread_prices(screen, observation, battle_bands=reads is not None)
     if recovered_prices:

@@ -72,6 +72,8 @@ class RerollProgress:
         self.account_id = account_id
         self.account_state = account_state
         self.read_only = read_only
+        from fleet.battle_prices import BattlePrices
+        self.battle_prices = BattlePrices(self.root, account_id, read_only=read_only)
         self.price_memory = WorkshopPrices(self.root, account_id)
         self._quotes: dict[str, PriceQuote] = {}
         if not read_only:
@@ -672,7 +674,7 @@ class RerollProgress:
                       observations: Mapping[str, Mapping[str, Any]] | None = None,
                       *, run_id: int | None = None, wave: int | None = None,
                       cash: int | None = None,
-                      combat: Mapping[str, float] | None = None) -> AutopilotPolicy:
+                      combat: Mapping[str, float] | None = None, pending_purchase: bool = False) -> AutopilotPolicy:
         route = None
         if self.route_runtime is not None:
             try:
@@ -707,6 +709,8 @@ class RerollProgress:
                 battle_max_health=(combat or {}).get("max_health"),
                 enemy_damage=(combat or {}).get("enemy_damage"),
                 upgrade_rows=rows,
+                battle_price_quotes=self.battle_prices.update(run_id=run_id, wave=wave,
+                    counts=counts, rows=rows, now=moment, pending=pending_purchase),
                 visit_id=(f"battle:{run_id}" if effective.battle.mode == "blocks" else
                           f"battle:{run_id}:{wave}") if run_id is not None and wave is not None else None,
                 run_purchases=counts, decision_sequence=sum((counts or {}).values()),
@@ -721,7 +725,7 @@ class RerollProgress:
             if wave is None or cash is None or run_id is None:
                 return replace(base, enabled=False, rules=())
             if effective.battle.mode == "blocks":
-                from fleet.strategy_blocks import program_upgrade_ids
+                from fleet.strategy_blocks import program_upgrade_ids, uses_modeled_prices
                 self.route_runtime.acknowledge(route.revision, self.account_id)
                 observe_only = evaluation.status != "observed" or evaluation.decision is None
                 ids = (tuple(uid for uid in evaluation.trace.observation_ids
@@ -732,7 +736,11 @@ class RerollProgress:
                                 for uid in ids),
                     cash_spend_limit_pct=100, observe_only=observe_only, single_purchase=True,
                     decision_token=f"{self.account_id}:{route.revision}:{run_id}:{facts.decision_sequence}",
-                    max_purchase_price=evaluation.decision.price if not observe_only else None)
+                    max_purchase_price=evaluation.decision.price if not observe_only else None,
+                    modeled_pool=uses_modeled_prices(effective.battle.blocks),
+                    battle_price_quote=(dict(facts.battle_price_quotes[evaluation.decision.upgrade_id],
+                        upgrade_id=evaluation.decision.upgrade_id) if not observe_only
+                        and evaluation.decision.price_source == "model" else None))
             _, phase = select_battle_phase(effective, facts)
             if phase is None:
                 return replace(base, enabled=False, rules=())

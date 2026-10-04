@@ -272,6 +272,7 @@ def read_region(
     *,
     padding: int = CROP_PADDING,
     min_confidence: float | None = None,
+    upscale: bool = True,
 ) -> tuple[TextBox, ...]:
     """Read one region off its own padded crop, in frame coordinates.
 
@@ -299,6 +300,8 @@ def read_region(
     padded = cv2.copyMakeBorder(
         crop, padding, padding, padding, padding, cv2.BORDER_CONSTANT
     )
+    if not upscale:
+        return read(padded, min_confidence=min_confidence, upscale=False)
     return read(padded, min_confidence=min_confidence)
 
 
@@ -371,7 +374,8 @@ class FrameReads:
     """
 
     def __init__(self, screen: Image, *, reuse: bool = False,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 battle_reader: Callable[["FrameReads"], tuple[TextBox, ...]] | None = None) -> None:
         """`reuse` is for menu frames only (spec P3): full() may return the
         last full read while the frame's thumbnail is unchanged."""
         self.screen = screen
@@ -382,6 +386,8 @@ class FrameReads:
         self._full_error: Exception | None = None
         self._battle: tuple[TextBox, ...] | None = None
         self._battle_error: Exception | None = None
+        self._battle_reader = battle_reader
+        self.battle_targeted = False
 
     @property
     def digest(self) -> str:
@@ -437,7 +443,7 @@ class FrameReads:
             raise self._battle_error
         if self._battle is None:
             try:
-                self._battle = self._read_battle()
+                self._battle = self._battle_reader(self) if self._battle_reader else self._read_battle()
             except Exception as error:
                 self._battle_error = error
                 raise

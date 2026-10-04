@@ -1192,3 +1192,81 @@ def test_a_wait_block_reads_prices_it_passed_over_before_holding() -> None:
     poor = replace(facts(), wallet_coins=10)
     held = blocks.evaluate_program(route(program), poor, None, 'workshop')
     assert held.decision is None and held.trace.reason == 'Wait block reached'
+
+
+def test_modeled_pool_uses_cash_curve_without_observed_price_ttl() -> None:
+    block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')
+    program = blocks.validate_program([block], 'battle')
+    quote = dict(account_id='account', run_id=7, status='available', source='model', verified=True, value=1)
+    f = replace(battle_facts(), battle_price_quotes={
+        'health': dict(quote, price=10), 'attack_speed': dict(quote, price=5)})
+    result = blocks.evaluate_program(route(list(program), lane='battle'), f, None, 'battle')
+    assert result.decision.upgrade_id == 'attack_speed'
+    assert result.decision.price == 5
+    assert result.decision.price_source == 'model'
+    assert result.trace.price_source == 'model'
+
+
+def test_model_pool_reconciles_cheapest_stale_wave_before_spending() -> None:
+    block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')
+    quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
+    f = replace(battle_facts(), battle_price_quotes={
+        'health': dict(quote, price=10, verified=True),
+        'attack_speed': dict(quote, price=5, verified=False)})
+    result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
+    assert result.trace.observation_ids == ('attack_speed',)
+    assert result.status == 'projected'
+
+
+def test_model_quotes_do_not_change_observed_pools_or_cross_run() -> None:
+    block = pool(upgrade_ids=['health'], selection='cheapest')
+    f = replace(battle_facts(), battle_price_quotes={
+        'health': dict(account_id='other', run_id=8, status='available', source='model', price=1, verified=True)})
+    result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
+    assert result.decision.price == 10
+    block['price_source'] = 'model'
+    result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
+    assert result.decision.price != 1
+
+
+def test_model_pool_rejects_wrong_lane_selection_and_missing_curve() -> None:
+    for lane, extra in [('workshop', {}), ('battle', {'selection': 'priority'}),
+                         ('battle', {'upgrade_ids': ['damage']})]:
+        with pytest.raises(ValueError):
+            blocks.validate_program([{**pool(upgrade_ids=['health'], selection='cheapest', price_source='model'), **extra}], lane)
+
+
+def test_assigned_model_pool_advances_only_after_persisted_receipt(tmp_path: Path) -> None:
+    import json
+    import time
+    import db
+    from account_state import AccountState
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    from fleet.build_route_runtime import BuildRouteRuntime
+    from fleet.reroll_progress import RerollProgress
+    from policy import AutopilotPolicy
+    from tests.test_build_route_integration import _registered
+    root = _registered(tmp_path, 'Air_38', 'account')
+    raw = RouteDocument.compatibility().to_dict()
+    raw['baseline']['battle'].update(mode='blocks', blocks=[pool(
+        upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')])
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, 'operator')
+    progress = RerollProgress(root, 'account', AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, 'Air_38', 'account')
+    rows = {uid: dict(status='available', value=1, price=price, observed_at=time.time())
+            for uid, price in [('health', 10), ('attack_speed', 5)]}
+    base = AutopilotPolicy(enabled=True)
+    first = progress.battle_policy(base, rows, run_id=2, wave=2, cash=100)
+    assert first.modeled_pool and first.battle_price_quote['price'] == 5
+    rows['attack_speed'].update(price=7, value=1.05, observed_at=time.time())
+    pending = progress.battle_policy(base, rows, run_id=2, wave=2, cash=95, pending_purchase=True)
+    assert pending.battle_price_quote['price'] == 5
+    with db.connect(root / 'tower_bot.db') as conn:
+        conn.execute("INSERT INTO events(seq,run_id,ts,type,detail) VALUES(1,2,1,'BattlePurchased',?)",
+                     (json.dumps({'upgrade_id': 'attack_speed'}),))
+    rows['attack_speed'].update(price=None, status='unreadable', observed_at=time.time())
+    second = progress.battle_policy(base, rows, run_id=2, wave=2, cash=95)
+    assert second.battle_price_quote['price'] == 7
+    assert second.battle_price_quote['value'] == 1.05
+    assert second.decision_token != first.decision_token
