@@ -84,6 +84,32 @@ def test_live_ad_variant_closes_only_after_maturity() -> None:
         gems_before=164, gems_after=170, delta=6, run_id=7)]
 
 
+def test_meta_audience_network_close_preserves_wait_and_verified_reward() -> None:
+    class MetaDevice(Device):
+        def shell(self, command: str) -> str:
+            if command.startswith("dumpsys window"):
+                return (FIX / "meta_audience_network_focus_82.txt").read_text()
+            if command.startswith("uiautomator dump"):
+                return (FIX / "meta_audience_network_end_82.xml").read_text()
+            raise AssertionError(command)
+
+    bus, device = Bus(), MetaDevice()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 170]), sleep=lambda _: None)
+    end_card = cv2.imread(str(FIX / "meta_audience_network_end_82.png"))
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    assert claim.observe(end_card, None, device, POLICY, 20, 7, False)
+    assert device.taps == [(200, 1368)]
+    assert claim.observe(end_card, None, device, POLICY, 31, 7, False)
+    assert device.taps[-1] == (77, 77)
+    assert bus.events == []  # Closing an ad is not proof of earned gems.
+    # Exercise the established reward flow; this expired live ad had no reward popup.
+    assert claim.observe(frame("reward"), None, device, POLICY, 34, 7, False)
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 36, 7, True)
+    assert not claim.active
+    assert bus.events == [events.InGameAdGemClaimed(
+        gems_before=164, gems_after=170, delta=6, run_id=7)]
+
+
 def test_reward_granted_end_card_closes_after_maturity() -> None:
     bus, device = Bus(), Device()
     claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164]), sleep=lambda _: None)
