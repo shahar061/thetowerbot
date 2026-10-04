@@ -155,6 +155,9 @@ class LabCadence:
         record = self._record()
         if record is None:
             return True
+        research_check_after = record.get("research_check_after")
+        if isinstance(research_check_after, (int, float)) and now < research_check_after:
+            return False
         # Older cadence files have no level evidence. Revisit a previously
         # readable picker once so the speed target can be recovered.
         if (record.get("kind") in {"wait_coins", "done"}
@@ -302,6 +305,19 @@ class LabCadence:
         record = self._record()
         if record is not None:
             self._write(self.path, {**record, "retry_at": now + 300.})
+
+    def note_other_research(self, now: float) -> None:
+        """Pace legacy research checks after observing a non-Game-Speed Lab 1 job.
+
+        Keep the saved Game Speed observation because this job says nothing about
+        its level, price or coin hold. Slot unlock checks stay independent.
+        """
+        record = self._record()
+        if record is None:
+            self.note(LabDecision("unknown"), now)
+            record = self._record()
+        if record is not None:
+            self._write(self.path, {**record, "research_check_after": now + 300.})
 
     @staticmethod
     def _write(path: Path, payload: dict[str, object]) -> None:

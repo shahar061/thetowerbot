@@ -246,6 +246,9 @@ class RerollProgress:
     def note_lab_failure(self, now: float | None = None) -> None:
         self.lab_cadence.note_failed(time.time() if now is None else now)
 
+    def note_other_lab_research(self, now: float | None = None) -> None:
+        self.lab_cadence.note_other_research(time.time() if now is None else now)
+
     def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None,
                           wallet_gems: int | None = None, now: float | None = None,
                           excluded_research: frozenset[str] = frozenset()) -> LabPlan | None:
