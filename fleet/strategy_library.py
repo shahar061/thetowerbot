@@ -84,8 +84,13 @@ class StrategyLibrary:
                         or type(row["version"]) is not int
                         or row["version"] != seen.get(row["id"], 0) + 1):
                     raise ValueError("invalid saved strategy")
-                row["baseline"] = RouteBaseline.from_dict(row["baseline"]).to_dict()
                 seen[row["id"]] = row["version"]
+            # Preserve older snapshots even if a later schema rejects one.
+            # Read serves only the latest version of each strategy; version()
+            # validates a historical baseline when it is selected.
+            for row in state["versions"]:
+                if row["version"] == seen[row["id"]]:
+                    row["baseline"] = RouteBaseline.from_dict(row["baseline"]).to_dict()
             return state
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             raise RouteUnavailable("strategy library unavailable") from exc
@@ -106,7 +111,10 @@ class StrategyLibrary:
                     if row["id"] == strategy_id and row["version"] == version), None)
         if row is None:
             raise ValueError("saved strategy version not found")
-        return row
+        try:
+            return {**row, "baseline": RouteBaseline.from_dict(row["baseline"]).to_dict()}
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise RouteUnavailable("strategy version unavailable") from exc
 
     def save(self, *, expected_revision: int, name: str, source_template: str,
              baseline: object, strategy_id: str | None = None) -> dict[str, Any]:
