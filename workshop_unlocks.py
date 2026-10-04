@@ -33,7 +33,7 @@ GROUPS = (
     UnlockGroup("unlock_rapid_fire", "ATTACK", "Unlock Rapid Fire",
                 ("rapid_fire_chance", "rapid_fire_duration"), "unlock_rapid_fire", 1500),
     UnlockGroup("unlock_bounce_shot", "ATTACK", "Unlock Bounce Shot",
-                ("bounce_shot_chance", "bounce_shot_targets", "bounce_shot_range"), None, 10_000),
+                ("bounce_shot_chance", "bounce_shot_targets", "bounce_shot_range"), "unlock_bounce_shot", 10_000),
     UnlockGroup("unlock_super_crit", "ATTACK", "Unlock Super Crit",
                 ("super_crit_chance", "super_crit_mult"), None, 100_000_000),
     UnlockGroup("unlock_rend_armor", "ATTACK", "Unlock Rend Armor",
