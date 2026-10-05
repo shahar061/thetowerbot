@@ -1441,6 +1441,27 @@ def test_rich_burst_ceiling_does_not_follow_live_cash(monkeypatch: pytest.Monkey
                                         rich_facts(cash, None, ()), None, 'battle').decision.burst_price_ceiling
                 for cash in (1000, 1234, 5000)}
     assert len(ceilings) == 1  # a policy that changed every frame would reset the row search
+    assert None not in ceilings
+
+
+@pytest.mark.parametrize('cash', [1000, 99])  # rich and not
+@pytest.mark.parametrize('limit', [
+    dict(level_caps={'health': {'base': 5}}),
+    dict(price_cap=100_000),
+    dict(max_purchases=50),
+    dict(wallet_share_pct=100),
+    dict(targets={'health': 1_000_000}),
+])
+def test_a_pool_with_count_or_funds_limits_never_bursts(
+        monkeypatch: pytest.MonkeyPatch, cash: int, limit: dict[str, Any]) -> None:
+    # Those limits are checked for the first level only; a burst would buy
+    # past them, so the pool keeps one tap per decision.
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    program = blocks.validate_program([{**rich_pool(), **limit}], 'battle')
+    facts = replace(rich_facts(cash, None, ()), run_purchases={'health': 3})
+    result = blocks.evaluate_program(route(list(program), lane='battle'), facts, None, 'battle')
+    assert result.decision.upgrade_id == 'health'
+    assert result.decision.burst_price_ceiling is None
 
 
 @pytest.mark.parametrize('enabled', [True, False])

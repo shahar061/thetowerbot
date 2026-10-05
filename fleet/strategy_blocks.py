@@ -16,6 +16,10 @@ MAX_DEPTH = 6
 
 COMPARISONS = {'gte': operator.ge, 'lte': operator.le, 'gt': operator.gt, 'lt': operator.lt}
 SYMBOLS = {'gte': '≥', 'lte': '≤', 'gt': '>', 'lt': '<'}
+# Pool keys whose count, price or funds limits are checked for one level at a
+# time. A pool with any of them never gets a burst price ceiling.
+_PER_LEVEL_POOL_LIMITS = ('max_purchases', 'level_caps', 'hold_until_capped', 'targets', 'price_cap',
+                          'wallet_share_pct', 'discount_pct', 'cheaper_than_upgrade_ids')
 
 
 def relative_wave_limit(relative: Mapping[str, int], best: int | None) -> int:
@@ -1100,6 +1104,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         if bursting:
                             burst_ceiling = (price_for(chosen, source=source)
                                              * (100 + block.get('max_price_premium_pct', 0)) // 100)
+                    if any(key in block for key in _PER_LEVEL_POOL_LIMITS):
+                        # pool_candidates checks these for the first level
+                        # only; a burst would buy past them, so keep one tap.
+                        burst_ceiling = None
                 elif block.get('selection', 'priority') == 'weighted':
                     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
                     matches = (pending is not None and pending.account_id == facts.account_id

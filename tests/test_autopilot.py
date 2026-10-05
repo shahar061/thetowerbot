@@ -557,7 +557,7 @@ def test_modeled_batch_reuses_confirmation_frames_and_stops_after_five(batch_siz
     assert len(device.actions) == batch_size
     assert bot.state.snapshot()['verified_purchases'] == batch_size
     assert calls == list(range(batch_size - 1))
-    assert receipts == list(range(batch_size))  # the final receipt installs a fence too
+    assert receipts == list(range(batch_size))  # every level's receipt feeds the tally
     assert bot.pending is None
 
 
@@ -719,7 +719,7 @@ def test_the_kill_switch_keeps_one_tap_per_decision(monkeypatch: pytest.MonkeyPa
     assert (bot._pending_curve, bot._pending_k) == ((), 1)
 
 
-def after_burst(index: int = 0, ceiling: int = 10_000) -> tuple:
+def after_burst(index: int = 0, ceiling: int = 10_000, cash: int = 100) -> tuple:
     """A bot that has just sent a burst on Attack Speed from curve level `index`."""
     from autopilot import BattleAutopilot
     _, device, frame, obs, policy = parts()
@@ -727,7 +727,7 @@ def after_burst(index: int = 0, ceiling: int = 10_000) -> tuple:
     bot = BattleAutopilot(bus=bus)
     row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
     bot.step(frame, device, modeled(policy, row, index, sequence=10, ceiling=ceiling),
-             cash=100, observation=shown(obs, row, index, at=100), run_id=7)
+             cash=cash, observation=shown(obs, row, index, at=100), run_id=7)
     return bot, device, frame, obs, policy, row, bus
 
 
@@ -764,19 +764,39 @@ def test_a_jump_past_the_burst_counts_at_most_its_taps() -> None:
     assert len(purchases(bus)) == 4
 
 
-def test_a_maxed_row_confirms_the_whole_burst() -> None:
-    bot, device, frame, obs, policy, row, bus = after_burst()
+def test_a_maxed_row_confirms_a_burst_that_reached_the_curve_end() -> None:
+    curve = curve_of('attack_speed')
+    bot, device, frame, obs, policy, row, bus = after_burst(index=len(curve) - 3, cash=30_000)
+    assert device.actions == [('burst', *row.tap, 3)]
     receipts: list = []
+    invalidated: list = []
     maxed = shown(obs, row, 0, at=101, status='maxed', price=None, raw_price=None)
-    confirm(bot, device, frame, policy, row, maxed, receipts, [])
-    assert purchases(bus) == [('attack_speed', price) for price in (5, 7, 10, 15, 21, 28)]
-    assert receipts == [(15, 'attack_speed', 6)]
+    confirm(bot, device, frame, policy, row, maxed, receipts, invalidated, index=len(curve) - 3)
+    assert purchases(bus) == [('attack_speed', price) for price in curve[-3:]]
+    assert receipts == [(12, 'attack_speed', 3)] and invalidated == []
+
+
+def test_a_maxed_row_short_of_the_curve_end_counts_one_level_and_reconciles() -> None:
+    # The in-game maximum can sit below the curve's last level, so MAX
+    # proves only that the first tap landed.
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    assert device.actions == [('burst', *row.tap, 6)]
+    receipts: list = []
+    invalidated: list = []
+    maxed = shown(obs, row, 0, at=101, status='maxed', price=None, raw_price=None)
+    confirm(bot, device, frame, policy, row, maxed, receipts, invalidated)
+    assert purchases(bus) == [('attack_speed', 5)]
+    assert receipts == [(10, 'attack_speed', 1)]
+    assert invalidated == ['attack_speed']  # the next read re-indexes the row
+    assert bot.pending is None
 
 
 @pytest.mark.parametrize('changes', [
     dict(price=None, raw_price=None, status='unreadable'),  # no price at all
     dict(price=6, raw_price='$6'),                          # matches no curve level
     dict(price=21, raw_price='$5'),                         # digits disagree with the parse
+    dict(price=1000, raw_price='$1K'),                      # matches several curve levels
+    dict(),                                                 # still at the starting level
 ])
 def test_an_undecidable_price_waits_then_falls_back_to_the_value(changes: dict[str, Any]) -> None:
     bot, device, frame, obs, policy, row, bus = after_burst()
@@ -791,6 +811,20 @@ def test_an_undecidable_price_waits_then_falls_back_to_the_value(changes: dict[s
     assert purchases(bus) == [('attack_speed', 5)]
     assert receipts == [(10, 'attack_speed', 1)]
     assert invalidated == ['attack_speed']  # the next read re-indexes the row
+
+
+def test_a_burst_row_scrolled_out_of_view_waits_then_blocks() -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    receipts: list = []
+    invalidated: list = []
+    for at in (101, 104, 107.9):
+        confirm(bot, device, frame, policy, row, replace(obs, observed_at=at, rows=()),
+                receipts, invalidated)
+        assert bot.pending is not None and purchases(bus) == []
+    confirm(bot, device, frame, policy, row, replace(obs, observed_at=108, rows=()),
+            receipts, invalidated)
+    assert purchases(bus) == [] and receipts == [] and invalidated == []
+    assert bot.pending is None and bot._blocked['attack_speed'] == 168
 
 
 def test_an_unconfirmed_burst_with_an_unchanged_value_blocks_the_row() -> None:

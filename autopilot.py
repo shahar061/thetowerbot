@@ -408,7 +408,9 @@ class BattleAutopilot:
                        waited: float) -> tuple[int, bool] | None:
         """(levels bought, invalidate the row's quote), or None to keep waiting.
 
-        1. MAX: every level the burst could still buy.
+        1. MAX: the rest of the burst when it ran to the curve's last level.
+           Short of that the in-game maximum may sit below the curve's end,
+           so MAX proves one level and the quote is invalidated.
         2. A price matching exactly one curve level j: j - index, clamped
            to the burst; a j behind the starting level means the model is
            wrong, so nothing counts and the quote is invalidated. A price
@@ -421,7 +423,9 @@ class BattleAutopilot:
         curve, index, size = self._pending_curve, self._pending_index, self._pending_k
         assert index is not None
         if after is not None and after.status == "maxed":
-            return min(size, len(curve) - index), False
+            if index + size >= len(curve):
+                return min(size, len(curve) - index), False
+            return 1, True
         price = _readable_price(after)
         if price is not None:
             from fleet.battle_prices import price_matches
@@ -806,7 +810,8 @@ class BattleAutopilot:
                 curve, index = steps, position
                 if policy.burst_price_ceiling is not None:
                     # The reserve and the spend limit bound the whole burst,
-                    # not just its first level.
+                    # not just its first level. max_purchase_price above
+                    # bounds only level 1; burst_price_ceiling bounds the rest.
                     budget = min(actual_cash - policy.cash_reserve,
                                  actual_cash * policy.cash_spend_limit_pct // 100)
                     count = burst_size(curve, index, budget, policy.burst_price_ceiling)
