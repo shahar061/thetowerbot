@@ -653,49 +653,6 @@ def test_blender_unlocks_the_defense_path_in_order(policy: str, owned: tuple[str
     assert (result.decision.state, result.decision.upgrade_id) == ('buy', expected)
 
 
-def test_blender_uses_lower_affordable_priority_then_reaches_bounce_unlock() -> None:
-    owned = {uid: 1 for uid in ('unlock_defense_upgrades', 'unlock_thorns',
-             'unlock_lifesteal', 'unlock_knockback', 'unlock_orbs',
-             'unlock_range_upgrades', 'unlock_multishot', 'unlock_rapid_fire')}
-    prices = {'attack_speed': 200, 'knockback_force': 200,
-              'multishot_chance': 200, 'multishot_targets': 200,
-              'knockback_chance': 200, 'orbs': 200, 'unlock_bounce_shot': 40,
-              'defense_absolute': 1}
-    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
-                     purchases=owned, prices=prices)
-    result = blocks.evaluate_program(route(list(blocks.template_program('turtle', 'workshop'))),
-                                     sample, None, 'workshop')
-    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_bounce_shot')
-
-
-def test_blender_prefers_attack_speed_and_never_falls_back_to_def_abs() -> None:
-    program = blocks.template_program('turtle', 'workshop')
-    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
-                     prices={'attack_speed': 20, 'defense_absolute': 1})
-    first = blocks.evaluate_program(route(list(program)), sample, None, 'workshop')
-    assert (first.decision.state, first.decision.upgrade_id) == ('buy', 'attack_speed')
-
-    no_attack = blocks.evaluate_program(route(list(program)),
-        replace(sample, prices={'attack_speed': 200, 'defense_absolute': 1}), None, 'workshop')
-    assert no_attack.decision is None or no_attack.decision.upgrade_id != 'defense_absolute'
-
-
-def test_blender_prefers_knockback_force_then_multishot_unlock() -> None:
-    owned = {uid: 1 for uid in ('unlock_defense_upgrades', 'unlock_thorns',
-             'unlock_lifesteal', 'unlock_knockback', 'unlock_orbs',
-             'unlock_range_upgrades')}
-    sample = replace(facts(), best_tier_1_wave=450, utility_spent_coins=400,
-                     purchases=owned, prices={'attack_speed': 200,
-                         'knockback_force': 20, 'unlock_multishot': 30,
-                         'defense_absolute': 1})
-    program = blocks.template_program('opening', 'workshop')
-    first = blocks.evaluate_program(route(list(program)), sample, None, 'workshop')
-    assert (first.decision.state, first.decision.upgrade_id) == ('buy', 'knockback_force')
-    later = blocks.evaluate_program(route(list(program)),
-        replace(sample, prices={**sample.prices, 'knockback_force': 200}), None, 'workshop')
-    assert (later.decision.state, later.decision.upgrade_id) == ('buy', 'unlock_multishot')
-
-
 @pytest.mark.parametrize('policy', ['opening', 'turtle'])
 def test_pinned_legacy_builtin_uses_blender_after_wave_450(policy: str) -> None:
     legacy = blocks.validate_program(blocks._workshop_template(policy), 'workshop')
@@ -1466,3 +1423,72 @@ def test_unlock_block_exposes_skills_and_their_unlock_tiles() -> None:
     program = blocks.validate_program([unlock(upgrade_ids=['orbs'])], 'workshop')
     assert {'orbs', 'unlock_defense_upgrades', 'unlock_knockback', 'unlock_orbs'} <= set(
         blocks.program_upgrade_ids(program))
+
+
+WORKER_83_PRICES = {
+    'attack_speed': 6490, 'cash_bonus': 6540, 'cash_per_wave': 6050, 'coins_per_kill_bonus': 5860,
+    'coins_per_wave': 4410, 'critical_chance': 50, 'critical_factor': 50, 'damage': 235,
+    'damage_per_meter': 50, 'defense_absolute': 11790, 'defense_percent': 7360, 'health': 4130,
+    'health_regen': 30, 'lifesteal': 547, 'multishot_chance': 5950, 'multishot_targets': 450,
+    'range': 50, 'rapid_fire_chance': 120, 'rapid_fire_duration': 120, 'thorns': 16760,
+    'unlock_bounce_shot': 10000, 'unlock_free_upgrades': 800, 'unlock_knockback': 5000}
+WORKER_83_PURCHASES = {
+    'attack_speed': 27, 'cash_bonus': 28, 'cash_per_wave': 27, 'coins_per_kill_bonus': 24,
+    'coins_per_wave': 21, 'damage': 3, 'defense_absolute': 43, 'defense_percent': 29, 'health': 26,
+    'multishot_chance': 23, 'thorns': 44, 'unlock_cash_bonuses': 1, 'unlock_coin_bonuses': 1,
+    'unlock_defense_upgrades': 1, 'unlock_lifesteal': 1, 'unlock_multishot': 1,
+    'unlock_range_upgrades': 1, 'unlock_rapid_fire': 1, 'unlock_thorns': 1}
+
+
+def blender_v2() -> list[dict[str, Any]]:
+    return list(blocks.template_program('turtle', 'workshop')[0]['then'])
+
+
+def worker_83(**changes: Any) -> RouteFacts:
+    """Tiramisu64_83's recorded Workshop facts on 2026-10-05 (blender v7)."""
+    recorded: dict[str, Any] = dict(
+        best_tier_1_wave=415, wallet_coins=1230, prices=dict(WORKER_83_PRICES),
+        purchases=dict(WORKER_83_PURCHASES), confirmed_purchases=dict(WORKER_83_PURCHASES))
+    return replace(facts(), **{**recorded, **changes})
+
+
+def test_blender_v2_replay_buys_free_upgrades_then_saves_for_knockback() -> None:
+    first = blocks.evaluate_program(route(blender_v2()), worker_83(), None, 'workshop')
+    assert (first.decision.state, first.decision.upgrade_id) == ('buy', 'unlock_free_upgrades')
+    owned = {**WORKER_83_PURCHASES, 'unlock_free_upgrades': 1}
+    second = blocks.evaluate_program(route(blender_v2()),
+        worker_83(wallet_coins=430, purchases=owned, confirmed_purchases=owned), None, 'workshop')
+    assert (second.decision.state, second.decision.upgrade_id) == ('save_coins', 'unlock_knockback')
+
+
+def test_blender_v2_spends_by_value_once_unlocks_are_done() -> None:
+    owned = {**WORKER_83_PURCHASES, **{uid: 1 for uid in (
+        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_interest')}}
+    prices = {**WORKER_83_PRICES, 'knockback_chance': 500, 'knockback_force': 500, 'orb_speed': 500,
+              'orbs': 20000, 'free_attack_upgrade': 75, 'free_defense_upgrade': 90,
+              'free_utility_upgrade': 100}
+    result = blocks.evaluate_program(route(blender_v2()),
+        worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned), None, 'workshop')
+    # Crit Chance 50 / 2 = 25 beats Free Defense 90 / 3 = 30; Regen is cheaper but not in the pool.
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'critical_chance')
+    assert any('manual unlock needed' in item or 'over unlock price limit' in item
+               for item in result.trace.rejected)
+
+
+def test_blender_v2_never_buys_defense_absolute() -> None:
+    owned = {**WORKER_83_PURCHASES, **{uid: 1 for uid in (
+        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_interest')}}
+    prices = {uid: 10**9 for uid in WORKER_83_PRICES} | {'defense_absolute': 1, 'health_regen': 1}
+    result = blocks.evaluate_program(route(blender_v2()),
+        worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned), None, 'workshop')
+    assert result.decision is None or result.decision.upgrade_id not in {'defense_absolute', 'health_regen'}
+
+
+def test_blender_v2_weights_sum_to_100_and_unlock_every_gated_pool_skill() -> None:
+    unlocks, value, stop = blender_v2()
+    assert sum(value['weights'].values()) == 100
+    assert value['selection'] == 'value' and stop['type'] == 'wait'
+    gated = {uid for uid in value['upgrade_ids'] if blocks.gate_for(uid) is not None}
+    assert gated <= set(unlocks['upgrade_ids'])
+    assert {'max_recovery', 'package_chance'} <= set(unlocks['upgrade_ids'])
+    assert (unlocks['max_price'], unlocks['hold']) == (20000, True)

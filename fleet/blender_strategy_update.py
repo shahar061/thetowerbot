@@ -38,13 +38,13 @@ def add_blender_gate(baseline: Mapping[str, Any], *, prefix: str,
     gate_id = f"{prefix}.blender.active"
     gate.update({"id": gate_id, "label": f"Blender after best Tier 1 wave {threshold}",
                  "value": threshold, "else": []})
-    gate["then"][0]["id"] = f"{prefix}.blender.priorities"
-    gate["then"][1]["id"] = f"{prefix}.blender.wait"
+    for child in gate["then"]:
+        child["id"] = child["id"].replace("turtle.blender.", f"{prefix}.blender.", 1)
     workshop["blocks"] = [gate, *(block for block in workshop["blocks"]
                                   if block["id"] != gate_id)]
     workshop["banned_upgrade_ids"] = [uid for uid in workshop["banned_upgrade_ids"]
                                        if uid != "unlock_range_upgrades"]
-    priorities = set(gate["then"][0]["upgrade_ids"])
+    priorities = {uid for child in gate["then"] for uid in child.get("upgrade_ids", ())}
     if _ban_closure(frozenset(workshop["banned_upgrade_ids"])) & priorities:
         raise ValueError("a Blender priority is still banned")
     RouteBaseline.from_dict(updated)

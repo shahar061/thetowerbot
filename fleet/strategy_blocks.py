@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 import builds
 import upgrades
-from workshop_unlocks import path_to
+from workshop_unlocks import gate_for, path_to
 
 MAX_BLOCKS = 80
 MAX_DEPTH = 6
@@ -270,17 +270,18 @@ def native_template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...
 _ECONOMY_WEIGHTS = {'unlock_cash_bonuses': 100, 'cash_per_wave': 200, 'unlock_coin_bonuses': 80,
                     'coins_per_kill_bonus': 150, 'cash_bonus': 60}
 _FILLER_CAPS = {'cash_per_wave': 5, 'coins_per_kill_bonus': 5, 'cash_bonus': 5, 'damage': 3, 'attack_speed': 3}
-_BLENDER_PRIORITY = (
-    'attack_speed',
-    'unlock_defense_upgrades', 'unlock_thorns', 'unlock_lifesteal',
-    'unlock_knockback', 'unlock_orbs',
-    'knockback_force',
-    'unlock_range_upgrades', 'unlock_multishot',
-    'multishot_chance', 'multishot_targets',
-    'knockback_chance', 'orbs',
-    'unlock_rapid_fire', 'unlock_bounce_shot',
-    'bounce_shot_chance', 'bounce_shot_targets', 'bounce_shot_range',
-)
+# Blender v2: coin weights for value-per-coin buying (sum 100) and stop targets.
+_BLENDER_WEIGHTS = {
+    'coins_per_kill_bonus': 18, 'defense_percent': 12, 'attack_speed': 10, 'health': 9,
+    'knockback_chance': 6, 'thorns': 6, 'damage': 4, 'lifesteal': 4, 'orb_speed': 4,
+    'free_utility_upgrade': 3, 'free_defense_upgrade': 3, 'cash_bonus': 3, 'orbs': 3,
+    'knockback_force': 3, 'free_attack_upgrade': 2, 'coins_per_wave': 2, 'cash_per_wave': 2,
+    'critical_chance': 2, 'multishot_targets': 2, 'multishot_chance': 1, 'critical_factor': 1,
+}
+_BLENDER_TARGETS = {'thorns': 51, 'lifesteal': 3.5, 'orbs': 3, 'multishot_targets': 5}
+# Every gated pool skill, plus Recovery Packages (whose path buys Interest).
+_BLENDER_UNLOCKS = (*(uid for uid in _BLENDER_WEIGHTS if gate_for(uid) is not None),
+                    'max_recovery', 'package_chance')
 _OLDER_BUILTIN_WORKSHOP_IDS = {
     'opening': ('opening.starter', 'opening.economy', 'opening.objectives', 'opening.filler'),
     'turtle': ('turtle.economy', 'turtle.attack', 'turtle.objectives',
@@ -351,8 +352,12 @@ def _blender_workshop_template(policy: str) -> dict[str, Any]:
             'label': 'Blender after best wave 450',
             'field': 'best_tier_1_wave', 'op': 'gte', 'value': 450,
             'then': [
-                _pool(f'{policy}.blender.priorities', list(_BLENDER_PRIORITY),
-                      label='Blender Workshop priorities'),
+                {'id': f'{policy}.blender.unlocks', 'type': 'unlock',
+                 'label': 'Unlock missing skills', 'upgrade_ids': list(_BLENDER_UNLOCKS),
+                 'max_price': 20000, 'hold': True},
+                {'id': f'{policy}.blender.value', 'type': 'pool', 'label': 'Blender value per coin',
+                 'upgrade_ids': list(_BLENDER_WEIGHTS), 'selection': 'value',
+                 'weights': dict(_BLENDER_WEIGHTS), 'targets': dict(_BLENDER_TARGETS)},
                 {'id': f'{policy}.blender.wait', 'type': 'wait',
                  'label': 'Wait for an affordable Blender upgrade'},
             ], 'else': _workshop_template(policy)}
