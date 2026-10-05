@@ -550,7 +550,7 @@ def test_modeled_batch_reuses_confirmation_frames_and_stops_after_five(batch_siz
     for index in range(1, batch_size + 1):
         bot.step(frame, device, configured(index - 1), cash=1000,
                  observation=observed(index), run_id=7, refresh_policy=refresh,
-                 record_receipt=receipts.append)
+                 record_receipt=lambda sequence, upgrade_id, levels: receipts.append(sequence))
     assert len(device.actions) == batch_size
     assert bot.state.snapshot()['verified_purchases'] == batch_size
     assert calls == list(range(batch_size - 1))
@@ -619,3 +619,20 @@ def test_a_model_quote_from_an_earlier_wave_still_authorizes_the_tap(
                      decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=quote)
     bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
     assert len(device.actions) == (1 if enabled else 0)
+
+
+def test_a_modeled_receipt_names_the_upgrade_and_its_levels() -> None:
+    from policy import UpgradeRule
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+        decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=dict(
+            account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+            status='available', verified=True, price=5, value=row.value,
+            wave=int(obs.combat['wave']), sequence=6))
+    bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
+    receipts: list[tuple] = []
+    changed = replace(obs, observed_at=102, rows=(replace(row, value=row.value + .05, observed_at=102),))
+    bot.step(frame, device, policy, cash=95, observation=changed, run_id=7,
+             record_receipt=lambda *args: receipts.append(args))
+    assert receipts == [(6, 'attack_speed', 1)]

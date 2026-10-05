@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from pathlib import Path
 from uuid import uuid4
 
+import config
 import db
 import ocr
 import upgrades
@@ -99,6 +100,11 @@ class RerollProgress:
         self._menu_wallet: tuple[int, float] | None = None
         # The lab jar the last menu route evaluation settled.
         self._route_jar = 0
+        # Levels this process confirmed in the current run, per upgrade,
+        # ahead of the asynchronous event sink. Starts from the database
+        # counts the first time a run is seen, so a restart mid-run loses
+        # nothing; battle_policy reads max(database, tally) per upgrade.
+        self._battle_tally: tuple[int | None, dict[str, int]] = (None, {})
 
     def note_menu_wallet(self, wallet_coins: int | None) -> None:
         """Keep a fresh, observed menu balance for the next route decision."""
@@ -677,6 +683,27 @@ class RerollProgress:
             minimum = max(sequence + 1, previous[1]) if previous and previous[0] == run_id else sequence + 1
             self._battle_receipt_fence = (run_id, minimum)
 
+    def note_battle_levels(self, run_id: int | None, upgrade_id: str, levels: int) -> None:
+        """Count confirmed battle levels before the event sink commits them."""
+        if type(run_id) is not int or type(levels) is not int or levels < 1:
+            return
+        tally_run, tally = self._battle_tally
+        if tally_run != run_id:
+            return  # never started from this run's database counts; the sink catches up
+        tally[upgrade_id] = tally.get(upgrade_id, 0) + levels
+
+    def _tallied_counts(self, run_id: int | None,
+                        counts: dict[str, int] | None) -> dict[str, int] | None:
+        """Per-upgrade max(database, tally); the tally restarts with each run."""
+        if counts is None or type(run_id) is not int:
+            return counts
+        if self._battle_tally[0] != run_id:
+            self._battle_tally = (run_id, dict(counts))
+        tally = self._battle_tally[1]
+        for upgrade_id, count in counts.items():
+            tally[upgrade_id] = max(tally.get(upgrade_id, 0), count)
+        return dict(tally)
+
     def battle_policy(self, base: AutopilotPolicy,
                       observations: Mapping[str, Mapping[str, Any]] | None = None,
                       *, run_id: int | None = None, wave: int | None = None,
@@ -712,15 +739,21 @@ class RerollProgress:
                 uid: dict(upgrade_id=uid, status="locked", value=None, price=None, observed_at=moment)
                 for uid in locked}}
             counts = self.route_runtime.purchase_counts("battle", run_id)
-            if after_receipt_sequence is not None:
-                self.await_battle_receipt(run_id, after_receipt_sequence)
-            fence = getattr(self, '_battle_receipt_fence', None)
-            if fence is not None:
-                if fence[0] == run_id and (counts is None or sum(counts.values()) < fence[1]):
-                    # The event sink commits asynchronously. Do not calibrate
-                    # a post-purchase frame against the old receipt count.
-                    return replace(base, enabled=False, rules=())
-                self._battle_receipt_fence = None
+            if config.BATTLE_BURST_ENABLED:
+                # The tally replaces the receipt fence: a confirmed level
+                # counts at once instead of disabling buying until the sink
+                # commits it.
+                counts = self._tallied_counts(run_id, counts)
+            else:
+                if after_receipt_sequence is not None:
+                    self.await_battle_receipt(run_id, after_receipt_sequence)
+                fence = getattr(self, '_battle_receipt_fence', None)
+                if fence is not None:
+                    if fence[0] == run_id and (counts is None or sum(counts.values()) < fence[1]):
+                        # The event sink commits asynchronously. Do not calibrate
+                        # a post-purchase frame against the old receipt count.
+                        return replace(base, enabled=False, rules=())
+                    self._battle_receipt_fence = None
             if batch_route_token != f'{self.account_id}:{route.revision}:{run_id}':
                 battle_batch_purchases = 0
             facts = RouteFacts(

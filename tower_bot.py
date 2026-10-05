@@ -2871,8 +2871,13 @@ class TowerBot:
                             batch_rule_id=self.autopilot.batch_rule_id,
                             after_receipt_sequence=after_sequence)
 
-                    def record_battle_receipt(sequence: int | None) -> None:
-                        if self.reroll_progress is not None:
+                    def record_battle_receipt(sequence: int | None, upgrade_id: str, levels: int) -> None:
+                        if self.reroll_progress is None:
+                            return
+                        if config.BATTLE_BURST_ENABLED:
+                            self.reroll_progress.note_battle_levels(
+                                self.runs.current_id, upgrade_id, levels)
+                        else:
                             self.reroll_progress.await_battle_receipt(self.runs.current_id, sequence)
 
                     battle_policy = refresh_battle_policy()

@@ -515,3 +515,42 @@ def test_failed_badge_claim_is_retried_without_waiting_an_hour() -> None:
     bot._milestones_retry_at = 0.
     bot.run_once()
     assert bot.milestones_claim.active
+
+
+class _BattleProgress:
+    """Just the reroll_progress surface the in-run scan touches."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.battle_prices = SimpleNamespace(
+            invalidate=lambda upgrade_id: self.calls.append(('invalidate', upgrade_id)))
+
+    def speed_target(self) -> None:
+        return None
+
+    def battle_policy(self, base, rows, **kwargs):  # noqa: ANN001, ANN201 - test fake
+        self.calls.append(('policy', kwargs.get('battle_tab')))
+        return base
+
+    def note_battle_levels(self, run_id, upgrade_id, levels) -> None:  # noqa: ANN001
+        self.calls.append(('levels', upgrade_id, levels))
+
+    def await_battle_receipt(self, run_id, sequence) -> None:  # noqa: ANN001
+        self.calls.append(('fence', sequence))
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_a_battle_receipt_feeds_the_tally_instead_of_the_fence(
+    bot_in_run_on: Callable[[str], TowerBot], monkeypatch: pytest.MonkeyPatch, enabled: bool,
+) -> None:
+    import config
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot = bot_in_run_on('in_run_lit')
+    bot.controls.apply({'autopilot': {'enabled': True}})
+    progress = _BattleProgress()
+    bot.reroll_progress = progress
+    monkeypatch.setattr(bot.autopilot, 'step',
+                        lambda *args, **kwargs: bool(kwargs['record_receipt'](4, 'attack_speed', 3)))
+    bot.run_once()
+    receipts = [call for call in progress.calls if call[0] in ('levels', 'fence')]
+    assert receipts == ([('levels', 'attack_speed', 3)] if enabled else [('fence', 4)])

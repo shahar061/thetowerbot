@@ -1239,7 +1239,9 @@ def test_model_pool_rejects_wrong_lane_selection_and_missing_curve() -> None:
             blocks.validate_program([{**pool(upgrade_ids=['health'], selection='cheapest', price_source='model'), **extra}], lane)
 
 
-def test_assigned_model_pool_advances_only_after_persisted_receipt(tmp_path: Path) -> None:
+def test_assigned_model_pool_advances_only_after_persisted_receipt(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the receipt fence
     import json
     import time
     import db
@@ -1339,3 +1341,60 @@ def test_burst_mode_buys_the_cheapest_quote_without_a_wave_reconcile_trip(
     result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
     assert result.trace.observation_ids == ()
     assert result.status == 'observed' and result.decision.upgrade_id == 'attack_speed'
+
+
+def _assigned_model_progress(tmp_path: Path) -> tuple[Any, Path, dict[str, dict[str, Any]], Any]:
+    """A registered worker whose assigned battle route is one modeled cheapest pool."""
+    import time
+    from account_state import AccountState
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    from fleet.build_route_runtime import BuildRouteRuntime
+    from fleet.reroll_progress import RerollProgress
+    from policy import AutopilotPolicy
+    from tests.test_build_route_integration import _registered
+    root = _registered(tmp_path, 'Air_38', 'account')
+    raw = RouteDocument.compatibility().to_dict()
+    raw['baseline']['battle'].update(mode='blocks', blocks=[pool(
+        upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model',
+        batch_size=5, max_price_premium_pct=25)])
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, 'operator')
+    progress = RerollProgress(root, 'account', AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, 'Air_38', 'account')
+    rows = {uid: dict(status='available', value=1, price=price, observed_at=time.time())
+            for uid, price in [('health', 10), ('attack_speed', 5)]}
+    return progress, root, rows, AutopilotPolicy(enabled=True)
+
+
+def _purchases(root: Path, run_id: int, *seqs: int) -> None:
+    """What the async event sink commits: one BattlePurchased row per level."""
+    import json
+    import db
+    with db.connect(root / 'tower_bot.db') as conn:
+        for seq in seqs:
+            conn.execute("INSERT INTO events(seq,run_id,ts,type,detail) VALUES(?,?,1,'BattlePurchased',?)",
+                         (seq, run_id, json.dumps({'upgrade_id': 'attack_speed'})))
+
+
+def test_the_in_memory_tally_replaces_the_receipt_fence(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    progress, root, rows, base = _assigned_model_progress(tmp_path)
+    _purchases(root, 2, 1)  # bought before this process started
+
+    def policy(run_id: int = 2, **extra: Any) -> Any:
+        return progress.battle_policy(base, rows, run_id=run_id, wave=2, cash=100, **extra)
+
+    assert policy().decision_token.endswith(':1')  # the tally starts from the database
+    rows['attack_speed'].update(price=None, status='unreadable')
+    progress.note_battle_levels(2, 'attack_speed', 3)
+    confirmed = policy(after_receipt_sequence=3)
+    assert confirmed.enabled  # no fence: the receipt never disables buying
+    assert confirmed.decision_token.endswith(':4')
+    _purchases(root, 2, 2, 3)  # the sink catches up partway
+    assert policy().decision_token.endswith(':4')  # max(db, tally), never the sum
+    _purchases(root, 2, 4, 5)
+    assert policy().decision_token.endswith(':5')  # the database may lead too
+    assert policy(run_id=3).decision_token.endswith(':0')  # a new run starts over
+    progress.note_battle_levels(2, 'attack_speed', 9)  # a receipt for the old run
+    assert policy(run_id=3).decision_token.endswith(':0')

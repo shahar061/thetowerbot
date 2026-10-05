@@ -370,7 +370,7 @@ class BattleAutopilot:
              identity: RunIdentity = RunIdentity(), elapsed: float | None = None,
              reads: ocr.FrameReads | None = None,
              refresh_policy: Callable[[int | None], AutopilotPolicy] | None = None,
-             record_receipt: Callable[[int | None], None] | None = None) -> bool:
+             record_receipt: Callable[[int | None, str, int], None] | None = None) -> bool:
         # The scan's shared OCR and digest, when they belong to this screen.
         if reads is not None and reads.screen is not screen:
             reads = None
@@ -467,7 +467,7 @@ class BattleAutopilot:
                 self._emit(events.BattlePurchased(item=after.name, upgrade_id=after.upgrade_id,
                                                   price=before.price, value=after.value))
                 if self._pending_modeled and record_receipt is not None:
-                    record_receipt(self._pending_sequence)
+                    record_receipt(self._pending_sequence, after.upgrade_id, 1)
                 self._decide("verified", f"Verified {after.name} upgrade", after.upgrade_id)
                 self.pending = None
                 self._manual = None
