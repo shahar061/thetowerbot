@@ -71,6 +71,8 @@ class RouteFacts:
     visible_upgrade_ids: tuple[str, ...] = ()
     battle_batch_purchases: int = 0
     battle_batch_rule_id: str | None = None
+    # The battle panel's open category (ATTACK, DEFENSE or UTILITY).
+    battle_tab: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,8 @@ class BattleDecision:
     reason: str
     target: float | None = None
     price_source: str = "observed"
+    # Highest single-level price a burst may include; None buys one level.
+    burst_price_ceiling: int | None = None
 
 
 @dataclass(frozen=True)

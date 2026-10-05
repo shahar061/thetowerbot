@@ -2869,11 +2869,21 @@ class TowerBot:
                                 observation, identity, self.runs.current_id),
                             batch_route_token=self.autopilot.batch_route_token,
                             batch_rule_id=self.autopilot.batch_rule_id,
-                            after_receipt_sequence=after_sequence)
+                            after_receipt_sequence=after_sequence,
+                            battle_tab=observation.category)
 
-                    def record_battle_receipt(sequence: int | None) -> None:
-                        if self.reroll_progress is not None:
+                    def record_battle_receipt(sequence: int | None, upgrade_id: str, levels: int) -> None:
+                        if self.reroll_progress is None:
+                            return
+                        if config.BATTLE_BURST_ENABLED:
+                            self.reroll_progress.note_battle_levels(
+                                self.runs.current_id, upgrade_id, levels)
+                        else:
                             self.reroll_progress.await_battle_receipt(self.runs.current_id, sequence)
+
+                    def invalidate_battle_quote(upgrade_id: str) -> None:
+                        if self.reroll_progress is not None:
+                            self.reroll_progress.battle_prices.invalidate(upgrade_id)
 
                     battle_policy = refresh_battle_policy()
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
@@ -2883,7 +2893,8 @@ class TowerBot:
                                                    identity=self.run_identity(settings),
                                                    elapsed=self.runs.elapsed(time.monotonic()),
                                                    reads=reads, refresh_policy=refresh_battle_policy,
-                                                   record_receipt=record_battle_receipt)
+                                                   record_receipt=record_battle_receipt,
+                                                   invalidate_quote=invalidate_battle_quote)
                     # The autopilot reads the panel itself, so its rows are
                     # the only description of this frame anything has. Left
                     # out, the set_boxes() below blanks the device view on
@@ -3227,6 +3238,14 @@ class TowerBot:
                 # docstring. Tests pass 0.0 to run the loop without sleeping,
                 # and jittering that would reintroduce the sleep.
                 current_interval = interval
+            if (interval is None and config.BATTLE_BURST_ENABLED
+                    and self._last_scan_in_battle and self.autopilot.buying):
+                # The last battle step bought, confirmed or headed for a
+                # purchase, and the next frame decides the next one.
+                current_interval = min(current_interval, max(
+                    MIN_INTERVAL,
+                    jitter.spread(config.BATTLE_SCAN_INTERVAL_SECONDS, live.timing_jitter),
+                ))
             if interval is None and self.autopilot.fast_followup:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.

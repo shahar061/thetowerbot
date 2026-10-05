@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
+import config
 from fleet.build_route_store import _write_json_atomic
 
 
@@ -32,11 +33,13 @@ def price_matches(price: int, observed: int | None, raw: str | None = None) -> b
 
 
 class BattlePrices:
-    """A price index advances only with a persisted purchase receipt or calibration.
+    """A price index advances only with a confirmed purchase count or calibration.
 
     DB runs may start mid-battle: even a new run must read prices initially.
-    Across waves quotes remain useful lower bounds, but need reconciliation
-    before execution because free upgrades can have raised unseen prices.
+    With config.BATTLE_BURST_ENABLED a quote stays verified across waves
+    until a fresh read disagrees, the run changes, or burst confirmation
+    invalidates it; the pre-tap row check still catches free wave-end levels.
+    With the switch off, a quote verifies only within the wave it was read.
     """
 
     def __init__(self, root: Path, account_id: str, *, read_only: bool = False) -> None:
@@ -108,7 +111,8 @@ class BattlePrices:
                 self.rows.pop(uid, None)
                 continue
             quote = dict(state, account_id=self.account_id, run_id=run_id, source="model",
-                         verified=state.get("wave") == wave or state["status"] in {"locked", "maxed"})
+                         verified=(config.BATTLE_BURST_ENABLED or state.get("wave") == wave
+                                   or state["status"] in {"locked", "maxed"}))
             if state["status"] == "available":
                 index = state.get("index")
                 if type(index) is not int:
@@ -121,6 +125,18 @@ class BattlePrices:
                 quote.update(index=index, price=curve[index])
             quotes[uid] = quote
         if not self.read_only and before != json.dumps((self.run_id, self.wave, self.rows), sort_keys=True):
-            _write_json_atomic(self.path, dict(account_id=self.account_id, run_id=self.run_id,
-                catalog_revision=catalog()["source_revision"], wave=self.wave, rows=self.rows))
+            self._save()
         return quotes
+
+    def invalidate(self, upgrade_id: str) -> None:
+        """Forget one row's index so its next fresh read re-indexes it.
+
+        Burst confirmation calls this when the screen contradicts the model:
+        a price behind the quote, or a level proven only by a value change.
+        """
+        if self.rows.pop(upgrade_id, None) is not None and not self.read_only:
+            self._save()
+
+    def _save(self) -> None:
+        _write_json_atomic(self.path, dict(account_id=self.account_id, run_id=self.run_id,
+            catalog_revision=catalog()["source_revision"], wave=self.wave, rows=self.rows))
