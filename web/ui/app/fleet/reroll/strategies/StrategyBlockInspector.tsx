@@ -130,7 +130,8 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
             batch_size: selection === "cheapest" ? block.batch_size : undefined,
             max_price_premium_pct: selection === "cheapest" ? block.max_price_premium_pct : undefined,
             decay_pct: selection === "weighted" ? block.decay_pct : undefined,
-            weight_floor: selection === "weighted" ? block.weight_floor : undefined }); }}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "workshop" && <option value="value">Best value per coin</option>}{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
+            weight_floor: selection === "weighted" ? block.weight_floor : undefined,
+            ...(selection === "value" ? { weights: Object.fromEntries(block.upgrade_ids.map(id => [id, block.weights?.[id] ?? 1])) } : {}) }); }}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "workshop" && <option value="value">Best value per coin</option>}{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
           {lane === "battle" && block.selection === "cheapest" && <label>Prices<select value={block.price_source ?? "observed"} onChange={event => onChange({ ...block, price_source: event.target.value as "observed" | "model",
             batch_size: event.target.value === "model" ? block.batch_size : undefined,
             max_price_premium_pct: event.target.value === "model" ? block.max_price_premium_pct : undefined })}>
@@ -142,7 +143,7 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
           </>}
           <div className={styles.orderedPool}>{block.upgrade_ids.map((id, index) => <div key={id}>
             <span>{index + 1}. {names.get(id) ?? id}</span><button type="button" disabled={index === 0} aria-label={`Prioritize ${names.get(id) ?? id}`} onClick={() => { const ids = [...block.upgrade_ids]; [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]]; onChange({ ...block, upgrade_ids: ids }); }}>↑</button>
-            {(block.selection === "weighted" || block.selection === "value") && <input aria-label={`Weight for ${names.get(id) ?? id}`} type="number" min={1} max={10000} step={1} value={block.weights?.[id] ?? 1} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, weights: { ...block.weights, [id]: value } }); }} />}
+            {(block.selection === "weighted" || block.selection === "value") && <input aria-label={`Weight for ${names.get(id) ?? id}`} type="number" min={1} max={100000} step={1} value={block.weights?.[id] ?? 1} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, weights: { ...block.weights, [id]: value } }); }} />}
             {block.targets?.[id] === undefined
               ? <button type="button" aria-label={`Add target for ${names.get(id) ?? id}`} onClick={() => onChange({ ...block, targets: { ...block.targets, [id]: 1 } })}>Target</button>
               : <input aria-label={`Target for ${names.get(id) ?? id}`} type="number" step="any" min={0} value={block.targets[id]} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, targets: { ...block.targets, [id]: value } }); }} />}
@@ -186,7 +187,8 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
         {block.type === "unlock" && <>
           <div className={styles.fieldHeading}>Skills to unlock <span>{block.upgrade_ids.length} chosen</span></div>
           <div className={styles.poolChoices}>{catalog.filter(item => !item.unlock).map(item => <button type="button" key={item.id}
-            aria-pressed={block.upgrade_ids.includes(item.id)} onClick={() => onChange({ ...block, upgrade_ids: block.upgrade_ids.includes(item.id)
+            aria-pressed={block.upgrade_ids.includes(item.id)} disabled={!block.upgrade_ids.includes(item.id) && block.upgrade_ids.length >= 30}
+            onClick={() => onChange({ ...block, upgrade_ids: block.upgrade_ids.includes(item.id)
               ? block.upgrade_ids.filter(id => id !== item.id) : [...block.upgrade_ids, item.id] })}>{item.name}</button>)}</div>
           {!block.upgrade_ids.length && <p role="alert">Choose at least one skill.</p>}
           <div className={styles.fieldHeading}>Price limit<button type="button" onClick={() => onChange({ ...block, max_price: block.max_price === undefined ? 20000 : undefined })}>{block.max_price === undefined ? "Add limit" : "Remove"}</button></div>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { BuildRouteDocument } from "@/lib/buildRoute";
 import type { StrategyLibrary } from "@/lib/strategyStudio";
@@ -565,6 +565,19 @@ test("value pool shows weights and coin share; battle has no value option", () =
   expect(screen.getByLabelText("Weight for Thorn Damage")).toHaveValue(3);
   expect(screen.getByText(/75% of coins/)).toBeInTheDocument();
   expect(screen.queryByLabelText("Reduce weight after each buy (%)")).not.toBeInTheDocument();
+  cleanup();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "priority" }} lane="battle"
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByLabelText("Selection")).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: "Best value per coin" })).toBeNull();
+});
+
+test("switching a priority pool without weights to value seeds a weight per upgrade", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns", "damage"], selection: "priority" }}
+    lane="workshop" catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Selection"), { target: { value: "value" } });
+  expect(onChange.mock.calls[0][0].weights).toEqual({ thorns: 1, damage: 1 });
 });
 
 test("unlock block edits its skills, price limit and hold", () => {
