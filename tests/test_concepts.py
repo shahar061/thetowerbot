@@ -16,8 +16,8 @@ def registry_module():
 def test_registry_preserves_legacy_execution_and_covers_source_snapshots() -> None:
     concepts = registry_module()
     registry = concepts.REGISTRY
-    assert len(upgrades.CATALOG) == 60
-    assert sum(bool(c.execution_scopes) for c in registry.concepts) == 60
+    assert len(upgrades.CATALOG) == 62
+    assert sum(bool(c.execution_scopes) for c in registry.concepts) == 62
     imported = [c for c in registry.concepts if "wiki-inventory" in c.source_refs]
     assert len(imported) == 516
     assert all(not c.execution_scopes and c.legacy_id is None for c in imported)

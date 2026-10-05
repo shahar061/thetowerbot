@@ -35,7 +35,7 @@ def test_catalog_contains_every_standard_upgrade_and_known_unlock_tile() -> None
     }
     assert len(by_category["ATTACK"]) == 21
     assert len(by_category["DEFENSE"]) == 23
-    assert len(by_category["UTILITY"]) == 16
+    assert len(by_category["UTILITY"]) == 18
     assert by_id("rend_armor_mult") is not None
     assert by_id("wall_rebuild") is not None
     assert by_id("enemy_health_level_skip") is not None
@@ -45,12 +45,14 @@ def test_catalog_contains_every_standard_upgrade_and_known_unlock_tile() -> None
         "unlock_coin_bonuses",
         "unlock_defense_upgrades",
         "unlock_free_upgrades",
+        "unlock_interest",
         "unlock_knockback",
         "unlock_lifesteal",
         "unlock_multishot",
         "unlock_orbs",
         "unlock_range_upgrades",
         "unlock_rapid_fire",
+        "unlock_recovery_packages",
         "unlock_thorns",
     }
 
@@ -73,6 +75,7 @@ def test_catalog_contains_every_standard_upgrade_and_known_unlock_tile() -> None
         ("Unlock Multi Shot", None, "unlock_multishot"),
         ("Unlock Rapidfire", None, "unlock_rapid_fire"),
         ("Unlock Bounce Shot Upgrades", "ATTACK", "unlock_bounce_shot"),
+        ("Unlock Interest", "UTILITY", "unlock_interest"),
     ],
 )
 def test_resolve_accepts_game_labels_guide_names_and_ocr_variants(
@@ -114,6 +117,8 @@ def test_sequential_cash_and_coin_unlocks_have_distinct_identities() -> None:
             "unlock_free_upgrades",
             ("free_attack_upgrade", "free_defense_upgrade", "free_utility_upgrade"),
         ),
+        ("unlock_interest", ("interest_per_wave",)),
+        ("unlock_recovery_packages", ("recovery_amount", "max_recovery", "package_chance")),
     ],
 )
 def test_unlock_tiles_name_the_canonical_stats_they_reveal(

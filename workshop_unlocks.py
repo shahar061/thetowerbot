@@ -63,9 +63,9 @@ GROUPS = (
                 ("free_attack_upgrade", "free_defense_upgrade", "free_utility_upgrade"),
                 "unlock_free_upgrades", 800),
     UnlockGroup("unlock_interest", "UTILITY", "Unlock Interest",
-                ("interest_per_wave",), None, 5000),
+                ("interest_per_wave",), "unlock_interest", 5000),
     UnlockGroup("unlock_recovery_packages", "UTILITY", "Unlock Recovery Packages",
-                ("recovery_amount", "max_recovery", "package_chance"), None, 1_500_000),
+                ("recovery_amount", "max_recovery", "package_chance"), "unlock_recovery_packages", 1_500_000),
     UnlockGroup("unlock_enemy_level_skips", "UTILITY", "Unlock Enemy Level Skips",
                 ("enemy_attack_level_skip", "enemy_health_level_skip"), None, 1_000_000_000),
 )
