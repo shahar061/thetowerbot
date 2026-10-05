@@ -527,6 +527,7 @@ class _Choice:
     transition_reason: str | None = None
     save_price: int | None = None
     price_source: str = "observed"
+    burst_price_ceiling: int | None = None
 
 
 def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
@@ -1064,20 +1065,41 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     continue
                 chosen = next(iter(candidates))
                 selected = None
+                burst_ceiling: int | None = None
                 if block.get('selection', 'priority') == 'cheapest':
-                    chosen = min(candidates, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
+                    def cheapest(ids: Any) -> str:
+                        return min(ids, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
+                    chosen = cheapest(candidates)
                     if (not config.BATTLE_BURST_ENABLED and source == 'model'
                             and (quote := model_quote(chosen)) and not quote.get('verified')):
                         return _Choice(identity, chosen, 'Reconcile the cheapest candidate after a wave change',
                                        observation_ids=(chosen,), price_source='model')
-                    if (source == 'model' and facts.battle_batch_rule_id == identity
-                            and 0 < facts.battle_batch_purchases < block.get('batch_size', 1)):
-                        local_ceiling = price_for(chosen, source=source) * (100 + block.get('max_price_premium_pct', 0))
-                        local = [uid for uid in candidates if uid in facts.visible_upgrade_ids
-                                 and (local_quote := model_quote(uid)) and local_quote.get('verified')
-                                 and price_for(uid, source=source) * 100 <= local_ceiling]
-                        if local:
-                            chosen = min(local, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
+                    bursting = config.BATTLE_BURST_ENABLED and source == 'model' and lane == 'battle'
+                    if bursting and wallet >= config.BATTLE_RICH_MULTIPLE * price_for(chosen, source=source):
+                        # Rich: work through the open tab, visible rows first.
+                        # This only narrows the block's own candidates; it
+                        # never adds an upgrade from outside the pool.
+                        on_tab = [uid for uid in candidates if facts.battle_tab is not None
+                                  and upgrades.by_id(uid).category == facts.battle_tab]
+                        in_view = [uid for uid in on_tab if uid in facts.visible_upgrade_ids]
+                        chosen = cheapest(in_view or on_tab or list(candidates))
+                        # Limited by cash alone: the autopilot's budget caps the
+                        # burst at cash - reserve. The top of the curve, not the
+                        # live cash, keeps the policy stable across frames.
+                        from fleet.battle_prices import catalog
+                        burst_ceiling = max(catalog()['curves'][chosen])
+                    else:
+                        if (source == 'model' and facts.battle_batch_rule_id == identity
+                                and 0 < facts.battle_batch_purchases < block.get('batch_size', 1)):
+                            local_ceiling = price_for(chosen, source=source) * (100 + block.get('max_price_premium_pct', 0))
+                            local = [uid for uid in candidates if uid in facts.visible_upgrade_ids
+                                     and (local_quote := model_quote(uid)) and local_quote.get('verified')
+                                     and price_for(uid, source=source) * 100 <= local_ceiling]
+                            if local:
+                                chosen = cheapest(local)
+                        if bursting:
+                            burst_ceiling = (price_for(chosen, source=source)
+                                             * (100 + block.get('max_price_premium_pct', 0)) // 100)
                 elif block.get('selection', 'priority') == 'weighted':
                     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
                     matches = (pending is not None and pending.account_id == facts.account_id
@@ -1101,7 +1123,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 return _Choice(identity, chosen, 'Eligible pool after price, cap and affordability filters',
                                weights=candidates if selected else None, pending=selected,
                                target=block.get('targets', {}).get(chosen),
-                               price_source='model' if source == 'model' and model_quote(chosen) else 'observed')
+                               price_source='model' if source == 'model' and model_quote(chosen) else 'observed',
+                               burst_price_ceiling=burst_ceiling)
         return None
 
     choice = evaluate(program) or saving or waiting_native
@@ -1155,7 +1178,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     else:
         decision = BattleDecision(facts.account_id, 'battle', 'buy', upgrade.id, upgrade.name,
             upgrade.category, price_for(upgrade.id, source=choice.price_source), wallet, choice.reason,
-            target=choice.target, price_source=choice.price_source)
+            target=choice.target, price_source=choice.price_source,
+            burst_price_ceiling=choice.burst_price_ceiling)
     status = 'observed' if lane == 'battle' or facts.screen == 'workshop' else 'projected'
     return RouteEvaluation(facts.account_id, route.revision, status, decision, trace,
                            facts.observed_at, choice.pending)

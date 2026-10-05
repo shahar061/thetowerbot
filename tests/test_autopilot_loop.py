@@ -567,3 +567,16 @@ def test_a_burst_invalidation_reaches_the_price_model(
                         lambda *args, **kwargs: bool(kwargs['invalidate_quote']('attack_speed')))
     bot.run_once()
     assert ('invalidate', 'attack_speed') in progress.calls
+
+
+@pytest.mark.parametrize('frame, tab', [('in_run_lit', 'ATTACK'), ('in_run_defense', 'DEFENSE')])
+def test_the_battle_policy_learns_which_tab_is_open(
+    bot_in_run_on: Callable[[str], TowerBot], monkeypatch: pytest.MonkeyPatch, frame: str, tab: str,
+) -> None:
+    bot = bot_in_run_on(frame)
+    bot.controls.apply({'autopilot': {'enabled': True}})
+    progress = _BattleProgress()
+    bot.reroll_progress = progress
+    monkeypatch.setattr(bot.autopilot, 'step', lambda *args, **kwargs: False)
+    bot.run_once()
+    assert ('policy', tab) in progress.calls

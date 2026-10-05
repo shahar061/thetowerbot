@@ -2869,7 +2869,8 @@ class TowerBot:
                                 observation, identity, self.runs.current_id),
                             batch_route_token=self.autopilot.batch_route_token,
                             batch_rule_id=self.autopilot.batch_rule_id,
-                            after_receipt_sequence=after_sequence)
+                            after_receipt_sequence=after_sequence,
+                            battle_tab=observation.category)
 
                     def record_battle_receipt(sequence: int | None, upgrade_id: str, levels: int) -> None:
                         if self.reroll_progress is None:

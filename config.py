@@ -38,6 +38,9 @@ BATTLE_BURST_ENABLED: bool = True
 BATTLE_BURST_TAP_GAP_SECONDS: float = 0.0
 # Most levels one burst may buy.
 BATTLE_BURST_MAX: int = 10
+# Rich mode: battle cash at least this many times the cheapest pool candidate.
+# The bot then stays on the open tab and bursts limited by cash alone.
+BATTLE_RICH_MULTIPLE: int = 10
 
 # --- Jitter ---------------------------------------------------------------
 # Every tap is an `input tap` over ADB: no travel path, no dwell, and a

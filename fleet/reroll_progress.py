@@ -711,7 +711,8 @@ class RerollProgress:
                       combat: Mapping[str, float] | None = None, pending_purchase: bool = False,
                       visible_upgrade_ids: tuple[str, ...] = (), battle_batch_purchases: int = 0,
                       batch_route_token: str | None = None, batch_rule_id: str | None = None,
-                      after_receipt_sequence: int | None = None) -> AutopilotPolicy:
+                      after_receipt_sequence: int | None = None,
+                      battle_tab: str | None = None) -> AutopilotPolicy:
         route = None
         if self.route_runtime is not None:
             try:
@@ -767,6 +768,7 @@ class RerollProgress:
                     counts=counts, rows=rows, now=moment, pending=pending_purchase),
                 visible_upgrade_ids=visible_upgrade_ids, battle_batch_purchases=battle_batch_purchases,
                 battle_batch_rule_id=batch_rule_id,
+                battle_tab=battle_tab,
                 visit_id=(f"battle:{run_id}" if effective.battle.mode == "blocks" else
                           f"battle:{run_id}:{wave}") if run_id is not None and wave is not None else None,
                 run_purchases=counts, decision_sequence=sum((counts or {}).values()),
@@ -794,6 +796,8 @@ class RerollProgress:
                     decision_token=f"{self.account_id}:{route.revision}:{run_id}:{facts.decision_sequence}",
                     max_purchase_price=evaluation.decision.price if not observe_only else None,
                     modeled_pool=uses_modeled_prices(effective.battle.blocks),
+                    burst_price_ceiling=(evaluation.decision.burst_price_ceiling
+                        if not observe_only and evaluation.decision.price_source == "model" else None),
                     battle_price_quote=(dict(facts.battle_price_quotes[evaluation.decision.upgrade_id],
                         upgrade_id=evaluation.decision.upgrade_id, sequence=facts.decision_sequence,
                         rule_id=evaluation.trace.matched_rule_id,
