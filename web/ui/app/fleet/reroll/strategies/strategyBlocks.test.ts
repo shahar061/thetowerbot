@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { StrategyBlock } from "@/lib/strategyStudio";
-import { BLOCK_PRESETS, GUIDE_BLOCKS, blockTitle, childGroups, findBlock, guideAnchor, insertBlock, locateBlock, makeBlock, relativeWaveLimit, updateBlock } from "./strategyBlocks";
+import { BLOCK_PRESETS, GUIDE_BLOCKS, blockTitle, childGroups, findBlock, guideAnchor, insertBlock, locateBlock, makeBlock, presetsForLane, relativeWaveLimit, updateBlock } from "./strategyBlocks";
 
 const tree: StrategyBlock[] = [{ id: "econ", type: "budget", metric: "utility_spent", target: 350, ceiling: 400, blocks: [
   { id: "goal", type: "save_for", goal: [{ id: "pool", type: "pool", upgrade_ids: ["cash_per_wave"], selection: "priority" }] }] },
@@ -53,4 +53,17 @@ test("relative wave conditions title and limit", () => {
     relative: { pct: 50, floor: 5, cap: 30 }, then: [], else: [] };
   expect(blockTitle(block, new Map())).toBe("If current wave ≤ 50% of best (5–30)");
   expect([null, 8, 24, 90].map(best => relativeWaveLimit({ pct: 50, floor: 5, cap: 30 }, best))).toEqual([5, 5, 12, 30]);
+});
+
+test("unlock and value presets are Workshop-only and build valid blocks", () => {
+  expect(makeBlock("unlock", "workshop")).toMatchObject({ type: "unlock", upgrade_ids: ["knockback_chance", "orbs"], max_price: 20000, hold: true });
+  expect(makeBlock("value", "workshop")).toMatchObject({ type: "pool", selection: "value",
+    weights: { defense_percent: 12, health: 9, attack_speed: 10 } });
+  expect(makeBlock("value", "workshop")).not.toHaveProperty("decay_pct");
+  expect(presetsForLane("battle").map(item => item.id)).not.toEqual(expect.arrayContaining(["unlock"]));
+  expect(presetsForLane("battle").map(item => item.id)).not.toEqual(expect.arrayContaining(["value"]));
+  const names = new Map([["orbs", "Orbs"]]);
+  expect(blockTitle(makeBlock("unlock", "workshop"), names)).toBe("Unlock missing skills");
+  expect(blockTitle(makeBlock("value", "workshop"), names)).toBe("Buy best value per coin");
+  expect(GUIDE_BLOCKS.map(item => item.type)).toContain("unlock");
 });

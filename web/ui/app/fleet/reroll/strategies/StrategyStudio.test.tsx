@@ -545,3 +545,35 @@ test("Battle batch controls clear incompatible settings when changing price sour
   expect(onChange.mock.lastCall[0].batch_size).toBeUndefined();
   expect(onChange.mock.lastCall[0].max_price_premium_pct).toBeUndefined();
 });
+
+test("switching a weighted pool to value drops decay settings", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "weighted",
+    decay_pct: 10, weight_floor: 1, weights: { thorns: 2 } }} lane="workshop" catalog={catalog} locked={false}
+    onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Selection"), { target: { value: "value" } });
+  const next = onChange.mock.calls[0][0];
+  expect(next.selection).toBe("value");
+  expect(next.decay_pct).toBeUndefined();
+  expect(next.weight_floor).toBeUndefined();
+});
+
+test("value pool shows weights and coin share; battle has no value option", () => {
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns", "damage"], selection: "value",
+    weights: { thorns: 3, damage: 1 } }} lane="workshop" catalog={catalog} locked={false}
+    onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByLabelText("Weight for Thorn Damage")).toHaveValue(3);
+  expect(screen.getByText(/75% of coins/)).toBeInTheDocument();
+  expect(screen.queryByLabelText("Reduce weight after each buy (%)")).not.toBeInTheDocument();
+});
+
+test("unlock block edits its skills, price limit and hold", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "u", type: "unlock", upgrade_ids: ["thorns"], max_price: 20000, hold: true }}
+    lane="workshop" catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Damage" }));
+  expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ upgrade_ids: ["thorns", "damage"] }));
+  fireEvent.click(screen.getByLabelText("Hold coins until the unlock is affordable"));
+  expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ hold: false }));
+  expect(screen.getByLabelText("Highest unlock price (coins)")).toHaveValue(20000);
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ChevronDown, ChevronUp, GitBranch, GripVertical, Pause, PiggyBank, Plus, ShoppingBag, Sparkles, Wallet } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronUp, GitBranch, GripVertical, Pause, PiggyBank, Plus, ShoppingBag, Sparkles, Unlock, Wallet } from "lucide-react";
 import type { StrategyBlock } from "@/lib/strategyStudio";
 import { blockDetail, blockTitle, childGroups, type BlockTarget } from "./strategyBlocks";
 import styles from "./studio.module.css";
@@ -32,8 +32,8 @@ export function StrategyCanvas({ blocks, names, selected, locked, target, onSele
     {blocks.map((block, index) => {
       const title = blockTitle(block, names);
       const Icon = block.type === "budget" ? Wallet : block.type === "save_for" || block.type === "while_saving" ? PiggyBank :
-        block.type === "condition" ? GitBranch : block.type === "wait" ? Pause : block.type === "pool" ? Sparkles : ShoppingBag;
-      const kind = block.type === "condition" || block.type === "pool" ? "logic"
+        block.type === "condition" ? GitBranch : block.type === "wait" ? Pause : block.type === "unlock" ? Unlock : block.type === "pool" ? Sparkles : ShoppingBag;
+      const kind = block.type === "condition" || block.type === "pool" || block.type === "unlock" ? "logic"
         : block.type === "fallback" || block.type === "wait" || block.type === "budget" || block.type === "save_for" || block.type === "while_saving" ? "flow" : "buy";
       const nextBlock = blocks[index + 1];
       return <div key={block.id}>

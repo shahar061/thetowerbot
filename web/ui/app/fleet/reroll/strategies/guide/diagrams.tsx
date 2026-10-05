@@ -4,6 +4,7 @@ import styles from "./guide.module.css";
 export type Outcome = "buy" | "save" | "pass" | "wait";
 const OUTCOMES: Record<GuideBlockType, Outcome[]> = {
   buy: ["buy", "pass"], pool: ["buy", "pass", "wait"], condition: ["pass", "wait"], fallback: ["buy", "wait", "pass"],
+  unlock: ["buy", "save", "pass"],
   budget: ["buy", "pass", "wait"], save_for: ["buy", "save", "pass"], while_saving: ["buy", "pass"], wait: ["wait"], native: ["buy", "save", "wait"],
 };
 const OUTCOME_TEXT: Record<Outcome, string> = { buy: "Buy → refresh", save: "Save → keep looking", pass: "Pass → next block", wait: "Wait → stop" };

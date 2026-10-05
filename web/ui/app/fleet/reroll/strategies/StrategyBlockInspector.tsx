@@ -26,6 +26,19 @@ function WeightPreview({ block, names }: { block: Pool; names: Map<string, strin
   </div>;
 }
 
+function ValueShare({ block, names }: { block: Pool; names: Map<string, string> }): React.JSX.Element {
+  const total = block.upgrade_ids.reduce((sum, id) => sum + (block.weights?.[id] ?? 1), 0);
+  return <div className={styles.weightPreview}>
+    <p className={styles.eyebrow}>Weight → share of coins at balance</p>
+    {block.upgrade_ids.map(id => { const share = total ? Math.round((block.weights?.[id] ?? 1) / total * 100) : 0;
+      return <div key={id} className={styles.weightRow}>
+        <div><span>{names.get(id) ?? id}</span><b>{share}% of coins</b></div>
+        <div className={styles.weightTrack}><span style={{ width: `${share}%` }} /></div>
+      </div>; })}
+    <p className={styles.hint}>Buys the eligible upgrade with the lowest price ÷ weight, so rising prices spread coins in these shares.</p>
+  </div>;
+}
+
 /** Number field value, or null when the field was cleared (keep the stored value). */
 function numberOrNull(event: React.ChangeEvent<HTMLInputElement>): number | null {
   return event.target.value === "" ? null : Number(event.target.value);
@@ -112,9 +125,12 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
                 .map(id => [id, block.level_caps?.[id] ?? { base: 20 }])) });
           }}>{item.name}</button>)}</div>
           {!block.upgrade_ids.length && <p role="alert">Choose at least one upgrade.</p>}
-          <label>Selection<select value={block.selection} onChange={event => onChange({ ...block, selection: event.target.value as Pool["selection"], price_source: event.target.value === "cheapest" ? block.price_source : undefined,
-            batch_size: event.target.value === "cheapest" ? block.batch_size : undefined,
-            max_price_premium_pct: event.target.value === "cheapest" ? block.max_price_premium_pct : undefined })}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
+          <label>Selection<select value={block.selection} onChange={event => { const selection = event.target.value as Pool["selection"]; onChange({ ...block, selection,
+            price_source: selection === "cheapest" ? block.price_source : undefined,
+            batch_size: selection === "cheapest" ? block.batch_size : undefined,
+            max_price_premium_pct: selection === "cheapest" ? block.max_price_premium_pct : undefined,
+            decay_pct: selection === "weighted" ? block.decay_pct : undefined,
+            weight_floor: selection === "weighted" ? block.weight_floor : undefined }); }}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "workshop" && <option value="value">Best value per coin</option>}{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
           {lane === "battle" && block.selection === "cheapest" && <label>Prices<select value={block.price_source ?? "observed"} onChange={event => onChange({ ...block, price_source: event.target.value as "observed" | "model",
             batch_size: event.target.value === "model" ? block.batch_size : undefined,
             max_price_premium_pct: event.target.value === "model" ? block.max_price_premium_pct : undefined })}>
@@ -126,7 +142,7 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
           </>}
           <div className={styles.orderedPool}>{block.upgrade_ids.map((id, index) => <div key={id}>
             <span>{index + 1}. {names.get(id) ?? id}</span><button type="button" disabled={index === 0} aria-label={`Prioritize ${names.get(id) ?? id}`} onClick={() => { const ids = [...block.upgrade_ids]; [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]]; onChange({ ...block, upgrade_ids: ids }); }}>↑</button>
-            {block.selection === "weighted" && <input aria-label={`Weight for ${names.get(id) ?? id}`} type="number" min={1} max={10000} step={1} value={block.weights?.[id] ?? 1} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, weights: { ...block.weights, [id]: value } }); }} />}
+            {(block.selection === "weighted" || block.selection === "value") && <input aria-label={`Weight for ${names.get(id) ?? id}`} type="number" min={1} max={10000} step={1} value={block.weights?.[id] ?? 1} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, weights: { ...block.weights, [id]: value } }); }} />}
             {block.targets?.[id] === undefined
               ? <button type="button" aria-label={`Add target for ${names.get(id) ?? id}`} onClick={() => onChange({ ...block, targets: { ...block.targets, [id]: 1 } })}>Target</button>
               : <input aria-label={`Target for ${names.get(id) ?? id}`} type="number" step="any" min={0} value={block.targets[id]} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, targets: { ...block.targets, [id]: value } }); }} />}
@@ -167,6 +183,18 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
           <label>Hard ceiling (coins)<input type="number" min={block.target} step={1} value={block.ceiling} onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, ceiling: value }); }} /></label>
           <p className={styles.hint}>Counts verified coins spent on utility upgrades.</p>
         </>}
+        {block.type === "unlock" && <>
+          <div className={styles.fieldHeading}>Skills to unlock <span>{block.upgrade_ids.length} chosen</span></div>
+          <div className={styles.poolChoices}>{catalog.filter(item => !item.unlock).map(item => <button type="button" key={item.id}
+            aria-pressed={block.upgrade_ids.includes(item.id)} onClick={() => onChange({ ...block, upgrade_ids: block.upgrade_ids.includes(item.id)
+              ? block.upgrade_ids.filter(id => id !== item.id) : [...block.upgrade_ids, item.id] })}>{item.name}</button>)}</div>
+          {!block.upgrade_ids.length && <p role="alert">Choose at least one skill.</p>}
+          <div className={styles.fieldHeading}>Price limit<button type="button" onClick={() => onChange({ ...block, max_price: block.max_price === undefined ? 20000 : undefined })}>{block.max_price === undefined ? "Add limit" : "Remove"}</button></div>
+          {block.max_price !== undefined && <label>Highest unlock price (coins)<input type="number" min={1} step={1} value={block.max_price}
+            onChange={event => { const value = numberOrNull(event); if (value !== null) onChange({ ...block, max_price: value }); }} /></label>}
+          <label><input type="checkbox" checked={block.hold !== false} onChange={event => onChange({ ...block, hold: event.target.checked })} />Hold coins until the unlock is affordable</label>
+          <p className={styles.hint}>Unlocks are bought in each tab’s order. Tiles the bot cannot buy yet are reported in the decision trace.</p>
+        </>}
         {block.type === "while_saving" && <label>Only while saving for<select value={block.upgrade_id ?? ""} onChange={event => {
           if (!event.target.value) { const { upgrade_id: _drop, ...rest } = block; onChange(rest as StrategyBlock); return; }
           onChange({ ...block, upgrade_id: event.target.value });
@@ -177,6 +205,7 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
         {block.type === "save_for" && <p className={styles.hint}>Select the goal pool inside this block to edit its upgrades.</p>}
       </fieldset>
       {block.type === "pool" && block.selection === "weighted" && <WeightPreview key={block.id} block={block} names={names} />}
+      {block.type === "pool" && block.selection === "value" && <ValueShare block={block} names={names} />}
       {locked ? <button type="button" className={styles.primaryButton} onClick={onCopy}>Create copy to edit</button>
         : <button type="button" className={styles.removeButton} onClick={onRemove}><Trash2 size={14} />Remove block</button>}
     </>}
