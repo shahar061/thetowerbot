@@ -1321,3 +1321,61 @@ def test_visible_batch_cannot_skip_a_stale_cheaper_quote() -> None:
     result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
     assert result.trace.observation_ids == ('attack_speed',)
     assert result.status == 'projected'
+
+
+def value_pool(**extra: Any) -> dict[str, Any]:
+    return pool(selection='value', **{'weights': {'damage': 1, 'attack_speed': 4}, **extra})
+
+
+def test_value_pool_buys_lowest_price_per_weight() -> None:
+    result = blocks.evaluate_program(route([value_pool()]), facts(), None, 'workshop')
+    assert result.decision.upgrade_id == 'attack_speed'  # 81 / 4 beats 80 / 1
+    assert any('value ranking' in item for item in result.trace.rejected)
+    assert not result.trace.eligible_odds
+
+
+def test_value_pool_ties_follow_list_order() -> None:
+    sample = replace(facts(), prices={'damage': 80, 'attack_speed': 80})
+    program = [value_pool(weights={'damage': 2, 'attack_speed': 2})]
+    assert blocks.evaluate_program(route(program), sample, None, 'workshop').decision.upgrade_id == 'damage'
+
+
+def test_value_pool_skips_unaffordable_and_reached_targets() -> None:
+    sample = replace(facts(), prices={'damage': 80, 'attack_speed': 400}, values={'damage': 50.0})
+    result = blocks.evaluate_program(route([value_pool(targets={'damage': 50})]), sample, None, 'workshop')
+    assert result.decision is None
+
+
+def test_value_pool_reads_unpriced_items_before_buying() -> None:
+    program = [pool(upgrade_ids=['damage', 'health'], selection='value', weights={'damage': 1, 'health': 1})]
+    result = blocks.evaluate_program(route(program), facts(), None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('observe_price', 'health')
+
+
+def test_value_pool_kill_bonus_stand_in_inherits_weight() -> None:
+    held = route([pool(upgrade_ids=['coins_per_kill_bonus', 'damage'], selection='value',
+                       weights={'coins_per_kill_bonus': 18, 'damage': 1})])
+    held.rules = RouteRules(coins=CoinRules(kill_bonus_min_best_wave=500))
+    sample = replace(facts(), prices={'damage': 80, 'coins_per_wave': 90},
+                     purchases={'unlock_cash_bonuses': 1, 'unlock_coin_bonuses': 1})
+    result = blocks.evaluate_program(held, sample, None, 'workshop')
+    assert result.decision.upgrade_id == 'coins_per_wave'  # 90 / 18 beats 80 / 1
+
+
+@pytest.mark.parametrize(('extra', 'message'), [
+    ({'weights': {'damage': 1}}, 'weight for every upgrade'),
+    ({'weights': {'damage': 1, 'attack_speed': 1}, 'decay_pct': 10}, 'decay or weight floor'),
+    ({'weights': {'damage': 1, 'attack_speed': 1}, 'weight_floor': 1}, 'decay or weight floor'),
+])
+def test_value_pool_validation(extra: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        blocks.validate_program([pool(selection='value', **extra)], 'workshop')
+
+
+def test_value_selection_is_workshop_only_and_not_a_saving_goal() -> None:
+    good = pool(selection='value', weights={'damage': 1, 'attack_speed': 1})
+    blocks.validate_program([good], 'workshop')
+    with pytest.raises(ValueError, match='only available in the Workshop'):
+        blocks.validate_program([good], 'battle')
+    with pytest.raises(ValueError, match='value pool'):
+        blocks.validate_program([{'id': 'save', 'type': 'save_for', 'goal': [good]}], 'workshop')

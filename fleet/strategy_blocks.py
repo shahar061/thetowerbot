@@ -86,8 +86,10 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 if len(set(ids)) != len(ids):
                     raise ValueError('duplicate pool upgrade')
                 block['upgrade_ids'] = ids
-                if block.get('selection', 'priority') not in {'priority', 'weighted', 'cheapest'}:
+                if block.get('selection', 'priority') not in {'priority', 'weighted', 'cheapest', 'value'}:
                     raise ValueError('unknown pool selection')
+                if block.get('selection') == 'value' and lane != 'workshop':
+                    raise ValueError('value selection is only available in the Workshop')
                 if lane == 'workshop' and block.get('selection') == 'cheapest':
                     raise ValueError('cheapest selection requires Battle price evidence')
                 if block.get('price_source', 'observed') not in {'observed', 'model'}:
@@ -118,6 +120,11 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     raise ValueError('pool weights must name pool upgrades')
                 for weight in weights.values():
                     number(weight, 'weight', 1, 100000)
+                if block.get('selection') == 'value':
+                    if set(weights) != set(ids):
+                        raise ValueError('value selection needs a weight for every upgrade')
+                    if 'decay_pct' in block or 'weight_floor' in block:
+                        raise ValueError('value selection does not use decay or weight floor')
                 reference = block.get('reference_upgrade_id', 'priority')
                 if reference != 'priority':
                     uid(reference)
@@ -216,6 +223,8 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     raise ValueError('save for goal needs exactly one buy or pool block')
                 if any(key in block['goal'][0] for key in ('discount_pct', 'cheaper_than_upgrade_ids')):
                     raise ValueError('a saving goal cannot be a price-comparison pool')
+                if block['goal'][0].get('selection') == 'value':
+                    raise ValueError('a saving goal cannot be a value pool')
             elif kind == 'while_saving':
                 allowed |= {'upgrade_id', 'blocks'}
                 if 'upgrade_id' in block and (not isinstance(block['upgrade_id'], str)
@@ -1031,6 +1040,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             identity, [uid for uid in ordered
                                        if uid in unpriced[before_unpriced:] and price_for(uid) is None]):
                         return observation
+                if lane == 'workshop' and block.get('selection') == 'value':
+                    # The cheapest value may be an item whose price is unread.
+                    if observation := observe_prices(
+                            identity, [uid for uid in unpriced[before_unpriced:]
+                                       if uid in block['upgrade_ids'] and price_for(uid) is None]):
+                        return observation
                 if lane == 'battle':
                     # A priority pick only needs the stale rows ranked above it;
                     # A cheapest pick can act on verified affordable rows now;
@@ -1076,6 +1091,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                  and price_for(uid, source=source) * 100 <= local_ceiling]
                         if local:
                             chosen = min(local, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
+                elif block.get('selection') == 'value':
+                    ranking = sorted(candidates, key=lambda uid: (
+                        price_for(uid) / candidates[uid], block['upgrade_ids'].index(uid)))
+                    chosen = ranking[0]
+                    rejected.append(f'{identity}: value ranking ' + ', '.join(
+                        f'{uid} {price_for(uid) / candidates[uid]:.1f}' for uid in ranking))
                 elif block.get('selection', 'priority') == 'weighted':
                     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
                     matches = (pending is not None and pending.account_id == facts.account_id
