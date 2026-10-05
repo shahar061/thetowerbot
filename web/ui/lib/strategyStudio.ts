@@ -11,7 +11,8 @@ export type StrategyBlock =
   | (BlockBase & { type: "pool"; upgrade_ids: string[]; selection: "priority" | "weighted" | "cheapest"; weights?: Record<string, number>;
       discount_pct?: number; reference_upgrade_id?: string; max_purchases?: number; count_scope?: "account" | "run";
       decay_pct?: number; weight_floor?: number; targets?: Record<string, number>; level_caps?: Record<string, LevelCap>;
-      price_cap?: number; wallet_share_pct?: number; hold_until_capped?: boolean; price_source?: "observed" | "model" })
+      price_cap?: number; wallet_share_pct?: number; hold_until_capped?: boolean; price_source?: "observed" | "model";
+      batch_size?: number; max_price_premium_pct?: number })
   | (BlockBase & { type: "condition"; field: "best_tier_1_wave" | "wave" | "wallet" | "upgrade_value" | "def_abs_coverage";
       op: "gte" | "lte" | "gt" | "lt"; value?: number; relative?: WaveRelative; upgrade_id?: string; then: StrategyBlock[]; else: StrategyBlock[] })
   | (BlockBase & { type: "fallback"; blocks: StrategyBlock[] })

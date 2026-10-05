@@ -28,11 +28,13 @@ def configure_battle(baseline: Mapping[str, Any]) -> dict[str, Any]:
         {"id": "blender.battle.wave20", "type": "condition", "field": "wave", "op": "lt", "value": 20,
          "then": [
              {"id": "blender.battle.economy", "type": "pool", "label": "Economy before wave 20",
-              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(ECONOMY_IDS)},
+              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(ECONOMY_IDS),
+              "batch_size": 5, "max_price_premium_pct": 25},
          ],
          "else": [
              {"id": "blender.battle.combat", "type": "pool", "label": "Blender combat from wave 20",
-              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(COMBAT_IDS)},
+              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(COMBAT_IDS),
+              "batch_size": 5, "max_price_premium_pct": 25},
          ]},
     ])
     RouteBaseline.from_dict(updated)

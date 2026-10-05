@@ -530,3 +530,18 @@ test("Battle cheapest pool exposes modeled cash prices without adding purchase c
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ price_source: "model" }));
   expect(onChange.mock.calls[0][0].level_caps).toBeUndefined();
 });
+
+test("Battle batch controls clear incompatible settings when changing price source or selection", () => {
+  const onChange = vi.fn();
+  render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns"], selection: "cheapest",
+    price_source: "model", batch_size: 5, max_price_premium_pct: 25 }} lane="battle"
+    catalog={catalog} locked={false} onChange={onChange} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByLabelText("Purchases per batch")).toHaveValue(5);
+  expect(screen.getByLabelText("Visible price premium (%)")).toHaveValue(25);
+  fireEvent.change(screen.getByLabelText("Prices"), { target: { value: "observed" } });
+  expect(onChange.mock.lastCall[0].batch_size).toBeUndefined();
+  expect(onChange.mock.lastCall[0].max_price_premium_pct).toBeUndefined();
+  fireEvent.change(screen.getByLabelText("Selection"), { target: { value: "priority" } });
+  expect(onChange.mock.lastCall[0].batch_size).toBeUndefined();
+  expect(onChange.mock.lastCall[0].max_price_premium_pct).toBeUndefined();
+});

@@ -26,6 +26,21 @@ from strategy import Claims, Shopping, ShoppingRule
 from tower_bot import TowerBot
 
 
+def test_same_frame_policy_refresh_honors_an_operator_pause(
+    bot_in_run_on: Callable[[str], TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_in_run_on('in_run_lit')
+    bot.controls.apply({'autopilot': {'enabled': True}})
+    refreshed = []
+    def step(*args: object, **kwargs: object) -> bool:
+        bot.controls.apply({'paused': True})
+        refreshed.append(kwargs['refresh_policy'](0))
+        return False
+    monkeypatch.setattr(bot.autopilot, 'step', step)
+    bot.run_once()
+    assert len(refreshed) == 1 and not refreshed[0].enabled
+
+
 @pytest.mark.parametrize("frame", ["in_run_lit", "in_run_defense", "in_run_utility"])
 def test_the_autopilot_steps_on_every_upgrade_tab(
     bot_in_run_on: Callable[[str], TowerBot],

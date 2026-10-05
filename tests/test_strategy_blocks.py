@@ -1250,7 +1250,8 @@ def test_assigned_model_pool_advances_only_after_persisted_receipt(tmp_path: Pat
     root = _registered(tmp_path, 'Air_38', 'account')
     raw = RouteDocument.compatibility().to_dict()
     raw['baseline']['battle'].update(mode='blocks', blocks=[pool(
-        upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')])
+        upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model',
+        batch_size=5, max_price_premium_pct=25)])
     BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, 'operator')
     progress = RerollProgress(root, 'account', AccountState())
     progress.route_runtime = BuildRouteRuntime(tmp_path, 'Air_38', 'account')
@@ -1262,6 +1263,10 @@ def test_assigned_model_pool_advances_only_after_persisted_receipt(tmp_path: Pat
     rows['attack_speed'].update(price=7, value=1.05, observed_at=time.time())
     pending = progress.battle_policy(base, rows, run_id=2, wave=2, cash=95, pending_purchase=True)
     assert pending.battle_price_quote['price'] == 5
+    awaiting = progress.battle_policy(base, rows, run_id=2, wave=2, cash=95,
+                                     after_receipt_sequence=0)
+    assert not awaiting.enabled
+    assert progress.battle_prices.rows['attack_speed']['index'] == 0
     with db.connect(root / 'tower_bot.db') as conn:
         conn.execute("INSERT INTO events(seq,run_id,ts,type,detail) VALUES(1,2,1,'BattlePurchased',?)",
                      (json.dumps({'upgrade_id': 'attack_speed'}),))
@@ -1270,3 +1275,49 @@ def test_assigned_model_pool_advances_only_after_persisted_receipt(tmp_path: Pat
     assert second.battle_price_quote['price'] == 7
     assert second.battle_price_quote['value'] == 1.05
     assert second.decision_token != first.decision_token
+    # Preference belongs to the current route and pool, never a previous
+    # revision's batch on an otherwise unchanged panel.
+    rows['attack_speed'].update(price=10, status='available', value=1.1, observed_at=time.time())
+    rows['health'].update(price=12, observed_at=time.time())
+    batch = dict(run_id=2, wave=2, cash=95, visible_upgrade_ids=('health',),
+                 battle_batch_purchases=1, batch_route_token='account:1:2', batch_rule_id='cheap')
+    assert progress.battle_policy(base, rows, **batch).rules[0].upgrade_id == 'health'
+    for stale_scope in (dict(batch_route_token='account:0:2'), dict(batch_rule_id='old_pool')):
+        assert progress.battle_policy(base, rows, **{**batch, **stale_scope}).rules[0].upgrade_id == 'attack_speed'
+
+
+@pytest.mark.parametrize('count,local_price,chosen', [
+    (0, 12, 'attack_speed'), (1, 12, 'health'), (4, 12, 'health'),
+    (5, 12, 'attack_speed'), (1, 13, 'attack_speed'),
+])
+def test_modeled_visible_batch_is_bounded_and_keeps_price_tolerance(
+    count: int, local_price: int, chosen: str,
+) -> None:
+    block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest',
+                 price_source='model', batch_size=5, max_price_premium_pct=25)
+    blocks.validate_program([block], 'battle')
+    quote = dict(account_id='account', run_id=7, status='available', source='model', value=1, verified=True)
+    f = replace(battle_facts(), visible_upgrade_ids=('health',), battle_batch_purchases=count, battle_batch_rule_id='cheap',
+        battle_price_quotes={'health': dict(quote, price=local_price), 'attack_speed': dict(quote, price=10)})
+    result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
+    assert result.decision.upgrade_id == chosen
+
+
+@pytest.mark.parametrize('extra', [dict(batch_size=0), dict(batch_size=6), dict(batch_size=True),
+    dict(max_price_premium_pct=26), dict(max_price_premium_pct=-1), dict(price_source='observed')])
+def test_batch_options_reject_unsafe_or_incompatible_values(extra: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        blocks.validate_program([pool(upgrade_ids=['health'], selection='cheapest',
+            **{**dict(price_source='model', batch_size=5, max_price_premium_pct=25), **extra})], 'battle')
+
+
+def test_visible_batch_cannot_skip_a_stale_cheaper_quote() -> None:
+    block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest',
+                 price_source='model', batch_size=5, max_price_premium_pct=25)
+    quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
+    f = replace(battle_facts(), visible_upgrade_ids=('health',), battle_batch_purchases=2, battle_batch_rule_id='cheap',
+        battle_price_quotes={'health': dict(quote, price=12, verified=True),
+                             'attack_speed': dict(quote, price=10, verified=False)})
+    result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
+    assert result.trace.observation_ids == ('attack_speed',)
+    assert result.status == 'projected'

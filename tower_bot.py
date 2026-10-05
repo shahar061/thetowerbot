@@ -112,6 +112,7 @@ from runner import BotRunner, RunnerError
 from runtime_identity import PROCESS_IDENTITY
 from runtime_records import PROCESS_BOOT_ID, RuntimeRecords
 from supervisor import DeviceSupervisor, RecoveryState
+from policy import AutopilotPolicy
 from runs import RunTracker
 from shopping import ShoppingSession, header_numbers
 from snapshots import SnapshotWriter
@@ -2847,22 +2848,42 @@ class TowerBot:
                         self.progress.meaningful_progress('wave',
                             f'{self.runs.current_id}:{wave_number}')
                         self._last_wave_progress = (self.runs.current_id, wave_number)
-                    battle_policy = (self.reroll_progress.battle_policy(
-                        settings.strategy.autopilot,
-                        {**self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)),
-                         **{row.upgrade_id: row.payload() for row in observation.rows}},
-                        run_id=self.runs.current_id,
-                        wave=(int(value) if (value := combat.get("wave")) is not None else None),
-                        cash=self.wallet,
-                        combat=combat, pending_purchase=self.autopilot.pending is not None)
-                                     if self.reroll_progress is not None else settings.strategy.autopilot)
+                    def refresh_battle_policy(after_sequence: int | None = None) -> AutopilotPolicy:
+                        # A confirmation can reuse this frame, but an operator
+                        # pause or strategy change must stop the next action.
+                        live = self.controls.snapshot()
+                        if live.paused or live.strategy != settings.strategy:
+                            return replace(settings.strategy.autopilot, enabled=False, rules=())
+                        if self.reroll_progress is None:
+                            return settings.strategy.autopilot
+                        identity = self.run_identity(settings)
+                        return self.reroll_progress.battle_policy(
+                            settings.strategy.autopilot,
+                            {**self.autopilot.state.rows("battle", time.time(), identity),
+                             **{row.upgrade_id: row.payload() for row in observation.rows}},
+                            run_id=self.runs.current_id, wave=wave_number, cash=self.wallet,
+                            combat=combat, pending_purchase=self.autopilot.pending is not None,
+                            visible_upgrade_ids=tuple(row.upgrade_id for row in observation.rows
+                                if row.confidence >= .9 and row.value is not None),
+                            battle_batch_purchases=self.autopilot.batch_purchases(
+                                observation, identity, self.runs.current_id),
+                            batch_route_token=self.autopilot.batch_route_token,
+                            batch_rule_id=self.autopilot.batch_rule_id,
+                            after_receipt_sequence=after_sequence)
+
+                    def record_battle_receipt(sequence: int | None) -> None:
+                        if self.reroll_progress is not None:
+                            self.reroll_progress.await_battle_receipt(self.runs.current_id, sequence)
+
+                    battle_policy = refresh_battle_policy()
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
                                                    cash=self.wallet, observation=observation,
                                                    cooldown=settings.strategy.click_cooldown,
                                                    run_id=self.runs.current_id,
                                                    identity=self.run_identity(settings),
                                                    elapsed=self.runs.elapsed(time.monotonic()),
-                                                   reads=reads)
+                                                   reads=reads, refresh_policy=refresh_battle_policy,
+                                                   record_receipt=record_battle_receipt)
                     # The autopilot reads the panel itself, so its rows are
                     # the only description of this frame anything has. Left
                     # out, the set_boxes() below blanks the device view on
@@ -3206,7 +3227,7 @@ class TowerBot:
                 # docstring. Tests pass 0.0 to run the loop without sleeping,
                 # and jittering that would reintroduce the sleep.
                 current_interval = interval
-            if interval is None and self.autopilot.pending is not None:
+            if interval is None and self.autopilot.fast_followup:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.
                 current_interval = min(current_interval, config.BATTLE_FOLLOWUP_SECONDS)

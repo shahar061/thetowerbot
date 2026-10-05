@@ -26,6 +26,7 @@ class BattleReader:
         self._layout: tuple[config.Rect, ...] = ()
         self._labels: tuple[ocr.TextBox, ...] = ()
         self._label_hash: bytes = b''
+        self._numbers: dict[str, tuple[bytes, tuple[ocr.TextBox, ...]]] = {}
 
     @staticmethod
     def target_regions(rect: config.Rect) -> tuple[config.Rect, config.Rect]:
@@ -38,10 +39,27 @@ class BattleReader:
 
     def _hash_labels(self, screen: Any) -> bytes:
         digest = hashlib.sha256()
-        for box in self._labels:
-            r = box.rect
-            digest.update(screen[r.y:r.y+r.h, r.x:r.x+r.w].tobytes())
+        for r in self._layout:
+            digest.update(screen[r.y:r.y+r.h, r.x:r.x+r.w//2].tobytes())
         return digest.digest()
+
+    @staticmethod
+    def _numeric_region(rect: config.Rect) -> config.Rect:
+        return config.Rect(rect.x + rect.w // 2, rect.y, rect.w - rect.w // 2, rect.h)
+
+    @staticmethod
+    def _pixels(screen: Any, rect: config.Rect) -> bytes:
+        return hashlib.sha256(screen[rect.y:rect.y+rect.h, rect.x:rect.x+rect.w].tobytes()).digest()
+
+    def _remember_numbers(self, screen: Any, boxes: tuple[ocr.TextBox, ...], observation: Observation) -> None:
+        for row in observation.rows:
+            if row.confidence < .9 or row.upgrade_id.startswith('discovered:'):
+                self._numbers.pop(row.upgrade_id, None)
+                continue
+            region = self._numeric_region(row.rect)
+            numeric = tuple(b for b in boxes if contains(row.rect, b.rect) and b.rect.x >= region.x)
+            if numeric:
+                self._numbers[row.upgrade_id] = (self._pixels(screen, region), numeric)
 
     @staticmethod
     def _crop(reads: ocr.FrameReads, region: config.Rect) -> tuple[ocr.TextBox, ...]:
@@ -73,17 +91,16 @@ class BattleReader:
             partial = parse_frame(screen, boxes, 'battle', digest=reads.digest,
                                   tab_colour=self._last.category)
             calibrating = not quote or not quote.get('verified') or quote.get('wave') != partial.combat.get('wave')
-            needs_price = calibrating or quote.get('verify_price')
-            # Read value and MAX together, at native scale: separately
-            # upscaling tiny crops costs more than reading the whole panel.
-            value_region, _ = self.target_regions(row.rect)
-            target_region = config.Rect(value_region.x, value_region.y, value_region.w, row.rect.h)
-            target_boxes = self._crop(reads, target_region)
-            if not needs_price:
-                target_boxes = tuple(b for b in target_boxes
-                    if b.rect.y < row.rect.y + row.rect.h * config.TILE_PRICE_TOP_FRACTION
-                    or b.text.strip().upper() in {'MAX', 'MAXED', 'LOCKED', 'UNAVAILABLE'})
-            boxes = (*boxes, *target_boxes)
+            # Cached text is evidence for this frame only when the entire
+            # numeric region has identical pixels. Read changed targets;
+            # unchanged neighbours can authorize the next visible purchase.
+            for previous in self._last.rows:
+                region = self._numeric_region(previous.rect)
+                cached = self._numbers.get(previous.upgrade_id)
+                if cached is not None and cached[0] == self._pixels(screen, region):
+                    boxes = (*boxes, *cached[1])
+                elif previous.upgrade_id == target:
+                    boxes = (*boxes, *self._crop(reads, region))
             current = parse_frame(screen, boxes, 'battle', digest=reads.digest,
                                   tab_colour=self._last.category)
             target_row = next((r for r in current.rows if r.upgrade_id == target), None)
@@ -94,15 +111,17 @@ class BattleReader:
                     and (not calibrating or target_row.price is not None
                          or target_row.status in {'maxed', 'locked'})):
                 reads.battle_targeted = True
+                self._remember_numbers(screen, boxes, current)
                 return boxes
         boxes = reads._read_battle()
         self._last = parse_frame(screen, boxes, 'battle', digest=reads.digest,
                                  tab_colour=battle_tab.classify_frame(screen))
         self._scope, self._layout = scope, layout
-        self._labels = tuple(b for b in boxes if b.confidence >= .9
-            and stat_number(b.text) is None and not any(c.isdigit() for c in b.text)
+        self._labels = tuple(b for b in boxes if stat_number(b.text) is None and not any(c.isdigit() for c in b.text)
             and b.text.strip().upper() not in {'MAX', 'MAXED', 'LOCKED', 'UNAVAILABLE'}
             and any(contains(r.rect, b.rect) and b.rect.x < r.rect.x + r.rect.w * .5
                     for r in self._last.rows if not r.upgrade_id.startswith('discovered:')))
         self._label_hash = self._hash_labels(screen)
+        self._numbers.clear()
+        self._remember_numbers(screen, boxes, self._last)
         return boxes

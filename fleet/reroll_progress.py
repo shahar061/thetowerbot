@@ -670,11 +670,21 @@ class RerollProgress:
         return replace(base, workshop=(ShoppingRule(plan.item, plan.category),),
                        allow_unlocks=True, coin_budget=budget, coin_budget_pct=None)
 
+    def await_battle_receipt(self, run_id: int | None, sequence: int | None) -> None:
+        """Fence every confirmed modeled tap, including the last in a batch."""
+        if type(run_id) is int and type(sequence) is int:
+            previous = getattr(self, '_battle_receipt_fence', None)
+            minimum = max(sequence + 1, previous[1]) if previous and previous[0] == run_id else sequence + 1
+            self._battle_receipt_fence = (run_id, minimum)
+
     def battle_policy(self, base: AutopilotPolicy,
                       observations: Mapping[str, Mapping[str, Any]] | None = None,
                       *, run_id: int | None = None, wave: int | None = None,
                       cash: int | None = None,
-                      combat: Mapping[str, float] | None = None, pending_purchase: bool = False) -> AutopilotPolicy:
+                      combat: Mapping[str, float] | None = None, pending_purchase: bool = False,
+                      visible_upgrade_ids: tuple[str, ...] = (), battle_batch_purchases: int = 0,
+                      batch_route_token: str | None = None, batch_rule_id: str | None = None,
+                      after_receipt_sequence: int | None = None) -> AutopilotPolicy:
         route = None
         if self.route_runtime is not None:
             try:
@@ -702,6 +712,17 @@ class RerollProgress:
                 uid: dict(upgrade_id=uid, status="locked", value=None, price=None, observed_at=moment)
                 for uid in locked}}
             counts = self.route_runtime.purchase_counts("battle", run_id)
+            if after_receipt_sequence is not None:
+                self.await_battle_receipt(run_id, after_receipt_sequence)
+            fence = getattr(self, '_battle_receipt_fence', None)
+            if fence is not None:
+                if fence[0] == run_id and (counts is None or sum(counts.values()) < fence[1]):
+                    # The event sink commits asynchronously. Do not calibrate
+                    # a post-purchase frame against the old receipt count.
+                    return replace(base, enabled=False, rules=())
+                self._battle_receipt_fence = None
+            if batch_route_token != f'{self.account_id}:{route.revision}:{run_id}':
+                battle_batch_purchases = 0
             facts = RouteFacts(
                 self.account_id, self.root.name, "battle", moment, moment,
                 best_tier_1_wave=best, run_id=run_id, wave=wave, battle_cash=cash,
@@ -711,6 +732,8 @@ class RerollProgress:
                 upgrade_rows=rows,
                 battle_price_quotes=self.battle_prices.update(run_id=run_id, wave=wave,
                     counts=counts, rows=rows, now=moment, pending=pending_purchase),
+                visible_upgrade_ids=visible_upgrade_ids, battle_batch_purchases=battle_batch_purchases,
+                battle_batch_rule_id=batch_rule_id,
                 visit_id=(f"battle:{run_id}" if effective.battle.mode == "blocks" else
                           f"battle:{run_id}:{wave}") if run_id is not None and wave is not None else None,
                 run_purchases=counts, decision_sequence=sum((counts or {}).values()),
@@ -725,7 +748,7 @@ class RerollProgress:
             if wave is None or cash is None or run_id is None:
                 return replace(base, enabled=False, rules=())
             if effective.battle.mode == "blocks":
-                from fleet.strategy_blocks import program_upgrade_ids, uses_modeled_prices
+                from fleet.strategy_blocks import batch_size_for, program_upgrade_ids, uses_modeled_prices
                 self.route_runtime.acknowledge(route.revision, self.account_id)
                 observe_only = evaluation.status != "observed" or evaluation.decision is None
                 ids = (tuple(uid for uid in evaluation.trace.observation_ids
@@ -739,7 +762,9 @@ class RerollProgress:
                     max_purchase_price=evaluation.decision.price if not observe_only else None,
                     modeled_pool=uses_modeled_prices(effective.battle.blocks),
                     battle_price_quote=(dict(facts.battle_price_quotes[evaluation.decision.upgrade_id],
-                        upgrade_id=evaluation.decision.upgrade_id) if not observe_only
+                        upgrade_id=evaluation.decision.upgrade_id, sequence=facts.decision_sequence,
+                        rule_id=evaluation.trace.matched_rule_id,
+                        batch_size=batch_size_for(effective.battle.blocks, evaluation.trace.matched_rule_id)) if not observe_only
                         and evaluation.decision.price_source == "model" else None))
             _, phase = select_battle_phase(effective, facts)
             if phase is None:

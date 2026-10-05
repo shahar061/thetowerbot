@@ -193,13 +193,20 @@ def parse_frame(
             status, price = "locked", None
         elif "UNAVAILABLE" in markers:
             status, price = "unavailable", None
+        confidence_boxes = [b for b in raw_boxes if contains(rect, b.rect)]
+        if context == "battle" and price_box is not None:
+            # A trusted price supersedes rejected price readings from this
+            # tile. Uncertain names and values must still block promotion.
+            confidence_boxes = [b for b in confidence_boxes if not (
+                b.confidence < .9 and price_number(b.text) is not None
+                and b.rect.y >= rect.y + rect.h * config.TILE_PRICE_TOP_FRACTION)]
         rows.append(ObservedUpgrade(
             entry.id if entry else "discovered:" + tiles.normalise(raw_name),
             entry.name if entry else raw_name, category, context, value, price, status, now,
             rect, (price_box.rect.x + price_box.rect.w // 2,
                    price_box.rect.y + price_box.rect.h // 2) if entry and price_box and price is not None else None,
             confidence=min([*(() if heading_confidence is None else (heading_confidence,)),
-                            *(b.confidence for b in raw_boxes if contains(rect, b.rect))]),
+                            *(b.confidence for b in confidence_boxes)]),
             raw_name=raw_name, raw_value=value_boxes[0].text if len(value_boxes) == 1 else None,
             raw_price=price_box.text if price_box else None,
         ))

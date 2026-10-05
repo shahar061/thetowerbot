@@ -68,6 +68,9 @@ class RouteFacts:
     price_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     lab_coin_jar: int = 0
     battle_price_quotes: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    visible_upgrade_ids: tuple[str, ...] = ()
+    battle_batch_purchases: int = 0
+    battle_batch_rule_id: str | None = None
 
 
 @dataclass(frozen=True)
