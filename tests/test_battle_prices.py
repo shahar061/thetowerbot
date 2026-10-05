@@ -1,5 +1,9 @@
 from pathlib import Path
 from typing import Any
+
+import pytest
+
+import config
 from fleet.battle_prices import BattlePrices
 
 
@@ -28,7 +32,9 @@ def test_restart_new_run_requires_calibration_and_max_is_terminal(tmp_path: Path
     assert model.update(run_id=8, wave=40, counts={}, rows={}, now=200)["health"]["status"] == "maxed"
 
 
-def test_pending_frame_cannot_double_advance_and_uncertain_wave_resyncs(tmp_path: Path) -> None:
+def test_pending_frame_cannot_double_advance_and_uncertain_wave_resyncs(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "BATTLE_BURST_ENABLED", False)  # pins the per-wave expiry
     model = BattlePrices(tmp_path, "a")
     model.update(run_id=7, wave=4, counts={}, rows={"attack_speed": row(5)}, now=100)
     q = model.update(run_id=7, wave=4, counts={}, rows={"attack_speed": row(7)}, now=101, pending=True)
@@ -62,3 +68,24 @@ def test_wave_regression_discards_previous_battle_and_unknown_value_changes_resy
     assert not model.update(run_id=7, wave=1, counts={}, rows={}, now=101)
     model.update(run_id=7, wave=1, counts={}, rows={'health': row(10, at=102)}, now=102)
     assert not model.update(run_id=7, wave=1, counts={}, rows={'health': row(value=99, at=103)}, now=103)
+
+
+def test_quotes_stay_verified_across_waves_until_a_fresh_read_disagrees(tmp_path: Path) -> None:
+    model = BattlePrices(tmp_path, "a")
+    model.update(run_id=7, wave=4, counts={}, rows={"attack_speed": row(5)}, now=100)
+    quote = model.update(run_id=7, wave=9, counts={"attack_speed": 1}, rows={}, now=103)["attack_speed"]
+    assert quote["verified"] and quote["price"] == 7
+    # A fresh read that matches no level of the curve drops the quote.
+    assert "attack_speed" not in model.update(run_id=7, wave=9, counts={"attack_speed": 1},
+        rows={"attack_speed": row(987654321, at=104)}, now=104)
+
+
+def test_invalidate_forgets_one_row_until_its_next_fresh_read(tmp_path: Path) -> None:
+    model = BattlePrices(tmp_path, "a")
+    model.update(run_id=7, wave=4, counts={}, rows={"attack_speed": row(5), "health": row(10)}, now=100)
+    model.invalidate("attack_speed")
+    quotes = model.update(run_id=7, wave=4, counts={}, rows={}, now=101)
+    assert "attack_speed" not in quotes and quotes["health"]["price"] == 10
+    assert "attack_speed" not in BattlePrices(tmp_path, "a").rows  # persisted
+    quotes = model.update(run_id=7, wave=4, counts={}, rows={"attack_speed": row(7, at=102)}, now=102)
+    assert quotes["attack_speed"]["index"] == 1

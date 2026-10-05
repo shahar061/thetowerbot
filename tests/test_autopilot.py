@@ -603,3 +603,19 @@ def test_modeled_batch_stops_for_changed_evidence_or_controls(interruption: str)
     assert len(device.actions) == 1
     if interruption in {'wave', 'route'}:
         assert not calls
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_a_model_quote_from_an_earlier_wave_still_authorizes_the_tap(
+        monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    quote = dict(account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+                 status='available', verified=True, price=5, value=row.value,
+                 wave=int(obs.combat['wave']) - 1)
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+                     decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=quote)
+    bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
+    assert len(device.actions) == (1 if enabled else 0)

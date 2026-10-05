@@ -540,7 +540,8 @@ class BattleAutopilot:
                     or not quote.get('verified') or quote.get('status') != 'available'
                     or not policy.single_purchase or not policy.decision_token
                     or not policy.decision_token.startswith(str(quote.get('account_id')) + ':')
-                    or quote.get('wave') != observation.combat.get('wave')
+                    or (not config.BATTLE_BURST_ENABLED
+                        and quote.get('wave') != observation.combat.get('wave'))
                     or type(quote.get('price')) is not int or quote['price'] <= 0):
                 self._decide("blocked", "Battle price quote requires current run evidence")
                 return False

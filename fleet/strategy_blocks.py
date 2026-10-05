@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 import builds
+import config
 import upgrades
 
 MAX_BLOCKS = 80
@@ -1065,7 +1066,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 selected = None
                 if block.get('selection', 'priority') == 'cheapest':
                     chosen = min(candidates, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
-                    if source == 'model' and (quote := model_quote(chosen)) and not quote.get('verified'):
+                    if (not config.BATTLE_BURST_ENABLED and source == 'model'
+                            and (quote := model_quote(chosen)) and not quote.get('verified')):
                         return _Choice(identity, chosen, 'Reconcile the cheapest candidate after a wave change',
                                        observation_ids=(chosen,), price_source='model')
                     if (source == 'model' and facts.battle_batch_rule_id == identity

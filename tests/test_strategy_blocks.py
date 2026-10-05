@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 import pytest
+import config
 
 from fleet.build_route import CoinRules, RouteRules
 from fleet.build_route_eval import RouteFacts
@@ -1207,7 +1208,9 @@ def test_modeled_pool_uses_cash_curve_without_observed_price_ttl() -> None:
     assert result.trace.price_source == 'model'
 
 
-def test_model_pool_reconciles_cheapest_stale_wave_before_spending() -> None:
+def test_model_pool_reconciles_cheapest_stale_wave_before_spending(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the wave reconcile trip
     block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')
     quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
     f = replace(battle_facts(), battle_price_quotes={
@@ -1311,7 +1314,9 @@ def test_batch_options_reject_unsafe_or_incompatible_values(extra: dict[str, Any
             **{**dict(price_source='model', batch_size=5, max_price_premium_pct=25), **extra})], 'battle')
 
 
-def test_visible_batch_cannot_skip_a_stale_cheaper_quote() -> None:
+def test_visible_batch_cannot_skip_a_stale_cheaper_quote(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the wave reconcile trip
     block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest',
                  price_source='model', batch_size=5, max_price_premium_pct=25)
     quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
@@ -1321,3 +1326,16 @@ def test_visible_batch_cannot_skip_a_stale_cheaper_quote() -> None:
     result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
     assert result.trace.observation_ids == ('attack_speed',)
     assert result.status == 'projected'
+
+
+def test_burst_mode_buys_the_cheapest_quote_without_a_wave_reconcile_trip(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')
+    quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
+    f = replace(battle_facts(), battle_price_quotes={
+        'health': dict(quote, price=10, verified=True),
+        'attack_speed': dict(quote, price=5, verified=False)})
+    result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
+    assert result.trace.observation_ids == ()
+    assert result.status == 'observed' and result.decision.upgrade_id == 'attack_speed'
