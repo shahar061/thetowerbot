@@ -8,7 +8,7 @@ import hashlib
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import cv2
 
@@ -17,7 +17,7 @@ from geometry import supported_frame
 import events
 import ocr
 import upgrades
-from device import Image, tap
+from device import Image, tap, tap_burst
 from combat_context import CombatContext, RunIdentity
 from perception import Observation, ObservedUpgrade, observe_frame
 from policy import AutopilotPolicy, UpgradeRule, choose
@@ -142,6 +142,23 @@ def scroll_panel(device: Any, screen: Image, heading_y: int, *, down: bool) -> N
     device.swipe(w // 5, start, w // 5, end, .35)
 
 
+def burst_size(curve: Sequence[int], index: int, budget: int, ceiling: int) -> int:
+    """Levels one burst may buy, starting at curve level `index`.
+
+    The largest k up to config.BATTLE_BURST_MAX whose prices
+    curve[index:index + k] each stay at or under `ceiling`, sum to at most
+    `budget` and stay inside the curve. 0 means not even the next level fits.
+    """
+    count = spent = 0
+    while count < config.BATTLE_BURST_MAX and index + count < len(curve):
+        price = curve[index + count]
+        if price > ceiling or spent + price > budget:
+            break
+        spent += price
+        count += 1
+    return count
+
+
 @dataclass
 class Search:
     target: str
@@ -176,6 +193,11 @@ class BattleAutopilot:
         self._pending_sequence: int | None = None
         self._pending_batch_size = 1
         self._pending_rule_id: str | None = None
+        # A curve-backed modeled tap: the price curve, the level the tap
+        # started from and how many taps the burst sent.
+        self._pending_curve: tuple[int, ...] = ()
+        self._pending_index: int | None = None
+        self._pending_k = 1
         self._batch_count = 0
         self._batch_scope: tuple[Any, ...] | None = None
         self._batch_route: str | None = None
@@ -622,9 +644,31 @@ class BattleAutopilot:
         if policy.max_purchase_price is not None and row.price > policy.max_purchase_price:
             self._decide("saving", "Live upgrade price exceeds the evaluated block limit", target)
             return False
-        tap(device, *row.tap)
+        count, curve, index = 1, (), None
+        if quote is not None and config.BATTLE_BURST_ENABLED:
+            from fleet.battle_prices import catalog
+            steps = tuple(catalog()['curves'].get(target, ()))
+            position = quote.get('index')
+            if type(position) is int and 0 <= position < len(steps) and steps[position] == quote['price']:
+                curve, index = steps, position
+                if policy.burst_price_ceiling is not None:
+                    # The reserve and the spend limit bound the whole burst,
+                    # not just its first level.
+                    budget = min(actual_cash - policy.cash_reserve,
+                                 actual_cash * policy.cash_spend_limit_pct // 100)
+                    count = burst_size(curve, index, budget, policy.burst_price_ceiling)
+                    if count == 0:
+                        self._reset_batch()
+                        self._decide("saving", f"Saving cash for {row.name}; above the burst price ceiling",
+                                     target)
+                        return False
+        if count > 1:
+            tap_burst(device, *row.tap, count, config.BATTLE_BURST_TAP_GAP_SECONDS)
+        else:
+            tap(device, *row.tap)
         self._mark_tapped(row)
         self.pending = (row, now)
+        self._pending_curve, self._pending_index, self._pending_k = curve, index, count
         self._pending_modeled = quote is not None
         self._pending_wave = int(observation.combat["wave"]) if quote is not None else None
         self._pending_next_price = None

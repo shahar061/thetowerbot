@@ -36,6 +36,8 @@ BATTLE_BURST_ENABLED: bool = True
 # 0 sends them back to back; set it from tools/probe_tap_burst.py if the game
 # drops taps, and record the measurement beside the value.
 BATTLE_BURST_TAP_GAP_SECONDS: float = 0.0
+# Most levels one burst may buy.
+BATTLE_BURST_MAX: int = 10
 
 # --- Jitter ---------------------------------------------------------------
 # Every tap is an `input tap` over ADB: no travel path, no dwell, and a
