@@ -2880,6 +2880,10 @@ class TowerBot:
                         else:
                             self.reroll_progress.await_battle_receipt(self.runs.current_id, sequence)
 
+                    def invalidate_battle_quote(upgrade_id: str) -> None:
+                        if self.reroll_progress is not None:
+                            self.reroll_progress.battle_prices.invalidate(upgrade_id)
+
                     battle_policy = refresh_battle_policy()
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
                                                    cash=self.wallet, observation=observation,
@@ -2888,7 +2892,8 @@ class TowerBot:
                                                    identity=self.run_identity(settings),
                                                    elapsed=self.runs.elapsed(time.monotonic()),
                                                    reads=reads, refresh_policy=refresh_battle_policy,
-                                                   record_receipt=record_battle_receipt)
+                                                   record_receipt=record_battle_receipt,
+                                                   invalidate_quote=invalidate_battle_quote)
                     # The autopilot reads the panel itself, so its rows are
                     # the only description of this frame anything has. Left
                     # out, the set_boxes() below blanks the device view on

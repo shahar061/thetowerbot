@@ -142,6 +142,17 @@ def scroll_panel(device: Any, screen: Image, heading_y: int, *, down: bool) -> N
     device.swipe(w // 5, start, w // 5, end, .35)
 
 
+def _readable_price(row: ObservedUpgrade | None) -> int | None:
+    """The row's price when its text and its parse agree; else unreadable."""
+    if row is None or type(row.price) is not int:
+        return None
+    if row.raw_price is not None:
+        from perception import price_number
+        if price_number(row.raw_price) != row.price:
+            return None
+    return row.price
+
+
 def burst_size(curve: Sequence[int], index: int, budget: int, ceiling: int) -> int:
     """Levels one burst may buy, starting at curve level `index`.
 
@@ -250,7 +261,7 @@ class BattleAutopilot:
             self._queued = None
         self._decide("idle", reason)
         if clear_battle:
-            self.pending = None
+            self._clear_pending()
             self.state.clear_battle()
             self.context.clear()
             self._blocked.clear()
@@ -262,6 +273,11 @@ class BattleAutopilot:
     def _reset_batch(self) -> None:
         self._batch_count = self._counter_followups = 0
         self._batch_scope = None
+
+    def _clear_pending(self) -> None:
+        """Forget the tap awaiting confirmation, its burst sizing included."""
+        self.pending = None
+        self._pending_curve, self._pending_index, self._pending_k = (), None, 1
 
     @staticmethod
     def _panel_scope(observation: Observation, identity: RunIdentity, run_id: int | None) -> tuple[Any, ...]:
@@ -344,6 +360,67 @@ class BattleAutopilot:
         self._decide("discovering", f"Scanning {entry.category.title()} for {entry.name}", target)
         return True
 
+    def _burst_outcome(self, before: ObservedUpgrade, after: ObservedUpgrade | None,
+                       waited: float) -> tuple[int, bool] | None:
+        """(levels bought, invalidate the row's quote), or None to keep waiting.
+
+        1. MAX: every level the burst could still buy.
+        2. A price matching exactly one curve level j: j - index, clamped
+           to the burst; a j behind the starting level means the model is
+           wrong, so nothing counts and the quote is invalidated. A price
+           still at the starting level proves nothing yet.
+        3. Unreadable, unmatched or ambiguous prices wait.
+        4. After 8 s: a changed value counts one level and invalidates the
+           quote so the next read re-indexes it; otherwise nothing counts
+           and the caller blocks the row.
+        """
+        curve, index, size = self._pending_curve, self._pending_index, self._pending_k
+        assert index is not None
+        if after is not None and after.status == "maxed":
+            return min(size, len(curve) - index), False
+        price = _readable_price(after)
+        if price is not None:
+            from fleet.battle_prices import price_matches
+            matches = [level for level, step in enumerate(curve)
+                       if price_matches(step, price, after.raw_price)]
+            if len(matches) == 1 and matches[0] < index:
+                return 0, True
+            if len(matches) == 1 and matches[0] > index:
+                return min(matches[0] - index, size), False
+        if waited < 8:
+            return None
+        if (after is not None and after.value is not None and before.value is not None
+                and after.value != before.value):
+            return 1, True
+        return 0, False
+
+    def _confirm_burst(self, before: ObservedUpgrade, after: ObservedUpgrade | None, levels: int,
+                       record_receipt: Callable[[int | None, str, int], None] | None) -> None:
+        """Record a confirmed burst as one BattlePurchased per level.
+
+        Each level is priced from the curve, so purchase counts, run upgrades
+        and dashboards keep meaning one level per event. Known cost: a free
+        level a wave-end perk grants inside the confirmation window is counted
+        as bought - at most one per wave per row, and never more than the
+        burst's size.
+        """
+        shown = after if after is not None else before
+        curve, index = self._pending_curve, self._pending_index
+        assert index is not None
+        for offset in range(levels):
+            self.state.verified(shown)
+            self._emit(events.BattlePurchased(
+                item=before.name, upgrade_id=before.upgrade_id, price=curve[index + offset],
+                value=shown.value if offset == levels - 1 else None))
+        self._completed_decision_token = self._pending_decision_token
+        if record_receipt is not None and self._pending_sequence is not None:
+            record_receipt(self._pending_sequence + levels - 1, before.upgrade_id, levels)
+        self._decide("verified", f"Verified {levels} {before.name} level{'s' if levels > 1 else ''}",
+                     before.upgrade_id)
+        self._clear_pending()
+        self._manual = None
+        self._batch_count += 1  # one batch decision, however many levels it bought
+
     def _draw(self, observation: Observation) -> None:
         """Record this frame's rows for the device view.
 
@@ -392,7 +469,8 @@ class BattleAutopilot:
              identity: RunIdentity = RunIdentity(), elapsed: float | None = None,
              reads: ocr.FrameReads | None = None,
              refresh_policy: Callable[[int | None], AutopilotPolicy] | None = None,
-             record_receipt: Callable[[int | None, str, int], None] | None = None) -> bool:
+             record_receipt: Callable[[int | None, str, int], None] | None = None,
+             invalidate_quote: Callable[[str], None] | None = None) -> bool:
         # The scan's shared OCR and digest, when they belong to this screen.
         if reads is not None and reads.screen is not screen:
             reads = None
@@ -407,7 +485,7 @@ class BattleAutopilot:
         if changed_identity:
             # A confirmation or search started under another run/build cannot
             # be finished using the new one's rows, even if its price matches.
-            self.pending = None
+            self._clear_pending()
             self.search = None
             self._blocked.clear()
             self._last_action = float("-inf")
@@ -454,59 +532,84 @@ class BattleAutopilot:
             self.search = None
             self._policy = policy
         visible = {r.upgrade_id: r for r in observation.rows}
+        confirmed_now = False
         if self.pending:
             before, sent_at = self.pending
             after = visible.get(before.upgrade_id)
             if now <= sent_at:
                 return False
-            price_receipt = False
-            if self._pending_modeled and after and self._pending_next_price is not None and after.raw_price:
-                from fleet.battle_prices import price_matches
-                from perception import price_number
-                price_receipt = (price_number(after.raw_price) == after.price
-                    and price_matches(self._pending_next_price, after.price, after.raw_price)
-                    and not price_matches(before.price, after.price, after.raw_price))
-            confirmed = after and (
-                price_receipt or
-                after.status == "maxed" or
-                (not self._pending_modeled and after.price is not None and before.price is not None and after.price > before.price) or
-                (after.value is not None and before.value is not None and after.value != before.value)
-            )
-            if self._pending_modeled and observation.combat.get('wave') != self._pending_wave:
-                # A wave transition may have granted a free upgrade. Reconcile
-                # instead of calling that change a paid purchase receipt.
-                self.pending = None
-                self._manual = None
-                self._reset_batch()
-                self._decide("observing", "Wave changed during purchase; reconciling")
-                return False
             # A manual buy is one purchase; the policy above is still its
             # single-rule stand-in, so falling through would buy it again.
             was_manual = self._manual is not None
-            if confirmed:
-                self.state.verified(after)
-                self._completed_decision_token = self._pending_decision_token
-                self._emit(events.BattlePurchased(item=after.name, upgrade_id=after.upgrade_id,
-                                                  price=before.price, value=after.value))
-                if self._pending_modeled and record_receipt is not None:
-                    record_receipt(self._pending_sequence, after.upgrade_id, 1)
-                self._decide("verified", f"Verified {after.name} upgrade", after.upgrade_id)
-                self.pending = None
-                self._manual = None
-                if self._pending_modeled:
-                    self._batch_count += 1
-                # No return: the frame that proves the last purchase already
-                # shows the new prices and cash, so it can pick the next one.
-                # Stopping here spent a whole scan per purchase doing nothing.
-            elif now - sent_at >= 8:
-                self._blocked[before.upgrade_id] = now + 60
-                self._decide("blocked", f"{before.name} purchase was not confirmed", before.upgrade_id)
-                self.pending = None
-                self._manual = None
-                self._reset_batch()
+            if self._pending_curve:
+                outcome = self._burst_outcome(before, after, now - sent_at)
+                if outcome is None:
+                    self._decide("verifying", f"Checking {before.name} purchase", before.upgrade_id)
+                    return False
+                levels, invalidate = outcome
+                if invalidate and invalidate_quote is not None:
+                    invalidate_quote(before.upgrade_id)
+                if not levels:
+                    if invalidate:
+                        self._decide("observing", f"{before.name} price is behind the model; reconciling",
+                                     before.upgrade_id)
+                    else:
+                        self._blocked[before.upgrade_id] = now + 60
+                        self._decide("blocked", f"{before.name} purchase was not confirmed",
+                                     before.upgrade_id)
+                    self._clear_pending()
+                    self._manual = None
+                    self._reset_batch()
+                    return False
+                self._confirm_burst(before, after, levels, record_receipt)
+                confirmed_now = True
             else:
-                self._decide("verifying", f"Checking {before.name} purchase", before.upgrade_id)
-            if not confirmed or was_manual:
+                price_receipt = False
+                if self._pending_modeled and after and self._pending_next_price is not None and after.raw_price:
+                    from fleet.battle_prices import price_matches
+                    from perception import price_number
+                    price_receipt = (price_number(after.raw_price) == after.price
+                        and price_matches(self._pending_next_price, after.price, after.raw_price)
+                        and not price_matches(before.price, after.price, after.raw_price))
+                confirmed = after and (
+                    price_receipt or
+                    after.status == "maxed" or
+                    (not self._pending_modeled and after.price is not None and before.price is not None and after.price > before.price) or
+                    (after.value is not None and before.value is not None and after.value != before.value)
+                )
+                if self._pending_modeled and observation.combat.get('wave') != self._pending_wave:
+                    # A wave transition may have granted a free upgrade. Reconcile
+                    # instead of calling that change a paid purchase receipt.
+                    self._clear_pending()
+                    self._manual = None
+                    self._reset_batch()
+                    self._decide("observing", "Wave changed during purchase; reconciling")
+                    return False
+                if confirmed:
+                    self.state.verified(after)
+                    self._completed_decision_token = self._pending_decision_token
+                    self._emit(events.BattlePurchased(item=after.name, upgrade_id=after.upgrade_id,
+                                                      price=before.price, value=after.value))
+                    if self._pending_modeled and record_receipt is not None:
+                        record_receipt(self._pending_sequence, after.upgrade_id, 1)
+                    self._decide("verified", f"Verified {after.name} upgrade", after.upgrade_id)
+                    self._clear_pending()
+                    self._manual = None
+                    if self._pending_modeled:
+                        self._batch_count += 1
+                    # No return: the frame that proves the last purchase already
+                    # shows the new prices and cash, so it can pick the next one.
+                    # Stopping here spent a whole scan per purchase doing nothing.
+                    confirmed_now = True
+                elif now - sent_at >= 8:
+                    self._blocked[before.upgrade_id] = now + 60
+                    self._decide("blocked", f"{before.name} purchase was not confirmed", before.upgrade_id)
+                    self._clear_pending()
+                    self._manual = None
+                    self._reset_batch()
+                else:
+                    self._decide("verifying", f"Checking {before.name} purchase", before.upgrade_id)
+            if not confirmed_now or was_manual:
                 return False
             if policy.single_purchase:
                 if (not self._pending_modeled or refresh_policy is None
@@ -645,7 +748,7 @@ class BattleAutopilot:
             self._decide("saving", "Live upgrade price exceeds the evaluated block limit", target)
             return False
         count, curve, index = 1, (), None
-        if quote is not None and config.BATTLE_BURST_ENABLED:
+        if quote is not None and config.BATTLE_BURST_ENABLED and target == quote['upgrade_id']:
             from fleet.battle_prices import catalog
             steps = tuple(catalog()['curves'].get(target, ()))
             position = quote.get('index')

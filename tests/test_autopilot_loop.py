@@ -554,3 +554,16 @@ def test_a_battle_receipt_feeds_the_tally_instead_of_the_fence(
     bot.run_once()
     receipts = [call for call in progress.calls if call[0] in ('levels', 'fence')]
     assert receipts == ([('levels', 'attack_speed', 3)] if enabled else [('fence', 4)])
+
+
+def test_a_burst_invalidation_reaches_the_price_model(
+    bot_in_run_on: Callable[[str], TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_in_run_on('in_run_lit')
+    bot.controls.apply({'autopilot': {'enabled': True}})
+    progress = _BattleProgress()
+    bot.reroll_progress = progress
+    monkeypatch.setattr(bot.autopilot, 'step',
+                        lambda *args, **kwargs: bool(kwargs['invalidate_quote']('attack_speed')))
+    bot.run_once()
+    assert ('invalidate', 'attack_speed') in progress.calls
