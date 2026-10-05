@@ -114,7 +114,11 @@ def test_wallet_ocr_refuses_ambiguous_or_low_confidence_numbers(monkeypatch: pyt
     assert read_cash(frame, (12, 1646)) is None
 
 
-def test_frame_evidence_is_honest_and_low_confidence_tile_blocks_promotion(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("context", ["workshop", "battle"])
+@pytest.mark.parametrize("uncertain", ["name", "value"])
+def test_frame_evidence_is_honest_and_low_confidence_tile_blocks_promotion(
+    monkeypatch: pytest.MonkeyPatch, context: str, uncertain: str,
+) -> None:
     from perception import parse_frame
     import tiles
     import numpy as np
@@ -123,15 +127,15 @@ def test_frame_evidence_is_honest_and_low_confidence_tile_blocks_promotion(monke
     monkeypatch.setattr(tiles, 'find_tiles', lambda image: (tile,))
     boxes = (ocr.TextBox('Defense Upgrades', .99, config.Rect(5, 5, 200, 30)),
              ocr.TextBox('Health', .99, config.Rect(20, 70, 70, 20)),
-             ocr.TextBox('Regen', .4, config.Rect(20, 95, 70, 20)),
-             ocr.TextBox('100', .98, config.Rect(160, 75, 50, 20)),
+             ocr.TextBox('Regen', .4 if uncertain == "name" else .99, config.Rect(20, 95, 70, 20)),
+             ocr.TextBox('100', .4 if uncertain == "value" else .98, config.Rect(160, 75, 50, 20)),
              ocr.TextBox('10', .96, config.Rect(160, 165, 50, 20)))
-    result = parse_frame(screen, boxes, 'workshop', now=1.)
-    assert result.context == 'workshop'
+    result = parse_frame(screen, boxes, context, now=1.)
+    assert result.context == context
     assert len(result.frame_digest) == 64
     assert (result.frame_width, result.frame_height) == (250, 250)
     assert result.rows[0].confidence == .4
-    assert result.rows[0].raw_value == '100'
+    assert result.rows[0].raw_value == ('100' if uncertain == "name" else None)
 
 
 @pytest.mark.parametrize("name,speed,regen,paused", [
@@ -174,13 +178,26 @@ def test_pause_is_unknown_on_a_frame_that_never_identified_itself() -> None:
 
 
 def test_battle_price_recovery_reads_native_digits_when_enlargement_loses_confidence() -> None:
+    from autopilot import BattleAutopilot
     from perception import observe_frame
+    from policy import AutopilotPolicy, UpgradeRule
+    from tests.test_autopilot import Device
     frame = cv2.imread(str(FIXTURES / "battle_reader/defense_price20_native.png"))
     observation = observe_frame(frame, "battle", reads=ocr.FrameReads(frame))
     row = next(row for row in observation.rows if row.upgrade_id == "defense_percent")
     assert row.value == 8.5
     assert row.price == 20
     assert row.status == "available"
+    quote = dict(account_id="account", run_id=7, upgrade_id=row.upgrade_id,
+                 source="model", status="available", verified=True, price=20,
+                 value=row.value, wave=int(observation.combat["wave"]))
+    policy = AutopilotPolicy(enabled=True, rules=(UpgradeRule(row.upgrade_id),),
+                            modeled_pool=True, battle_price_quote=quote,
+                            single_purchase=True, decision_token="account:1:7:0")
+    bot, device = BattleAutopilot(), Device()
+    bot.step(frame, device, policy, observation=observation, run_id=7)
+    assert device.actions == [("tap", *row.tap)]
+    assert row.confidence >= .9
 
 
 def test_a_single_digit_value_the_frame_read_misses_is_re_read_off_a_crop() -> None:

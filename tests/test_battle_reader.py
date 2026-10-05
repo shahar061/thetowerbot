@@ -42,7 +42,7 @@ def test_targeted_reader_uses_fresh_target_and_reconciles_changed_labels(monkeyp
     target = next(r for r in current.rows if r.upgrade_id == 'cash_bonus')
     assert target.value == row.value
     assert second.battle_targeted
-    assert target.price is None, (quote, current.combat)
+    assert target.price == row.price  # identical numeric pixels retain their price evidence
     assert second.battle_targeted
     assert calls == ['full']
     assert all(rect.h < config.BATTLE_BANDS[(1080, 2400)].panel.h for rect in regions)
@@ -95,6 +95,9 @@ def test_unreadable_target_crop_falls_back_to_identification(monkeypatch: pytest
     reader = BattleReader()
     reader.read(ocr.FrameReads(frame), target='cash_bonus', quote=None, scope=1)
     monkeypatch.setattr(ocr, 'read_region', lambda *args, **kwargs: ())
+    row = next(r for r in reader._last.rows if r.upgrade_id == 'cash_bonus')
+    frame = frame.copy()
+    frame[row.rect.y + 30, row.rect.x + row.rect.w * 3 // 4] ^= 255
     reads = ocr.FrameReads(frame)
     reader.read(reads, target='cash_bonus', quote=None, scope=1)
     assert calls == ['full', 'full']
@@ -112,6 +115,9 @@ def test_reconciliation_falls_back_when_only_price_is_unreadable(monkeypatch: py
         return tuple(replace(b, rect=config.Rect(b.rect.x-rect.x+20, b.rect.y-rect.y+20,
                      b.rect.w, b.rect.h)) for b in boxes if b.text == 'x1.00')
     monkeypatch.setattr(ocr, 'read_region', value_only)
+    row = next(r for r in reader._last.rows if r.upgrade_id == 'cash_bonus')
+    frame = frame.copy()
+    frame[row.rect.y + 30, row.rect.x + row.rect.w * 3 // 4] ^= 255
     reads = ocr.FrameReads(frame)
     reader.read(reads, target='cash_bonus', quote=None, scope=1)
     assert calls == ['full', 'full']
@@ -135,3 +141,55 @@ def test_native_targeted_path_preserves_real_hud_and_purchase_fields(fixture: st
     assert current.combat['wave'] == initial.combat['wave']
     row = next(r for r in current.rows if r.upgrade_id == uid)
     assert row.value == value and row.price is not None
+
+
+def test_unchanged_numeric_regions_reuse_evidence_for_all_visible_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures/in_run_utility.png'))
+    boxes = recorded('in_run_utility')
+    monkeypatch.setattr(ocr.FrameReads, '_read_battle', lambda self: boxes)
+    reader = BattleReader()
+    initial = parse_frame(frame, reader.read(ocr.FrameReads(frame), target='cash_bonus', quote=None, scope=1), 'battle')
+    crop_calls = []
+    monkeypatch.setattr(reader, '_crop', lambda reads, rect: (crop_calls.append(rect), ())[1])
+    reads = ocr.FrameReads(frame.copy())
+    current = parse_frame(reads.screen, reader.read(reads, target='cash_bonus',
+        quote=dict(verified=True, wave=initial.combat['wave']), scope=1), 'battle')
+    assert reads.battle_targeted
+    assert crop_calls == []
+    assert [(r.upgrade_id, r.value, r.price) for r in current.rows] == [
+        (r.upgrade_id, r.value, r.price) for r in initial.rows]
+
+
+def test_new_pixels_outside_old_digits_invalidate_numeric_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures/in_run_utility.png'))
+    boxes = recorded('in_run_utility')
+    monkeypatch.setattr(ocr.FrameReads, '_read_battle', lambda self: boxes)
+    reader = BattleReader()
+    initial = parse_frame(frame, reader.read(ocr.FrameReads(frame), target='cash_bonus', quote=None, scope=1), 'battle')
+    row = next(r for r in initial.rows if r.upgrade_id == 'cash_bonus')
+    changed = frame.copy()
+    changed[row.rect.y + 12, row.rect.x + row.rect.w - 15] ^= 255
+    calls = []
+    def crop(reads: ocr.FrameReads, region: config.Rect) -> tuple[ocr.TextBox, ...]:
+        calls.append(region)
+        return tuple(replace(b, text='x1.10') if b.text == 'x1.00' else b for b in boxes
+                     if row.rect.y <= b.rect.y < row.rect.y + row.rect.h and b.rect.x >= region.x)
+    monkeypatch.setattr(reader, '_crop', crop)
+    reads = ocr.FrameReads(changed)
+    result = parse_frame(changed, reader.read(reads, target='cash_bonus',
+        quote=dict(verified=True, wave=initial.combat['wave']), scope=1), 'battle')
+    assert len(calls) == 1 and reads.battle_targeted
+    assert next(r for r in result.rows if r.upgrade_id == 'cash_bonus').value == 1.1
+
+
+def test_cached_labels_retain_low_confidence_rejection_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures/in_run_utility.png'))
+    boxes = tuple(replace(b, confidence=.4) if b.text == 'CashBonus' else b for b in recorded('in_run_utility'))
+    calls = []
+    monkeypatch.setattr(ocr.FrameReads, '_read_battle', lambda self: (calls.append('full'), boxes)[1])
+    reader = BattleReader()
+    reader.read(ocr.FrameReads(frame), target='cash_bonus', quote=None, scope=1)
+    reads = ocr.FrameReads(frame.copy())
+    result = parse_frame(reads.screen, reader.read(reads, target='cash_bonus', quote=None, scope=1), 'battle')
+    assert calls == ['full', 'full'] and not reads.battle_targeted
+    assert not any(r.upgrade_id == 'cash_bonus' and r.confidence >= .9 for r in result.rows)

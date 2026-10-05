@@ -8,7 +8,7 @@ import hashlib
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 
@@ -173,6 +173,13 @@ class BattleAutopilot:
         self._pending_modeled = False
         self._pending_wave: int | None = None
         self._pending_next_price: int | None = None
+        self._pending_sequence: int | None = None
+        self._pending_batch_size = 1
+        self._pending_rule_id: str | None = None
+        self._batch_count = 0
+        self._batch_scope: tuple[Any, ...] | None = None
+        self._batch_route: str | None = None
+        self._counter_followups = 0
         self._pending_decision_token: str | None = None
         self._completed_decision_token: str | None = None
         self.search: Search | None = None
@@ -214,6 +221,7 @@ class BattleAutopilot:
                             (180 if action == "scan" else 20)}
 
     def suspend(self, reason: str, *, clear_battle: bool = False) -> None:
+        self._reset_batch()
         self.search = None
         self._manual = None
         with self._command_lock:
@@ -228,6 +236,30 @@ class BattleAutopilot:
     def _emit(self, event: events.Event) -> None:
         if self.bus is not None:
             self.bus.publish(event)
+
+    def _reset_batch(self) -> None:
+        self._batch_count = self._counter_followups = 0
+        self._batch_scope = None
+
+    @staticmethod
+    def _panel_scope(observation: Observation, identity: RunIdentity, run_id: int | None) -> tuple[Any, ...]:
+        return (identity, run_id, observation.combat.get('wave'), observation.category,
+                tuple((row.upgrade_id, row.rect) for row in observation.rows))
+
+    def batch_purchases(self, observation: Observation, identity: RunIdentity, run_id: int | None) -> int:
+        return self._batch_count if self._batch_scope == self._panel_scope(observation, identity, run_id) else 0
+
+    @property
+    def fast_followup(self) -> bool:
+        return self.pending is not None or self._counter_followups > 0
+
+    @property
+    def batch_route_token(self) -> str | None:
+        return self._batch_route
+
+    @property
+    def batch_rule_id(self) -> str | None:
+        return self._pending_rule_id
 
     def _decide(self, phase: str, reason: str, target: str | None = None) -> None:
         """Show the decision and publish it when it changes.
@@ -336,11 +368,19 @@ class BattleAutopilot:
              cash: int | None = None, observation: Observation | None = None,
              run_id: int | None = None, cooldown: float = .75,
              identity: RunIdentity = RunIdentity(), elapsed: float | None = None,
-             reads: ocr.FrameReads | None = None) -> bool:
+             reads: ocr.FrameReads | None = None,
+             refresh_policy: Callable[[int | None], AutopilotPolicy] | None = None,
+             record_receipt: Callable[[int | None], None] | None = None) -> bool:
         # The scan's shared OCR and digest, when they belong to this screen.
         if reads is not None and reads.screen is not screen:
             reads = None
         observation = observation or observe_frame(screen, "battle", reads=reads)
+        self._counter_followups = max(0, self._counter_followups - 1)
+        scope = self._panel_scope(observation, identity, run_id)
+        route_scope = policy.decision_token.rsplit(':', 1)[0] if policy.decision_token else None
+        if scope != self._batch_scope or route_scope != self._batch_route:
+            self._reset_batch()
+            self._batch_scope, self._batch_route = scope, route_scope
         changed_identity = self.context.rebind(identity)
         if changed_identity:
             # A confirmation or search started under another run/build cannot
@@ -415,6 +455,7 @@ class BattleAutopilot:
                 # instead of calling that change a paid purchase receipt.
                 self.pending = None
                 self._manual = None
+                self._reset_batch()
                 self._decide("observing", "Wave changed during purchase; reconciling")
                 return False
             # A manual buy is one purchase; the policy above is still its
@@ -425,9 +466,13 @@ class BattleAutopilot:
                 self._completed_decision_token = self._pending_decision_token
                 self._emit(events.BattlePurchased(item=after.name, upgrade_id=after.upgrade_id,
                                                   price=before.price, value=after.value))
+                if self._pending_modeled and record_receipt is not None:
+                    record_receipt(self._pending_sequence)
                 self._decide("verified", f"Verified {after.name} upgrade", after.upgrade_id)
                 self.pending = None
                 self._manual = None
+                if self._pending_modeled:
+                    self._batch_count += 1
                 # No return: the frame that proves the last purchase already
                 # shows the new prices and cash, so it can pick the next one.
                 # Stopping here spent a whole scan per purchase doing nothing.
@@ -436,10 +481,30 @@ class BattleAutopilot:
                 self._decide("blocked", f"{before.name} purchase was not confirmed", before.upgrade_id)
                 self.pending = None
                 self._manual = None
+                self._reset_batch()
             else:
                 self._decide("verifying", f"Checking {before.name} purchase", before.upgrade_id)
-            if not confirmed or was_manual or policy.single_purchase:
+            if not confirmed or was_manual:
                 return False
+            if policy.single_purchase:
+                if (not self._pending_modeled or refresh_policy is None
+                        or self._batch_count >= self._pending_batch_size
+                        or route_scope != (self._pending_decision_token or '').rsplit(':', 1)[0]
+                        or (policy.battle_price_quote or {}).get('rule_id') != self._pending_rule_id):
+                    self._reset_batch()
+                    return False
+                policy = refresh_policy(self._pending_sequence)
+                if policy.decision_token and policy.decision_token.rsplit(':', 1)[0] != route_scope:
+                    self._reset_batch()
+                    return False
+                if (policy.enabled and (policy.battle_price_quote or {}).get('rule_id') != self._pending_rule_id):
+                    self._reset_batch()
+                    return False
+                if not policy.enabled or policy.decision_token == self._completed_decision_token:
+                    self._counter_followups = 2
+                    self._decide('waiting', 'Waiting for the confirmed purchase counter to refresh')
+                    return False
+                self._policy = policy
         if (policy.single_purchase and policy.decision_token == self._completed_decision_token
                 and not self._manual):
             self._decide("waiting", "Waiting for the confirmed purchase counter to refresh")
@@ -501,6 +566,7 @@ class BattleAutopilot:
                         or (policy.modeled_pool and policy.observe_only
                             and cached[r.upgrade_id]["status"] == "unreadable")), None)
         if missing and missing not in visible and decision.phase != "survival":
+            self._reset_batch()
             moved = self._seek(missing, observation, screen, device, policy)
             if moved:
                 self._last_action = now
@@ -508,8 +574,10 @@ class BattleAutopilot:
         target = decision.upgrade_id
         self._decide(decision.phase, decision.reason, target)
         if not target:
+            self._reset_batch()
             return False
         if target not in visible:
+            self._reset_batch()
             moved = self._seek(target, observation, screen, device, policy)
             if moved:
                 self._last_action = now
@@ -531,6 +599,7 @@ class BattleAutopilot:
                           tap=row.tap or (row.rect.x + round(row.rect.w * .75),
                                           row.rect.y + round(row.rect.h * .82)))
         if row.status != "available" or row.price is None or row.tap is None:
+            self._reset_batch()
             return False
         if policy.observe_only:
             self._decide("observing", "Waiting for a route decision on verified rows", target)
@@ -540,8 +609,10 @@ class BattleAutopilot:
             # The wallet is decision-critical and has no safe default: no
             # reading means no purchase, however affordable the price looks.
             self._decide("blocked", refusal or "This purchase is held: cash is unreadable", target)
+            self._reset_batch()
             return False
         if row.price > actual_cash - policy.cash_reserve:
+            self._reset_batch()
             self._decide("saving", f"Saving cash for {row.name}; reserve protected", target)
             return False
         if row.price > actual_cash * policy.cash_spend_limit_pct // 100:
@@ -556,6 +627,9 @@ class BattleAutopilot:
         self._pending_modeled = quote is not None
         self._pending_wave = int(observation.combat["wave"]) if quote is not None else None
         self._pending_next_price = None
+        self._pending_sequence = quote.get('sequence') if quote is not None else None
+        self._pending_batch_size = quote.get('batch_size', 1) if quote is not None else 1
+        self._pending_rule_id = quote.get('rule_id') if quote is not None else None
         if quote is not None:
             from fleet.battle_prices import catalog
             curve = catalog()['curves'].get(target, ())

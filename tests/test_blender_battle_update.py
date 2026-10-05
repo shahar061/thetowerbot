@@ -25,6 +25,7 @@ def test_configure_battle_uses_unlimited_pools_split_at_wave_twenty() -> None:
         pool, = condition[branch]
         assert pool["selection"] == "cheapest"
         assert pool["price_source"] == "model"
+        assert (pool['batch_size'], pool['max_price_premium_pct']) == (5, 25)
         assert pool["upgrade_ids"] == list(ids)
         assert "level_caps" not in pool and "max_purchases" not in pool
     assert configure_battle(updated) == updated

@@ -77,7 +77,8 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 allowed |= {'upgrade_ids', 'selection', 'weights', 'discount_pct', 'reference_upgrade_id',
                             'max_purchases', 'count_scope', 'decay_pct', 'weight_floor',
                             'targets', 'level_caps', 'price_cap', 'wallet_share_pct',
-                            'wallet_share_basis', 'cheaper_than_upgrade_ids', 'hold_until_capped', 'price_source'}
+                            'wallet_share_basis', 'cheaper_than_upgrade_ids', 'hold_until_capped', 'price_source',
+                            'batch_size', 'max_price_premium_pct'}
                 ids = block.get('upgrade_ids')
                 if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
                     raise ValueError('pool requires 1 to 30 upgrades')
@@ -97,6 +98,11 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                         raise ValueError('modeled prices require a cheapest Battle pool')
                     if set(ids) - supported_ids():
                         raise ValueError('modeled pool requires a cash curve for every upgrade')
+                if 'batch_size' in block or 'max_price_premium_pct' in block:
+                    if lane != 'battle' or block.get('selection') != 'cheapest' or block.get('price_source') != 'model':
+                        raise ValueError('batches require a modeled cheapest Battle pool')
+                    number(block.get('batch_size', 1), 'batch size', 1, 5)
+                    number(block.get('max_price_premium_pct', 0), 'price premium', 0, 25)
                 expected_scope = 'account' if lane == 'workshop' else 'run'
                 if block.get('count_scope', expected_scope) != expected_scope:
                     raise ValueError(f'{lane} purchase counts must use {expected_scope} scope')
@@ -406,6 +412,17 @@ def child_lists(block: Mapping[str, Any]) -> tuple[list[dict[str, Any]], ...]:
 def uses_modeled_prices(program: tuple[dict[str, Any], ...]) -> bool:
     return any(block.get('price_source') == 'model' or any(
         uses_modeled_prices(tuple(children)) for children in child_lists(block)) for block in program)
+
+
+def batch_size_for(program: tuple[dict[str, Any], ...], rule_id: str) -> int:
+    for block in program:
+        if block['id'] == rule_id:
+            return block.get('batch_size', 1)
+        for children in child_lists(block):
+            size = batch_size_for(tuple(children), rule_id)
+            if size > 1:
+                return size
+    return 1
 
 
 def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
@@ -1051,6 +1068,14 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     if source == 'model' and (quote := model_quote(chosen)) and not quote.get('verified'):
                         return _Choice(identity, chosen, 'Reconcile the cheapest candidate after a wave change',
                                        observation_ids=(chosen,), price_source='model')
+                    if (source == 'model' and facts.battle_batch_rule_id == identity
+                            and 0 < facts.battle_batch_purchases < block.get('batch_size', 1)):
+                        local_ceiling = price_for(chosen, source=source) * (100 + block.get('max_price_premium_pct', 0))
+                        local = [uid for uid in candidates if uid in facts.visible_upgrade_ids
+                                 and (local_quote := model_quote(uid)) and local_quote.get('verified')
+                                 and price_for(uid, source=source) * 100 <= local_ceiling]
+                        if local:
+                            chosen = min(local, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
                 elif block.get('selection', 'priority') == 'weighted':
                     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
                     matches = (pending is not None and pending.account_id == facts.account_id

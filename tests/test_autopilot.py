@@ -520,3 +520,86 @@ def test_model_confirms_rounded_stat_from_independent_next_price_read() -> None:
     receipt = replace(obs, observed_at=102, rows=(replace(row, price=7, raw_price='7', observed_at=102),))
     bot.step(frame, device, policy, cash=95, observation=receipt, run_id=7)
     assert bot.state.snapshot()['verified_purchases'] == 1
+
+
+@pytest.mark.parametrize('batch_size', [1, 5])
+def test_modeled_batch_reuses_confirmation_frames_and_stops_after_five(batch_size: int) -> None:
+    from policy import UpgradeRule
+    from fleet.battle_prices import catalog
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    curve = catalog()['curves']['attack_speed']
+    def configured(index: int) -> Any:
+        return replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+            decision_token=f'a:1:7:{index}', modeled_pool=True, battle_price_quote=dict(
+                account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+                status='available', verified=True, price=curve[index], index=index,
+                value=row.value + index * .05, wave=int(obs.combat['wave']),
+                sequence=index, batch_size=batch_size))
+    def observed(index: int) -> Any:
+        return replace(obs, observed_at=100 + index * 2, rows=(replace(row,
+            price=curve[index], raw_price=str(curve[index]), value=row.value + index * .05,
+            observed_at=100 + index * 2),))
+    calls = []
+    receipts = []
+    def refresh(sequence: int | None) -> Any:
+        calls.append(sequence)
+        return configured(sequence + 1)
+    bot.step(frame, device, configured(0), cash=1000, observation=observed(0), run_id=7,
+             refresh_policy=refresh)
+    for index in range(1, batch_size + 1):
+        bot.step(frame, device, configured(index - 1), cash=1000,
+                 observation=observed(index), run_id=7, refresh_policy=refresh,
+                 record_receipt=receipts.append)
+    assert len(device.actions) == batch_size
+    assert bot.state.snapshot()['verified_purchases'] == batch_size
+    assert calls == list(range(batch_size - 1))
+    assert receipts == list(range(batch_size))  # the final receipt installs a fence too
+    assert bot.pending is None
+
+
+def test_modeled_batch_never_replays_a_receipt_while_counter_is_stale() -> None:
+    from policy import UpgradeRule
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+        decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=dict(
+            account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+            status='available', verified=True, price=5, index=0, value=row.value,
+            wave=int(obs.combat['wave']), sequence=0, batch_size=5))
+    bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
+    changed = replace(obs, observed_at=102, rows=(replace(row, price=7,
+                      value=row.value + .05, observed_at=102),))
+    bot.step(frame, device, policy, cash=95, observation=changed, run_id=7,
+             refresh_policy=lambda sequence: policy)
+    assert len(device.actions) == 1
+    assert bot.state.snapshot()['verified_purchases'] == 1
+
+
+@pytest.mark.parametrize('interruption', ['wave', 'maxed', 'pause', 'route'])
+def test_modeled_batch_stops_for_changed_evidence_or_controls(interruption: str) -> None:
+    from policy import UpgradeRule
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+        decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=dict(
+            account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+            status='available', verified=True, price=5, index=0, value=row.value,
+            wave=int(obs.combat['wave']), sequence=0, batch_size=5))
+    bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
+    changed = replace(obs, observed_at=102, rows=(replace(row, price=7, value=row.value + .05,
+        status='maxed' if interruption == 'maxed' else 'available', observed_at=102),))
+    if interruption == 'wave':
+        changed = replace(changed, combat={**changed.combat, 'wave': obs.combat['wave'] + 1})
+    if interruption == 'route':
+        policy = replace(policy, decision_token='a:2:7:0')
+    calls = []
+    def refresh(sequence: int | None) -> Any:
+        calls.append(sequence)
+        return replace(policy, enabled=interruption != 'pause', decision_token='a:1:7:1',
+                       battle_price_quote={**policy.battle_price_quote, 'price': 7,
+                                           'value': row.value + .05, 'index': 1, 'sequence': 1})
+    bot.step(frame, device, policy, cash=95, observation=changed, run_id=7, refresh_policy=refresh)
+    assert len(device.actions) == 1
+    if interruption in {'wave', 'route'}:
+        assert not calls
