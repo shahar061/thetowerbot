@@ -27,6 +27,16 @@ CLICK_COOLDOWN_SECONDS: float = 1.0
 # interval here doubled the time between purchases for no information.
 BATTLE_FOLLOWUP_SECONDS: float = 0.25
 
+# --- Fast battle buying -----------------------------------------------------
+# Kill switch for burst taps, quotes valid across waves, the in-memory battle
+# purchase tally, tab-sticky choice, directional row seek and the faster
+# buying scan. False restores the one-level-per-decision path everywhere.
+BATTLE_BURST_ENABLED: bool = True
+# Pause between the taps of one burst, inside its single `adb shell` command.
+# 0 sends them back to back; set it from tools/probe_tap_burst.py if the game
+# drops taps, and record the measurement beside the value.
+BATTLE_BURST_TAP_GAP_SECONDS: float = 0.0
+
 # --- Jitter ---------------------------------------------------------------
 # Every tap is an `input tap` over ADB: no travel path, no dwell, and a
 # pixel derived by fixed offset from a template match. Left alone, the bot

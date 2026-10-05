@@ -438,6 +438,16 @@ class DeviceSupervisor:
         """Checkpoint the action before issuing exactly one ADB click."""
         self._action(lambda: self._device.click(x, y), f"tap ({x}, {y})")
 
+    def tap_burst(self, x: int, y: int, n: int, gap_s: float) -> None:
+        """Several taps in one ADB command, checkpointed as one input.
+
+        The next action still waits for a fresh frame, so the
+        one-input-per-screenshot invariant holds for the whole burst.
+        """
+        from device import burst_command
+        command = burst_command(x, y, n, gap_s)
+        self._action(lambda: self._device.shell(command), f"tap burst {n}x ({x}, {y})")
+
     def recovery_tap(self, x: int, y: int, *, guard: Callable[[], bool]) -> None:
         """Revalidate recovery immediately after checkpoint, at the input boundary."""
         self._action(lambda: self._device.click(x, y), f"recovery tap ({x}, {y})", guard)
@@ -510,6 +520,9 @@ class GuardedDevice:
 
     def click(self, x: int, y: int) -> None:
         self.supervisor.tap(x, y)
+
+    def tap_burst(self, x: int, y: int, n: int, gap_s: float) -> None:
+        self.supervisor.tap_burst(x, y, n, gap_s)
 
     def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
         self.supervisor.swipe(x, y, x2, y2, duration)

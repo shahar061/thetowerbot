@@ -8,6 +8,7 @@ screencap returns live frames and input tap registers.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import cv2
 import numpy as np
@@ -101,3 +102,28 @@ def capture_screen(device: AdbDevice) -> Image:
 def tap(device: AdbDevice, x: int, y: int) -> None:
     """Send an invisible tap. The emulator does not need focus."""
     device.click(x, y)
+
+
+def burst_command(x: int, y: int, n: int, gap_s: float = 0.0) -> str:
+    """One `adb shell` line tapping (x, y) `n` times, `gap_s` seconds apart."""
+    if type(n) is not int or n < 1:
+        raise ValueError("a tap burst needs at least one tap")
+    if gap_s < 0:
+        raise ValueError("a tap gap may not be negative")
+    line = f"input tap {int(x)} {int(y)}"
+    separator = f"; sleep {gap_s:g}; " if gap_s > 0 else "; "
+    return separator.join([line] * n)
+
+
+def tap_burst(device: Any, x: int, y: int, n: int, gap_s: float = 0.0) -> None:
+    """Send `n` taps as one input.
+
+    A supervised device brings its own `tap_burst`, which checkpoints the
+    whole burst as a single action; a raw adbutils device gets one shell
+    command.
+    """
+    burst = getattr(device, "tap_burst", None)
+    if callable(burst):
+        burst(x, y, n, gap_s)
+    else:
+        device.shell(burst_command(x, y, n, gap_s))
