@@ -572,6 +572,17 @@ test("value pool shows weights and coin share; battle has no value option", () =
   expect(screen.queryByRole("option", { name: "Best value per coin" })).toBeNull();
 });
 
+test("a save-for goal pool offers no value selection", () => {
+  const block = { id: "pool", type: "pool" as const, upgrade_ids: ["thorns"], selection: "priority" as const };
+  const { rerender } = render(<StrategyBlockInspector block={block} lane="workshop" isGoal
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("option", { name: "Weighted draw" })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: "Best value per coin" })).toBeNull();
+  rerender(<StrategyBlockInspector block={block} lane="workshop"
+    catalog={catalog} locked={false} onChange={() => {}} onRemove={() => {}} onCopy={() => {}} />);
+  expect(screen.getByRole("option", { name: "Best value per coin" })).toBeInTheDocument();
+});
+
 test("switching a priority pool without weights to value seeds a weight per upgrade", () => {
   const onChange = vi.fn();
   render(<StrategyBlockInspector block={{ id: "p", type: "pool", upgrade_ids: ["thorns", "damage"], selection: "priority" }}

@@ -131,7 +131,7 @@ export function StrategyBlockInspector({ block, lane, catalog, locked, isGoal = 
             max_price_premium_pct: selection === "cheapest" ? block.max_price_premium_pct : undefined,
             decay_pct: selection === "weighted" ? block.decay_pct : undefined,
             weight_floor: selection === "weighted" ? block.weight_floor : undefined,
-            ...(selection === "value" ? { weights: Object.fromEntries(block.upgrade_ids.map(id => [id, block.weights?.[id] ?? 1])) } : {}) }); }}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "workshop" && <option value="value">Best value per coin</option>}{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
+            ...(selection === "value" ? { weights: Object.fromEntries(block.upgrade_ids.map(id => [id, block.weights?.[id] ?? 1])) } : {}) }); }}><option value="priority">First eligible in pool order</option><option value="weighted">Weighted draw</option>{lane === "workshop" && (!isGoal || block.selection === "value") && <option value="value">Best value per coin</option>}{lane === "battle" && <option value="cheapest">Cheapest affordable</option>}</select></label>
           {lane === "battle" && block.selection === "cheapest" && <label>Prices<select value={block.price_source ?? "observed"} onChange={event => onChange({ ...block, price_source: event.target.value as "observed" | "model",
             batch_size: event.target.value === "model" ? block.batch_size : undefined,
             max_price_premium_pct: event.target.value === "model" ? block.max_price_premium_pct : undefined })}>
