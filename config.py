@@ -35,6 +35,8 @@ BATTLE_BURST_ENABLED: bool = True
 # Pause between the taps of one burst, inside its single `adb shell` command.
 # 0 sends them back to back; set it from tools/probe_tap_burst.py if the game
 # drops taps, and record the measurement beside the value.
+# Measured 2026-10-05 on Tiramisu64_82 (Attack Speed): 10 taps took 0.10s and
+# the game registered all 10 levels, so no gap is needed.
 BATTLE_BURST_TAP_GAP_SECONDS: float = 0.0
 # Most levels one burst may buy.
 BATTLE_BURST_MAX: int = 10
