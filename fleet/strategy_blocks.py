@@ -955,6 +955,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
             elif kind == 'unlock':
                 steps: dict[str, tuple[Any, int]] = {}
                 for skill in block['upgrade_ids']:
+                    if skill in excluded:
+                        rejected.append(f'{skill}: blocked by Never Buy')
+                        continue
                     path = path_to(skill, workshop_owned)
                     if not path:
                         continue
@@ -976,6 +979,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     if 'max_price' in block and price > block['max_price']:
                         rejected.append(f'{identity}: {group.name} over unlock price limit')
                         continue
+                    # Never save for a step a budget block would forbid buying.
+                    if budget_room is not None and price > budget_room:
+                        rejected.append(f'{identity}: {group.name} exceeds budget ceiling')
+                        continue
                     steps.setdefault(tile, (group, price))
                 if not steps:
                     continue
@@ -983,7 +990,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 ranked = sorted(steps, key=lambda tile: (steps[tile][1], tab_order[steps[tile][0].category]))
                 for tile in ranked:
                     group, price = steps[tile]
-                    if price > ceiling or (budget_room is not None and price > budget_room):
+                    if price > ceiling:
+                        rejected.append(f'{identity}: {group.name} over spend ceiling')
                         continue
                     if price_for(tile) is None:
                         if observation := observe_prices(identity, [tile]):
@@ -994,7 +1002,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 goal = _Choice(identity, ranked[0], f'Saving for {group.name} ({wallet}/{price} coins)',
                                wait=True, save_price=price)
                 if block.get('hold', True):
-                    return goal
+                    # An earlier saving goal stays the published target.
+                    return saving or goal
                 if saving is None:
                     saving = goal
             elif kind == 'while_saving':

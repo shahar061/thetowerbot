@@ -1441,6 +1441,35 @@ def test_unlock_block_exposes_skills_and_their_unlock_tiles() -> None:
         blocks.program_upgrade_ids(program))
 
 
+def test_unlock_block_never_saves_for_a_step_past_its_budget_ceiling() -> None:
+    # Utility spent 400 of a 430 ceiling leaves 30 coins of room; the step costs 40.
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 40})
+    program = [budget(target=420, ceiling=430, blocks=[unlock()]), pool()]
+    result = blocks.evaluate_program(route(program), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'damage')
+    assert 'unlock: Unlock Lifesteal exceeds budget ceiling' in result.trace.rejected
+
+
+def test_unlock_block_reports_a_step_over_the_spend_ceiling() -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 2000})
+    result = blocks.evaluate_program(route([unlock(), pool()]), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('save_coins', 'unlock_lifesteal')
+    assert 'unlock: Unlock Lifesteal over spend ceiling' in result.trace.rejected
+
+
+def test_unlock_block_never_unlocks_for_a_never_buy_skill() -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 90})
+    result = blocks.evaluate_program(route([unlock(), pool()], bans=('lifesteal',)), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'damage')
+    assert 'lifesteal: blocked by Never Buy' in result.trace.rejected
+
+
+def test_a_holding_unlock_keeps_an_earlier_saving_goal() -> None:
+    sample = replace(facts(), wallet_coins=50, prices={**facts().prices, 'unlock_lifesteal': 2000})
+    result = blocks.evaluate_program(route([save_goal(['thorns']), unlock(), pool()]), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('save_coins', 'thorns')
+
+
 WORKER_83_PRICES = {
     'attack_speed': 6490, 'cash_bonus': 6540, 'cash_per_wave': 6050, 'coins_per_kill_bonus': 5860,
     'coins_per_wave': 4410, 'critical_chance': 50, 'critical_factor': 50, 'damage': 235,
