@@ -106,6 +106,15 @@ def next_group(category: str, owned: set[str]) -> UnlockGroup | None:
                  and group.id not in owned), None)
 
 
+def path_to(upgrade_id: str, owned: set[str]) -> tuple[UnlockGroup, ...]:
+    """Unlock groups still to buy, in tab order, before ``upgrade_id`` is available."""
+    target = gate_for(upgrade_id)
+    if target is None or target.id in owned:
+        return ()
+    chain = [group for group in GROUPS if group.category == target.category]
+    return tuple(group for group in chain[:chain.index(target) + 1] if group.id not in owned)
+
+
 def locked_upgrade_ids(owned: set[str]) -> frozenset[str]:
     return frozenset(uid for group in GROUPS if group.id not in owned for uid in group.upgrade_ids)
 

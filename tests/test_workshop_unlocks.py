@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import upgrades
 from workshop_unlocks import (GROUPS, STARTER_IDS, available, gate_for, locked_upgrade_ids,
-                              next_group, owned_groups)
+                              next_group, owned_groups, path_to)
 
 
 def test_all_levelled_skills_have_one_explicit_availability_rule() -> None:
@@ -62,3 +62,14 @@ def test_interest_and_recovery_unlock_tiles_are_executable_and_named_apart() -> 
     owned |= owned_groups(purchased_ids={"unlock_interest"})
     assert available("unlock_recovery_packages", owned)
     assert gate_for("max_recovery").executable_upgrade_id == "unlock_recovery_packages"
+
+
+def test_path_to_lists_missing_unlocks_in_tab_order() -> None:
+    assert path_to("damage", set()) == ()
+    assert path_to("unknown", set()) == ()
+    assert [group.id for group in path_to("cash_bonus", set())] == ["unlock_cash_bonuses"]
+    owned = owned_groups(purchased_ids={"unlock_defense_upgrades", "unlock_thorns", "unlock_lifesteal"})
+    assert path_to("lifesteal", owned) == ()
+    assert [group.id for group in path_to("orbs", owned)] == ["unlock_knockback", "unlock_orbs"]
+    assert [group.id for group in path_to("land_mine_chance", owned)] == [
+        "unlock_knockback", "unlock_orbs", "unlock_shockwave", "unlock_land_mines"]
