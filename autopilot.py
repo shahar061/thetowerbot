@@ -170,6 +170,30 @@ def burst_size(curve: Sequence[int], index: int, budget: int, ceiling: int) -> i
     return count
 
 
+def catalog_direction(target: upgrades.Upgrade, rows: Sequence[ObservedUpgrade]) -> str | None:
+    """Which way the panel must scroll to reach `target`, from catalog order.
+
+    upgrades.CATALOG lists each tab's standard rows in on-screen order, so a
+    target ranked after the last visible row is further down and one ranked
+    before the first is further up. None when no visible row is in the
+    catalog order or the target sits inside the visible span; the up-then-
+    down sweep decides those.
+    """
+    order = [entry.id for entry in upgrades.CATALOG
+             if entry.category == target.category and not entry.unlock]
+    if target.id not in order:
+        return None
+    seen = [order.index(row.upgrade_id) for row in rows if row.upgrade_id in order]
+    if not seen:
+        return None
+    position = order.index(target.id)
+    if position > max(seen):
+        return "down"
+    if position < min(seen):
+        return "up"
+    return None
+
+
 @dataclass
 class Search:
     target: str
@@ -177,6 +201,8 @@ class Search:
     scrolls: int = 0
     fingerprint: tuple[str, ...] | None = None
     tab_attempts: int = 0
+    # "directed" follows catalog order; "sweep" is the up-then-down fallback.
+    mode: str = "directed"
 
 
 # How long an already-published decision stays quiet if the autopilot comes
@@ -340,6 +366,17 @@ class BattleAutopilot:
             self._decide("discovering", f"{entry.category.title()} upgrades are locked in the Workshop", target)
             return False
         fingerprint = tuple(r.upgrade_id for r in observation.rows)
+        if search.mode == "directed":
+            direction = (catalog_direction(entry, observation.rows)
+                         if config.BATTLE_BURST_ENABLED else None)
+            stuck = search.fingerprint is not None and (
+                fingerprint == search.fingerprint or search.scrolls >= policy.max_scrolls)
+            if direction is None or stuck or (search.scrolls and direction != search.direction):
+                # Catalog order cannot place the target, or following it
+                # stopped moving: fall back to today's full sweep, from the top.
+                search.mode, search.direction, search.scrolls, search.fingerprint = "sweep", "up", 0, None
+            else:
+                search.direction = direction
         at_end = fingerprint == search.fingerprint or search.scrolls >= policy.max_scrolls
         if at_end:
             if search.direction == "up":

@@ -855,3 +855,54 @@ def test_every_way_a_pending_burst_ends_forgets_its_curve(ending: str) -> None:
     else:
         bot.suspend('Run ended', clear_battle=True)
     assert (bot.pending, bot._pending_curve, bot._pending_index, bot._pending_k) == (None, (), None, 1)
+
+
+@pytest.mark.parametrize('enabled, down', [(True, True), (False, False)])
+def test_seek_scrolls_toward_the_target_in_catalog_order(
+        monkeypatch: pytest.MonkeyPatch, enabled: bool, down: bool) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot, device, frame, observation, policy = parts()
+    # Multishot Chance is listed after every visible Attack row.
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('multishot_chance'),)),
+             cash=100, observation=observation)
+    (kind, _, y, _, y2), = device.actions
+    assert kind == 'swipe' and (y > y2) == down  # a downward scroll swipes upward
+
+
+def test_seek_scrolls_up_for_a_target_listed_before_the_visible_rows(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, observation, policy = parts()
+    lower = tuple(replace(r, upgrade_id=uid) for r, uid in zip(
+        observation.rows, ('range', 'damage_per_meter', 'multishot_chance', 'multishot_targets')))
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('damage'),)),
+             cash=100, observation=replace(observation, rows=lower))
+    (kind, _, y, _, y2), = device.actions
+    assert kind == 'swipe' and y < y2
+
+
+def test_seek_sweeps_when_catalog_order_cannot_place_the_target(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, observation, policy = parts()
+    # Visible rows on both sides of Critical Chance, but not Critical Chance.
+    rows = tuple(r for r in observation.rows if r.upgrade_id in ('damage', 'critical_factor'))
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('critical_chance'),)),
+             cash=100, observation=replace(observation, rows=rows))
+    (kind, _, y, _, y2), = device.actions
+    assert kind == 'swipe' and y < y2  # the sweep starts upward
+
+
+def test_a_directed_seek_that_stops_moving_restarts_as_a_full_sweep(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, observation, policy = parts()
+    policy = replace(policy, rules=(UpgradeRule('multishot_chance'),))
+    for n in range(2):  # the panel never moves
+        bot.step(frame, device, policy, cash=100, observation=replace(observation, observed_at=100 + n))
+    (_, _, down_y, _, down_y2), (_, _, up_y, _, up_y2) = device.actions
+    assert down_y > down_y2 and up_y < up_y2
