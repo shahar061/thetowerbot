@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 import builds
 import upgrades
+from workshop_unlocks import path_to
 
 MAX_BLOCKS = 80
 MAX_DEPTH = 6
@@ -169,6 +170,23 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     number(block['price_cap'], 'price_cap', 1, 1000000000000)
                 if 'wallet_share_pct' in block:
                     number(block['wallet_share_pct'], 'wallet_share_pct', 1, 100)
+            elif kind == 'unlock':
+                allowed |= {'upgrade_ids', 'max_price', 'hold'}
+                if lane != 'workshop':
+                    raise ValueError('unlock blocks are only available in the Workshop')
+                ids = block.get('upgrade_ids')
+                if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
+                    raise ValueError('unlock block requires 1 to 30 skills')
+                ids = [uid(item) for item in ids]
+                if len(set(ids)) != len(ids):
+                    raise ValueError('duplicate unlock skill')
+                if any(upgrades.by_id(item).unlock for item in ids):
+                    raise ValueError('name the skill to unlock, not its unlock tile')
+                block['upgrade_ids'] = ids
+                if 'max_price' in block:
+                    number(block['max_price'], 'max_price', 1, 1000000000000)
+                if 'hold' in block and type(block['hold']) is not bool:
+                    raise ValueError('hold must be true or false')
             elif kind == 'condition':
                 allowed |= {'field', 'op', 'value', 'relative', 'then', 'else', 'upgrade_id'}
                 field = block.get('field')
@@ -447,6 +465,11 @@ def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
             reference = block.get("reference_upgrade_id")
             if reference and reference != "priority":
                 result.append(reference)
+        elif kind == "unlock":
+            result.extend(block["upgrade_ids"])
+            for skill in block["upgrade_ids"]:
+                result.extend(group.executable_upgrade_id for group in path_to(skill, set())
+                              if group.executable_upgrade_id)
         elif kind == "native":
             result.extend(("cash_per_wave", "coins_per_kill_bonus", "cash_bonus",
                            "defense_absolute", "thorns", "health", "coins_per_wave",
@@ -920,6 +943,51 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 name = upgrades.by_id(uid).name
                 saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
                                  wait=True, save_price=price)
+            elif kind == 'unlock':
+                steps: dict[str, tuple[Any, int]] = {}
+                for skill in block['upgrade_ids']:
+                    path = path_to(skill, workshop_owned)
+                    if not path:
+                        continue
+                    group = path[0]
+                    tile = group.executable_upgrade_id
+                    if tile is None:
+                        rejected.append(f'{identity}: manual unlock needed: {group.name} (for {skill})')
+                        continue
+                    if tile in excluded:
+                        rejected.append(f'{tile}: blocked by Never Buy')
+                        continue
+                    if not available(tile, workshop_owned):
+                        continue
+                    # An unlock has one fixed price; the catalog figure ranks it until read.
+                    price = price_for(tile)
+                    price = group.cost if price is None else price
+                    if price is None:
+                        continue
+                    if 'max_price' in block and price > block['max_price']:
+                        rejected.append(f'{identity}: {group.name} over unlock price limit')
+                        continue
+                    steps.setdefault(tile, (group, price))
+                if not steps:
+                    continue
+                tab_order = {'ATTACK': 0, 'DEFENSE': 1, 'UTILITY': 2}
+                ranked = sorted(steps, key=lambda tile: (steps[tile][1], tab_order[steps[tile][0].category]))
+                for tile in ranked:
+                    group, price = steps[tile]
+                    if price > ceiling or (budget_room is not None and price > budget_room):
+                        continue
+                    if price_for(tile) is None:
+                        if observation := observe_prices(identity, [tile]):
+                            return observation
+                        continue
+                    return _Choice(identity, tile, f'Unlock {group.name} for skills in this strategy')
+                group, price = steps[ranked[0]]
+                goal = _Choice(identity, ranked[0], f'Saving for {group.name} ({wallet}/{price} coins)',
+                               wait=True, save_price=price)
+                if block.get('hold', True):
+                    return goal
+                if saving is None:
+                    saving = goal
             elif kind == 'while_saving':
                 if lane == 'workshop' and _legacy_saving_filler(block):
                     # Pinned built-in strategies carry the old 20%-wallet

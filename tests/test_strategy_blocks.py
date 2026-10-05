@@ -1379,3 +1379,90 @@ def test_value_selection_is_workshop_only_and_not_a_saving_goal() -> None:
         blocks.validate_program([good], 'battle')
     with pytest.raises(ValueError, match='value pool'):
         blocks.validate_program([{'id': 'save', 'type': 'save_for', 'goal': [good]}], 'workshop')
+
+
+def unlock(**extra: Any) -> dict[str, Any]:
+    return {'id': 'unlock', 'type': 'unlock', 'upgrade_ids': ['lifesteal'], **extra}
+
+
+def test_unlock_block_validation() -> None:
+    blocks.validate_program([unlock(max_price=20000, hold=False)], 'workshop')
+    for bad in (unlock(upgrade_ids=[]), unlock(upgrade_ids=['unlock_lifesteal']), unlock(hold='yes'),
+                unlock(max_price=0), unlock(upgrade_ids=['lifesteal', 'lifesteal'])):
+        with pytest.raises(ValueError):
+            blocks.validate_program([bad], 'workshop')
+    with pytest.raises(ValueError, match='only available in the Workshop'):
+        blocks.validate_program([unlock()], 'battle')
+
+
+def test_unlock_block_buys_the_cheapest_affordable_next_unlock_across_tabs() -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 90, 'unlock_range_upgrades': 50})
+    result = blocks.evaluate_program(route([unlock(upgrade_ids=['lifesteal', 'range'])]), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_range_upgrades')
+
+
+def test_unlock_block_walks_the_tab_chain_one_step_at_a_time() -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 90})
+    result = blocks.evaluate_program(route([unlock(upgrade_ids=['orbs'])]), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_lifesteal')
+
+
+def test_unlock_block_fills_an_evidence_gap_in_the_chain() -> None:
+    gap = replace(facts(), purchases={'unlock_defense_upgrades': 1, 'unlock_thorns': 1,
+                                      'unlock_lifesteal': 1, 'unlock_orbs': 1},
+                  prices={**facts().prices, 'unlock_knockback': 90})
+    result = blocks.evaluate_program(route([unlock(upgrade_ids=['knockback_chance', 'orbs'])]), gap, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_knockback')
+
+
+def test_unlock_block_holds_coins_by_default() -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 2000})
+    held = blocks.evaluate_program(route([unlock(), pool()]), sample, None, 'workshop')
+    assert (held.decision.state, held.decision.upgrade_id) == ('save_coins', 'unlock_lifesteal')
+    spending = blocks.evaluate_program(route([unlock(hold=False), pool()]), sample, None, 'workshop')
+    assert (spending.decision.state, spending.decision.upgrade_id) == ('buy', 'damage')
+
+
+def test_unlock_block_without_hold_feeds_while_saving() -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 2000})
+    program = [unlock(hold=False),
+               {'id': 'ws', 'type': 'while_saving', 'upgrade_id': 'unlock_lifesteal',
+                'blocks': [{'id': 'hold', 'type': 'wait'}]},
+               pool()]
+    result = blocks.evaluate_program(route(program), sample, None, 'workshop')
+    assert result.decision is None
+    assert result.trace.matched_rule_id == 'hold'
+
+
+def test_unlock_block_respects_max_price_and_reports_manual_unlocks() -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 2000})
+    capped = blocks.evaluate_program(route([unlock(max_price=1000), pool()]), sample, None, 'workshop')
+    assert capped.decision.upgrade_id == 'damage'
+    assert any('over unlock price limit' in item for item in capped.trace.rejected)
+    late = replace(facts(), purchases={uid: 1 for uid in ('unlock_defense_upgrades', 'unlock_thorns',
+                                                          'unlock_lifesteal', 'unlock_knockback', 'unlock_orbs')})
+    manual = blocks.evaluate_program(route([unlock(upgrade_ids=['land_mine_chance']), pool()]),
+                                     late, None, 'workshop')
+    assert manual.decision.upgrade_id == 'damage'
+    assert any('manual unlock needed: Unlock Shockwave' in item for item in manual.trace.rejected)
+
+
+def test_unlock_block_reads_an_unpriced_affordable_unlock() -> None:
+    sample = replace(facts(), purchases={})
+    result = blocks.evaluate_program(route([unlock(upgrade_ids=['cash_bonus']), pool()]), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('observe_price', 'unlock_cash_bonuses')
+
+
+def test_unlock_block_passes_when_every_skill_is_reachable_or_banned() -> None:
+    reachable = blocks.evaluate_program(route([unlock(upgrade_ids=['thorns', 'damage']), pool()]),
+                                        facts(), None, 'workshop')
+    assert reachable.decision.upgrade_id == 'damage'
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 90})
+    banned = blocks.evaluate_program(route([unlock(), pool()], bans=('unlock_lifesteal',)), sample, None, 'workshop')
+    assert banned.decision.upgrade_id == 'damage'
+
+
+def test_unlock_block_exposes_skills_and_their_unlock_tiles() -> None:
+    program = blocks.validate_program([unlock(upgrade_ids=['orbs'])], 'workshop')
+    assert {'orbs', 'unlock_defense_upgrades', 'unlock_knockback', 'unlock_orbs'} <= set(
+        blocks.program_upgrade_ids(program))
