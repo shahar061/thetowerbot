@@ -252,6 +252,7 @@ class BattleAutopilot:
         self._policy: AutopilotPolicy | None = None
         self._blocked: dict[str, float] = {}
         self._last_action = float("-inf")
+        self._buying = False
         self._command_lock = threading.Lock()
         self._queued: dict | None = None
         self._manual: dict | None = None
@@ -280,6 +281,7 @@ class BattleAutopilot:
                             (180 if action == "scan" else 20)}
 
     def suspend(self, reason: str, *, clear_battle: bool = False) -> None:
+        self._buying = False
         self._reset_batch()
         self.search = None
         self._manual = None
@@ -316,6 +318,11 @@ class BattleAutopilot:
     @property
     def fast_followup(self) -> bool:
         return self.pending is not None or self._counter_followups > 0
+
+    @property
+    def buying(self) -> bool:
+        """The last battle step tapped, confirmed or headed for a purchase."""
+        return self._buying
 
     @property
     def batch_route_token(self) -> str | None:
@@ -513,6 +520,7 @@ class BattleAutopilot:
             reads = None
         observation = observation or observe_frame(screen, "battle", reads=reads)
         self._counter_followups = max(0, self._counter_followups - 1)
+        buying_before, self._buying = self._buying, False
         scope = self._panel_scope(observation, identity, run_id)
         route_scope = policy.decision_token.rsplit(':', 1)[0] if policy.decision_token else None
         if scope != self._batch_scope or route_scope != self._batch_route:
@@ -648,6 +656,7 @@ class BattleAutopilot:
                     self._decide("verifying", f"Checking {before.name} purchase", before.upgrade_id)
             if not confirmed_now or was_manual:
                 return False
+            self._buying = True
             if policy.single_purchase:
                 if (not self._pending_modeled or refresh_policy is None
                         or self._batch_count >= self._pending_batch_size
@@ -674,7 +683,10 @@ class BattleAutopilot:
         if not observation.category or not (observation.rows or observation.category_locked):
             self._decide("blocked", "Waiting for a readable upgrade panel")
             return False
-        if now - self._last_action < max(.75, cooldown):
+        if (not (config.BATTLE_BURST_ENABLED and confirmed_now)
+                and now - self._last_action < max(.75, cooldown)):
+            # Skipped scans keep the pace the last decision set.
+            self._buying = self._buying or buying_before
             return False
         if self._manual and self._manual["action"] in ("category", "scan"):
             command = self._manual
@@ -744,6 +756,7 @@ class BattleAutopilot:
             moved = self._seek(target, observation, screen, device, policy)
             if moved:
                 self._last_action = now
+                self._buying = not policy.observe_only
             return moved
         row = visible[target]
         self.search = None
@@ -815,7 +828,7 @@ class BattleAutopilot:
         self._pending_sequence = quote.get('sequence') if quote is not None else None
         self._pending_batch_size = quote.get('batch_size', 1) if quote is not None else 1
         self._pending_rule_id = quote.get('rule_id') if quote is not None else None
-        if quote is not None:
+        if quote is not None and target == quote['upgrade_id']:
             from fleet.battle_prices import catalog
             curve = catalog()['curves'].get(target, ())
             index = quote.get('index')
@@ -826,4 +839,5 @@ class BattleAutopilot:
         self._decide("verifying", f"Checking {row.name} purchase", target)
         self._emit(events.Tapped(action=row.name, x=row.tap[0], y=row.tap[1], score=1,
                                  price=row.price, wallet=actual_cash))
+        self._buying = True
         return True

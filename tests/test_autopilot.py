@@ -906,3 +906,60 @@ def test_a_directed_seek_that_stops_moving_restarts_as_a_full_sweep(
         bot.step(frame, device, policy, cash=100, observation=replace(observation, observed_at=100 + n))
     (_, _, down_y, _, down_y2), (_, _, up_y, _, up_y2) = device.actions
     assert down_y > down_y2 and up_y < up_y2
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_a_confirmed_purchase_skips_the_post_tap_cooldown(
+        monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    bot.step(frame, device, modeled(policy, row, 0), cash=100,
+             observation=shown(obs, row, 0, at=100), run_id=7, cooldown=1.0)
+    bot.step(frame, device, modeled(policy, row, 0), cash=95,
+             observation=shown(obs, row, 1, at=100.4), run_id=7, cooldown=1.0,
+             refresh_policy=lambda sequence: modeled(policy, row, 1, sequence=1),
+             record_receipt=lambda *args: None)
+    # The confirming frame buys again only when the cooldown is skipped.
+    assert len(device.actions) == (2 if enabled else 1)
+
+
+def test_buying_follows_the_last_battle_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, obs, policy = parts()
+    bot.step(frame, device, policy, cash=100, observation=obs)
+    assert bot.buying  # tapped a purchase
+    bot.suspend("Run ended", clear_battle=True)
+    assert not bot.buying
+    bot.step(frame, device, replace(policy, cash_reserve=95), cash=100,
+             observation=replace(obs, observed_at=105))
+    assert not bot.buying  # saving
+    damage = next(r for r in obs.rows if r.upgrade_id == 'damage')
+    bot.state.observe(replace(obs, rows=(replace(damage, upgrade_id='health', name='Health',
+                                                 category='DEFENSE'),)))  # cached off-tab
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('health'),)), cash=100,
+             observation=replace(obs, observed_at=110))
+    assert bot.buying  # opening the tab that holds the target
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('health'),)), cash=100,
+             observation=replace(obs, observed_at=110.3), cooldown=1.0)
+    assert bot.buying  # a cooldown-skipped scan keeps the previous pace
+    bot.step(frame, device, replace(policy, observe_only=True), cash=100,
+             observation=replace(obs, observed_at=115))
+    assert not bot.buying  # observing only
+
+
+def test_a_tap_on_another_row_than_the_quoted_one_expects_no_next_price(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, obs, policy = parts()
+    quoted = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    damage = next(r for r in obs.rows if r.upgrade_id == 'damage')
+    other = replace(damage, upgrade_id='health', name='Health')  # has its own curve
+    # The quote prices Attack Speed; the rule taps Health.
+    policy = replace(modeled(policy, quoted, 0), rules=(UpgradeRule('health'),))
+    bot.step(frame, device, policy, cash=100, run_id=7,
+             observation=replace(obs, rows=(other, quoted)))
+    assert bot.pending is not None and bot.pending[0].upgrade_id == 'health'
+    assert bot._pending_next_price is None

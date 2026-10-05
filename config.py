@@ -41,6 +41,10 @@ BATTLE_BURST_MAX: int = 10
 # Rich mode: battle cash at least this many times the cheapest pool candidate.
 # The bot then stays on the open tab and bursts limited by cash alone.
 BATTLE_RICH_MULTIPLE: int = 10
+# Battle scan interval while buying: the last step tapped or confirmed a
+# purchase, or headed for a buyable target. Saving, observing, idle and
+# blocked steps keep the strategy interval.
+BATTLE_SCAN_INTERVAL_SECONDS: float = 0.6
 
 # --- Jitter ---------------------------------------------------------------
 # Every tap is an `input tap` over ADB: no travel path, no dwell, and a

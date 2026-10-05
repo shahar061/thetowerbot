@@ -3238,6 +3238,14 @@ class TowerBot:
                 # docstring. Tests pass 0.0 to run the loop without sleeping,
                 # and jittering that would reintroduce the sleep.
                 current_interval = interval
+            if (interval is None and config.BATTLE_BURST_ENABLED
+                    and self._last_scan_in_battle and self.autopilot.buying):
+                # The last battle step bought, confirmed or headed for a
+                # purchase, and the next frame decides the next one.
+                current_interval = min(current_interval, max(
+                    MIN_INTERVAL,
+                    jitter.spread(config.BATTLE_SCAN_INTERVAL_SECONDS, live.timing_jitter),
+                ))
             if interval is None and self.autopilot.fast_followup:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.
