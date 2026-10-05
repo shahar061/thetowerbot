@@ -647,6 +647,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if uid in excluded:
             rejected.append(f'{uid}: blocked by Never Buy')
             return False
+        if lane == 'workshop' and uid in facts.maxed_ids:
+            # A maxed row shows no price: never wait on or read one.
+            rejected.append(f'{uid}: maxed')
+            return False
         if lane == 'workshop' and not available(uid, workshop_owned):
             rejected.append(f'{uid}: Workshop upgrade is not unlocked or the next unlock')
             return False
@@ -739,7 +743,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         needed = []
         for uid in dict.fromkeys(ids):
             gate = builds.prerequisites().get(uid)
-            if (uid in excluded or not available(uid, workshop_owned)
+            if (uid in excluded or uid in facts.maxed_ids or not available(uid, workshop_owned)
                     or (gate and gate not in workshop_owned and facts.purchases.get(gate, 0) <= 0)):
                 continue
             if not observed_quote(uid):

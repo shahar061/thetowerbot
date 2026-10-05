@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from dataclasses import asdict, replace
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -507,6 +507,7 @@ class RerollProgress:
             price_evidence={uid: {"source": quote.source,
                 "observed_at": self.price_memory.entries.get(uid, {}).get("observed_at")}
                 for uid, quote in quotes.items()},
+            maxed_ids=self.price_memory.maxed_ids(purchases),
         )
 
     def shopping_policy(self, base: Shopping) -> Shopping:
@@ -885,7 +886,8 @@ class RerollProgress:
         decision = self.decision()
         return decision.price is not None and decision.wallet_coins is not None
 
-    def observe_prices(self, prices: Mapping[str, int | None], wallet: int | None) -> None:
+    def observe_prices(self, prices: Mapping[str, int | None], wallet: int | None,
+                       *, maxed: Iterable[str] = ()) -> None:
         """Learn all readable rows during an already necessary Workshop visit."""
         _, purchases = self._history()
         now = time.time()
@@ -893,6 +895,8 @@ class RerollProgress:
         for uid, price in prices.items():
             self.price_memory.observe(uid, price, purchases.get(uid, 0), now=now,
                                       discount_signature=signature)
+        for uid in maxed:
+            self.price_memory.observe_maxed(uid, purchases.get(uid, 0), now=now)
         if type(wallet) is int and wallet >= 0:
             with db.reader(self.root / "tower_bot.db") as conn:
                 last_run = conn.execute("SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL").fetchone()[0]

@@ -1309,6 +1309,22 @@ def test_value_pool_reads_unpriced_items_before_buying() -> None:
     assert (result.decision.state, result.decision.upgrade_id) == ('observe_price', 'health')
 
 
+def test_value_pool_buys_past_a_maxed_skill_instead_of_reading_it_forever() -> None:
+    # A maxed row shows no price, so only the maxed evidence ends its reads.
+    program = [pool(upgrade_ids=['damage', 'health'], selection='value', weights={'damage': 1, 'health': 1})]
+    result = blocks.evaluate_program(route(program), replace(facts(), maxed_ids=('health',)), None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'damage')
+    assert 'health: maxed' in result.trace.rejected
+    assert 'health' not in result.trace.observation_ids
+
+
+def test_a_maxed_skill_is_never_read_as_a_strict_reference_or_leftover() -> None:
+    program = [pool(upgrade_ids=['health'], cheaper_than_upgrade_ids=['damage'])]
+    result = blocks.evaluate_program(route(program), replace(facts(), maxed_ids=('health',)), None, 'workshop')
+    assert result.decision is None
+    assert 'health' not in result.trace.observation_ids
+
+
 def test_value_pool_kill_bonus_stand_in_inherits_weight() -> None:
     held = route([pool(upgrade_ids=['coins_per_kill_bonus', 'damage'], selection='value',
                        weights={'coins_per_kill_bonus': 18, 'damage': 1})])

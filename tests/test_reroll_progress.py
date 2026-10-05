@@ -353,6 +353,23 @@ def test_read_only_route_facts_do_not_persist_lifetime_summary(tmp_path: Path) -
     assert not (root / "reroll-lifetime.json").exists()
 
 
+def test_maxed_workshop_rows_reach_route_facts_until_a_buy_contradicts_them(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    complete_starter(progress)
+    progress.observe_prices({"attack_speed": 15}, 100, maxed=("health", "damage"))
+    progress.route_runtime = BuildRouteRuntime(tmp_path, progress.root.name, "ACCOUNT-A")
+    assert progress.route_facts().maxed_ids == ("damage", "health")
+    restarted = RerollProgress(progress.root, "ACCOUNT-A", AccountState(), read_only=True)
+    restarted.route_runtime = progress.route_runtime
+    assert restarted.route_facts().maxed_ids == ("damage", "health")
+    with db.connect(progress.root / "tower_bot.db") as connection:
+        connection.execute(
+            "INSERT INTO ledger(ts,kind,item,category,currency,delta,dry_run,detail) "
+            "VALUES(2,'WORKSHOP_BUY','Damage','ATTACK','coins',-30,0,?)",
+            (json.dumps({"verdict": "bought"}),))
+    assert progress.route_facts().maxed_ids == ("health",)
+
+
 def test_unreadable_game_start_or_rate_does_not_create_a_fake_stat(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     class Readings:

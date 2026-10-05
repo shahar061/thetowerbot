@@ -71,6 +71,9 @@ class RouteFacts:
     visible_upgrade_ids: tuple[str, ...] = ()
     battle_batch_purchases: int = 0
     battle_batch_rule_id: str | None = None
+    # Workshop rows read as MAX with no later buy or priced read. A tuple, not
+    # a set: the facts snapshot is written with json.dump(asdict(facts)).
+    maxed_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
