@@ -1335,6 +1335,18 @@ def test_value_pool_kill_bonus_stand_in_inherits_weight() -> None:
     assert result.decision.upgrade_id == 'coins_per_wave'  # 90 / 18 beats 80 / 1
 
 
+def test_value_pool_listing_coins_per_wave_keeps_its_own_weight_while_kill_bonus_is_held() -> None:
+    held = route([pool(upgrade_ids=['coins_per_kill_bonus', 'coins_per_wave', 'damage'], selection='value',
+                       weights={'coins_per_kill_bonus': 18, 'coins_per_wave': 2, 'damage': 1})])
+    held.rules = RouteRules(coins=CoinRules(kill_bonus_min_best_wave=500))
+    sample = replace(facts(), wallet_coins=1000, prices={'damage': 80, 'coins_per_wave': 900},
+                     purchases={'unlock_cash_bonuses': 1, 'unlock_coin_bonuses': 1})
+    result = blocks.evaluate_program(held, sample, None, 'workshop')
+    # 900 / 2 = 450 loses to 80 / 1; Coins / Kill's 18 would have made it 50.
+    assert result.decision.upgrade_id == 'damage'
+    assert any('coins_per_wave 450.0' in item for item in result.trace.rejected)
+
+
 @pytest.mark.parametrize(('extra', 'message'), [
     ({'weights': {'damage': 1}}, 'weight for every upgrade'),
     ({'weights': {'damage': 1, 'attack_speed': 1}, 'decay_pct': 10}, 'decay or weight floor'),
@@ -1468,6 +1480,14 @@ def test_a_holding_unlock_keeps_an_earlier_saving_goal() -> None:
     sample = replace(facts(), wallet_coins=50, prices={**facts().prices, 'unlock_lifesteal': 2000})
     result = blocks.evaluate_program(route([save_goal(['thorns']), unlock(), pool()]), sample, None, 'workshop')
     assert (result.decision.state, result.decision.upgrade_id) == ('save_coins', 'thorns')
+
+
+def test_unlock_block_breaks_a_price_tie_by_tab_order() -> None:
+    # Worker 83's Knockback (DEFENSE) and Interest (UTILITY) both cost 5000.
+    sample = replace(facts(), prices={**facts().prices, 'unlock_cash_bonuses': 50, 'unlock_lifesteal': 50})
+    result = blocks.evaluate_program(route([unlock(upgrade_ids=['cash_bonus', 'lifesteal'])]),
+                                     sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_lifesteal')
 
 
 WORKER_83_PRICES = {
