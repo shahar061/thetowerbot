@@ -433,7 +433,7 @@ def template_lab_list_rules() -> dict[str, Any]:
     """Just-in-time saving toward the ranked list's targets, with a cheap idle filler."""
     return {
         "coins": {"lab_share": {"mode": "just_in_time", "pct": 25}, "workshop_spend_limit_pct": 100},
-        "labs": {"auto_start": True, "idle_fill": "leave_idle",
+        "labs": {"auto_start": True, "direct_start": True, "idle_fill": "leave_idle",
                  "pool": {"selection": "ordered", "max_price_pct_of_wallet": None, "max_seconds": None},
                  "saving": {"income_margin_pct": 75,
                             "window_hours": {"S+": 72, "S": 24, "A": 12, "B": 4, "C": 0}},
