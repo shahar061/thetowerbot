@@ -1623,7 +1623,9 @@ class TowerBot:
         if (last is not None and result.status == 'started'
                 and (last[0][0] in started_slots if started_slots else selected is not None)):
             self._lab_action_last = (last[0], last[1], 0.)
-            if (self.reroll_progress is not None
+            # A visit that re-planned after its last start already read the
+            # strip it left; only one that returned straight away owes a look.
+            if (self.reroll_progress is not None and not getattr(result, 'replanned', False)
                     and self.reroll_progress.lab_visit_options().direct_start):
                 self._lab_followup_due = True
 
@@ -1632,7 +1634,8 @@ class TowerBot:
         failures = self._lab_picker_failures
         if result.status == 'started':
             started_slots = getattr(result, 'started_slots', ())
-            proven = {getattr(result.decision, 'research_id', None)}
+            proven = {getattr(result.decision, 'research_id', None),
+                      *getattr(result, 'started_research', ())}
             if selected is not None and (selected.slot in started_slots if started_slots else True):
                 proven.add(selected.research)
             for key in [key for key in failures if key[2] in proven]:

@@ -55,6 +55,10 @@ class LabVisitResult:
     unlocked_slot: int | None = None
     # Slots proven started in this visit, in order; direct start fills several.
     started_slots: tuple[int, ...] = ()
+    # The research each proven start began, in the same order as started_slots.
+    started_research: tuple[str, ...] = ()
+    # The visit re-planned from a fresh strip after its last proven start.
+    replanned: bool = False
     # A later attempt that ended after a proven start; the started result is kept.
     attempt: LabVisitResult | None = None
 
@@ -646,7 +650,9 @@ class LabVisit:
         prior = self._outcome
         if prior is not None and prior.started_slots and not outcome.started_slots:
             # A failure after proven starts still reports which slots started.
-            outcome = replace(outcome, started_slots=prior.started_slots)
+            outcome = replace(outcome, started_slots=prior.started_slots,
+                              started_research=prior.started_research,
+                              replanned=prior.replanned)
         self._state = "idle"
         self._outcome = outcome
         return outcome
@@ -720,17 +726,22 @@ class LabVisit:
         transaction is open at a time; the planner hook re-plans from the next
         fresh, complete strip read, with every per-start check applied again.
         """
-        slot = outcome.decision.slot
-        slots = (self._outcome.started_slots if self._outcome is not None else ()) + (
+        slot, research = outcome.decision.slot, outcome.decision.research_id
+        prior = self._outcome
+        slots = (prior.started_slots if prior is not None else ()) + (
             (slot,) if slot is not None else ())
-        outcome = replace(outcome, started_slots=slots)
+        started = (prior.started_research if prior is not None else ()) + (
+            (research,) if research is not None else ())
+        outcome = replace(outcome, started_slots=slots, started_research=started, replanned=False)
         # Loop only where the planner hook in advance() can choose the next start.
         if not (self._options.direct_start and self._options.start_research
                 and self._options.native_repeat == 'unchanged' and not self._unlock_done
                 and self.plan_action is not None and self.runtime is not None):
             self._return(outcome)
             return
-        self._outcome = outcome  # a later timeout or empty plan still reports "started"
+        # A later timeout or empty plan still reports "started"; the visit
+        # re-reads the strip after this start, so no follow-up visit is owed.
+        self._outcome = replace(outcome, replanned=True)
         self._reset_start()
         self._state = "home"
 

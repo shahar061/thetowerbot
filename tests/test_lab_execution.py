@@ -284,6 +284,39 @@ def test_started_slots_accumulate_in_order(tmp_path: Path, monkeypatch: pytest.M
     assert h.visit._outcome.reason == 'game_speed_confirmed'
 
 
+def test_a_replanned_visit_reports_it_and_every_started_research(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'research_confirmed',
+                                       LabDecision('start', slot=3, research_id='labs.health')))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed',
+                                       LabDecision('start', slot=1, research_id='labs.game-speed')))
+    assert h.visit._outcome.replanned
+    assert h.visit._outcome.started_research == ('labs.health', 'labs.game-speed')
+    # The re-planned strip had nothing more: the ending attempt keeps both.
+    h.visit._end_attempt(LabVisitResult('observed', 'wait_running', LabDecision('wait_running')))
+    assert h.visit._outcome.replanned and h.visit._outcome.started_research == ('labs.health', 'labs.game-speed')
+
+
+def test_a_visit_that_returns_after_its_start_has_not_replanned(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    assert h.visit.request(action(), options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed',
+                                       LabDecision('start', slot=1, research_id='labs.game-speed')))
+    assert h.visit._state == 'return'
+    assert not h.visit._outcome.replanned
+    assert h.visit._outcome.started_research == ('labs.game-speed',)
+
+
 def test_each_proven_start_extends_the_visit_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     h = LabHarness(tmp_path, monkeypatch)
     h.visit.cancel('new request')
