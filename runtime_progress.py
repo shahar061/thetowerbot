@@ -144,6 +144,20 @@ class ProgressRecorder:
                      self._heartbeat.phase_deadline_utc) = previous
                     self._publish()
 
+    def extend_startup(self, deadline_seconds: float) -> None:
+        """Re-arm the startup deadline after fresh evidence of a deliberate wait.
+
+        Only the account walk waiting out a live battle calls this, after a
+        completed capture, so a hung capture still trips its own deadline.
+        """
+        if deadline_seconds <= 0 or not math.isfinite(deadline_seconds):
+            raise ValueError('finite deadline required')
+        with self._lock:
+            if self._heartbeat.phase != 'startup':
+                return
+            self._heartbeat.phase_deadline_utc = self._now() + deadline_seconds
+            self._publish()
+
     def observe_capture(self) -> None:
         """Mark a completed physical capture in the current clock epoch."""
         with self._lock:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -216,6 +217,48 @@ def account_rows() -> list[AccountFrame]:
     return [frame("settings", controls={"account": (3, 4)}),
             frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
             frame("settings", controls={"close": (910, 490)}), frame("home")]
+
+
+class LateSupervisor(Supervisor):
+    """Accept account evidence observed at any time, as after a long wait."""
+
+    def verify_account(self, account_id: str, *, observed_at: float) -> None:
+        super().verify_account(account_id, observed_at=100.)
+
+    def observe(self, *, frame_digest: str, observed_at: float,
+                screen: str, account_id: str) -> RecoveryState:
+        return super().observe(frame_digest=frame_digest, observed_at=100.,
+                               screen=screen, account_id=account_id)
+
+
+class Progress:
+    def __init__(self, clock: SteppingClock) -> None:
+        self.clock = clock
+        self.rearmed: list[float] = []
+
+    def extend_startup(self, seconds: float) -> None:
+        assert seconds == 60
+        self.rearmed.append(self.clock())
+
+
+def test_a_long_battle_keeps_startup_alive_until_it_ends() -> None:
+    # Restarted mid-battle at wave 29-30, emulators 82 and 83 outlasted both
+    # the 180 s battle wait and the 60 s startup deadline, and were killed.
+    device = Device()
+    clock = SteppingClock()
+    supervisor = LateSupervisor("ACCOUNT-A")
+    supervisor.progress = Progress(clock)  # type: ignore[attr-defined]
+    rows = observer([
+        *[frame("battle")] * 600,
+        frame("game_over", controls={"home_from_game_over": (7, 8)}),
+        frame("home", controls={"settings": (1, 2)}),
+        *account_rows(),
+    ])
+    verify_restart_account(device=device, supervisor=supervisor,
+        expected_account="ACCOUNT-A", clock=clock, sleep=clock.sleep,
+        observe=lambda device: replace(rows(device), observed_at=clock()))
+    assert supervisor.verified == "ACCOUNT-A"
+    assert len(supervisor.progress.rearmed) == 600  # type: ignore[attr-defined]
 
 
 def test_link_account_prompt_over_home_is_closed_mid_transition() -> None:
