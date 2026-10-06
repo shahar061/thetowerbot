@@ -24,7 +24,15 @@ from fleet.lab_list import validate_lab_list  # noqa: E402
 from fleet.resource_blocks import template_lab_list  # noqa: E402
 
 GAME_SPEED = "labs.game-speed"
-BANNED = ("black-hole", "cooldown")
+LABS_SPEED = "labs.labs-speed"
+# Never researched: Black Hole Damage and the bot-cooldown labs. Other Black Hole labs are fine.
+BANNED = frozenset({"labs.black-hole-damage", "labs.flame-bot-cooldown", "labs.thunder-bot-cooldown",
+                    "labs.golden-bot-cooldown", "labs.amplify-bot-cooldown"})
+
+
+def _max_level(lab_id: str, default: int) -> int:
+    entry = lab_catalog.lab(lab_id)
+    return entry.max_level if entry is not None and entry.max_level else default
 
 
 def _template_tiers() -> dict[str, str]:
@@ -74,7 +82,7 @@ def flatten_slot_tracks(blocks: list[dict[str, Any]]) -> tuple[list[dict[str, An
     entries: list[dict[str, Any]] = []
     highest: dict[str, tuple[int, int | None]] = {}
     for lab_id, level, pin in ordered:
-        if any(word in lab_id for word in BANNED):
+        if lab_id in BANNED:
             notes.append(f"dropped {lab_id}: never researched (banned)")
             continue
         entry = lab_catalog.lab(lab_id)
@@ -95,12 +103,36 @@ def flatten_slot_tracks(blocks: list[dict[str, Any]]) -> tuple[list[dict[str, An
         if pin is not None:
             item["pin_slot"] = pin
         entries.append(item)
+    game_top = _max_level(GAME_SPEED, 7)
     if not entries or entries[0]["lab_id"] != GAME_SPEED or entries[0].get("pin_slot") != 1:
         entries = [e for e in entries if e["lab_id"] != GAME_SPEED]
-        entries.insert(0, {"id": "migrated.game-speed.7", "lab_id": GAME_SPEED, "to_level": 7,
-                           "tier": "S+", "pin_slot": 1, "label": "Game Speed to max"})
+        entries.insert(0, {"id": f"migrated.game-speed.{game_top}", "lab_id": GAME_SPEED,
+                           "to_level": game_top, "tier": "S+", "pin_slot": 1, "label": "Game Speed to max"})
         notes.append("put Game Speed first, pinned to slot 1")
+    elif entries[0]["to_level"] < game_top:
+        # Slot 1 is Game Speed's until it is maxed; later Game Speed entries now repeat it.
+        notes.append(f"raised Game Speed on slot 1 to L{game_top} (was L{entries[0]['to_level']})")
+        entries[0] = {**entries[0], "id": f"migrated.game-speed.{game_top}", "to_level": game_top}
+        entries = entries[:1] + [e for e in entries[1:] if e["lab_id"] != GAME_SPEED]
+    if not any(e.get("pin_slot") == 2 for e in entries):
+        entries = _pin_labs_speed(entries, notes)
     return entries, notes
+
+
+def _pin_labs_speed(entries: list[dict[str, Any]], notes: list[str]) -> list[dict[str, Any]]:
+    """Slot 2 is Labs Speed's: insert it to max right after the slot-1 pins."""
+    top = _max_level(LABS_SPEED, 99)
+    at = next((i for i, e in enumerate(entries) if e.get("pin_slot") != 1), len(entries))
+    if any(e["lab_id"] == LABS_SPEED and e["to_level"] >= top for e in entries[:at]):
+        notes.append("Labs Speed already maxed on slot 1: no slot 2 pin added")
+        return entries
+    later = [e for e in entries[at:] if e["lab_id"] == LABS_SPEED and e["to_level"] <= top]
+    for entry in later:  # A lower or equal level after the pin would repeat it.
+        notes.append(f"dropped {LABS_SPEED} L{entry['to_level']}: repeats L{top}")
+    pinned = {"id": f"migrated.labs-speed.{top}", "lab_id": LABS_SPEED, "to_level": top,
+              "tier": "S", "pin_slot": 2, "label": "Labs Speed to max"}
+    notes.append(f"pinned Labs Speed to slot 2 (L{top})")
+    return entries[:at] + [pinned] + [e for e in entries[at:] if not any(e is d for d in later)]
 
 
 def migrate_baseline(baseline: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:

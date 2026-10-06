@@ -78,6 +78,57 @@ def test_flatten_drops_non_increasing_repeats_and_unpriced_labs() -> None:
     assert any("black-hole" in n for n in notes)
 
 
+def test_only_black_hole_damage_and_the_bot_cooldown_labs_are_banned(monkeypatch) -> None:
+    """Other Black Hole labs are not banned; they stay when they have a price table."""
+    real = m.lab_catalog.lab
+    priced = real("labs.coins-wave")
+    monkeypatch.setattr(m.lab_catalog, "lab", lambda lab_id: real(lab_id) or priced)
+    tracks = copy.deepcopy(TRACKS)
+    for i, lab_id in enumerate(("labs.black-hole-damage", "labs.flame-bot-cooldown",
+                                "labs.thunder-bot-cooldown", "labs.golden-bot-cooldown",
+                                "labs.amplify-bot-cooldown", "labs.extra-black-hole",
+                                "labs.black-hole-coins-bonus")):
+        tracks[2]["children"].append({"id": f"t3.x{i}", "type": "research", "lab_id": lab_id, "to_level": 1})
+    entries, notes = m.flatten_slot_tracks(tracks)
+    kept = {e["lab_id"] for e in entries}
+    assert kept.isdisjoint({"labs.black-hole-damage", "labs.flame-bot-cooldown", "labs.thunder-bot-cooldown",
+                            "labs.golden-bot-cooldown", "labs.amplify-bot-cooldown"})
+    assert {"labs.extra-black-hole", "labs.black-hole-coins-bonus"} <= kept
+    assert sum("(banned)" in n for n in notes) == 5
+
+
+def test_labs_speed_is_pinned_to_slot_2_when_no_track_pins_it() -> None:
+    tracks = [copy.deepcopy(TRACKS[0]), copy.deepcopy(TRACKS[2])]
+    tracks[1]["children"].append({"id": "t3.ls", "type": "research", "lab_id": "labs.labs-speed",
+                                  "to_level": 20})
+    entries, notes = m.flatten_slot_tracks(tracks)
+    ids = [(e["lab_id"], e["to_level"], e.get("pin_slot")) for e in entries]
+    assert ids[:3] == [("labs.game-speed", 7, 1), ("labs.attack-speed", 50, 1), ("labs.labs-speed", 99, 2)]
+    assert entries[2]["tier"] == "S"
+    # The unpinned Labs Speed L20 would repeat L99 at a lower level: dropped.
+    assert [e for e in entries if e["lab_id"] == "labs.labs-speed"] == [entries[2]]
+    assert any("Labs Speed" in n and "slot 2" in n for n in notes)
+    m.validate_lab_list({"id": "labs.list", "type": "lab_list", "label": "x", "entries": entries})
+
+
+def test_an_existing_slot_2_pin_is_kept() -> None:
+    tracks = copy.deepcopy(TRACKS)
+    tracks[1]["children"] = [{"id": "t2.h", "type": "research", "lab_id": "labs.coins-wave", "to_level": 5}]
+    entries, _ = m.flatten_slot_tracks(tracks)
+    assert [(e["lab_id"], e.get("pin_slot")) for e in entries if e.get("pin_slot") == 2] == [
+        ("labs.coins-wave", 2)]
+
+
+def test_game_speed_pinned_to_slot_1_goes_to_max() -> None:
+    tracks = copy.deepcopy(TRACKS)
+    tracks[0]["children"][0]["to_level"] = 3
+    entries, notes = m.flatten_slot_tracks(tracks)
+    assert (entries[0]["lab_id"], entries[0]["to_level"], entries[0]["pin_slot"]) == ("labs.game-speed", 7, 1)
+    assert entries[0]["id"] == "migrated.game-speed.7"
+    assert [e for e in entries if e["lab_id"] == "labs.game-speed"] == [entries[0]]
+    assert any("Game Speed" in n and "L7" in n for n in notes)
+
+
 def test_rules_leave_workshop_and_gem_limits_alone() -> None:
     base = _baseline(STEPS)
     base["rules"]["coins"]["workshop_spend_limit_pct"] = 40
