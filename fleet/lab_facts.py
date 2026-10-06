@@ -10,14 +10,15 @@ import json
 import math
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import db
 from account_state import completed_lab_levels
 from fleet.build_route_preview_facts import read_lab_slots
-from fleet.coin_share import LabCoinJar, jit_hold
+from fleet.build_route import is_lab_list
+from fleet.coin_share import LabCoinJar, SaveTarget, jit_hold
 from fleet.reroll_lifetime import read_lifetime
-from fleet.resource_blocks import LabFacts, evaluate_lab_plan
+from fleet.resource_blocks import LabFacts, _slot_context, evaluate_lab_plan
 from lab_plan import LabCadence
 
 
@@ -85,3 +86,31 @@ def just_in_time_hold(route: Any, worker_root: Path, account_id: str, *, wallet:
     plan = evaluate_lab_plan(route, persisted_lab_facts(worker_root, account_id, now=now, coins=wallet,
                                                         gems=None, db_path=db_path))
     return jit_hold(plan.saving, wallet)
+
+
+def save_pct_target(route: Any, worker_root: Path, account_id: str, *, wallet: int | None,
+                    db_path: Path, now: float
+                    ) -> tuple[SaveTarget | None, Callable[[str, int | None], bool]] | None:
+    """The ranked list's slot-1 save target and a "researching or finished" check.
+
+    The target is slot 1's planned lab, or the lab its filler saves for. None when the
+    route is not a ranked lab list (no plan: the caller falls back to the cadence); a
+    `(None, ...)` pair when the plan names nothing for slot 1 right now.
+    """
+    if not is_lab_list(route.labs):
+        return None
+    facts = persisted_lab_facts(worker_root, account_id, now=now, coins=wallet, gems=None, db_path=db_path)
+    plan = evaluate_lab_plan(route, facts)
+    ctx = _slot_context(facts)
+
+    def retired(lab_id: str, level: int | None) -> bool:
+        if level is None:
+            return False
+        known = ctx.known.get(lab_id)
+        return (known is not None and known >= level) or ctx.running.get(lab_id) == level
+
+    slot1 = next((slot for slot in plan.slots if slot.slot == 1), None)
+    pick = None if slot1 is None else slot1.saving_for if slot1.role == "filler" else slot1.next
+    if pick is None or type(pick.price) is not int or pick.price <= 0:
+        return None, retired
+    return SaveTarget(pick.lab_id, pick.level, pick.price), retired

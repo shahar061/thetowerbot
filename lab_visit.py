@@ -57,6 +57,12 @@ class LabVisitResult:
     started_slots: tuple[int, ...] = ()
     # The research each proven start began, in the same order as started_slots.
     started_research: tuple[str, ...] = ()
+    # (research, coins) for each proven start, in the same order: the journal-proven
+    # spend, else the planned price. The lab coin jar is debited once per start.
+    started_spends: tuple[tuple[str, int], ...] = ()
+    # (level, completes_at) of a Game Speed start in this visit, even when it was
+    # not the last start: the slot-1 cadence must record it running.
+    game_speed_start: tuple[int | None, float | None] | None = None
     # The visit re-planned from a fresh strip after its last proven start.
     replanned: bool = False
     # A later attempt that ended after a proven start; the started result is kept.
@@ -668,6 +674,8 @@ class LabVisit:
             # A failure after proven starts still reports which slots started.
             outcome = replace(outcome, started_slots=prior.started_slots,
                               started_research=prior.started_research,
+                              started_spends=prior.started_spends,
+                              game_speed_start=prior.game_speed_start,
                               replanned=prior.replanned)
         self._state = "idle"
         self._outcome = outcome
@@ -748,7 +756,17 @@ class LabVisit:
             (slot,) if slot is not None else ())
         started = (prior.started_research if prior is not None else ()) + (
             (research,) if research is not None else ())
-        outcome = replace(outcome, started_slots=slots, started_research=started, replanned=False)
+        decision = outcome.decision
+        spent = (outcome.observed_coin_spend if outcome.observed_coin_spend > 0
+                 else decision.price if type(decision.price) is int and decision.price > 0 else 0)
+        spends = (prior.started_spends if prior is not None else ()) + (
+            ((research, spent),) if research is not None and spent > 0 else ())
+        game_speed = prior.game_speed_start if prior is not None else None
+        if research == 'labs.game-speed':
+            job = outcome.confirmed_job
+            game_speed = (decision.game_speed_level, job.completes_at if job is not None else None)
+        outcome = replace(outcome, started_slots=slots, started_research=started,
+                          started_spends=spends, game_speed_start=game_speed, replanned=False)
         # Loop only where the planner hook in advance() can choose the next start.
         if not (self._options.direct_start and self._options.start_research
                 and self._options.native_repeat == 'unchanged' and not self._unlock_done

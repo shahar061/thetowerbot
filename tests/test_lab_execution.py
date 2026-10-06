@@ -320,6 +320,37 @@ def test_a_replanned_visit_reports_it_and_every_started_research(
     assert h.visit._outcome.replanned and h.visit._outcome.started_research == ('labs.health', 'labs.game-speed')
 
 
+def test_every_start_carries_its_spend_and_game_speeds_job(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    from labs import LabJob
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    job = LabJob(1, 'labs.game-speed', 'Game Speed Lv.4', 120_000., 4000.,
+                 None, 'unknown', 'researching', 1., (100, 300, 200, 50))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed',
+                                       LabDecision('start', 50_000, 51_500, game_speed_level=4, slot=1,
+                                                   research_id='labs.game-speed'),
+                                       confirmed_job=job, observed_coin_spend=50_000))
+    h.visit._next_start(LabVisitResult('started', 'research_confirmed',
+                                       LabDecision('start', 71, 1_500, slot=2, research_id='labs.coins-wave'),
+                                       observed_coin_spend=70))
+    h.visit._next_start(LabVisitResult('started', 'research_confirmed',
+                                       LabDecision('start', 1350, 1_430, slot=3,
+                                                   research_id='labs.coins-kill-bonus')))
+    outcome = h.visit._outcome
+    # The journal-proven spend, else the planned price when none was proven.
+    assert outcome.started_spends == (('labs.game-speed', 50_000), ('labs.coins-wave', 70),
+                                      ('labs.coins-kill-bonus', 1350))
+    assert outcome.game_speed_start == (4, 120_000.)
+    h.visit._end_attempt(LabVisitResult('observed', 'wait_running', LabDecision('wait_running')))
+    assert h.visit._outcome.started_spends == outcome.started_spends
+    assert h.visit._outcome.game_speed_start == (4, 120_000.)
+
+
 def test_a_visit_that_returns_after_its_start_has_not_replanned(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from lab_plan import LabDecision

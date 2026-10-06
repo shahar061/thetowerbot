@@ -677,3 +677,92 @@ def test_published_gem_step_names_the_canary(tmp_path: Path) -> None:
     assert published["gem_step"]["reason"] == "Canary: Air_38 unlocks slot 2 next visit"
     facts = json.loads((tmp_path / "workers" / "Air_38" / "build-route-resource-facts.json").read_text())
     assert facts["lab_slot_status"] == {"2": "locked"}
+
+
+def _save_pct_template_route(root: Path, expected: int = 0) -> RouteDocument:
+    """The real lab-list template with its own rules (save_pct 25)."""
+    from fleet import resource_blocks as rb
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
+    raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
+    raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    assert raw["baseline"]["rules"]["coins"]["lab_share"] == {"mode": "save_pct", "pct": 25}
+    return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
+
+
+def _game_speed_l3_finished_and_a_filler_runs(progress: RerollProgress) -> None:
+    """Game Speed L3 started (wait_running), finished; slot 1 now runs a filler.
+
+    The slot-1 cadence is never written wait_coins again: a filler start keeps it.
+    """
+    progress.note_lab_observation(LabDecision("wait_running", job_completes_at=time.time() - 60,
+                                              game_speed_level=3), now=time.time() - 7200)
+    progress.note_other_lab_research(now=time.time())
+
+
+def _jar(progress: RerollProgress) -> dict:
+    return json.loads((progress.root / "lab-coin-jar.json").read_text())
+
+
+def test_save_pct_saves_toward_the_plans_game_speed_while_a_filler_runs(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _save_pct_template_route(tmp_path)
+    _game_speed_l3_finished_and_a_filler_runs(progress)
+    base = Strategy.from_config().shopping
+    progress.route_facts = _facts("after-run:1", wallet=10_000)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 2_500
+    assert _jar(progress)["target"] == {"lab_id": "labs.game-speed", "level": 4}
+    progress.route_facts = _facts("after-run:2", wallet=12_500)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 5_000
+    assert progress._route_evaluation.trace.spend_ceiling == 7_500
+    # Capped at Game Speed L4's 50,000 from the plan, however rich the run.
+    progress.route_facts = _facts("after-run:3", wallet=1_000_000)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 50_000
+
+
+def test_a_transient_unknown_cadence_keeps_the_jar(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _save_pct_template_route(tmp_path)
+    progress.note_lab_failure(now=time.time())  # no saved observation: the cadence reads "unknown"
+    (progress.root / "lab-coin-jar.json").write_text(json.dumps(
+        {"account_id": "account-a", "amount": 5_000, "visit_key": "after-run:1", "updated_at": 1.0,
+         "target": {"lab_id": "labs.game-speed", "level": 4}}))
+    progress.route_facts = _facts("after-run:2", wallet=12_000)  # type: ignore[method-assign]
+    progress.shopping_policy(Strategy.from_config().shopping)
+    assert progress.coin_jar.amount() == 5_000
+    assert progress._route_evaluation.trace.spend_ceiling == 7_000
+
+
+def test_a_multi_start_visit_leaves_no_phantom_jar(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _save_pct_template_route(tmp_path)
+    _game_speed_l3_finished_and_a_filler_runs(progress)
+    base = Strategy.from_config().shopping
+    (progress.root / "lab-coin-jar.json").write_text(json.dumps(
+        {"account_id": "account-a", "amount": 50_000, "visit_key": "after-run:5", "updated_at": 1.0,
+         "target": {"lab_id": "labs.game-speed", "level": 4}}))
+    # A stale jar never exceeds the wallet it reads.
+    progress.route_facts = _facts("after-run:5", wallet=10_000)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 10_000
+    (progress.root / "lab-coin-jar.json").write_text(json.dumps(
+        {"account_id": "account-a", "amount": 50_000, "visit_key": "after-run:5", "updated_at": 1.0,
+         "target": {"lab_id": "labs.game-speed", "level": 4}}))
+    # One visit started Game Speed L4, then two fillers: every start is debited.
+    for spent in (50_000, 71, 1_350):
+        progress.note_lab_coin_debit(spent)
+    progress.note_lab_observation(LabDecision("wait_running", job_completes_at=time.time() + 120_000,
+                                              game_speed_level=4), now=time.time())
+    progress.route_facts = _facts("after-run:5", wallet=79)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 0
+    assert progress._route_evaluation.trace.spend_ceiling == 79
+    # The next run saves toward L5; L4 is running, so its old target never caps the jar.
+    progress.route_facts = _facts("after-run:6", wallet=10_079)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 2_519
+    assert _jar(progress)["target"] == {"lab_id": "labs.game-speed", "level": 5}
+    assert progress._route_evaluation.trace.spend_ceiling == 7_560

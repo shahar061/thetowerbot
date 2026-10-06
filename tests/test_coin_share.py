@@ -73,57 +73,87 @@ def test_workshop_paused_agrees_with_the_wallet_not_just_the_lab_state() -> None
     assert coin_share.workshop_paused(labs_first, WAITING, wallet=None)      # wallet unknown: fail closed
 
 
-def test_settle_grows_once_per_visit_and_resets(tmp_path: Path) -> None:
+GS4 = coin_share.SaveTarget("labs.game-speed", 4, 50_000)
+
+
+def test_settle_grows_once_per_visit(tmp_path: Path) -> None:
     jar = coin_share.LabCoinJar(tmp_path, "a1")
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 20}})
-    assert jar.settle(saving, WAITING, 1000, "visit-1", 10.) == 200
-    assert jar.settle(saving, WAITING, 1000, "visit-1", 11.) == 200   # same visit, no regrowth
-    assert jar.settle(saving, WAITING, 1000, "visit-2", 12.) == 360
+    target = coin_share.cadence_target(saving, WAITING)
+    assert target == coin_share.SaveTarget("labs.game-speed", 2, 2500)
+    assert jar.settle(saving, target, 1000, "visit-1", 10.) == 200
+    assert jar.settle(saving, target, 1000, "visit-1", 11.) == 200   # same visit, no regrowth
+    assert jar.settle(saving, target, 1000, "visit-2", 12.) == 360
     record = json.loads(jar.path.read_text())
     assert record["account_id"] == "a1" and record["amount"] == 360
-    jar.reset(13.)
-    assert jar.amount() == 0
-    assert jar.settle(saving, WAITING, 1000, "visit-2", 14.) == 0      # reset holds for this visit
+    assert record["target"] == {"lab_id": "labs.game-speed", "level": 2}
 
 
 def test_save_pct_keeps_a_share_of_each_run_across_runs(tmp_path: Path) -> None:
     """Each run's first menu visit moves pct% of the coins above the jar into it."""
     jar = coin_share.LabCoinJar(tmp_path, "a1")
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
-    waiting = {**WAITING, "price": 50_000}
-    assert jar.settle(saving, waiting, 10_000, "after-run:1", 10.) == 2_500
+    assert jar.settle(saving, GS4, 10_000, "after-run:1", 10.) == 2_500
     assert coin_share.workshop_ceiling(saving, 10_000, 2_500) == 7_500
     # Workshop spent its 7,500; the next run earned 10,000 more.
-    assert jar.settle(saving, waiting, 12_500, "after-run:2", 11.) == 5_000
+    assert jar.settle(saving, GS4, 12_500, "after-run:2", 11.) == 5_000
     assert coin_share.workshop_ceiling(saving, 12_500, 5_000) == 7_500
 
 
 def test_a_lab_debit_takes_only_its_price_from_the_jar(tmp_path: Path) -> None:
     jar = coin_share.LabCoinJar(tmp_path, "a1")
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
-    waiting = {**WAITING, "price": 50_000}
-    jar.settle(saving, waiting, 20_000, "after-run:1", 10.)
+    jar.settle(saving, GS4, 20_000, "after-run:1", 10.)
     assert jar.spend(71, 11.) == 4_929        # a cheap filler keeps the Game Speed savings
-    assert jar.settle(saving, waiting, 19_929, "after-run:1", 12.) == 4_929  # same run: no regrowth
+    assert jar.settle(saving, GS4, 19_929, "after-run:1", 12.) == 4_929  # same run: no regrowth
     assert jar.spend(50_000, 13.) == 0        # never below empty
     assert jar.amount() == 0
     assert coin_share.LabCoinJar(tmp_path / "none", "a1").spend(71, 14.) == 0
 
 
-def test_no_waiting_lab_or_another_mode_empties_the_jar(tmp_path: Path) -> None:
+def test_the_jar_never_exceeds_the_wallet_or_the_target_price(tmp_path: Path) -> None:
+    jar = coin_share.LabCoinJar(tmp_path, "a1")
+    saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 50}})
+    assert jar.settle(saving, GS4, 200_000, "after-run:1", 10.) == 50_000   # capped at the price
+    assert jar.settle(saving, GS4, 1_000, "after-run:1", 11.) == 1_000      # a known wallet clamps it
+    assert jar.amount() == 1_000
+    assert jar.settle(saving, None, 400, "after-run:1", 12.) == 400         # with no target too
+
+
+def test_an_unknown_target_keeps_the_jar_and_another_mode_empties_it(tmp_path: Path) -> None:
     jar = coin_share.LabCoinJar(tmp_path, "a1")
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 20}})
-    jar.settle(saving, WAITING, 1000, "visit-1", 10.)
-    assert jar.settle(saving, {**WAITING, "kind": "done"}, 1000, "visit-2", 11.) == 0
+    jar.settle(saving, GS4, 10_000, "after-run:1", 10.)
+    # A transient unknown/inspect cadence or unread plan names no target: keep, never grow.
+    assert coin_share.cadence_target(saving, {**WAITING, "kind": "unknown"}) is None
+    assert jar.settle(saving, None, 10_000, "after-run:2", 11.) == 2_000
+    assert jar.amount() == 2_000
+    assert jar.settle(route(), GS4, 10_000, "after-run:3", 12.) == 0
     assert jar.amount() == 0
-    assert coin_share.LabCoinJar(tmp_path / "fresh", "a1").settle(route(), WAITING, 1000, "v", 1.) == 0
+    assert coin_share.LabCoinJar(tmp_path / "fresh", "a1").settle(route(), GS4, 1000, "v", 1.) == 0
+    assert coin_share.LabCoinJar(tmp_path / "fresh", "a1").settle(saving, None, 1000, "v", 1.) == 0
     assert not (tmp_path / "fresh" / coin_share.JAR_FILE).exists()
+
+
+def test_the_jar_empties_once_its_target_is_researching_or_finished(tmp_path: Path) -> None:
+    jar = coin_share.LabCoinJar(tmp_path, "a1")
+    saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
+    jar.settle(saving, GS4, 20_000, "after-run:1", 10.)
+    gs5 = coin_share.SaveTarget("labs.game-speed", 5, 150_000)
+    started = {("labs.game-speed", 4)}
+    # The plan moved on but L4 is neither running nor done: the savings carry over.
+    assert jar.settle(saving, gs5, 20_000, "after-run:1", 11., retired=lambda lab, level: False) == 5_000
+    jar.settle(saving, GS4, 20_000, "after-run:1", 12.)
+    # L4 started (or finished): its savings are spent, saving for L5 starts from zero.
+    assert jar.settle(saving, gs5, 20_000, "after-run:2", 13.,
+                      retired=lambda lab, level: (lab, level) in started) == 5_000
+    assert json.loads(jar.path.read_text())["target"] == {"lab_id": "labs.game-speed", "level": 5}
 
 
 def test_read_only_jar_never_writes(tmp_path: Path) -> None:
     jar = coin_share.LabCoinJar(tmp_path, "a1", read_only=True)
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 20}})
-    assert jar.settle(saving, WAITING, 1000, "visit-1", 10.) == 200
+    assert jar.settle(saving, coin_share.cadence_target(saving, WAITING), 1000, "visit-1", 10.) == 200
     assert not jar.path.exists()
 
 

@@ -430,6 +430,7 @@ class CadenceProgress:
         from lab_plan import LabCadence
         self.lab_cadence = LabCadence(root, 'account-a')
         self.debits = 0
+        self.spends: list[int] = []
         self.failures = 0
 
     def note_lab_slots(self, slots: dict, gems: int | None) -> None:
@@ -440,6 +441,7 @@ class CadenceProgress:
 
     def note_lab_coin_debit(self, spent: int) -> None:
         self.debits += 1
+        self.spends.append(spent)
 
     def note_lab_failure(self) -> None:
         self.failures += 1
@@ -527,6 +529,39 @@ def test_another_slots_failed_visit_still_backs_off(tmp_path: Path) -> None:
     assert b.reroll_progress.failures == 1
     record = b.reroll_progress.lab_cadence._record()
     assert (record['kind'], record['price'], record['game_speed_level']) == ('wait_coins', 500, 3)
+
+
+def test_a_multi_start_visit_debits_every_start_and_marks_game_speed_running(tmp_path: Path) -> None:
+    from lab_visit import LabVisitResult
+    b = finishing_bot(tmp_path)
+    # Game Speed L4 started first, then two fillers; the visit's decision is the last filler's.
+    result = LabVisitResult(
+        'started', 'research_confirmed',
+        LabDecision('start', 1350, 1421, game_speed_level=6, slot=3, research_id='labs.coins-kill-bonus'),
+        slot_job(3, 'labs.coins-kill-bonus', 9000.), 1350, transaction_key='txn-3',
+        started_slots=(1, 2, 3),
+        started_research=('labs.game-speed', 'labs.coins-wave', 'labs.coins-kill-bonus'),
+        started_spends=(('labs.game-speed', 50_000), ('labs.coins-wave', 71),
+                        ('labs.coins-kill-bonus', 1350)),
+        game_speed_start=(4, 120_000.))
+    b._finish_lab_visit(result)
+    b._finish_lab_visit(result)  # a repeated finish never debits twice
+    assert b.reroll_progress.spends == [50_000, 71, 1350]
+    record = b.reroll_progress.lab_cadence._record()
+    assert (record['kind'], record['job_completes_at'], record['game_speed_level']) == (
+        'wait_running', 120_000., 4)
+    assert b._research_until == 120_000.
+
+
+@pytest.mark.parametrize('observed, debited', [(280, 280), (0, 300)], ids=['observed', 'unread'])
+def test_the_journal_proven_spend_is_debited(tmp_path: Path, observed: int, debited: int) -> None:
+    from lab_visit import LabVisitResult
+    b = finishing_bot(tmp_path)
+    b._finish_lab_visit(LabVisitResult(
+        'started', 'research_confirmed',
+        LabDecision('start', 300, 613, game_speed_level=8, slot=2, research_id='labs.attack-speed'),
+        slot_job(2, 'labs.attack-speed', 9000.), observed, transaction_key='txn-2'))
+    assert b.reroll_progress.spends == [debited]
 
 
 def test_lab_one_game_speed_start_still_writes_its_cadence(tmp_path: Path) -> None:

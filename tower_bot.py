@@ -275,6 +275,7 @@ class TowerBot:
                                           if self.lab_visit is not None else None)
         self._bind_lab_runtime()
         self._last_lab_confirmation: tuple[float | None, int, int] | None = None
+        self._last_lab_debit: tuple[Any, ...] | None = None
         self._last_wave_progress: tuple[int | None, int] | None = None
         # The last HUD wave the autopilot read. Reported on IN_RUN scans only.
         self._scan_wave: int | None = None
@@ -1765,8 +1766,6 @@ class TowerBot:
                             coins_before=decision.wallet_coins,
                             coins_after=decision.wallet_coins - decision.price,
                             completes_at=result.confirmed_job.completes_at))
-                    # The confirmed debit spends only its own price from the lab savings.
-                    self.reroll_progress.note_lab_coin_debit(decision.price)
         else:
             # With auto-start off the visit only looked; keep the saved Game
             # Speed evidence rather than overwriting it with "inspect". A visit
@@ -1779,6 +1778,17 @@ class TowerBot:
                 # slot, but research never began: it must not be observed as
                 # a start or as any other cadence/state-changing observation.
                 self.reroll_progress.note_lab_observation(decision)
+        self._debit_lab_starts(result)
+        started_speed = getattr(result, 'game_speed_start', None)
+        if started_speed is not None and not (game_speed and result.status == "started"
+                                              and result.confirmed_job is not None):
+            # Game Speed started earlier in this visit, before its last start: Lab 1 is
+            # running it, whichever start the visit's decision describes.
+            level, completes = started_speed
+            if completes is not None:
+                self._research_until = completes
+            self.reroll_progress.note_lab_observation(LabDecision(
+                "wait_running", job_completes_at=completes, game_speed_level=level))
         if (decision.slot == 1 and decision.research_id != 'labs.game-speed'
                 and result.status in ('started', 'observed')
                 and decision.kind != 'unknown' and result.reason != 'research_rehearsed'):
@@ -1786,6 +1796,28 @@ class TowerBot:
         logger.info("Lab %s visit ended: %s (%s), started slots %s%s", decision.slot, result.status,
                     result.reason, getattr(result, 'started_slots', ()),
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
+
+    def _debit_lab_starts(self, result: Any) -> None:
+        """Take each proven start's coins from the lab jar, once per visit result.
+
+        Every start in a multi-start visit is debited, not just the last one. The
+        journal-proven spend counts; the planned price only when none was proven.
+        """
+        spends = tuple(getattr(result, 'started_spends', ()) or ())
+        decision = result.decision
+        if not spends and result.status == "started" and result.confirmed_job is not None:
+            spent = (result.observed_coin_spend if result.observed_coin_spend > 0
+                     else decision.price if type(decision.price) is int else 0)
+            spends = ((decision.research_id, spent),) if spent > 0 else ()
+        if not spends:
+            return
+        job = result.confirmed_job
+        key = (result.transaction_key, spends, job.completes_at if job is not None else None)
+        if key == getattr(self, '_last_lab_debit', None):
+            return
+        self._last_lab_debit = key
+        for _, spent in spends:
+            self.reroll_progress.note_lab_coin_debit(spent)
 
     def run_once(self, max_runs: int | None = None) -> bool:
         """Record a scan only when its pass returned normally."""
