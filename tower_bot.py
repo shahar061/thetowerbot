@@ -1613,6 +1613,14 @@ class TowerBot:
         return frozenset(research for (account, route, research), expiry in blocked.items()
                          if account == account_id and route == revision and now < expiry)
 
+    def _arm_lab_visit_bookkeeping(self, lab_notice_due: bool) -> None:
+        """Record the route revision and badge generation for a just-armed Labs visit."""
+        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        self._lab_visit_revision = route_runtime.current().revision if route_runtime is not None else None
+        if lab_notice_due:
+            self._notifications.begin("labs", time.time())
+        logger.info("Armed Labs check from the confirmed unlocked tab.")
+
     def _lab_start_due(self, now: float) -> bool:
         """Whether a lab start is due, from slot state alone (never the wallet)."""
         if self.reroll_progress is None:
@@ -3003,32 +3011,33 @@ class TowerBot:
             elif self._offer_cards_intro():
                 logger.info("Armed the first Cards visit from the main menu.")
             elif self.lab_visit is not None and self.reroll_progress is not None:
-                armed = self._offer_claim(settings)
-                if armed is not None:
-                    logger.info("Armed a %s claim from the main menu.", armed)
+                now = time.time()
+                # Persist only an explicit lock or unlocked-tab match.
+                # An ambiguous frame remains unknown and never authorizes
+                # a tap into Labs.
+                labs_tab_status = self.lab_visit.tab_status(self.screen)
+                if labs_tab_status == "unlocked":
+                    self.reroll_progress.note_lab_unlocked("labs_tab")
+                elif labs_tab_status == "locked":
+                    self.reroll_progress.note_lab_locked("labs_tab")
+                lab_notice_due = self._notifications.eligible("labs", now)
+                # A due lab start outranks claims and the Workshop. The start
+                # probe has pacing side effects, so it runs once per frame.
+                lab_due_now = (labs_tab_status == "unlocked" and (
+                    lab_notice_due or self._lab_start_due(now)
+                    or self.reroll_progress.lab_unlock_due(wallet_gems=menu_gems)))
+                if lab_due_now and self._request_planned_lab_visit(now, True):
+                    self._arm_lab_visit_bookkeeping(lab_notice_due)
                 else:
-                    # Persist only an explicit lock or unlocked-tab match.
-                    # An ambiguous frame remains unknown and never authorizes
-                    # a tap into Labs.
-                    labs_tab_status = self.lab_visit.tab_status(self.screen)
-                    if labs_tab_status == "unlocked":
-                        self.reroll_progress.note_lab_unlocked("labs_tab")
-                    elif labs_tab_status == "locked":
-                        self.reroll_progress.note_lab_locked("labs_tab")
-                    lab_notice_due = self._notifications.eligible("labs", time.time())
-                    if (labs_tab_status == "unlocked"
-                            and self._request_planned_lab_visit(
-                                time.time(),
-                                lab_notice_due or self._lab_start_due(time.time())
-                                or self.reroll_progress.lab_unlock_due(wallet_gems=menu_gems))):
-                        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
-                        self._lab_visit_revision = route_runtime.current().revision if route_runtime is not None else None
-                        if lab_notice_due:
-                            self._notifications.begin("labs", time.time())
-                        logger.info("Armed Labs check from the confirmed unlocked tab.")
-                    else:
-                        if self._menu_tab_unlocked("workshop"):
-                            self.shopping.begin(shopping_policy, self.runs.completed)
+                    armed = self._offer_claim(settings)
+                    if armed is not None:
+                        logger.info("Armed a %s claim from the main menu.", armed)
+                    # Not due: a pending planned-action follow-up can still arm.
+                    elif (labs_tab_status == "unlocked"
+                            and self._request_planned_lab_visit(now, False)):
+                        self._arm_lab_visit_bookkeeping(lab_notice_due)
+                    elif self._menu_tab_unlocked("workshop"):
+                        self.shopping.begin(shopping_policy, self.runs.completed)
             elif not self.shopping.begin(shopping_policy, self.runs.completed):
                 armed = self._offer_claim(settings)
                 if armed is not None:
