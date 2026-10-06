@@ -161,11 +161,15 @@ def test_reroll_game_over_only_goes_home_when_the_target_may_be_affordable(
         def stats_due(self):
             return False
 
-        def lab_due(self):
+        def lab_due(self, *args, **kwargs):
             return False
 
         def lab_unlock_due(self, *args, **kwargs):
             return False
+
+        def lab_visit_options(self):
+            from lab_plan import LabVisitOptions
+            return LabVisitOptions()
 
     bot = _shopping_bot(
         "game_over", state=screens.ScreenState.GAME_OVER,
@@ -292,6 +296,34 @@ def test_stale_strip_refreshes_after_six_hours_not_five_minutes() -> None:
     assert bot._lab_start_due(now) is False
     bot2, now2 = _due_bot(('researching',), (time.time() + 86400,), observed_at=time.time() - 7 * 3600)
     assert bot2._lab_start_due(now2) is True
+
+
+def test_lab_start_due_looks_ahead_thirty_seconds() -> None:
+    # Spec 3.5(b): a timer ending within 30 s is due now; one 40 s out is not.
+    bot, now = _due_bot(('researching',), (time.time() + 20,))
+    assert bot._lab_start_due(now) is True
+    bot2, now2 = _due_bot(('researching',), (time.time() + 40,))
+    assert bot2._lab_start_due(now2) is False
+
+
+def test_lab_start_due_without_a_lab_runtime_defers_to_the_legacy_cadence() -> None:
+    bot, now = _due_bot(('idle',), (None,))
+    bot.lab_runtime = None
+    bot.reroll_progress.lab_due = lambda *a, **k: True
+    assert bot._lab_start_due(now) is True
+    bot.reroll_progress.lab_due = lambda *a, **k: False
+    assert bot._lab_start_due(now) is False
+
+
+def test_game_over_lab_detour_survives_a_declined_navigation_pass() -> None:
+    bot, _ = _due_bot(('idle',), (None,))
+    bot._update_maintenance = lambda *args: None
+    asked: list[bool] = []
+    bot.navigator.maybe_navigate = lambda *args, **kwargs: asked.append(kwargs['go_home'])
+    bot.run_once()
+    bot.run_once()  # the 300 s pacing is spent; the latch must carry the detour
+    assert asked == [True, True]
+    assert bot._lab_home_pending is True
 
 
 def test_direct_lab_detour_paces_idle_and_stale_running_checks() -> None:
