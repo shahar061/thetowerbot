@@ -1893,7 +1893,8 @@ class TowerBot:
         self._last_scan_in_battle = battle_context
         # GAME_OVER is in both: it paces like battle today, and is also dead
         # time between runs. Only an actual run (or a run-HUD UNKNOWN) is not.
-        self._last_scan_between_games = not in_run
+        # A paused bot can sit on a menu for hours: it keeps the menu pace.
+        self._last_scan_between_games = not in_run and not settings.paused
         if reading.state is not screens.ScreenState.MAIN_MENU:
             # Any other screen (a claim walk's pages included) ends the idling,
             # even on passes that return before the watchdog below is reached.
@@ -3371,7 +3372,9 @@ class TowerBot:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.
                 current_interval = min(current_interval, config.BATTLE_FOLLOWUP_SECONDS)
-            if interval is None and config.MENU_FAST_PROFILE and self._last_scan_between_games:
+            # Paused since the scan: the menu pace, not the fast profile.
+            if (interval is None and config.MENU_FAST_PROFILE and self._last_scan_between_games
+                    and not self.controls.snapshot().paused):
                 current_interval = min(current_interval, max(MIN_INTERVAL, jitter.spread(
                     config.MENU_FAST_SCAN_SECONDS, live.timing_jitter)))
                 if self.tracker.pending:

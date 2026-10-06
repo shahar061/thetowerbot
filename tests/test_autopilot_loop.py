@@ -690,6 +690,18 @@ def test_the_battle_policy_learns_which_tab_is_open(
     assert ('policy', tab) in progress.calls
 
 
+def test_a_paused_scan_is_not_a_between_games_scan(
+    bot_on_main_menu: Callable[..., TowerBot],
+) -> None:
+    """The fast menu profile is for the gap between games, not a paused bot."""
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    bot.run_once()
+    assert bot._last_scan_between_games
+    bot.controls.apply({'paused': True})
+    bot.run_once()
+    assert not bot._last_scan_between_games
+
+
 # --- Home-screen idle watchdog -----------------------------------------------
 
 
