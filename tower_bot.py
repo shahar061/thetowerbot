@@ -3129,6 +3129,7 @@ class TowerBot:
             and not (self.lab_visit is not None and self.lab_visit.active)
         )
         tier_selecting = False
+        nav_tapped = False
         if navigation_clear:
             # Navigator taps BATTLE on MAIN_MENU on a cooldown - left alone
             # it would start a run in the middle of a shopping errand.
@@ -3160,7 +3161,7 @@ class TowerBot:
                                  and (self._lab_home_pending or self._lab_start_due(time.time())))
                 if lab_start_due:
                     self._lab_home_pending = True
-                self.navigator.maybe_navigate(
+                nav_tapped = self.navigator.maybe_navigate(
                     self.screen,
                     state,
                     self.device,
@@ -3205,24 +3206,25 @@ class TowerBot:
                     cooldown=(config.MENU_FAST_NAV_COOLDOWN_SECONDS
                               if config.MENU_FAST_PROFILE and self._last_scan_between_games
                               else None),
-                )
+                ) is not None
 
         # Backstop for the idle gap between games: the visits above normally
         # finish and the navigation above taps BATTLE within seconds, but
         # nothing else bounds a menu that stays quiet. Idle means the same
         # gate navigation uses, plus a plain missions visit and tier selection.
-        if (navigation_clear and not tier_selecting and not self.visit.active
+        # A pass whose navigation tapped is not idle: one tap per frame.
+        if (navigation_clear and not tier_selecting and not nav_tapped and not self.visit.active
                 and state is screens.ScreenState.MAIN_MENU
                 and reading.state is screens.ScreenState.MAIN_MENU):
             idle_now = time.monotonic()
             if self._menu_idle_since is None:
                 self._menu_idle_since = idle_now
-            elif idle_now - self._menu_idle_since >= config.MENU_IDLE_WATCHDOG_SECONDS:
+            elif (idle_now - self._menu_idle_since >= config.MENU_IDLE_WATCHDOG_SECONDS
+                    and self.navigator.maybe_navigate(
+                        self.screen, state, self.device, now=idle_now,
+                        tuning=settings.strategy, go_home=False, cooldown=0.0) is not None):
                 logger.warning("between_games_idle_watchdog: %.0f s idle on the main menu; "
-                               "starting the next run", idle_now - self._menu_idle_since)
-                self.navigator.maybe_navigate(
-                    self.screen, state, self.device, now=idle_now,
-                    tuning=settings.strategy, go_home=False, cooldown=0.0)
+                               "started the next run", idle_now - self._menu_idle_since)
                 self._menu_idle_since = None
         else:
             self._menu_idle_since = None

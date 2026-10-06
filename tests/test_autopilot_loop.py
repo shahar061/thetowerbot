@@ -712,7 +712,9 @@ def test_watchdog_taps_battle_after_twenty_idle_seconds(
     clock = [1000.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
     calls: list[dict] = []
-    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    # Normal navigation taps nothing (its cooldown); the watchdog's call taps.
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or (
+        "BATTLE" if k.get("cooldown") == 0.0 else None)
     bot.run_once()
     assert not any(k.get("cooldown") == 0.0 for k in calls)
     assert bot._menu_idle_since is not None
@@ -720,6 +722,43 @@ def test_watchdog_taps_battle_after_twenty_idle_seconds(
     bot.run_once()
     assert any(k.get("cooldown") == 0.0 and k.get("go_home") is False for k in calls)
     assert bot._menu_idle_since is None
+
+
+def test_watchdog_never_taps_again_on_a_pass_navigation_tapped(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or None
+    bot.run_once()
+    assert bot._menu_idle_since is not None
+    clock[0] += 21
+    # This pass, ordinary navigation taps BATTLE itself.
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or "BATTLE"
+    calls.clear()
+    bot.run_once()
+    assert len(calls) == 1 and calls[0].get("cooldown") != 0.0
+
+
+def test_watchdog_that_tapped_nothing_keeps_its_idle_clock(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or None
+    bot.run_once()
+    idle_since = bot._menu_idle_since
+    clock[0] += 21
+    with caplog.at_level("WARNING", logger="tower_bot"):
+        bot.run_once()
+    assert any(k.get("cooldown") == 0.0 for k in calls)
+    assert bot._menu_idle_since == idle_since
+    assert "between_games_idle_watchdog" not in caplog.text
 
 
 def test_watchdog_quiet_before_the_threshold(
