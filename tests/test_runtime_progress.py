@@ -83,6 +83,21 @@ def test_observed_run_uses_original_capture_time_and_clock_epoch(tmp_path: Path)
     assert progress.snapshot()['run_observation']['wave'] == 31
 
 
+def test_startup_deadline_rearms_only_while_starting(tmp_path: Path) -> None:
+    clock = Clock()
+    progress = recorder(tmp_path / 'heartbeat.json', clock)
+    clock.advance(50)
+    progress.extend_startup(60)
+    clock.advance(50)
+    assert progress.health()['status'] != 'blocked_scan'
+    clock.advance(11)
+    assert progress.health()['status'] == 'blocked_scan'
+    with progress.phase('scan', 90):
+        progress.complete_scan(1, 'fresh-frame')
+    progress.extend_startup(60)
+    assert progress.snapshot()['phase_deadline_utc'] is None
+
+
 def test_initial_startup_remains_timed_until_first_completed_scan(tmp_path: Path) -> None:
     clock = Clock()
     progress = recorder(tmp_path / 'heartbeat.json', clock)

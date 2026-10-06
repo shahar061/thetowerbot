@@ -49,6 +49,11 @@ _INTERRUPTIONS = {"link_account_prompt", "free_ticket_offer"}
 # leaves the screen unchanged; re-tap from a fresh frame after this long.
 _RETAP_AFTER_SECONDS = 2.
 _MAX_RETAPS = 2
+# A worker restarted mid-run cannot tap until its account is proven, so the
+# run plays on unattended; at wave 30 that outlasted several minutes. Stay
+# inside the monitor's 15 min limit on an unverified connected account.
+_BATTLE_WAIT_SECONDS = 12 * 60
+_STARTUP_DEADLINE_SECONDS = 60
 
 
 def verify_restart_account(
@@ -69,7 +74,8 @@ def verify_restart_account(
     awaiting: tuple[str, str] | None = None
     tapped_at = 0.
     retaps = 0
-    battle_deadline = clock() + 180
+    battle_deadline = clock() + _BATTLE_WAIT_SECONDS
+    progress = getattr(supervisor, "progress", None)
     navigation_steps = 0
     while navigation_steps < 20:
         frame = observe(device)
@@ -78,6 +84,9 @@ def verify_restart_account(
         if frame.screen == "battle" and awaiting is None:
             if clock() >= battle_deadline:
                 raise RecoveryBlocked("battle did not finish during account verification")
+            # Each fresh battle frame proves a deliberate wait, not a hang.
+            if progress is not None:
+                progress.extend_startup(_STARTUP_DEADLINE_SECONDS)
             sleep(1.)
             continue
         navigation_steps += 1
