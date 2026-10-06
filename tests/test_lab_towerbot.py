@@ -776,31 +776,38 @@ def test_settling_without_a_lab_visit_is_a_no_op() -> None:
     assert b._lab_action_last is None
 
 
+@dataclass(frozen=True)
+class SlotsPlan:
+    slots: tuple[Any, ...]
+    gems: Any = field(default_factory=lambda: SimpleNamespace(next=None, why=()))
+
+
 @dataclass
 class SlotsAccount(FakeAccount):
-    """The planner's slot order: the first action whose research is not excluded."""
+    """choose_lab_action's order: the first action whose slot the plan still offers."""
     actions: tuple[LabAction, ...] = ()
 
     def lab_action(self, plan: Any, runtime: Any, *, revision: int, now: float) -> LabAction | None:
         self.calls.append(revision)
-        return next((a for a in self.actions if a.research not in plan.excluded), None)
+        offered = {slot.slot for slot in plan.slots}
+        return next((a for a in self.actions if a.slot in offered), None)
 
 
-class ExcludingProgress(FakeProgress):
+class SlotsProgress(FakeProgress):
     def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None, now: float,
                           excluded_research: frozenset[str] = frozenset()) -> Any:
         self.excluded_research = excluded_research
-        return SimpleNamespace(excluded=excluded_research, slots=(),
-                               gems=SimpleNamespace(next=None, why=()))
+        return SlotsPlan(tuple(SimpleNamespace(slot=slot, next=None, automated=True, why=())
+                               for slot in (1, 2, 3)))
 
 
 def test_a_backed_off_action_lets_the_planner_move_on_to_the_next_slot() -> None:
-    """Slot 1's held action excludes only its research; slots 2 and 3 still get a turn."""
+    """Slot 1's held action steps its slot aside; slots 2 and 3 still get a turn."""
     from lab_visit import LabVisitResult
     slot1, slot2 = action(1, 'labs.coins-wave', 1), action(2, 'labs.coins-kill-bonus', 3)
     b = bot(None, options=LabVisitOptions(direct_start=True))
     b.account_state = SlotsAccount(None, actions=(slot1, slot2))
-    b.reroll_progress = ExcludingProgress(None, options=LabVisitOptions(direct_start=True))
+    b.reroll_progress = SlotsProgress(None, options=LabVisitOptions(direct_start=True))
     b.lab_visit.worker = 'Air_1'
     b.lab_visit.account_state = SimpleNamespace(verified_scope=SimpleNamespace(account_id='a'))
     assert b._request_planned_lab_visit(1000., due=False)
@@ -809,6 +816,7 @@ def test_a_backed_off_action_lets_the_planner_move_on_to_the_next_slot() -> None
     b._settle_planned_lab_attempt(LabVisitResult('failed', 'selected_research_mismatch',
                                                  LabDecision('unknown')))
     assert b._plan_lab_action(1001.) == slot2
+    assert b.reroll_progress.excluded_research == frozenset()  # no research is excluded
     assert b._request_planned_lab_visit(1001., due=False)
     assert b.lab_visit.selected_action == slot2
     # The spend boundary re-plans the same way, though slot 2 is now the last attempt.
@@ -817,3 +825,56 @@ def test_a_backed_off_action_lets_the_planner_move_on_to_the_next_slot() -> None
     # Both held: nothing to arm until a backoff runs out; slot 1's own backoff is kept.
     assert b._plan_lab_action(1003.) is None
     assert b._plan_lab_action(1000. + 901.) == slot1
+
+
+def real_planner_bot(tmp_path: Path) -> Any:
+    """TowerBot over the real account facts, lab_list planner and choose_lab_action."""
+    from dataclasses import replace
+    from tests.test_account_state import _idle_strip, _restarted_lab_state
+    from tests.test_lab_list_eval import Route
+    route = Route(rules={'labs': {'direct_start': True}})
+    state = _restarted_lab_state(tmp_path, (
+        ('labs.game-speed', 3, 'verified', 'acct'), ('labs.labs-speed', 10, 'verified', 'acct'),
+        ('labs.coins-wave', 2, 'verified', 'acct'), ('labs.coins-kill-bonus', 5, 'verified', 'acct'),
+    ))
+    runtime = _idle_strip(11.)
+
+    class Progress:
+        route_runtime = SimpleNamespace(current=lambda: SimpleNamespace(revision=route.revision))
+
+        def lab_visit_options(self) -> LabVisitOptions:
+            return LabVisitOptions(direct_start=True)
+
+        def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None, now: float,
+                              excluded_research: frozenset[str] = frozenset()) -> Any:
+            facts = state.lab_facts(runtime, now=now)
+            return evaluate_lab_plan(route, replace(
+                facts, best_tier_1_wave=200, best_waves={1: 200}, worker='Air_1',
+                reserved_research=facts.reserved_research | excluded_research))
+
+    b = bot(None, options=LabVisitOptions(direct_start=True))
+    b.account_state, b.reroll_progress = state, Progress()
+    b.lab_runtime = SimpleNamespace(snapshot=lambda: runtime)
+    b._lab_visit_revision = route.revision
+    b.lab_visit.worker, b.lab_visit.account_state = 'Air_1', state
+    return b
+
+
+def test_a_held_game_speed_keeps_slot_1_and_gives_slot_2_its_turn(tmp_path: Path) -> None:
+    """The real planner: slot 1 stays Game Speed's while its start is held."""
+    b = real_planner_bot(tmp_path)
+    now = 11.
+    game_speed = b._plan_lab_action(now)
+    assert (game_speed.slot, game_speed.research, game_speed.target_level) == (1, 'labs.game-speed', 4)
+    b._hold_lab_action(*b._lab_action_key(game_speed), now)
+    nxt = b._plan_lab_action(now)
+    assert (nxt.slot, nxt.research, nxt.target_level) == (2, 'labs.labs-speed', 11)
+    revision = game_speed.strategy_revision
+    options = LabVisitOptions(direct_start=True)
+    assert b.lab_visit.request(nxt, options=options)
+    assert b._authorize_lab('lab_start', decision(2, 'labs.labs-speed', 11, revision), now)
+    # Slot 1 is not handed to another lab, and the spend boundary refuses one there.
+    b.lab_visit.cancel('test')
+    filler = LabAction(1, 'labs.coins-wave', 3, 'start', revision, 'filler')
+    assert b.lab_visit.request(filler, options=options)
+    assert not b._authorize_lab('lab_start', decision(1, 'labs.coins-wave', 3, revision), now)

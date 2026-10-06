@@ -1490,7 +1490,8 @@ class TowerBot:
         facts = self.account_state.lab_facts(snapshot, now=now)
         if facts is None:
             return False
-        # Re-plan the way the visit chose: held actions step aside, this one excepted.
+        # Re-plan the way the visit chose: only exact-key held actions step their
+        # slot aside, and never this one.
         _, action = self._choose_lab_action(snapshot, facts, revision, now,
                                             keep=(slot, research, target, revision, 'start'))
         return (action is not None and action.operation == 'start' and action.slot == slot
@@ -1525,29 +1526,31 @@ class TowerBot:
 
     def _choose_lab_action(self, snapshot: Any, facts: Any, revision: int | None, now: float, *,
                            keep: tuple | None = None) -> tuple[Any | None, Any | None]:
-        """The first plan and its action, with every held action's research stepped aside.
+        """The plan and its action, with each held action's slot stepped aside.
 
-        A held action (one in its backoff) excludes only its own research for
-        this choice, the way an unavailable lab does, so the planner moves on
-        to the next slot or lab instead of idling every slot behind it. The
-        action ``keep`` names is the one being authorized and never steps aside.
+        A held action (one in its backoff, matched by its exact key) gives up
+        only its slot for this choice, so slots 2 and 3 get their turn while
+        slot 1 stays idle or saving for Game Speed. Nothing is excluded from
+        the plan itself: excluding the research would let slot 1's pin fall
+        through to another lab. ``keep`` is the action being authorized and
+        never steps aside, so the spend boundary still refuses a plan whose
+        action for that slot changed.
         """
-        excluded = self._excluded_lab_research(now)
-        first = None
-        for _ in range(6):  # five slots, each held at most once, then the answer
-            plan = self.reroll_progress.lab_strategy_plan(
-                snapshot, available_coins=facts.available_coins, now=now,
-                excluded_research=excluded)
-            first = plan if first is None else first
-            if plan is None:
-                return first, None
-            action = self.account_state.lab_action(plan, snapshot, revision=revision, now=now)
+        plan = self.reroll_progress.lab_strategy_plan(
+            snapshot, available_coins=facts.available_coins, now=now,
+            excluded_research=self._excluded_lab_research(now))
+        if plan is None:
+            return None, None
+        offered = plan
+        for _ in range(6):  # five slots, each stepped aside at most once, then the answer
+            action = self.account_state.lab_action(offered, snapshot, revision=revision, now=now)
             if action is None or not self._lab_action_held(action, now, keep=keep):
-                return first, action
-            if action.research in excluded:
-                return first, None  # the plan ignored the exclusion; never arm a held action
-            excluded = excluded | {action.research}
-        return first, None
+                return plan, action
+            remaining = tuple(slot for slot in offered.slots if slot.slot != action.slot)
+            if len(remaining) == len(offered.slots):
+                return plan, None  # the held slot is not the plan's to drop; never arm it
+            offered = replace(offered, slots=remaining)
+        return plan, None
 
     def _lab_action_key(self, action: Any) -> tuple[tuple, tuple | None]:
         """A planned action's backoff key and the slot evidence it was held against."""
