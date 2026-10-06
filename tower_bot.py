@@ -1595,7 +1595,13 @@ class TowerBot:
             self._lab_unavailable[(account_id, revision, selected.research)] = time.time() + LAB_ACTION_BACKOFF_SECONDS
             self._lab_followup_due = True
         last = self._lab_action_last
-        if last is not None and self.lab_visit.selected_action is not None and result.status == 'started':
+        # Direct start fills several slots in one visit: the last planned action
+        # may be a later attempt that failed while the result keeps an earlier
+        # proven start, so only an action whose slot started clears its backoff.
+        started_slots = getattr(result, 'started_slots', ())
+        started = (last[0][0] in started_slots if last is not None and started_slots
+                   else self.lab_visit.selected_action is not None)
+        if last is not None and started and result.status == 'started':
             self._lab_action_last = (last[0], last[1], 0.)
             if (self.reroll_progress is not None
                     and self.reroll_progress.lab_visit_options().direct_start):
@@ -1723,7 +1729,8 @@ class TowerBot:
                 and result.status in ('started', 'observed')
                 and decision.kind != 'unknown' and result.reason != 'research_rehearsed'):
             self.reroll_progress.note_other_lab_research()
-        logger.info("Lab %s visit ended: %s (%s)%s", decision.slot, result.status, result.reason,
+        logger.info("Lab %s visit ended: %s (%s), started slots %s%s", decision.slot, result.status,
+                    result.reason, getattr(result, 'started_slots', ()),
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:

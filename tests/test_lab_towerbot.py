@@ -552,3 +552,35 @@ def test_planning_sweeps_a_canary_that_left_the_pool(tmp_path: Path) -> None:
     b.lab_visit.starter, b.lab_visit.worker = starter, 'Air_1'
     b._plan_lab_action(1000.)
     assert starter.state().rollout('start:2').stage == 'dry_run'
+
+
+def test_a_multi_start_visit_clears_only_a_started_actions_backoff() -> None:
+    """Direct start re-plans inside one visit: the visit's last planned action
+    may be a later attempt that failed, while the result keeps the earlier
+    proven start. Only a slot in started_slots clears the backoff."""
+    from dataclasses import replace
+    from lab_visit import LabVisitResult
+    b = bot(action(2, 'labs.attack-speed', 1), options=LabVisitOptions(direct_start=True))
+    held = (2, 'labs.attack-speed', 1, REVISION, 'start'), None, 2000.
+    b._lab_action_last = held
+    b.lab_visit.selected_action = action(2, 'labs.attack-speed', 1)
+    started = LabVisitResult('started', 'game_speed_confirmed', decision(), started_slots=(1,))
+    b._settle_planned_lab_attempt(started)
+    assert b._lab_action_last == held
+    # The planner had nothing after slot 2 started: no selected action remains.
+    b.lab_visit.selected_action = None
+    b._settle_planned_lab_attempt(replace(started, started_slots=(1, 2)))
+    assert b._lab_action_last == (held[0], held[1], 0.)
+    assert b._lab_followup_due
+
+
+def test_a_finished_visit_logs_its_started_slots(caplog: pytest.LogCaptureFixture) -> None:
+    from lab_visit import LabVisitResult
+    b = bot(None)
+    b._notifications = SimpleNamespace(snapshot=lambda: {'kinds': {'labs': {'in_flight': False}}})
+    b.reroll_progress = RecordingProgress()
+    result = LabVisitResult('started', 'research_confirmed', decision(3, 'labs.health', 1),
+                            started_slots=(1, 3))
+    with caplog.at_level('INFO', logger='tower_bot'):
+        b._finish_lab_visit(result)
+    assert 'started slots (1, 3)' in caplog.text
