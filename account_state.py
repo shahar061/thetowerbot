@@ -257,16 +257,17 @@ def completed_lab_level(status: Any, value: Any) -> int | None:
 
 
 def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | None, *,
-                         unscoped_account: str | None = None,
-                         catalog_revision: str | None = None) -> dict[str, int]:
+                         unscoped_account: str | None = None) -> dict[str, int]:
     """Completed level per lab from stored ``lab_levels``: the bot's and the dashboard's rule.
 
     A lab level is a durable account fact, so one stored under an earlier
-    lease, generation or epoch of the same account still counts after a
-    restart; only another account's level is dropped. A fact without a scope
+    lease, generation, epoch or catalog revision of the same account still
+    counts after a restart, while the lab exists and the level is within its
+    max; only another account's level is dropped. A fact without a scope
     belongs to ``unscoped_account``. When one lab has several facts, the
     newest reading wins.
     """
+    import lab_catalog
     newest: dict[str, tuple[float, int]] = {}
     for fact in facts:
         if not isinstance(fact, Mapping):
@@ -274,10 +275,10 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
         concept_id, status, value = fact.get('concept_id'), fact.get('status'), fact.get('value')
         scope, evidence = fact.get('scope'), fact.get('evidence')
         owner = scope.get('account_id') if isinstance(scope, Mapping) else unscoped_account
-        if (account_id is None or owner != account_id or not isinstance(concept_id, str)
+        entry = lab_catalog.lab(concept_id) if isinstance(concept_id, str) else None
+        if (account_id is None or owner != account_id or entry is None
                 or status not in LAB_LEVEL_STATUSES or type(value) is not int
-                or value < (1 if status in _PICKER_TARGET_STATUSES else 0)
-                or catalog_revision is not None and fact.get('catalog_revision') != catalog_revision):
+                or not (1 if status in _PICKER_TARGET_STATUSES else 0) <= value <= entry.max_level):
             continue
         observed = evidence.get('observed_at') if isinstance(evidence, Mapping) else None
         stamp = float(observed) if type(observed) in (int, float) else -math.inf
@@ -437,7 +438,7 @@ class AccountState:
     def lab_facts(self, runtime: Any, *, now: float) -> Any | None:
         """Adapt only current confirmed facts to L3; timers never imply completion."""
         from fleet.resource_blocks import LabFacts
-        from lab_runtime import LabScope, _catalog_revision
+        from lab_runtime import LabScope
         scope = self.verified_scope
         if scope is None or self.currencies is None:
             return None
@@ -452,8 +453,8 @@ class AccountState:
         gems = self.currencies.balance('gems', scope=scope, now=now)
         # Levels outlive the generation that read them; slots above do not.
         completed = completed_lab_levels(
-            (asdict(f) for f in self._revision.lab_levels or ()), scope.account_id,
-            catalog_revision=_catalog_revision()) if self._revision else {}
+            (asdict(f) for f in (self._revision.lab_levels if self._revision else None) or ()),
+            scope.account_id)
         from transactions import TransactionJournal
         pending = TransactionJournal(self.currencies.path).open_transactions()
         reserved = frozenset(t.before['research_id'] for t in pending

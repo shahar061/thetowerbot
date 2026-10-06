@@ -343,11 +343,11 @@ def test_worker_lab_plan_uses_current_adapter_not_persisted_cadence(
     assert progress.lab_strategy_plan(runtime,available_coins=60,now=11.) is None
 
 
-def _restarted_lab_state(tmp_path: Path, levels: tuple[tuple[str, int, str, str], ...]) -> Any:
+def _restarted_lab_state(tmp_path: Path, levels: tuple[tuple[Any, ...], ...]) -> Any:
     """A worker restarted under a new generation, over levels its earlier runs stored.
 
-    Each level is ``(lab_id, value, status, account_id)``, stored under generation
-    ``old``; the live scope is generation ``new`` of account ``acct``.
+    Each level is ``(lab_id, value, status, account_id[, catalog_revision])``, stored
+    under generation ``old``; the live scope is generation ``new`` of account ``acct``.
     """
     from account_state import (AccountRepository, AccountRevision, AccountState,
                                Evidence, Fact)
@@ -357,13 +357,14 @@ def _restarted_lab_state(tmp_path: Path, levels: tuple[tuple[str, int, str, str]
     repository = AccountRepository(tmp_path / 'bot.db')
     facts = tuple(Fact(lab_id, value, status,
                        Evidence(5., .99, lab_id, str(value), (0, 0, 1, 1), 1080, 2400, 'frame'),
-                       FactScope(account, 'old-lease', 'old', 0), _catalog_revision())
-                  for lab_id, value, status, account in levels)
+                       FactScope(account, 'old-lease', 'old', 0),
+                       catalog[0] if catalog else _catalog_revision())
+                  for lab_id, value, status, account, *catalog in levels)
     repository.save_account(AccountRevision(account_id='acct', lab_levels=facts or None), facts)
     state = AccountState(repository)
     scope = FactScope('acct', 'lease', 'new', 1)
     state.bind_scope(scope, identity=IdentityEvidence('acct', 10., 'id'))
-    state.observe_balance(BalanceInterval('coins', 100_000, 100_000, scope, 10., 'wallet'))
+    state.observe_balance(BalanceInterval('coins', 1_000_000, 1_000_000, scope, 10., 'wallet'))
     return state
 
 
@@ -409,3 +410,14 @@ def test_a_restarted_worker_starts_the_next_listed_lab_from_stored_levels(tmp_pa
     action = state.lab_action(plan, runtime, revision=route.revision, now=now)
     assert action is not None and action.operation == 'start'
     assert (action.slot, action.research, action.target_level) == (1, 'labs.game-speed', 4)
+
+
+def test_a_lab_level_from_an_older_catalog_revision_still_counts_while_the_lab_exists(tmp_path):
+    state = _restarted_lab_state(tmp_path, (
+        ('labs.game-speed', 3, 'verified', 'acct', 'older-catalog'),
+        ('labs.health', 4, 'available', 'acct', 'older-catalog'),
+        ('labs.game-speed-retired', 2, 'verified', 'acct', 'older-catalog'),
+        ('labs.labs-speed', 999, 'verified', 'acct', 'older-catalog'),
+    ))
+    assert state.lab_facts(_idle_strip(11.), now=11.).completed_levels == {
+        'labs.game-speed': 3, 'labs.health': 3}

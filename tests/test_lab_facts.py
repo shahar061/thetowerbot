@@ -61,7 +61,7 @@ def test_persisted_lab_facts_fills_completed_levels_from_the_persisted_revision(
         "lab_levels": [
             {"concept_id": "labs.game-speed", "status": "verified", "value": 3},
             # An "available" picker reads one level ahead of what is owned.
-            {"concept_id": "labs.crit-chance", "status": "available", "value": 5},
+            {"concept_id": "labs.critical-factor", "status": "available", "value": 5},
         ],
     }
     with db.connect(path) as connection:
@@ -69,7 +69,7 @@ def test_persisted_lab_facts_fills_completed_levels_from_the_persisted_revision(
                            (json.dumps(revision),))
     facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
                                           db_path=path)
-    assert facts.completed_levels == {"labs.game-speed": 3, "labs.crit-chance": 4}
+    assert facts.completed_levels == {"labs.game-speed": 3, "labs.critical-factor": 4}
 
 
 def test_persisted_lab_facts_completed_levels_missing_revision_is_none(tmp_path: Path) -> None:
