@@ -330,6 +330,8 @@ class ShoppingSession:
         self.evidence_dir: Path | None = None
         self._replan_due = False
         self._replanned: Shopping | None = None
+        # Price checks already handed back to the strategy this visit.
+        self._price_checks_replanned: set[frozenset[tuple[str, str]]] = set()
         self._templates = templates
         self._bus = bus
         self._reader = reader
@@ -528,6 +530,7 @@ class ShoppingSession:
         self._last_run_count = run_count
         self._replan_due = False
         self._replanned = None
+        self._price_checks_replanned = set()
         self._stop_reason = None
         self._step = Step.OPEN_WORKSHOP if categories else Step.OPEN_CARDS
 
@@ -945,6 +948,9 @@ class ShoppingSession:
             self._replan_due = False
             shopping = self._replan(shopping, coins)
         rules = [r for r in shopping.rows_for(category) if r.name not in self._exhausted]
+        if not rules and self._price_check_read(shopping):
+            shopping = self._replan(shopping, coins)
+            rules = [r for r in shopping.rows_for(category) if r.name not in self._exhausted]
         if not rules:
             self._categories.pop(0)
             self._search = None
@@ -1092,6 +1098,23 @@ class ShoppingSession:
         self._categories += [c for c in policy.categories_in_priority_order()
                              if c not in self._categories]
         return policy
+
+    def _price_check_read(self, shopping: Shopping) -> bool:
+        """Has a no-spend price check read every row it was sent for?
+
+        A strategy that has never seen a price sends a zero-budget visit to
+        read it. Once read the strategy may choose to buy it, but nothing asked
+        again: the visit ended, and the one-visit-per-run cadence held the buy
+        for a whole run. Asked once per set of rows, so a strategy that sends
+        the same check again ends the visit instead of looping.
+        """
+        if self.reroll_replan is None or shopping.coin_budget != 0 or len(self._categories) != 1:
+            return False
+        rows = frozenset((rule.name, rule.category) for rule in shopping.workshop)
+        if rows in self._price_checks_replanned:
+            return False
+        self._price_checks_replanned.add(rows)
+        return True
 
     def _visit_budget(self, shopping: Shopping) -> int | None:
         """Coins this visit may spend in total, or None for no limit.
