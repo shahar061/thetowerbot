@@ -1610,10 +1610,10 @@ class TowerBot:
         # Direct start fills several slots in one visit: the last planned action
         # may be a later attempt that failed while the result keeps an earlier
         # proven start, so only an action whose slot started clears its backoff.
+        # `selected` is None when no LabVisit is attached.
         started_slots = getattr(result, 'started_slots', ())
-        started = (last[0][0] in started_slots if last is not None and started_slots
-                   else self.lab_visit.selected_action is not None)
-        if last is not None and started and result.status == 'started':
+        if (last is not None and result.status == 'started'
+                and (last[0][0] in started_slots if started_slots else selected is not None)):
             self._lab_action_last = (last[0], last[1], 0.)
             if (self.reroll_progress is not None
                     and self.reroll_progress.lab_visit_options().direct_start):

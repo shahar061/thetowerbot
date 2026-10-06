@@ -671,3 +671,13 @@ def test_another_labs_start_keeps_this_labs_picker_failures() -> None:
                                                  decision(3, 'labs.health', 1), started_slots=(3,)))
     b._settle_planned_lab_attempt(picker_failure())
     assert 'labs.game-speed' in b._excluded_lab_research(time.time())
+
+
+def test_settling_without_a_lab_visit_is_a_no_op() -> None:
+    from lab_visit import LabVisitResult
+    b = bot(None)
+    b.lab_visit = None
+    b._settle_planned_lab_attempt(LabVisitResult('failed', 'purchase_unconfirmed', LabDecision('unknown')))
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'game_speed_confirmed', decision(),
+                                                 started_slots=(1,)))
+    assert b._lab_action_last is None
