@@ -102,3 +102,21 @@ def test_persisted_lab_facts_reads_an_unaffordable_row_like_an_available_one(tmp
     facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
                                           db_path=path)
     assert facts.completed_levels == {"labs.coins-kill-bonus": 2, "labs.health": 4}
+
+
+def test_persisted_lab_facts_counts_a_job_whose_finish_has_passed(tmp_path: Path) -> None:
+    """The dashboard folds the runtime's job history the same way the bot does."""
+    import hashlib
+    path = _db(tmp_path)
+    db.bind_account(path, "acct")
+    with db.connect(path) as connection:
+        connection.execute("INSERT INTO account_revisions(detail) VALUES (?)", (json.dumps({
+            "account_id": "acct",
+            "lab_levels": [{"concept_id": "labs.game-speed", "status": "verified", "value": 3}]}),))
+    scope = {"account_id": "acct", "lease_id": "l", "generation": "g", "epoch": 0}
+    (tmp_path / f"lab-runtime-{hashlib.sha256(b'acct').hexdigest()}.json").write_text(json.dumps(
+        {"version": 1, "scope": scope, "slots": [],
+         "job_history": [["labs.game-speed", 4, 900.0], ["labs.health", 2, 2000.0]]}))
+    facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
+                                          db_path=path)
+    assert facts.completed_levels == {"labs.game-speed": 4}

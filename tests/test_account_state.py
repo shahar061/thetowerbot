@@ -421,3 +421,51 @@ def test_a_lab_level_from_an_older_catalog_revision_still_counts_while_the_lab_e
     ))
     assert state.lab_facts(_idle_strip(11.), now=11.).completed_levels == {
         'labs.game-speed': 3, 'labs.health': 3}
+
+
+def _old_runtime_with_a_job(tmp_path: Path, research: str, target: int, finish: float) -> None:
+    """The runtime file an earlier generation left: slot 1 researching ``research``."""
+    import hashlib
+    import json
+    old = {'account_id': 'acct', 'lease_id': 'old-lease', 'generation': 'old', 'epoch': 0}
+    slots = [{'scope': old, 'slot': slot, 'state': 'unknown', 'confirmed': False,
+              'evidence_status': 'historical'} for slot in range(1, 6)]
+    slots[0].update(state='researching', research_id=research, source_level=target - 1,
+                    target_level=target, expected_finish=finish, observed_at=1.,
+                    generation='job', frame_digest='strip')
+    key = hashlib.sha256(b'acct').hexdigest()
+    (tmp_path / f'lab-runtime-{key}.json').write_text(json.dumps(
+        {'version': 1, 'scope': old, 'slots': slots, 'slots_owned': 2, 'observed_at': 1.,
+         'verified_speed': None, 'strip_complete': True}))
+
+
+def test_a_job_that_finished_while_the_bot_was_down_counts_and_plans_the_next_level(tmp_path):
+    from dataclasses import replace as replaced
+    from fleet.resource_blocks import evaluate_lab_plan
+    from lab_runtime import LabRuntime
+    from tests.test_lab_list_eval import Route
+    now = 11.
+    state = _restarted_lab_state(tmp_path, (
+        ('labs.game-speed', 3, 'verified', 'acct'), ('labs.labs-speed', 10, 'verified', 'acct'),
+        ('labs.coins-wave', 2, 'verified', 'acct'), ('labs.coins-kill-bonus', 5, 'verified', 'acct'),
+    ))
+    _old_runtime_with_a_job(tmp_path, 'labs.game-speed', 4, finish=5.)
+    restarted = LabRuntime(tmp_path, 'acct', lease_id='lease', generation='new', epoch=1).snapshot()
+    runtime = replaced(_idle_strip(now), job_history=restarted.job_history)
+    facts = state.lab_facts(runtime, now=now)
+    assert facts.completed_levels['labs.game-speed'] == 4
+    route = Route(rules={'labs': {'direct_start': True}})
+    plan = evaluate_lab_plan(route, replaced(facts, best_tier_1_wave=200, best_waves={1: 200}))
+    assert plan.slots[0].next.level == 5
+    action = state.lab_action(plan, runtime, revision=route.revision, now=now)
+    assert action is not None and (action.research, action.target_level) == ('labs.game-speed', 5)
+
+
+def test_a_job_still_running_by_its_timer_does_not_count_yet(tmp_path):
+    from dataclasses import replace as replaced
+    from lab_runtime import LabRuntime
+    state = _restarted_lab_state(tmp_path, (('labs.game-speed', 3, 'verified', 'acct'),))
+    _old_runtime_with_a_job(tmp_path, 'labs.game-speed', 4, finish=50.)
+    restarted = LabRuntime(tmp_path, 'acct', lease_id='lease', generation='new', epoch=1).snapshot()
+    runtime = replaced(_idle_strip(11.), job_history=restarted.job_history)
+    assert state.lab_facts(runtime, now=11.).completed_levels == {'labs.game-speed': 3}

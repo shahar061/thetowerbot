@@ -20,6 +20,7 @@ from fleet.coin_share import LabCoinJar, SaveTarget, jit_hold
 from fleet.reroll_lifetime import read_lifetime
 from fleet.resource_blocks import LabFacts, _slot_context, evaluate_lab_plan
 from lab_plan import LabCadence
+from lab_runtime import read_job_history
 
 
 def best_waves(db_path: Path) -> dict[int, int]:
@@ -38,7 +39,8 @@ def coins_per_hour(worker_root: Path, account_id: str) -> float | None:
     return float(rate)
 
 
-def _completed_levels(db_path: Path, account_id: str) -> dict[str, int] | None:
+def _completed_levels(db_path: Path, account_id: str, *, worker_root: Path | None = None,
+                      now: float | None = None) -> dict[str, int] | None:
     """Known lab levels from the persisted account revision.
 
     The same ``lab_levels`` section the Fleet State page (`state_view.build_labs`)
@@ -61,8 +63,11 @@ def _completed_levels(db_path: Path, account_id: str) -> dict[str, int] | None:
     if not isinstance(revision, dict) or revision.get("account_id") not in (None, account_id):
         return None
     # The bot's own reader (`AccountState.lab_facts`), so both plan from the same levels.
-    known = completed_lab_levels(revision.get("lab_levels") or (), account_id,
-                                 unscoped_account=revision.get("account_id") or account_id)
+    known = completed_lab_levels(
+        revision.get("lab_levels") or (), account_id,
+        unscoped_account=revision.get("account_id") or account_id,
+        finished_jobs=read_job_history(worker_root, account_id) if worker_root is not None else (),
+        now=now)
     return known or None
 
 
@@ -76,7 +81,8 @@ def persisted_lab_facts(worker_root: Path, account_id: str, *, now: float, coins
                     slots=read_lab_slots(worker_root, account_id), available_coins=coins,
                     account_id=account_id, best_waves=waves or None,
                     coins_per_hour=coins_per_hour(worker_root, account_id),
-                    completed_levels=_completed_levels(db_path, account_id),
+                    completed_levels=_completed_levels(db_path, account_id,
+                                                       worker_root=worker_root, now=now),
                     slot_ownership=cadence.slot_records())
 
 

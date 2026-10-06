@@ -257,7 +257,9 @@ def completed_lab_level(status: Any, value: Any) -> int | None:
 
 
 def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | None, *,
-                         unscoped_account: str | None = None) -> dict[str, int]:
+                         unscoped_account: str | None = None,
+                         finished_jobs: Iterable[tuple[str, int, float]] = (),
+                         now: float | None = None) -> dict[str, int]:
     """Completed level per lab from stored ``lab_levels``: the bot's and the dashboard's rule.
 
     A lab level is a durable account fact, so one stored under an earlier
@@ -265,7 +267,9 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
     counts after a restart, while the lab exists and the level is within its
     max; only another account's level is dropped. A fact without a scope
     belongs to ``unscoped_account``. When one lab has several facts, the
-    newest reading wins.
+    newest reading wins. A ``finished_jobs`` entry ``(lab, target, finish)``
+    with ``finish <= now`` raises its lab to ``target``: the job completed,
+    possibly while the bot was down and no picker could show it.
     """
     import lab_catalog
     newest: dict[str, tuple[float, int]] = {}
@@ -285,7 +289,13 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
         level = completed_lab_level(status, value)
         if level is not None and (concept_id not in newest or stamp >= newest[concept_id][0]):
             newest[concept_id] = (stamp, level)
-    return {concept_id: level for concept_id, (_, level) in newest.items()}
+    levels = {concept_id: level for concept_id, (_, level) in newest.items()}
+    for concept_id, target, finish in finished_jobs if now is not None else ():
+        entry = lab_catalog.lab(concept_id)
+        if (entry is not None and type(target) is int and 1 <= target <= entry.max_level
+                and finish <= now and target > levels.get(concept_id, -1)):
+            levels[concept_id] = target
+    return levels
 
 
 class AccountState:
@@ -454,7 +464,7 @@ class AccountState:
         # Levels outlive the generation that read them; slots above do not.
         completed = completed_lab_levels(
             (asdict(f) for f in (self._revision.lab_levels if self._revision else None) or ()),
-            scope.account_id)
+            scope.account_id, finished_jobs=getattr(runtime, 'job_history', ()), now=now)
         from transactions import TransactionJournal
         pending = TransactionJournal(self.currencies.path).open_transactions()
         reserved = frozenset(t.before['research_id'] for t in pending

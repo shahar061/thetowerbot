@@ -248,3 +248,22 @@ def test_legacy_slot_two_file_alone_sets_slots_owned(tmp_path: Path) -> None:
     snapshot = LabRuntime(tmp_path, "ACCOUNT-A").snapshot()
     assert snapshot.slots[1].state == "locked"
     assert snapshot.slots_owned == 1
+
+
+def test_a_job_seen_researching_outlives_the_idle_strip_of_a_later_generation(tmp_path: Path) -> None:
+    """A job that finished while the bot was down keeps its target level on record."""
+    from lab_runtime import LabRuntime
+    before = confirmed(runtime(tmp_path)).slots[0]
+    assert before.state == "researching" and before.research_id
+    later = LabRuntime(tmp_path, "ACCOUNT-A", lease_id="lease-a", generation="worker-2")
+    reading = observation(2000.)
+    idle = replace(reading.jobs[0], status="idle", concept_id=None, raw_name="Lab Offline",
+                   completes_at=None, remaining_s=None, source_level=None, target_level=None)
+    reading = replace(reading, jobs=(idle, *reading.jobs[1:]))
+    later.observe(reading)
+    later.observe(replace(reading, observed_at=2001.))
+    assert later.snapshot().slots[0].state == "idle"
+    again = LabRuntime(tmp_path, "ACCOUNT-A", lease_id="lease-a", generation="worker-3").snapshot()
+    assert (before.research_id, before.target_level, before.expected_finish) in again.job_history
+    assert all(row[0] != before.research_id
+               for row in runtime(tmp_path, "ACCOUNT-B").snapshot().job_history)

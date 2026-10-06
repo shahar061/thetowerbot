@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import threading
+from typing import Any
 from uuid import uuid4
 
 import config
@@ -67,6 +68,50 @@ class LabRuntimeSnapshot:
     # True only when the pair that produced observed_at read the whole owned
     # strip. Retained slots_owned is history, not proof of a complete read.
     strip_complete: bool = False
+    # (research_id, target_level, expected_finish) of the highest job this
+    # account was seen researching per lab, under any scope. It outlives the
+    # slot that showed it, so a job that finished while the bot was down still
+    # counts once its finish has passed. Planning history, never authority.
+    job_history: tuple[tuple[str, int, float], ...] = ()
+
+
+def _remember(history: dict[str, tuple[int, float]], research: object, target: object,
+              finish: object) -> None:
+    """Keep the highest target per lab; a later reading of that target updates its finish."""
+    if (research in LAB_CONCEPT_IDS and type(target) is int and target >= 1 and _finite(finish)
+            and (research not in history or target >= history[research][0])):
+        history[research] = (target, float(finish))
+
+
+def _history_rows(payload: dict[str, Any]) -> dict[str, tuple[int, float]]:
+    """The job history a runtime file carries, plus the jobs its slots still show."""
+    history: dict[str, tuple[int, float]] = {}
+    for row in payload.get("job_history") or ():
+        if isinstance(row, (list, tuple)) and len(row) == 3:
+            _remember(history, *row)
+    for row in payload.get("slots") or ():
+        if isinstance(row, dict) and row.get("state") == "researching":
+            _remember(history, row.get("research_id"), row.get("target_level"),
+                      row.get("expected_finish"))
+    return history
+
+
+def _history(history: dict[str, tuple[int, float]]) -> tuple[tuple[str, int, float], ...]:
+    return tuple((research, target, finish) for research, (target, finish) in sorted(history.items()))
+
+
+def read_job_history(root: Path, account_id: str) -> tuple[tuple[str, int, float], ...]:
+    """Read-only `LabRuntimeSnapshot.job_history` of one account, for the dashboard."""
+    path = Path(root) / f"lab-runtime-{hashlib.sha256(account_id.encode('utf-8')).hexdigest()}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    if (not isinstance(payload, dict) or payload.get("version") != 1
+            or not isinstance(payload.get("scope"), dict)
+            or payload["scope"].get("account_id") != account_id):
+        return ()
+    return _history(_history_rows(payload))
 
 
 @cache
@@ -123,6 +168,7 @@ class LabRuntime:
         # slot -> (research_id, target_level, job generation) from an earlier
         # scope of this account; identity only, never state or confirmation.
         self._carried: dict[int, tuple[str, int, str]] = {}
+        self._job_history: dict[str, tuple[int, float]] = {}
         self._snapshot = LabRuntimeSnapshot(self.scope, tuple(
             LabJobRecord(self.scope, slot) for slot in range(1, 6)))
         self._load()
@@ -220,11 +266,15 @@ class LabRuntime:
                     evidence_status="verified" if confirmed else "historical",
                     frame_digest=reading.frame_digest, confirmed=confirmed)
             complete = owned_strip and len(matched) == reading.slots_owned
+            history = dict(self._job_history)
+            for record in slots:
+                if record.confirmed and record.state == "researching":
+                    _remember(history, record.research_id, record.target_level, record.expected_finish)
             candidate = LabRuntimeSnapshot(self.scope, tuple(slots),
                 reading.slots_owned if complete else self._snapshot.slots_owned,
-                reading.observed_at, self._snapshot.verified_speed, complete)
+                reading.observed_at, self._snapshot.verified_speed, complete, _history(history))
             self._save(candidate)
-            self._snapshot = candidate
+            self._snapshot, self._job_history = candidate, history
 
     def _save(self, snapshot: LabRuntimeSnapshot) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -253,6 +303,8 @@ class LabRuntime:
             payload = json.loads(source.read_text(encoding="utf-8"))
             if payload.get("version") != 1 or payload.get("scope", {}).get("account_id") != self.scope.account_id:
                 return
+            self._job_history = _history_rows(payload)
+            self._snapshot = replace(self._snapshot, job_history=_history(self._job_history))
             capability = payload.get('verified_speed')
             if type(capability) in (int, float) and capability in config.SPEED_VALUES and capability > 0:
                 self._snapshot = replace(self._snapshot, verified_speed=capability)
@@ -282,7 +334,8 @@ class LabRuntime:
             # Disk preserves history and transaction identity, never live input authority.
             slots = tuple(replace(job, confirmed=False, evidence_status='historical') for job in slots)
             self._snapshot = LabRuntimeSnapshot(self.scope, slots, payload["slots_owned"],
-                                                 payload["observed_at"], self._snapshot.verified_speed)
+                                                 payload["observed_at"], self._snapshot.verified_speed,
+                                                 job_history=self._snapshot.job_history)
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             return  # A corrupt runtime cannot authorize an action.
 
