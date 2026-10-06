@@ -131,6 +131,8 @@ _FAILED_MILESTONES_RETRY_SECONDS = 60.
 # the same (slot, research, level, revision) and slot evidence until this passes.
 LAB_ACTION_BACKOFF_SECONDS = 900.
 LAB_DIRECT_CHECK_SECONDS = 300.
+# A strip whose every slot claims to be running is re-read this rarely (spec 3.5 d).
+LAB_STRIP_REFRESH_SECONDS = 6 * 3600.
 
 
 def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
@@ -1604,12 +1606,12 @@ class TowerBot:
         return frozenset(research for (account, route, research), expiry in blocked.items()
                          if account == account_id and route == revision and now < expiry)
 
-    def _direct_lab_visit_due(self, now: float) -> bool:
-        """Inspect owned labs after game over if a direct-start slot may be free."""
+    def _lab_start_due(self, now: float) -> bool:
+        """Whether a lab start is due, from slot state alone (never the wallet)."""
         if self.reroll_progress is None or self.lab_runtime is None:
             return False
         options = self.reroll_progress.lab_visit_options()
-        if not (options.start_research and options.direct_start):
+        if not options.start_research:
             return False
         if not self.reroll_progress.lab_unlocked():
             return False
@@ -1626,7 +1628,7 @@ class TowerBot:
             self._lab_followup_due = True
             return True
         stale = (snapshot.observed_at is None
-                 or now - snapshot.observed_at >= LAB_DIRECT_CHECK_SECONDS)
+                 or now - snapshot.observed_at >= LAB_STRIP_REFRESH_SECONDS)
         for slot in range(1, owned + 1):
             record = next((row for row in snapshot.slots if row.slot == slot), None)
             if (record is None or not record.confirmed or record.state != 'researching'
@@ -1641,6 +1643,8 @@ class TowerBot:
             self._lab_followup_due = True
             return True
         return False
+
+    _direct_lab_visit_due = _lab_start_due  # alias kept for one release
 
     def _finish_lab_visit(self, result: Any) -> None:
         """Record only verified research and lab-slot purchases."""
@@ -3001,9 +3005,10 @@ class TowerBot:
                         self.reroll_progress.note_lab_locked("labs_tab")
                     lab_notice_due = self._notifications.eligible("labs", time.time())
                     if (labs_tab_status == "unlocked"
-                            and self._request_planned_lab_visit(time.time(), lab_notice_due or self.reroll_progress.lab_due(
-                                wallet_coins=menu_coins, wallet_gems=menu_gems,
-                            ))):
+                            and self._request_planned_lab_visit(
+                                time.time(),
+                                lab_notice_due or self._lab_start_due(time.time())
+                                or self.reroll_progress.lab_unlock_due(wallet_gems=menu_gems))):
                         route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
                         self._lab_visit_revision = route_runtime.current().revision if route_runtime is not None else None
                         if lab_notice_due:
@@ -3058,8 +3063,8 @@ class TowerBot:
             # taken when the visit it exists for will actually start.
             if not (state is screens.ScreenState.MAIN_MENU
                     and self._advance_tier(settings)):
-                lab_direct_due = (state is screens.ScreenState.GAME_OVER
-                                  and self._direct_lab_visit_due(time.time()))
+                lab_start_due = (state is screens.ScreenState.GAME_OVER
+                                 and self._lab_start_due(time.time()))
                 self.navigator.maybe_navigate(
                     self.screen,
                     state,
@@ -3083,10 +3088,10 @@ class TowerBot:
                              or (state is screens.ScreenState.GAME_OVER
                                  and self.reroll_progress is not None
                                  and self.reroll_progress.stats_due())
+                             or lab_start_due
                              or (state is screens.ScreenState.GAME_OVER
                                  and self.reroll_progress is not None
-                                 and self.reroll_progress.lab_due())
-                             or lab_direct_due),
+                                 and self.reroll_progress.lab_unlock_due())),
                     # The way off a menu page. NAV_BUTTONS is keyed by
                     # ScreenState, which has no member for one, so the bot could
                     # neither act on the workshop (the loop above gates on

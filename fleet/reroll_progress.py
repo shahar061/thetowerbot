@@ -145,21 +145,25 @@ class RerollProgress:
                            self.account_id, exc)
             return RouteRules()
 
+    def lab_unlock_due(self, now: float | None = None, *, wallet_gems: int | None = None) -> bool:
+        """Whether the next lab slot is worth a gem-purchase visit."""
+        moment = time.time() if now is None else now
+        if not self.lab_unlocked() or self.lab_cadence.backing_off(moment):
+            return False
+        rules = self.resource_rules()
+        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
+        price = lab_catalog.lab_slot_gems(slot) if slot is not None else None
+        return price is not None and self.lab_cadence.slot_due(slot, moment, wallet_gems,
+                                                                min_gems=price + rules.gems.keep)
+
     def lab_due(self, now: float | None = None, *,
                 wallet_coins: int | None = None,
                 wallet_gems: int | None = None) -> bool:
         moment = time.time() if now is None else now
         if not self.lab_unlocked() or self.lab_cadence.backing_off(moment):
             return False
-        rules = self.resource_rules()
-        unlock = False
-        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
-        price = lab_catalog.lab_slot_gems(slot) if slot is not None else None
-        if price is not None:
-            unlock = self.lab_cadence.slot_due(slot, moment, wallet_gems,
-                                               min_gems=price + rules.gems.keep)
-        research = rules.labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
-        return unlock or research
+        research = self.resource_rules().labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
+        return self.lab_unlock_due(moment, wallet_gems=wallet_gems) or research
 
     def lab_visit_options(self) -> LabVisitOptions:
         rules = self.resource_rules()

@@ -46,6 +46,31 @@ def test_lab_checks_wait_for_account_bound_unlock_observation(tmp_path: Path) ->
     assert restarted.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
 
 
+def test_lab_unlock_due_is_the_slot_purchase_half_of_lab_due(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert not progress.lab_unlock_due(now=1000., wallet_gems=500)  # Labs not unlocked yet
+    progress.note_lab_unlocked("unlock_card", caption="Labunlocked", now=999.)
+    progress.note_lab_slots({2: "locked"}, 65, now=1000.)
+    assert not progress.lab_unlock_due(now=1100., wallet_gems=65)
+    assert progress.lab_unlock_due(now=1100., wallet_gems=500)
+    # Research waiting on coins is not an unlock: only lab_due stays True for it.
+    progress.note_lab_observation(
+        LabDecision("wait_coins", price=300, wallet_coins=122, game_speed_level=1), now=1000.)
+    assert not progress.lab_unlock_due(now=1100., wallet_gems=65)
+    assert progress.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
+
+
+def test_lab_unlock_due_is_false_when_auto_unlock_is_off(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    route = RouteDocument.compatibility().to_dict()
+    route["baseline"]["rules"]["gems"].update(auto_unlock_lab_slots=False)
+    (tmp_path / "build-route.json").write_text(json.dumps(route))
+    progress.route_runtime = BuildRouteRuntime(tmp_path, progress.root.name, "ACCOUNT-A")
+    progress.note_lab_unlocked("unlock_card", caption="Labunlocked", now=999.)
+    progress.note_lab_slots({2: "locked"}, 500, now=1000.)
+    assert not progress.lab_unlock_due(now=1100., wallet_gems=500)
+
+
 def test_lab_visit_applies_saved_repeat_preference_when_bot_starts_are_off(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     route = RouteDocument.compatibility().to_dict()

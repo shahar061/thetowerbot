@@ -106,7 +106,7 @@ def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
     progress = Mock()
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     progress.lab_visit_options.return_value = LabVisitOptions()
     progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress
@@ -128,7 +128,7 @@ def test_confirmed_lab_dot_arms_visit_before_periodic_lab_due() -> None:
     progress = Mock()
     progress.shopping_policy.return_value = a_policy(enabled=False)
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = False
+    progress.lab_unlock_due.return_value = False
     progress.lab_visit_options.return_value = LabVisitOptions(start_research=False)
     progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress
@@ -141,7 +141,7 @@ def test_confirmed_lab_dot_arms_visit_before_periodic_lab_due() -> None:
     bot.run_once()
     assert bot.lab_visit.active
     assert bot._notifications.snapshot()["kinds"]["labs"]["in_flight"]
-    progress.lab_due.assert_called_once()
+    progress.lab_unlock_due.assert_called_once()
 
 
 def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu) -> None:
@@ -155,7 +155,7 @@ def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu)
     progress = Mock()
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     options = LabVisitOptions(start_research=False, keep_gems=50)
     progress.lab_visit_options.return_value = options
     progress.initial_workshop_due.return_value = False
@@ -176,7 +176,7 @@ def test_reroll_does_not_open_labs_without_a_visible_unlocked_tab(bot_on_main_me
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.initial_workshop_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
 
@@ -185,7 +185,7 @@ def test_reroll_does_not_open_labs_without_a_visible_unlocked_tab(bot_on_main_me
     assert not bot.lab_visit.active
     progress.note_lab_unlocked.assert_not_called()
     progress.note_lab_locked.assert_called_once_with("labs_tab")
-    progress.lab_due.assert_not_called()
+    progress.lab_unlock_due.assert_not_called()
 
 
 def test_reroll_does_not_open_labs_when_the_tab_is_unreadable(bot_on_main_menu) -> None:
@@ -195,7 +195,7 @@ def test_reroll_does_not_open_labs_when_the_tab_is_unreadable(bot_on_main_menu) 
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.initial_workshop_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
 
@@ -204,7 +204,7 @@ def test_reroll_does_not_open_labs_when_the_tab_is_unreadable(bot_on_main_menu) 
     assert not bot.lab_visit.active
     progress.note_lab_unlocked.assert_not_called()
     progress.note_lab_locked.assert_not_called()
-    progress.lab_due.assert_not_called()
+    progress.lab_unlock_due.assert_not_called()
 
 
 def test_reroll_workshop_resumes_when_lab_check_not_due(bot_on_main_menu) -> None:
@@ -212,7 +212,7 @@ def test_reroll_workshop_resumes_when_lab_check_not_due(bot_on_main_menu) -> Non
     progress = Mock()
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = False
+    progress.lab_unlock_due.return_value = False
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
 
