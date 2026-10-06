@@ -570,6 +570,52 @@ def test_unaffordable_target_skips_visits_until_run_coins_cover_it(tmp_path: Pat
     assert progress.shopping_policy(base).workshop
 
 
+def test_workshop_not_worthwhile_when_only_lab_savings_cover_the_price(tmp_path: Path) -> None:
+    # Wallet 210 (80 read + 130 run payout) covers the 120 price, but 100 is held for labs.
+    progress = worker_without_verified_utility_debits(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    end_run(progress, 1, 130)
+    progress._route_jar = 100
+    assert progress.workshop_worthwhile() is False
+
+
+def test_workshop_worthwhile_when_spendable_covers_the_price(tmp_path: Path) -> None:
+    progress = worker_without_verified_utility_debits(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    end_run(progress, 1, 130)
+    progress._route_jar = 5
+    assert progress.workshop_worthwhile() is True
+    progress._route_jar = 90
+    assert progress.workshop_worthwhile() is True
+    progress._route_jar = 91
+    assert progress.workshop_worthwhile() is False
+
+
+def test_workshop_skip_for_lab_savings_names_the_coins_above_them(tmp_path: Path) -> None:
+    progress = worker_without_verified_utility_debits(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    end_run(progress, 1, 130)
+    progress._route_jar = 100
+    assert not progress.workshop_worthwhile()
+    assert "110 coins above lab savings" in progress._last_skip_note
+
+
+def test_unknown_balance_still_detours_regardless_of_the_jar(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", None, 120)
+    progress._route_jar = 1_000_000
+    assert progress.workshop_worthwhile(detour=True)
+
+
+def test_unknown_price_still_detours_when_coins_sit_above_the_jar(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", 80, None)
+    progress._route_jar = 10
+    assert progress.workshop_worthwhile(detour=True)
+    progress._route_jar = 80
+    assert not progress.workshop_worthwhile(detour=True)
+
+
 def test_a_menu_balance_reanchors_the_wallet_after_a_lost_run_payout(tmp_path: Path) -> None:
     # A run a killed process never finished is closed with no payout. Replayed
     # as an unknown delta, it left the wallet unknown until the next Workshop

@@ -1013,18 +1013,26 @@ class RerollProgress:
                                             "estimated from run payouts)")
         else:
             plan = self.decision()
+        # Coins held back for labs (the jar) are not the Workshop's to spend;
+        # only what sits above them can buy the planned row.
+        spendable = (None if plan.wallet_coins is None else
+                     coin_share.spendable_wallet(plan.wallet_coins, getattr(self, "_route_jar", 0) or 0))
         worthwhile = (plan.upgrade_id is not None and
-                      (plan.wallet_coins is None or plan.wallet_coins > 0) and
-                      (plan.price is None or plan.wallet_coins is None or plan.wallet_coins >= plan.price))
-        if detour and worthwhile and (plan.price is None or plan.wallet_coins is None):
+                      (spendable is None or spendable > 0) and
+                      (plan.price is None or spendable is None or spendable >= plan.price))
+        if detour and worthwhile and (plan.price is None or spendable is None):
             worthwhile = self._unknown_detour_due(plan.upgrade_id)
         note = (None if worthwhile else
                 f"workshop skipped: {plan.item} price or balance still unread; next read within "
-                f"{UNKNOWN_PLAN_DETOUR_RUNS} runs" if plan.price is None or plan.wallet_coins is None else
-                f"workshop skipped: {plan.wallet_coins} coins; {plan.item} needs {plan.price}")
+                f"{UNKNOWN_PLAN_DETOUR_RUNS} runs" if plan.price is None or spendable is None else
+                f"workshop skipped: {spendable} coins above lab savings; {plan.item} needs {plan.price}")
         if note is not None and note != self._last_skip_note:
             RerollJournal(self.root.parent.parent).append(
                 instance=self.root.name, level="info", kind="workshop_skip", message=note)
+            if spendable is not None and plan.price is not None:
+                # Same rate limit as the journal line: once per changed note.
+                logger.info("Skipping the Workshop: %s coins above lab savings, cheapest planned %s",
+                            spendable, plan.price)
             if publish_estimate:
                 self._publish(plan)
         self._last_skip_note = note
