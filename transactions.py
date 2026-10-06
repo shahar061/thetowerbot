@@ -72,12 +72,14 @@ def _recovery_mutation(method: Any) -> Any:
 def abbreviation_slack(value: int) -> int:
     """How far the real balance behind a header reading can be from it.
 
-    The header shows three significant digits once a balance reaches four:
-    "2.61K" parses to exactly 2610 but stands for anything near it. A
-    reading under 1000 is shown in full and hides nothing.
+    The header abbreviates to two decimals of its unit once a balance
+    reaches four digits: "2.61K", "14.66K" and "123.45K" each parse to an
+    exact figure but stand for anything within 10 coins of it, and every
+    "M" reading within 10,000. A reading under 1000 is shown in full and
+    hides nothing.
     """
     digits = len(str(abs(value)))
-    return 0 if digits <= 3 else 10 ** (digits - 3)
+    return 0 if digits <= 3 else 10 ** (3 * ((digits - 1) // 3) - 2)
 
 
 def reading_tolerance(*readings: int, rounded_amounts: int = 0) -> int:

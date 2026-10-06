@@ -434,7 +434,9 @@ def test_lab_recovery_timeout_uses_earlier_inspection_after_research_finishes(
     txn = journal.prepare(intent, scope=scope, balance=balance)
     assert txn is not None
     journal.record_action(txn.key, at=11.)
-    proof = RecoveryEvidence(category='LABS', currency='coins', wallet_after=14430,
+    # A 110 drop misses the 81 price by more than two "14.xxK" readings can
+    # hide, so this inspection stays inconclusive.
+    proof = RecoveryEvidence(category='LABS', currency='coins', wallet_after=14400,
         effect_changed=True, observed_at=12., frame_digest='after', scope=scope,
         operation='lab_start', slot=2, research_id='labs.cash-bonus', target_level=2)
     assert journal.reconcile(txn.key, proof, now=12.).verdict == Verdict.UNPROVEN
