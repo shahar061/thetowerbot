@@ -58,17 +58,21 @@ def test_meta_audience_network_uses_its_labelled_close() -> None:
     assert ad_exit.find_close(screen, TEMPLATES, device) == (77, 77)
 
 
-def test_meta_video_skip_is_found_before_the_slow_accessibility_dump() -> None:
+@pytest.mark.parametrize("name", ["meta_video_83", "meta_video_dark_83"])
+def test_meta_video_skip_is_found_before_the_slow_accessibility_dump(name: str) -> None:
     # A playing Meta video never idles: emulator 83's dump ran 12 s and failed,
     # so the witnessed skip was tapped from a 12-14 s old frame and refused.
+    # The skip's circle is translucent; over a dark creative the colour
+    # template scored 0.82, so both bots fell back to the dump and stalled.
     fixtures = ROOT / "tests/fixtures/in_game_ad"
-    screen = cv2.imread(str(fixtures / "meta_video_83.jpg"))
+    screen = cv2.imread(str(fixtures / f"{name}.jpg"))
     device = Device((fixtures / "meta_audience_network_focus_82.txt").read_text(), "")
     read = device.shell
     commands: list[str] = []
     device.shell = lambda command: commands.append(command) or read(command)
 
-    assert ad_exit.find_close(screen, TEMPLATES, device) == (982, 180)
+    x, y = ad_exit.find_close(screen, TEMPLATES, device)
+    assert abs(x - 981) <= 6 and abs(y - 183) <= 6
     assert not any(command.startswith("uiautomator") for command in commands)
 
 
