@@ -8,6 +8,7 @@ import cv2
 import pytest
 
 import config
+import tiles
 from tests.test_perception import recorded
 
 
@@ -997,3 +998,27 @@ def test_a_tap_on_another_row_than_the_quoted_one_expects_no_next_price(
              observation=replace(obs, rows=(other, quoted)))
     assert bot.pending is not None and bot.pending[0].upgrade_id == 'health'
     assert bot._pending_next_price is None
+
+
+@pytest.mark.parametrize('fixture', ['in_run_defense.png', 'in_run_defense_1920.png'])
+def test_a_panel_scroll_moves_at_most_one_row(fixture: str) -> None:
+    """The panel shows about 2.6 rows and a tile is only read whole. A swipe
+    past one row lets a five-row tab rest only at its top and bottom, so the
+    middle row (Thorns | Lifesteal on Defense) is clipped at both."""
+    from autopilot import scroll_panel
+    from perception import observe_frame
+    frame = cv2.imread(str(Path(__file__).parent / 'fixtures' / fixture))
+    observation = observe_frame(frame, 'battle')
+    first, second = sorted({tile.y for tile in tiles.find_tiles(frame)})[:2]
+    swipes: list[tuple[int, float]] = []
+
+    class Recorder:
+        def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
+            swipes.append((y - y2, duration))
+
+    for down in (True, False):
+        scroll_panel(Recorder(), frame, observation.heading_y, down=down)
+    assert [abs(distance) for distance, _ in swipes] == [abs(swipes[0][0])] * 2
+    assert 0 < abs(swipes[0][0]) <= second - first
+    # Slow enough that the panel stops near where the finger lifts.
+    assert all(duration >= .5 for _, duration in swipes)
