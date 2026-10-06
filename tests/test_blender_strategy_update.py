@@ -29,10 +29,10 @@ def test_blender_gate_precedes_old_rules_and_is_idempotent(prefix: str, threshol
     gate = updated["workshop"]["blocks"][0]
     assert (gate["type"], gate["field"], gate["op"], gate["value"], gate["else"]) == (
         "condition", "best_tier_1_wave", "gte", threshold, [])
-    unlocks, _, priorities, stop = gate["then"]
+    unlocks, _, _, priorities, stop = gate["then"]
     assert [block["id"] for block in gate["then"]] == [
-        f"{prefix}.blender.unlocks", f"{prefix}.blender.free_unlocks", f"{prefix}.blender.value",
-        f"{prefix}.blender.wait"]
+        f"{prefix}.blender.unlocks", f"{prefix}.blender.free_unlocks", f"{prefix}.blender.thorns",
+        f"{prefix}.blender.value", f"{prefix}.blender.wait"]
     assert unlocks["type"] == "unlock" and {"knockback_chance", "orbs"} <= set(unlocks["upgrade_ids"])
     assert priorities["selection"] == "value"
     assert "defense_absolute" not in priorities["upgrade_ids"]

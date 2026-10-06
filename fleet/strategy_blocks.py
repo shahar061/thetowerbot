@@ -284,7 +284,11 @@ _BLENDER_WEIGHTS = {
     'cash_per_wave': 2, 'critical_chance': 2, 'bounce_shot_targets': 2, 'bounce_shot_range': 1,
     'critical_factor': 1,
 }
-_BLENDER_TARGETS = {'thorns': 51, 'lifesteal': 3.5, 'orbs': 3}
+_BLENDER_TARGETS = {'lifesteal': 3.5, 'orbs': 3}
+# Thorns has its own pool: bought only while cheaper than each core pick.
+_BLENDER_THORNS_CHEAPER_THAN = ('attack_speed', 'health', 'defense_percent', 'knockback_chance',
+                                'coins_per_kill_bonus')
+_BLENDER_VALUE_WEIGHTS = {uid: weight for uid, weight in _BLENDER_WEIGHTS.items() if uid != 'thorns'}
 # Every gated pool skill: the Orbs and Bounce Shot chains come first, Free
 # Upgrades only once they are owned. Nothing here leads to Interest.
 _BLENDER_LATER_UNLOCKS = ('free_utility_upgrade', 'free_defense_upgrade', 'free_attack_upgrade')
@@ -366,9 +370,12 @@ def _blender_workshop_template(policy: str) -> dict[str, Any]:
                 {'id': f'{policy}.blender.free_unlocks', 'type': 'unlock',
                  'label': 'Unlock Free Upgrades', 'upgrade_ids': list(_BLENDER_LATER_UNLOCKS),
                  'max_price': 20000, 'hold': True},
+                {'id': f'{policy}.blender.thorns', 'type': 'pool', 'label': 'Thorns while cheap',
+                 'upgrade_ids': ['thorns'], 'targets': {'thorns': 51},
+                 'cheaper_than_upgrade_ids': list(_BLENDER_THORNS_CHEAPER_THAN)},
                 {'id': f'{policy}.blender.value', 'type': 'pool', 'label': 'Blender value per coin',
-                 'upgrade_ids': list(_BLENDER_WEIGHTS), 'selection': 'value',
-                 'weights': dict(_BLENDER_WEIGHTS), 'targets': dict(_BLENDER_TARGETS)},
+                 'upgrade_ids': list(_BLENDER_VALUE_WEIGHTS), 'selection': 'value',
+                 'weights': dict(_BLENDER_VALUE_WEIGHTS), 'targets': dict(_BLENDER_TARGETS)},
                 {'id': f'{policy}.blender.wait', 'type': 'wait',
                  'label': 'Wait for an affordable Blender upgrade'},
             ], 'else': _workshop_template(policy)}

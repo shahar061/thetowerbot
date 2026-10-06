@@ -654,6 +654,20 @@ def test_blender_unlocks_the_defense_path_in_order(policy: str, owned: tuple[str
     assert (result.decision.state, result.decision.upgrade_id) == ('buy', expected)
 
 
+@pytest.mark.parametrize('thorns_price,expected', [(40, 'thorns'), (50, None)])
+def test_blender_buys_workshop_thorns_only_while_cheaper_than_core_picks(
+        thorns_price: int, expected: str | None) -> None:
+    gate = blocks.template_program('turtle', 'workshop')[0]
+    thorns, value = gate['then'][2:4]
+    assert 'thorns' not in value['upgrade_ids']
+    prices = {uid: 50 for uid in thorns['cheaper_than_upgrade_ids']} | {'thorns': thorns_price}
+    owned = {'unlock_defense_upgrades': 1, 'unlock_thorns': 1, 'unlock_knockback': 1, 'unlock_coin_bonuses': 1}
+    sample = replace(facts(), wallet_coins=1000, prices=prices, purchases=owned, confirmed_purchases=owned,
+                     price_evidence={uid: {'source': 'observed', 'observed_at': 99} for uid in prices})
+    result = blocks.evaluate_program(route([thorns, {'id': 'stop', 'type': 'wait'}]), sample, None, 'workshop')
+    assert (result.decision.upgrade_id if result.decision else None) == expected
+
+
 @pytest.mark.parametrize('policy', ['opening', 'turtle'])
 def test_pinned_legacy_builtin_uses_blender_after_wave_450(policy: str) -> None:
     legacy = blocks.validate_program(blocks._workshop_template(policy), 'workshop')
@@ -1550,8 +1564,10 @@ def test_blender_v2_spends_by_value_once_unlocks_are_done() -> None:
               'orbs': 20000, 'free_attack_upgrade': 75, 'free_defense_upgrade': 90,
               'free_utility_upgrade': 100, 'bounce_shot_chance': 3300, 'bounce_shot_range': 3300,
               'bounce_shot_targets': 12000}
+    evidence = {uid: {'source': 'observed', 'observed_at': 99} for uid in prices}
     result = blocks.evaluate_program(route(blender_v2()),
-        worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned), None, 'workshop')
+        worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned,
+                  price_evidence=evidence), None, 'workshop')
     # Crit Chance 50 / 2 = 25 beats Free Defense 90 / 3 = 30; Regen is cheaper but not in the pool.
     assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'critical_chance')
 
@@ -1566,10 +1582,11 @@ def test_blender_v2_never_buys_defense_absolute() -> None:
 
 
 def test_blender_v2_weights_sum_to_100_and_unlock_every_gated_pool_skill() -> None:
-    core, later, value, stop = blender_v2()
-    assert sum(value['weights'].values()) == 100
+    core, later, thorns, value, stop = blender_v2()
+    assert sum(value['weights'].values()) + blocks._BLENDER_WEIGHTS['thorns'] == 100
     assert value['selection'] == 'value' and stop['type'] == 'wait'
-    gated = {uid for uid in value['upgrade_ids'] if blocks.gate_for(uid) is not None}
+    assert thorns['upgrade_ids'] == ['thorns'] and 'thorns' not in value['upgrade_ids']
+    gated = {uid for uid in [*thorns['upgrade_ids'], *value['upgrade_ids']] if blocks.gate_for(uid) is not None}
     assert gated <= set(core['upgrade_ids']) | set(later['upgrade_ids'])
     assert {'orbs', 'bounce_shot_chance'} <= set(core['upgrade_ids'])
     assert set(later['upgrade_ids']) == {'free_utility_upgrade', 'free_defense_upgrade', 'free_attack_upgrade'}
