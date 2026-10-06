@@ -352,7 +352,37 @@ def test_reading_tolerance_adds_each_readings_abbreviation_and_each_rounded_amou
     assert transactions.reading_tolerance(450, 451) == 0
     assert transactions.reading_tolerance(2610, 2614) == 20
     assert transactions.reading_tolerance(450, 451, rounded_amounts=2) == 2
-    assert transactions.reading_tolerance(12300, rounded_amounts=1) == 101
+    assert transactions.reading_tolerance(12300, rounded_amounts=1) == 11
+
+
+@pytest.mark.parametrize(("balance", "slack"), [
+    (450, 0),                  # shown in full
+    (2_610, 10),               # "2.61K"
+    (14_660, 10),              # "14.66K", not "14.7K"
+    (123_450, 10),             # "123.45K"
+    (1_230_000, 10_000),       # "1.23M"
+    (492_210_000, 10_000),     # "492.21M"
+    (103_120_000_000, 10_000_000),  # "103.12B"
+])
+def test_the_header_shows_two_decimals_at_every_magnitude(balance: int, slack: int) -> None:
+    """The game abbreviates to two decimals ("12.31K", "93.20B"), never to
+    three significant digits, so a 5-digit balance hides 10 coins, not 100."""
+    assert transactions.abbreviation_slack(balance) == slack
+
+
+@pytest.mark.parametrize(("price", "before", "after"), [
+    (113, 14_660, 14_550),  # Knockback Chance: real balance 14,547 shown "14.55K"
+    (75, 16_720, 16_640),   # Free Defense Upgrade: real balance 16,645 shown "16.64K"
+])
+def test_a_cheap_buy_on_a_five_digit_wallet_settles_at_its_price(
+    price: int, before: int, after: int,
+) -> None:
+    """Both landed live and both were closed unproven: a 100-coin slack per
+    reading made any price under 200 indistinguishable from rounding."""
+    outcome = transactions.judge("k", price=price, wallet_before=before,
+                                 wallet_after=after, effect_changed=True)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.BOUGHT, price)
 
 
 def _scoped(journal, *, wallet=13, lower=None):
