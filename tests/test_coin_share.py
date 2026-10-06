@@ -86,6 +86,30 @@ def test_settle_grows_once_per_visit_and_resets(tmp_path: Path) -> None:
     assert jar.settle(saving, WAITING, 1000, "visit-2", 14.) == 0      # reset holds for this visit
 
 
+def test_save_pct_keeps_a_share_of_each_run_across_runs(tmp_path: Path) -> None:
+    """Each run's first menu visit moves pct% of the coins above the jar into it."""
+    jar = coin_share.LabCoinJar(tmp_path, "a1")
+    saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
+    waiting = {**WAITING, "price": 50_000}
+    assert jar.settle(saving, waiting, 10_000, "after-run:1", 10.) == 2_500
+    assert coin_share.workshop_ceiling(saving, 10_000, 2_500) == 7_500
+    # Workshop spent its 7,500; the next run earned 10,000 more.
+    assert jar.settle(saving, waiting, 12_500, "after-run:2", 11.) == 5_000
+    assert coin_share.workshop_ceiling(saving, 12_500, 5_000) == 7_500
+
+
+def test_a_lab_debit_takes_only_its_price_from_the_jar(tmp_path: Path) -> None:
+    jar = coin_share.LabCoinJar(tmp_path, "a1")
+    saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
+    waiting = {**WAITING, "price": 50_000}
+    jar.settle(saving, waiting, 20_000, "after-run:1", 10.)
+    assert jar.spend(71, 11.) == 4_929        # a cheap filler keeps the Game Speed savings
+    assert jar.settle(saving, waiting, 19_929, "after-run:1", 12.) == 4_929  # same run: no regrowth
+    assert jar.spend(50_000, 13.) == 0        # never below empty
+    assert jar.amount() == 0
+    assert coin_share.LabCoinJar(tmp_path / "none", "a1").spend(71, 14.) == 0
+
+
 def test_no_waiting_lab_or_another_mode_empties_the_jar(tmp_path: Path) -> None:
     jar = coin_share.LabCoinJar(tmp_path, "a1")
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 20}})

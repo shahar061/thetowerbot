@@ -174,11 +174,11 @@ class RerollProgress:
                                direct_start=rules.labs.direct_start,
                                native_repeat=rules.labs.native_repeat)
 
-    def note_lab_coin_debit(self, now: float | None = None) -> None:
-        """A confirmed lab coin debit spent the savings: empty the jar."""
+    def note_lab_coin_debit(self, spent: int, now: float | None = None) -> None:
+        """A confirmed lab coin debit of `spent` coins: the jar loses at most that much."""
         if self.read_only:
             return
-        self.coin_jar.reset(time.time() if now is None else now)
+        self.coin_jar.spend(spent, time.time() if now is None else now)
 
     def lab_unlocked(self) -> bool:
         """Whether this account has positive, persisted Labs unlock evidence."""

@@ -438,7 +438,7 @@ class CadenceProgress:
     def note_lab_observation(self, decision: LabDecision) -> None:
         self.lab_cadence.note(decision, 1000.)
 
-    def note_lab_coin_debit(self) -> None:
+    def note_lab_coin_debit(self, spent: int) -> None:
         self.debits += 1
 
     def note_lab_failure(self) -> None:

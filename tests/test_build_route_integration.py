@@ -459,8 +459,29 @@ def test_save_pct_holds_a_jar_that_workshop_cannot_spend(tmp_path: Path) -> None
     progress.route_facts = _facts("visit-2")  # type: ignore[method-assign]
     progress.shopping_policy(base)
     assert progress._route_evaluation.trace.spend_ceiling == 640
-    progress.note_lab_coin_debit()
+    progress.note_lab_coin_debit(2500)
     assert progress.coin_jar.amount() == 0
+
+
+def test_save_pct_grows_across_runs_and_a_filler_spends_only_its_price(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "save_pct", "pct": 25}}})
+    _game_speed_waits(progress, price=50_000)
+    base = Strategy.from_config().shopping
+    progress.route_facts = _facts("after-run:1", wallet=10_000)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 2_500
+    assert progress._route_evaluation.trace.spend_ceiling == 7_500  # Workshop: wallet - jar
+    progress.route_facts = _facts("after-run:2", wallet=12_500)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 5_000
+    assert progress._route_evaluation.trace.spend_ceiling == 7_500
+    progress.note_lab_coin_debit(71)  # a 71-coin filler started
+    assert progress.coin_jar.amount() == 4_929
+    progress.route_facts = _facts("after-run:2", wallet=12_429)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 4_929
+    assert progress._route_evaluation.trace.spend_ceiling == 7_500
 
 
 def test_the_jar_lowers_the_live_workshop_visit_budget(tmp_path: Path) -> None:
@@ -602,6 +623,7 @@ def _jit_route(root: Path, expected: int = 0) -> RouteDocument:
     raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
     raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
     raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    raw["baseline"]["rules"]["coins"]["lab_share"] = {"mode": "just_in_time", "pct": 25}
     return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
 
 

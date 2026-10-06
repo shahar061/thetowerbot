@@ -337,7 +337,7 @@ def test_confirmed_lab_start_records_one_job_and_one_coin_debit(bot_on_main_menu
                if isinstance(event, events.LabResearchStarted)]
     assert len(started) == 1
     assert (started[0].coins_before, started[0].coins_after) == (400, 100)
-    bot.reroll_progress.note_lab_coin_debit.assert_called_once()
+    bot.reroll_progress.note_lab_coin_debit.assert_called_once_with(300)
 
 
 def test_failed_lab_start_does_not_record_a_spend(bot_on_main_menu) -> None:

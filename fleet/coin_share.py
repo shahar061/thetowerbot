@@ -140,6 +140,19 @@ class LabCoinJar:
         self._write(amount, visit_key, now)
         return amount
 
+    def spend(self, coins: int, now: float) -> int:
+        """A confirmed lab coin debit takes at most its own price from the jar.
+
+        Labs may spend the whole wallet, jar included, so a cheap filler only
+        dips into the savings; it never empties them. Returns the new amount.
+        """
+        record = self._record(quiet=True)
+        if record is None:
+            return 0
+        amount = max(0, record["amount"] - max(0, coins))
+        self._write(amount, record.get("visit_key"), now)
+        return amount
+
     def reset(self, now: float) -> None:
         """After the lab's confirmed coin debit, the savings are spent."""
         record = self._record(quiet=True)

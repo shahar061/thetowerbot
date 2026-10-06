@@ -1765,8 +1765,8 @@ class TowerBot:
                             coins_before=decision.wallet_coins,
                             coins_after=decision.wallet_coins - decision.price,
                             completes_at=result.confirmed_job.completes_at))
-                    # The confirmed debit spent the lab savings.
-                    self.reroll_progress.note_lab_coin_debit()
+                    # The confirmed debit spends only its own price from the lab savings.
+                    self.reroll_progress.note_lab_coin_debit(decision.price)
         else:
             # With auto-start off the visit only looked; keep the saved Game
             # Speed evidence rather than overwriting it with "inspect". A visit
