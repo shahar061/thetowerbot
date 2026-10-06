@@ -1526,32 +1526,39 @@ def worker_83(**changes: Any) -> RouteFacts:
     return replace(facts(), **{**recorded, **changes})
 
 
-def test_blender_v2_replay_buys_free_upgrades_then_saves_for_knockback() -> None:
+def test_blender_v2_replay_saves_for_knockback_before_free_upgrades() -> None:
     first = blocks.evaluate_program(route(blender_v2()), worker_83(), None, 'workshop')
-    assert (first.decision.state, first.decision.upgrade_id) == ('buy', 'unlock_free_upgrades')
-    owned = {**WORKER_83_PURCHASES, 'unlock_free_upgrades': 1}
-    second = blocks.evaluate_program(route(blender_v2()),
-        worker_83(wallet_coins=430, purchases=owned, confirmed_purchases=owned), None, 'workshop')
-    assert (second.decision.state, second.decision.upgrade_id) == ('save_coins', 'unlock_knockback')
+    assert (first.decision.state, first.decision.upgrade_id) == ('save_coins', 'unlock_knockback')
+    owned = {**WORKER_83_PURCHASES, 'unlock_knockback': 1, 'unlock_orbs': 1, 'unlock_bounce_shot': 1}
+    later = blocks.evaluate_program(route(blender_v2()),
+        worker_83(purchases=owned, confirmed_purchases=owned), None, 'workshop')
+    assert (later.decision.state, later.decision.upgrade_id) == ('buy', 'unlock_free_upgrades')
+
+
+def test_blender_v2_unlocks_bounce_shot_but_never_interest() -> None:
+    owned = {**WORKER_83_PURCHASES, 'unlock_knockback': 1, 'unlock_orbs': 1}
+    prices = {**WORKER_83_PRICES, 'unlock_interest': 1}
+    result = blocks.evaluate_program(route(blender_v2()),
+        worker_83(wallet_coins=20000, prices=prices, purchases=owned, confirmed_purchases=owned), None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'unlock_bounce_shot')
 
 
 def test_blender_v2_spends_by_value_once_unlocks_are_done() -> None:
     owned = {**WORKER_83_PURCHASES, **{uid: 1 for uid in (
-        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_interest')}}
+        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_bounce_shot')}}
     prices = {**WORKER_83_PRICES, 'knockback_chance': 500, 'knockback_force': 500, 'orb_speed': 500,
               'orbs': 20000, 'free_attack_upgrade': 75, 'free_defense_upgrade': 90,
-              'free_utility_upgrade': 100}
+              'free_utility_upgrade': 100, 'bounce_shot_chance': 3300, 'bounce_shot_range': 3300,
+              'bounce_shot_targets': 12000}
     result = blocks.evaluate_program(route(blender_v2()),
         worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned), None, 'workshop')
     # Crit Chance 50 / 2 = 25 beats Free Defense 90 / 3 = 30; Regen is cheaper but not in the pool.
     assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'critical_chance')
-    assert any('manual unlock needed' in item or 'over unlock price limit' in item
-               for item in result.trace.rejected)
 
 
 def test_blender_v2_never_buys_defense_absolute() -> None:
     owned = {**WORKER_83_PURCHASES, **{uid: 1 for uid in (
-        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_interest')}}
+        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_bounce_shot')}}
     prices = {uid: 10**9 for uid in WORKER_83_PRICES} | {'defense_absolute': 1, 'health_regen': 1}
     result = blocks.evaluate_program(route(blender_v2()),
         worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned), None, 'workshop')
@@ -1559,13 +1566,16 @@ def test_blender_v2_never_buys_defense_absolute() -> None:
 
 
 def test_blender_v2_weights_sum_to_100_and_unlock_every_gated_pool_skill() -> None:
-    unlocks, value, stop = blender_v2()
+    core, later, value, stop = blender_v2()
     assert sum(value['weights'].values()) == 100
     assert value['selection'] == 'value' and stop['type'] == 'wait'
     gated = {uid for uid in value['upgrade_ids'] if blocks.gate_for(uid) is not None}
-    assert gated <= set(unlocks['upgrade_ids'])
-    assert {'max_recovery', 'package_chance'} <= set(unlocks['upgrade_ids'])
-    assert (unlocks['max_price'], unlocks['hold']) == (20000, True)
+    assert gated <= set(core['upgrade_ids']) | set(later['upgrade_ids'])
+    assert {'orbs', 'bounce_shot_chance'} <= set(core['upgrade_ids'])
+    assert set(later['upgrade_ids']) == {'free_utility_upgrade', 'free_defense_upgrade', 'free_attack_upgrade'}
+    assert not {'max_recovery', 'package_chance', 'multishot_chance'} & (
+        set(core['upgrade_ids']) | set(value['upgrade_ids']))
+    assert all((block['max_price'], block['hold']) == (20000, True) for block in (core, later))
 
 
 def test_burst_mode_buys_the_cheapest_quote_without_a_wave_reconcile_trip(
