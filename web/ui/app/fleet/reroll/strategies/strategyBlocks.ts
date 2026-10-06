@@ -1,6 +1,6 @@
 import type { ProgramLane, StrategyBlock, WaveRelative } from "@/lib/strategyStudio";
 
-export type BlockPreset = "condition" | "cheap" | "cap" | "weighted" | "buy" | "fallback" | "wait" | "budget" | "save_for" | "while_saving";
+export type BlockPreset = "condition" | "cheap" | "cap" | "weighted" | "value" | "unlock" | "buy" | "fallback" | "wait" | "budget" | "save_for" | "while_saving";
 export type BlockTarget = { parent: string | null; branch: "root" | "then" | "else" | "blocks" | "goal"; index: number };
 export const ROOT_END: BlockTarget = { parent: null, branch: "root", index: Number.MAX_SAFE_INTEGER };
 export const BLOCK_PRESETS: { id: BlockPreset; label: string; detail: string; group: "Logic" | "Flow" | "Buy" }[] = [
@@ -8,6 +8,8 @@ export const BLOCK_PRESETS: { id: BlockPreset; label: string; detail: string; gr
   { id: "cheap", label: "Cheap pool", detail: "Buy one below a price limit", group: "Logic" },
   { id: "cap", label: "Purchase cap", detail: "Up to X buys per upgrade", group: "Logic" },
   { id: "weighted", label: "Weighted draw", detail: "Let weights evolve after buys", group: "Logic" },
+  { id: "value", label: "Value per coin", detail: "Buy the lowest price ÷ weight", group: "Logic" },
+  { id: "unlock", label: "Unlock missing skills", detail: "Buy the unlocks these skills need first", group: "Logic" },
   { id: "fallback", label: "First available", detail: "Try paths in order", group: "Flow" },
   { id: "budget", label: "Budget", detail: "Spend up to a utility allowance", group: "Flow" },
   { id: "save_for", label: "Save for goal", detail: "Save for one goal, let cheap buys continue", group: "Flow" },
@@ -15,9 +17,10 @@ export const BLOCK_PRESETS: { id: BlockPreset; label: string; detail: string; gr
   { id: "wait", label: "Save & wait", detail: "Stop buying on this path", group: "Flow" },
   { id: "buy", label: "Buy upgrade", detail: "One affordable purchase", group: "Buy" },
 ];
-/** Budget counts Workshop utility spend, so the In-game palette omits it. */
+/** Budget, unlocks and value pools are Workshop-only, so the In-game palette omits them. */
 export function presetsForLane(lane: ProgramLane): typeof BLOCK_PRESETS {
-  return lane === "battle" ? BLOCK_PRESETS.filter(item => item.id !== "budget") : BLOCK_PRESETS;
+  const workshopOnly = new Set<BlockPreset>(["budget", "unlock", "value"]);
+  return lane === "battle" ? BLOCK_PRESETS.filter(item => !workshopOnly.has(item.id)) : BLOCK_PRESETS;
 }
 
 export function makeBlock(preset: BlockPreset, lane: ProgramLane, upgradeId = "defense_absolute"): StrategyBlock {
@@ -32,6 +35,9 @@ export function makeBlock(preset: BlockPreset, lane: ProgramLane, upgradeId = "d
     case "cap": return { id, type: "pool", upgrade_ids: [upgradeId], selection: "priority", max_purchases: 8, count_scope: scope };
     case "weighted": return { id, type: "pool", upgrade_ids: ["defense_absolute", "cash_per_wave", "damage"], selection: "weighted",
       weights: { defense_absolute: 8, cash_per_wave: 4, damage: 2 }, decay_pct: 20, weight_floor: 1, count_scope: scope };
+    case "value": return { id, type: "pool", upgrade_ids: ["defense_percent", "health", "attack_speed"], selection: "value",
+      weights: { defense_percent: 12, health: 9, attack_speed: 10 }, count_scope: scope };
+    case "unlock": return { id, type: "unlock", upgrade_ids: ["knockback_chance", "orbs"], max_price: 20000, hold: true };
     case "budget": return { id, type: "budget", metric: "utility_spent", target: 350, ceiling: 400,
       blocks: [{ id: `${id}.pool`, type: "pool", upgrade_ids: ["cash_per_wave"], selection: "priority", count_scope: "account" }] };
     case "save_for": return { id, type: "save_for", goal: [{ id: `${id}.goal`, type: "pool", upgrade_ids: [upgradeId], selection: "priority" }] };
@@ -69,14 +75,18 @@ export function blockTitle(block: StrategyBlock, names: Map<string, string>): st
     case "save_for": return "Save for goal";
     case "while_saving": return block.upgrade_id ? `While saving for ${names.get(block.upgrade_id) ?? block.upgrade_id}` : "While saving";
     case "wait": return "Save & wait";
-    case "pool": return block.hold_until_capped ? "Buy until purchase caps" : block.selection === "weighted" ? "Draw with evolving weights" : block.selection === "cheapest" ? "Buy cheapest available" : block.discount_pct !== undefined ? "Buy one from a cheap pool" : "Capped upgrade pool";
+    case "unlock": return "Unlock missing skills";
+    case "pool": return block.hold_until_capped ? "Buy until purchase caps" : block.selection === "value" ? "Buy best value per coin" : block.selection === "weighted" ? "Draw with evolving weights" : block.selection === "cheapest" ? "Buy cheapest available" : block.discount_pct !== undefined ? "Buy one from a cheap pool" : "Capped upgrade pool";
   }
 }
 export function blockDetail(block: StrategyBlock): string {
   if (block.type === "native") return nativeDetails[block.phase][1];
+  if (block.type === "unlock") return ["Buys the next unlock these skills need, cheapest first",
+    block.max_price !== undefined ? `Unlocks ≤ ${block.max_price} coins` : null,
+    block.hold === false ? "Later blocks may spend while saving" : "Holds coins until the unlock is affordable"].filter(Boolean).join(" · ");
   if (block.type === "pool") return [block.discount_pct !== undefined ? `At least ${block.discount_pct}% cheaper` : "Filter eligible upgrades",
     block.max_purchases !== undefined ? `Max ${block.max_purchases} confirmed buys / upgrade` : "One purchase, then evaluate again",
-    block.selection === "weighted" ? `${block.decay_pct ?? 0}% weight reduction / buy` : block.selection === "cheapest" ? "Lowest affordable price" : "First eligible item",
+    block.selection === "value" ? "Lowest price ÷ weight" : block.selection === "weighted" ? `${block.decay_pct ?? 0}% weight reduction / buy` : block.selection === "cheapest" ? "Lowest affordable price" : "First eligible item",
     block.price_source === "model" ? "Tracked battle prices · verify each purchase" : null,
     block.hold_until_capped ? "Wait until available upgrades reach their purchase caps" : null,
     block.price_cap !== undefined ? `≤ ${block.price_cap} coins` : null,
@@ -132,10 +142,11 @@ export function locateBlock(blocks: StrategyBlock[], id: string, parent: string 
   }
   return null;
 }
-export type GuideBlockType = "buy" | "pool" | "condition" | "fallback" | "budget" | "save_for" | "while_saving" | "wait" | "native";
+export type GuideBlockType = "buy" | "pool" | "unlock" | "condition" | "fallback" | "budget" | "save_for" | "while_saving" | "wait" | "native";
 export const GUIDE_BLOCKS: { type: GuideBlockType; title: string; summary: string }[] = [
   { type: "buy", title: "Buy upgrade", summary: "Buys one upgrade if it is unlocked, affordable and not on Never Buy. Otherwise passes." },
-  { type: "pool", title: "Upgrade pool", summary: "Filters a list of upgrades by caps, targets and price limits, then buys the first eligible one or draws by weight." },
+  { type: "pool", title: "Upgrade pool", summary: "Filters a list of upgrades by caps, targets and price limits, then buys the first eligible one, draws by weight, or buys the best value per coin (lowest price ÷ weight)." },
+  { type: "unlock", title: "Unlock missing skills", summary: "Buys the next Workshop unlock the listed skills need, cheapest first. Holds coins for it unless hold is off; skips unlocks over the price limit or the bot cannot buy." },
   { type: "condition", title: "If / else", summary: "Checks one fact and follows Then or Else. Unknown facts pause the decision." },
   { type: "fallback", title: "First available", summary: "Tries each path in order until one buys or waits." },
   { type: "budget", title: "Budget", summary: "Runs its blocks until utility spend reaches a target, never past the ceiling." },

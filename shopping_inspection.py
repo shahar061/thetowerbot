@@ -232,7 +232,8 @@ class WorkshopInspection:
             coins, _ = header_numbers(screen, reading.page, reading.top_left)
             if session.reroll_observe_prices is not None:
                 session.reroll_observe_prices({r.upgrade_id: r.price for r in observation.rows
-                    if r.status == 'available'}, coins)
+                    if r.status == 'available'}, coins,
+                    maxed=tuple(r.upgrade_id for r in observation.rows if r.status == 'maxed'))
             if session.observations is not None:
                 session.observations.observe(observation)
             viewport = (category, tuple((r.upgrade_id, r.rect) for r in observation.rows))

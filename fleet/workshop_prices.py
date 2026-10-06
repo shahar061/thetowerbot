@@ -87,6 +87,9 @@ class WorkshopPrices:
         self.path = root / "workshop-prices.json"
         self.account_id = account_id
         self.entries: dict[str, dict] = {}
+        # Rows read as MAX, with the purchase count at that read. Terminal
+        # evidence: a maxed row shows no price, so no read can ever quote it.
+        self.maxed: dict[str, dict] = {}
         self.wallet: dict | None = None
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -100,6 +103,13 @@ class WorkshopPrices:
                             and math.isfinite(entry["observed_at"])
                             and isinstance(entry.get("discount_signature"), str)):
                         self.entries[uid] = entry
+                maxed = payload.get("maxed")
+                for uid, entry in (maxed.items() if isinstance(maxed, dict) else ()):
+                    if (upgrades.by_id(uid) is not None and isinstance(entry, dict)
+                            and type(entry.get("purchases")) is int and entry["purchases"] >= 0
+                            and isinstance(entry.get("observed_at"), (int, float))
+                            and math.isfinite(entry["observed_at"])):
+                        self.maxed[uid] = entry
                 wallet = payload.get("wallet")
                 if (isinstance(wallet, dict) and type(wallet.get("coins")) is int
                         and wallet["coins"] >= 0 and type(wallet.get("run_id")) is int
@@ -108,6 +118,7 @@ class WorkshopPrices:
                     self.wallet = wallet
         except (OSError, ValueError, TypeError, AttributeError):
             self.entries = {}
+            self.maxed = {}
             self.wallet = None
 
     def observe(self, upgrade_id: str, price: int | None, purchases: int,
@@ -118,6 +129,26 @@ class WorkshopPrices:
         self.entries[upgrade_id] = {"price": price, "purchases": purchases,
                                     "observed_at": now,
                                     "discount_signature": discount_signature}
+        # A priced row is not maxed (for example after a raised max level).
+        self.maxed.pop(upgrade_id, None)
+
+    def observe_maxed(self, upgrade_id: str, purchases: int, *, now: float) -> None:
+        if (upgrades.by_id(upgrade_id) is None or type(purchases) is not int
+                or purchases < 0 or not math.isfinite(now)):
+            return
+        self.maxed[upgrade_id] = {"purchases": purchases, "observed_at": now}
+        # Any earlier price is for a level the row has already passed.
+        self.entries.pop(upgrade_id, None)
+
+    def maxed_ids(self, purchases: Mapping[str, int]) -> tuple[str, ...]:
+        """Maxed reads no confirmed buy or ledger change has contradicted since.
+
+        A buy after the read means the row was not maxed; a lower count means
+        the purchase history changed under it (for example a reset). Either
+        way the row is read again rather than trusted.
+        """
+        return tuple(sorted(uid for uid, entry in self.maxed.items()
+                            if purchases.get(uid, 0) == entry["purchases"]))
 
     def quotes(self, purchases: Mapping[str, int], *,
                invalidated: Mapping[str, float] | None = None,
@@ -151,7 +182,8 @@ class WorkshopPrices:
             with temporary.open("x", encoding="utf-8") as output:
                 json.dump({"version": 1, "account_id": self.account_id,
                            "catalog_revision": CATALOG_REVISION,
-                           "entries": self.entries, "wallet": self.wallet}, output)
+                           "entries": self.entries, "maxed": self.maxed,
+                           "wallet": self.wallet}, output)
                 output.write("\n")
             os.replace(temporary, self.path)
         finally:

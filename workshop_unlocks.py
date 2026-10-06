@@ -63,9 +63,9 @@ GROUPS = (
                 ("free_attack_upgrade", "free_defense_upgrade", "free_utility_upgrade"),
                 "unlock_free_upgrades", 800),
     UnlockGroup("unlock_interest", "UTILITY", "Unlock Interest",
-                ("interest_per_wave",), None, 5000),
+                ("interest_per_wave",), "unlock_interest", 5000),
     UnlockGroup("unlock_recovery_packages", "UTILITY", "Unlock Recovery Packages",
-                ("recovery_amount", "max_recovery", "package_chance"), None, 1_500_000),
+                ("recovery_amount", "max_recovery", "package_chance"), "unlock_recovery_packages", 1_500_000),
     UnlockGroup("unlock_enemy_level_skips", "UTILITY", "Unlock Enemy Level Skips",
                 ("enemy_attack_level_skip", "enemy_health_level_skip"), None, 1_000_000_000),
 )
@@ -104,6 +104,15 @@ def owned_groups(*, visible_ids: Iterable[str] = (), purchased_ids: Iterable[str
 def next_group(category: str, owned: set[str]) -> UnlockGroup | None:
     return next((group for group in GROUPS if group.category == category.upper()
                  and group.id not in owned), None)
+
+
+def path_to(upgrade_id: str, owned: set[str]) -> tuple[UnlockGroup, ...]:
+    """Unlock groups still to buy, in tab order, before ``upgrade_id`` is available."""
+    target = gate_for(upgrade_id)
+    if target is None or target.id in owned:
+        return ()
+    chain = [group for group in GROUPS if group.category == target.category]
+    return tuple(group for group in chain[:chain.index(target) + 1] if group.id not in owned)
 
 
 def locked_upgrade_ids(owned: set[str]) -> frozenset[str]:

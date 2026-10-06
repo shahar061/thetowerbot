@@ -2197,11 +2197,12 @@ def test_reroll_observes_neighbor_prices_but_not_pending_receipts(
     rows = (
         dataclasses.replace(_tab_row("damage", "Damage"), price=300),
         dataclasses.replace(_tab_row("attack_speed", "Attack Speed"), price=30),
+        dataclasses.replace(_tab_row("critical_factor", "Critical Factor"), price=None, status="maxed"),
     )
     monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_:
                         physical_observation(screen, Observation("ATTACK", rows, {}, None, 1, 270)))
     seen = []
-    session.reroll_observe_prices = lambda prices, coins: seen.append((prices, coins))
+    session.reroll_observe_prices = lambda prices, coins, *, maxed: seen.append((prices, coins, maxed))
     policy = a_policy(armed=True, coin_budget=500, workshop=(
         ShoppingRule(name="Damage", category="ATTACK"),))
     session.begin(policy, run_count=1)
@@ -2209,7 +2210,8 @@ def test_reroll_observes_neighbor_prices_but_not_pending_receipts(
     for _ in range(2):
         session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
                           frame("menu_workshop_attack"), device, policy)
-    assert seen == [({"damage": 300, "attack_speed": 30}, 1000)]
+    # A maxed row has no price; it is reported so no strategy waits to read one.
+    assert seen == [({"damage": 300, "attack_speed": 30}, 1000, ("critical_factor",))]
     assert len(device.taps) == 1
 
 
@@ -2315,7 +2317,7 @@ def test_zero_budget_price_probe_reads_expensive_reference_and_every_row(
     observed: list[tuple[str, int | None]] = []
     neighbors: list[dict[str, int]] = []
     session.reroll_observe_price = lambda uid, _balance, price: observed.append((uid, price))
-    session.reroll_observe_prices = lambda prices, _balance: neighbors.append(prices)
+    session.reroll_observe_prices = lambda prices, _balance, **_: neighbors.append(prices)
     policy = a_policy(armed=True, coin_budget=0, allow_unlocks=False,
         cards=CardPolicy(enabled=False), workshop=tuple(
             ShoppingRule(name=row.name, category='ATTACK') for row in rows))

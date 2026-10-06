@@ -10,6 +10,7 @@ from typing import Any, Mapping
 import builds
 import config
 import upgrades
+from workshop_unlocks import gate_for, path_to
 
 MAX_BLOCKS = 80
 MAX_DEPTH = 6
@@ -91,8 +92,10 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 if len(set(ids)) != len(ids):
                     raise ValueError('duplicate pool upgrade')
                 block['upgrade_ids'] = ids
-                if block.get('selection', 'priority') not in {'priority', 'weighted', 'cheapest'}:
+                if block.get('selection', 'priority') not in {'priority', 'weighted', 'cheapest', 'value'}:
                     raise ValueError('unknown pool selection')
+                if block.get('selection') == 'value' and lane != 'workshop':
+                    raise ValueError('value selection is only available in the Workshop')
                 if lane == 'workshop' and block.get('selection') == 'cheapest':
                     raise ValueError('cheapest selection requires Battle price evidence')
                 if block.get('price_source', 'observed') not in {'observed', 'model'}:
@@ -123,6 +126,11 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     raise ValueError('pool weights must name pool upgrades')
                 for weight in weights.values():
                     number(weight, 'weight', 1, 100000)
+                if block.get('selection') == 'value':
+                    if set(weights) != set(ids):
+                        raise ValueError('value selection needs a weight for every upgrade')
+                    if 'decay_pct' in block or 'weight_floor' in block:
+                        raise ValueError('value selection does not use decay or weight floor')
                 reference = block.get('reference_upgrade_id', 'priority')
                 if reference != 'priority':
                     uid(reference)
@@ -167,6 +175,23 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     number(block['price_cap'], 'price_cap', 1, 1000000000000)
                 if 'wallet_share_pct' in block:
                     number(block['wallet_share_pct'], 'wallet_share_pct', 1, 100)
+            elif kind == 'unlock':
+                allowed |= {'upgrade_ids', 'max_price', 'hold'}
+                if lane != 'workshop':
+                    raise ValueError('unlock blocks are only available in the Workshop')
+                ids = block.get('upgrade_ids')
+                if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
+                    raise ValueError('unlock block requires 1 to 30 skills')
+                ids = [uid(item) for item in ids]
+                if len(set(ids)) != len(ids):
+                    raise ValueError('duplicate unlock skill')
+                if any(upgrades.by_id(item).unlock for item in ids):
+                    raise ValueError('name the skill to unlock, not its unlock tile')
+                block['upgrade_ids'] = ids
+                if 'max_price' in block:
+                    number(block['max_price'], 'max_price', 1, 1000000000000)
+                if 'hold' in block and type(block['hold']) is not bool:
+                    raise ValueError('hold must be true or false')
             elif kind == 'condition':
                 allowed |= {'field', 'op', 'value', 'relative', 'then', 'else', 'upgrade_id'}
                 field = block.get('field')
@@ -221,6 +246,8 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     raise ValueError('save for goal needs exactly one buy or pool block')
                 if any(key in block['goal'][0] for key in ('discount_pct', 'cheaper_than_upgrade_ids')):
                     raise ValueError('a saving goal cannot be a price-comparison pool')
+                if block['goal'][0].get('selection') == 'value':
+                    raise ValueError('a saving goal cannot be a value pool')
             elif kind == 'while_saving':
                 allowed |= {'upgrade_id', 'blocks'}
                 if 'upgrade_id' in block and (not isinstance(block['upgrade_id'], str)
@@ -248,17 +275,18 @@ def native_template_program(policy: str, lane: str) -> tuple[dict[str, Any], ...
 _ECONOMY_WEIGHTS = {'unlock_cash_bonuses': 100, 'cash_per_wave': 200, 'unlock_coin_bonuses': 80,
                     'coins_per_kill_bonus': 150, 'cash_bonus': 60}
 _FILLER_CAPS = {'cash_per_wave': 5, 'coins_per_kill_bonus': 5, 'cash_bonus': 5, 'damage': 3, 'attack_speed': 3}
-_BLENDER_PRIORITY = (
-    'attack_speed',
-    'unlock_defense_upgrades', 'unlock_thorns', 'unlock_lifesteal',
-    'unlock_knockback', 'unlock_orbs',
-    'knockback_force',
-    'unlock_range_upgrades', 'unlock_multishot',
-    'multishot_chance', 'multishot_targets',
-    'knockback_chance', 'orbs',
-    'unlock_rapid_fire', 'unlock_bounce_shot',
-    'bounce_shot_chance', 'bounce_shot_targets', 'bounce_shot_range',
-)
+# Blender v2: coin weights for value-per-coin buying (sum 100) and stop targets.
+_BLENDER_WEIGHTS = {
+    'coins_per_kill_bonus': 18, 'defense_percent': 12, 'attack_speed': 10, 'health': 9,
+    'knockback_chance': 6, 'thorns': 6, 'damage': 4, 'lifesteal': 4, 'orb_speed': 4,
+    'free_utility_upgrade': 3, 'free_defense_upgrade': 3, 'cash_bonus': 3, 'orbs': 3,
+    'knockback_force': 3, 'free_attack_upgrade': 2, 'coins_per_wave': 2, 'cash_per_wave': 2,
+    'critical_chance': 2, 'multishot_targets': 2, 'multishot_chance': 1, 'critical_factor': 1,
+}
+_BLENDER_TARGETS = {'thorns': 51, 'lifesteal': 3.5, 'orbs': 3, 'multishot_targets': 5}
+# Every gated pool skill, plus Recovery Packages (whose path buys Interest).
+_BLENDER_UNLOCKS = (*(uid for uid in _BLENDER_WEIGHTS if gate_for(uid) is not None),
+                    'max_recovery', 'package_chance')
 _OLDER_BUILTIN_WORKSHOP_IDS = {
     'opening': ('opening.starter', 'opening.economy', 'opening.objectives', 'opening.filler'),
     'turtle': ('turtle.economy', 'turtle.attack', 'turtle.objectives',
@@ -329,8 +357,12 @@ def _blender_workshop_template(policy: str) -> dict[str, Any]:
             'label': 'Blender after best wave 450',
             'field': 'best_tier_1_wave', 'op': 'gte', 'value': 450,
             'then': [
-                _pool(f'{policy}.blender.priorities', list(_BLENDER_PRIORITY),
-                      label='Blender Workshop priorities'),
+                {'id': f'{policy}.blender.unlocks', 'type': 'unlock',
+                 'label': 'Unlock missing skills', 'upgrade_ids': list(_BLENDER_UNLOCKS),
+                 'max_price': 20000, 'hold': True},
+                {'id': f'{policy}.blender.value', 'type': 'pool', 'label': 'Blender value per coin',
+                 'upgrade_ids': list(_BLENDER_WEIGHTS), 'selection': 'value',
+                 'weights': dict(_BLENDER_WEIGHTS), 'targets': dict(_BLENDER_TARGETS)},
                 {'id': f'{policy}.blender.wait', 'type': 'wait',
                  'label': 'Wait for an affordable Blender upgrade'},
             ], 'else': _workshop_template(policy)}
@@ -443,6 +475,11 @@ def program_upgrade_ids(program: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
             reference = block.get("reference_upgrade_id")
             if reference and reference != "priority":
                 result.append(reference)
+        elif kind == "unlock":
+            result.extend(block["upgrade_ids"])
+            for skill in block["upgrade_ids"]:
+                result.extend(group.executable_upgrade_id for group in path_to(skill, set())
+                              if group.executable_upgrade_id)
         elif kind == "native":
             result.extend(("cash_per_wave", "coins_per_kill_bonus", "cash_bonus",
                            "defense_absolute", "thorns", "health", "coins_per_wave",
@@ -616,6 +653,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if uid in excluded:
             rejected.append(f'{uid}: blocked by Never Buy')
             return False
+        if lane == 'workshop' and uid in facts.maxed_ids:
+            # A maxed row shows no price: never wait on or read one.
+            rejected.append(f'{uid}: maxed')
+            return False
         if lane == 'workshop' and not available(uid, workshop_owned):
             rejected.append(f'{uid}: Workshop upgrade is not unlocked or the next unlock')
             return False
@@ -708,7 +749,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         needed = []
         for uid in dict.fromkeys(ids):
             gate = builds.prerequisites().get(uid)
-            if (uid in excluded or not available(uid, workshop_owned)
+            if (uid in excluded or uid in facts.maxed_ids or not available(uid, workshop_owned)
                     or (gate and gate not in workshop_owned and facts.purchases.get(gate, 0) <= 0)):
                 continue
             if not observed_quote(uid):
@@ -917,6 +958,60 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 name = upgrades.by_id(uid).name
                 saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
                                  wait=True, save_price=price)
+            elif kind == 'unlock':
+                steps: dict[str, tuple[Any, int]] = {}
+                for skill in block['upgrade_ids']:
+                    if skill in excluded:
+                        rejected.append(f'{skill}: blocked by Never Buy')
+                        continue
+                    path = path_to(skill, workshop_owned)
+                    if not path:
+                        continue
+                    group = path[0]
+                    tile = group.executable_upgrade_id
+                    if tile is None:
+                        rejected.append(f'{identity}: manual unlock needed: {group.name} (for {skill})')
+                        continue
+                    if tile in excluded:
+                        rejected.append(f'{tile}: blocked by Never Buy')
+                        continue
+                    if not available(tile, workshop_owned):
+                        continue
+                    # An unlock has one fixed price; the catalog figure ranks it until read.
+                    price = price_for(tile)
+                    price = group.cost if price is None else price
+                    if price is None:
+                        continue
+                    if 'max_price' in block and price > block['max_price']:
+                        rejected.append(f'{identity}: {group.name} over unlock price limit')
+                        continue
+                    # Never save for a step a budget block would forbid buying.
+                    if budget_room is not None and price > budget_room:
+                        rejected.append(f'{identity}: {group.name} exceeds budget ceiling')
+                        continue
+                    steps.setdefault(tile, (group, price))
+                if not steps:
+                    continue
+                tab_order = {'ATTACK': 0, 'DEFENSE': 1, 'UTILITY': 2}
+                ranked = sorted(steps, key=lambda tile: (steps[tile][1], tab_order[steps[tile][0].category]))
+                for tile in ranked:
+                    group, price = steps[tile]
+                    if price > ceiling:
+                        rejected.append(f'{identity}: {group.name} over spend ceiling')
+                        continue
+                    if price_for(tile) is None:
+                        if observation := observe_prices(identity, [tile]):
+                            return observation
+                        continue
+                    return _Choice(identity, tile, f'Unlock {group.name} for skills in this strategy')
+                group, price = steps[ranked[0]]
+                goal = _Choice(identity, ranked[0], f'Saving for {group.name} ({wallet}/{price} coins)',
+                               wait=True, save_price=price)
+                if block.get('hold', True):
+                    # An earlier saving goal stays the published target.
+                    return saving or goal
+                if saving is None:
+                    saving = goal
             elif kind == 'while_saving':
                 if lane == 'workshop' and _legacy_saving_filler(block):
                     # Pinned built-in strategies carry the old 20%-wallet
@@ -1037,6 +1132,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             identity, [uid for uid in ordered
                                        if uid in unpriced[before_unpriced:] and price_for(uid) is None]):
                         return observation
+                if lane == 'workshop' and block.get('selection') == 'value':
+                    # The cheapest value may be an item whose price is unread.
+                    if observation := observe_prices(
+                            identity, [uid for uid in unpriced[before_unpriced:]
+                                       if uid in block['upgrade_ids'] and price_for(uid) is None]):
+                        return observation
                 if lane == 'battle':
                     # A priority pick only needs the stale rows ranked above it;
                     # A cheapest pick can act on verified affordable rows now;
@@ -1108,6 +1209,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         # pool_candidates checks these for the first level
                         # only; a burst would buy past them, so keep one tap.
                         burst_ceiling = None
+                elif block.get('selection') == 'value':
+                    ranking = sorted(candidates, key=lambda uid: (
+                        price_for(uid) / candidates[uid], block['upgrade_ids'].index(uid)))
+                    chosen = ranking[0]
+                    rejected.append(f'{identity}: value ranking ' + ', '.join(
+                        f'{uid} {price_for(uid) / candidates[uid]:.1f}' for uid in ranking))
                 elif block.get('selection', 'priority') == 'weighted':
                     visit = facts.visit_id or f'{lane}:{facts.run_id if lane == "battle" else facts.account_id}'
                     matches = (pending is not None and pending.account_id == facts.account_id

@@ -937,7 +937,8 @@ class ShoppingSession:
             return
         if self.reroll_observe_prices is not None and observation.category == category:
             self.reroll_observe_prices(
-                {row.upgrade_id: row.price for row in observation.rows if row.status == "available"}, coins)
+                {row.upgrade_id: row.price for row in observation.rows if row.status == "available"}, coins,
+                maxed=tuple(row.upgrade_id for row in observation.rows if row.status == "maxed"))
         if self._replan_due:
             # After the prices and wallet this frame shows were reported, so
             # the strategy chooses from what the purchase actually changed.

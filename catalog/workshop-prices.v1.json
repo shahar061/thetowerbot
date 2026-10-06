@@ -253,6 +253,18 @@
       "next_coins": [
         500
       ]
+    },
+    "unlock_interest": {
+      "source_url": "https://the-tower-idle-tower-defense.game-vault.net/wiki/Workshop",
+      "next_coins": [
+        5000
+      ]
+    },
+    "unlock_recovery_packages": {
+      "source_url": "https://the-tower-idle-tower-defense.game-vault.net/wiki/Workshop",
+      "next_coins": [
+        1500000
+      ]
     }
   }
 }

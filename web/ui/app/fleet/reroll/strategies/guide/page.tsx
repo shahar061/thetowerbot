@@ -10,6 +10,7 @@ import styles from "./guide.module.css";
 
 const EXAMPLES: Record<GuideBlockType, string> = {
   buy: "Buy Thorns: unlocked, costs 400, wallet 450 → buys. Wallet 300 → passes to the next block.",
+  unlock: "Skills Knockback Chance, Orbs with Lifesteal owned: buys Unlock Knockback (5,000) first, then Unlock Orbs (15,000). With 3,000 coins it holds them for Knockback; nothing later spends.",
   pool: "Pool Damage → Attack Speed, Damage capped at 2 buys: after 2 Damage buys, Attack Speed is picked. Add a target (Thorns → 51) to stop once the stat reaches 51%.",
   condition: "If current wave ≤ 20 → Then: economy pool. At wave 25 the Else path runs; if the wave is unknown, the decision waits.",
   fallback: "Paths: [Def. Abs pool, Wait]. Def. Abs costs 120 with 90 cash: the pool can't buy, so the Wait stops the decision and the 90 cash is kept.",

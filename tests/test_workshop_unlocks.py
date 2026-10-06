@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import upgrades
 from workshop_unlocks import (GROUPS, STARTER_IDS, available, gate_for, locked_upgrade_ids,
-                              next_group, owned_groups)
+                              next_group, owned_groups, path_to)
 
 
 def test_all_levelled_skills_have_one_explicit_availability_rule() -> None:
@@ -11,7 +11,7 @@ def test_all_levelled_skills_have_one_explicit_availability_rule() -> None:
     assert len(set(grouped)) == len(grouped)
     assert set(grouped).isdisjoint(STARTER_IDS)
     assert set(grouped) | STARTER_IDS == levelled
-    assert len(upgrades.CATALOG) == 59
+    assert len(upgrades.CATALOG) == 62
     assert locked_upgrade_ids(set()) == levelled - STARTER_IDS
 
 
@@ -51,3 +51,25 @@ def test_only_next_executable_unlock_is_available_and_visible_unlock_is_not_owne
     assert not available("unlock_defense_upgrades", owned)
     assert not available("unlock_wall", set())
     assert not available("unknown", set())
+
+
+def test_interest_and_recovery_unlock_tiles_are_executable_and_named_apart() -> None:
+    assert upgrades.resolve("Unlock Interest", "UTILITY").id == "unlock_interest"
+    assert upgrades.resolve("Interest", "UTILITY").id == "interest_per_wave"
+    assert upgrades.resolve("Unlock Recovery Packages", "UTILITY").id == "unlock_recovery_packages"
+    owned = owned_groups(purchased_ids={"unlock_cash_bonuses", "unlock_coin_bonuses", "unlock_free_upgrades"})
+    assert available("unlock_interest", owned)
+    owned |= owned_groups(purchased_ids={"unlock_interest"})
+    assert available("unlock_recovery_packages", owned)
+    assert gate_for("max_recovery").executable_upgrade_id == "unlock_recovery_packages"
+
+
+def test_path_to_lists_missing_unlocks_in_tab_order() -> None:
+    assert path_to("damage", set()) == ()
+    assert path_to("unknown", set()) == ()
+    assert [group.id for group in path_to("cash_bonus", set())] == ["unlock_cash_bonuses"]
+    owned = owned_groups(purchased_ids={"unlock_defense_upgrades", "unlock_thorns", "unlock_lifesteal"})
+    assert path_to("lifesteal", owned) == ()
+    assert [group.id for group in path_to("orbs", owned)] == ["unlock_knockback", "unlock_orbs"]
+    assert [group.id for group in path_to("land_mine_chance", owned)] == [
+        "unlock_knockback", "unlock_orbs", "unlock_shockwave", "unlock_land_mines"]
