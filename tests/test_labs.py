@@ -384,3 +384,20 @@ def test_speed_and_acceleration_are_carried_not_invented(tmp_path: Path) -> None
     assert current.jobs[0].acceleration == 'unknown'
     # A running job says what is being paid for, not what level was reached.
     assert current.status_for(DAMAGE) == 'unknown'
+
+
+def test_an_unaffordable_picker_row_is_stored_and_read_one_level_below(tmp_path: Path) -> None:
+    """A priced but unaffordable row still names the level a start buys: Lv.5 means 4 done."""
+    from evidence_scope import FactScope
+    from fleet.identity import IdentityEvidence
+    from lab_runtime import LabScope, LabRuntimeSnapshot, _catalog_revision
+    lab_state, account = state(tmp_path)
+    scope = FactScope('acct', 'lease', 'generation', 0)
+    account.bind_scope(scope, identity=IdentityEvidence('acct', 900., 'identity'))
+    revision = _catalog_revision()
+    rows = (entry(DAMAGE, 5, status='unavailable'),)
+    assert not lab_state.observe(reading(rows), scope=scope, catalog_revision=revision)
+    assert lab_state.observe(reading(rows, now=1010.), scope=scope, catalog_revision=revision)
+    runtime = LabRuntimeSnapshot(LabScope('acct', 'lease', 'generation', 0), ())
+    assert account.lab_facts(runtime, now=1011.).completed_levels == {DAMAGE: 4}
+    assert lab_state.levels()[DAMAGE]['level'] == 4

@@ -617,3 +617,46 @@ def test_a_lab_effect_with_an_unreadable_wallet_stays_unproven(tmp_path: Path, o
 
     assert (outcome.verdict, outcome.spent) == (Verdict.UNPROVEN, None)
     assert journal.open_transactions()[0].key == txn.key
+
+
+def test_a_mismatched_picker_level_is_stored_so_the_next_plan_targets_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stale plan asks for Lv.3; the picker shows unaffordable Lv.4 on two reads.
+
+    The live case: a Game Speed job finished unseen, the stored level stayed
+    at 2, and every visit mismatched. The picker's level is now stored, so the
+    next plan targets Lv.4.
+    """
+    from fleet.resource_blocks import LabAction, evaluate_lab_plan
+    from lab_runtime import _catalog_revision
+    from lab_screen import read_selected_picker, read_slots
+    from labs import LabsState
+    from tests.test_resource_blocks import template_route
+    h = LabHarness(tmp_path, monkeypatch)
+    labs = LabsState(h.account)
+    h.visit.cancel('new request')
+    assert h.visit.request(LabAction(1, 'labs.game-speed', 3, 'start', 7, 'route next'))
+
+    def scan(name: str) -> None:
+        # What TowerBot._observe_labs_capture does before every visit step.
+        h.time += 1.
+        image = frame(name)
+        text = tuple(replace(box, text='Game Speed Lv.4') if box.text == 'Game Speed Lv.1' else box
+                     for box in boxes(name))
+        observation = read_slots(image, text, observed_at=h.time)
+        picker = read_selected_picker(image, text, research_id='labs.game-speed')
+        if picker.page and picker.entry is not None:
+            observation = replace(observation, entries=(picker.entry,))
+        labs.observe(observation, scope=h.scope, catalog_revision=_catalog_revision())
+        h.visit.advance(image, text, h.device, h.time, observed_at=h.time, capture_scope=h.scope)
+
+    for name in ('menu_labs_slot1_affordable', 'menu_labs_slot1_affordable',
+                 'menu_labs_game_speed_picker'):
+        scan(name)
+    assert h.visit._outcome is None  # one read of a different level is not yet evidence
+    scan('menu_labs_game_speed_picker')
+    assert h.visit._outcome.reason == 'selected_research_mismatch'
+    facts = h.account.lab_facts(h.runtime.snapshot(), now=h.time)
+    assert facts.completed_levels == {'labs.game-speed': 3}
+    slot = evaluate_lab_plan(template_route(), facts).slots[0]
+    assert (slot.next.lab_id, slot.next.level) == ('labs.game-speed', 4)

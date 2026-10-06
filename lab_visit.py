@@ -241,6 +241,7 @@ class LabVisit:
         '_search': None, '_search_frames': [], '_picker_frames': [],
         '_picker_signature': None, '_picker_reads': 0, '_dialog_signature': None, '_dialog_reads': 0,
         '_unavailable_signature': None, '_unavailable_reads': 0, '_picker_name': None,
+        '_mismatch_signature': None,
         '_picker_seconds': None,
         '_start_tap': None, '_start_scans': 0, '_start_tapped_at': 0., '_start_frames': [],
         '_rehearsing': False,
@@ -1415,11 +1416,20 @@ class LabVisit:
             if selected is not None:
                 decision = replace(decision, slot=selected.slot, research_id=selected.research,
                                    strategy_revision=selected.strategy_revision)
-                if (picker.entry is not None
-                        and (picker.entry.concept_id != selected.research
-                             or picker.entry.level != selected.target_level)):
+                entry = picker.entry
+                if entry is not None and entry.level != selected.target_level:
+                    # Two identical reads before giving up, so the Labs capture
+                    # stores the level the picker shows and the next plan
+                    # targets it instead of mismatching on every visit.
+                    signature = (entry.concept_id, entry.level, entry.status)
+                    if entry.concept_id == selected.research and signature != self._mismatch_signature:
+                        self._mismatch_signature = signature
+                        return None
+                if entry is not None and (entry.concept_id != selected.research
+                                          or entry.level != selected.target_level):
                     self._end_attempt(LabVisitResult('failed', 'selected_research_mismatch', decision))
                     return None
+                self._mismatch_signature = None
             if decision.kind != "start":
                 self._picker_signature, self._picker_reads = None, 0
                 entry = picker.entry
