@@ -34,13 +34,18 @@ def _template_tiers() -> dict[str, str]:
     return tiers
 
 
-def _walk(children: list[dict[str, Any]], pin: int | None,
-          pinned: dict[int, list[tuple[str, int]]], rest: list[tuple[str, int]]) -> None:
+def _walk(children: list[dict[str, Any]], slot: int | None, pinned: dict[int, list[tuple[str, int]]],
+          late: list[tuple[str, int]], rest: list[tuple[str, int]]) -> None:
     for child in children:
         kind = child.get("type")
         if kind == "research":
             item = (child["lab_id"], int(child["to_level"]))
-            (pinned.setdefault(pin, []) if pin is not None else rest).append(item)
+            if slot in (1, 2):
+                pinned.setdefault(slot, []).append(item)
+            elif slot is not None:
+                late.append(item)  # A slot 3+ pin would never run without that slot: unpin, keep the order.
+            else:
+                rest.append(item)
         elif kind == "lab_pool":
             caps = child.get("caps") or {}
             for lab_id in child.get("lab_ids", []):
@@ -48,22 +53,22 @@ def _walk(children: list[dict[str, Any]], pin: int | None,
                 top = entry.max_level if entry is not None and entry.max_level else 1
                 rest.append((lab_id, int(caps.get(lab_id, top))))
         elif kind == "condition":
-            _walk(list(child.get("then", [])) + list(child.get("else", [])), pin, pinned, rest)
+            _walk(list(child.get("then", [])) + list(child.get("else", [])), slot, pinned, late, rest)
 
 
 def flatten_slot_tracks(blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     """Slot tracks to ranked lab-list entries: slot-1 pins, slot-2 pins, then the rest in order."""
     pinned: dict[int, list[tuple[str, int]]] = {}
+    late: list[tuple[str, int]] = []
     rest: list[tuple[str, int]] = []
     for block in blocks:
         if block.get("type") != "slot_track":
             continue
         slots = block.get("slots") or []
-        _walk(block.get("children", []), slots[0] if len(slots) == 1 else None, pinned, rest)
+        _walk(block.get("children", []), slots[0] if len(slots) == 1 else None, pinned, late, rest)
     ordered = ([(lab, lvl, 1) for lab, lvl in pinned.get(1, [])]
                + [(lab, lvl, 2) for lab, lvl in pinned.get(2, [])]
-               + [(lab, lvl, s) for s in sorted(k for k in pinned if k not in (1, 2))
-                  for lab, lvl in pinned[s]]
+               + [(lab, lvl, None) for lab, lvl in late]
                + [(lab, lvl, None) for lab, lvl in rest])
     tiers, notes = _template_tiers(), []
     entries: list[dict[str, Any]] = []

@@ -89,3 +89,16 @@ def test_rules_leave_workshop_and_gem_limits_alone() -> None:
 def test_template_rules_default_to_direct_start() -> None:
     from fleet.resource_blocks import template_lab_list_rules
     assert template_lab_list_rules()["labs"]["direct_start"] is True
+
+
+def test_slot_3_plus_research_is_unpinned_and_ordered_after_slot_2_pins() -> None:
+    tracks = copy.deepcopy(TRACKS)
+    tracks.append({"id": "t5", "type": "slot_track", "slots": [5], "on_blocked": "skip", "children": [
+        {"id": "t5.up", "type": "research", "lab_id": "labs.unlock-perks", "to_level": 1}]})
+    entries, _ = m.flatten_slot_tracks(tracks)
+    assert all(e.get("pin_slot") in (None, 1, 2) for e in entries)
+    ids = [(e["lab_id"], e.get("pin_slot")) for e in entries]
+    assert ids[:4] == [("labs.game-speed", 1), ("labs.attack-speed", 1), ("labs.labs-speed", 2),
+                       ("labs.unlock-perks", None)]
+    # Pool and multi-slot research follow the former slot-3+ research.
+    assert ids.index(("labs.unlock-perks", None)) < ids.index(("labs.coins-kill-bonus", None))
