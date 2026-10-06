@@ -18,6 +18,7 @@ from typing import Callable
 import pytest
 
 import config
+import events
 from strategy import Shopping
 from tower_bot import TowerBot
 
@@ -305,6 +306,7 @@ def deadline_bot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Tower
     bot.lab_visit.runtime = bot.lab_runtime
     bot.tracker.state = screens.ScreenState.IN_RUN
     bot.tracker._confirmed = True
+    bot._speed_maxed = True  # these tests count policy taps, not the startup burst
     return bot, clock, picture
 
 
@@ -538,3 +540,65 @@ def test_unacknowledged_inspection_never_rearms_every_menu_pass(
     assert armed == [110., 300.], armed
     if reason == 'restart':
         assert any(a.reason == reason for a in bot.maintenance.due(500.))  # Still due, visible.
+
+
+@pytest.fixture
+def fresh_start(in_run: TowerBot) -> TowerBot:
+    """A bot that has not yet maxed the speed this process - as in production."""
+    in_run._speed_maxed = False
+    return in_run
+
+
+def test_first_battle_scan_taps_plus_to_the_ceiling(fresh_start: TowerBot) -> None:
+    """The game can drop below the researched speed, and the bot cannot read
+    past x2.5. Blind + taps reach the ceiling anyway: past it they do nothing."""
+    fresh_start.run_once()
+
+    plus = tapped_in(PLUS_BOX, fresh_start.device.taps)
+    assert len(plus) == config.SPEED_MAX_TAPS
+    assert len(fresh_start.device.taps) == config.SPEED_MAX_TAPS
+    sources = [e.source for e in fresh_start.bus.published if isinstance(e, events.SpeedAdjusted)]
+    assert sources == ["startup"] * config.SPEED_MAX_TAPS
+
+
+def test_max_taps_cover_the_whole_widget() -> None:
+    """From a stopped game (x0.0) to a maxed Game Speed lab (x5.0)."""
+    assert config.SPEED_MAX_TAPS >= 9
+
+
+def test_speed_is_maxed_once_per_bot_start(fresh_start: TowerBot) -> None:
+    fresh_start.run_once()
+    before = len(fresh_start.device.taps)
+    fresh_start.run_once()
+
+    assert len(fresh_start.device.taps) == before
+
+
+def test_speed_max_waits_out_a_pause(fresh_start: TowerBot) -> None:
+    fresh_start.controls.apply({"paused": True})
+    fresh_start.run_once()
+    assert not tapped_in(PLUS_BOX, fresh_start.device.taps)
+
+    fresh_start.controls.apply({"paused": False})
+    fresh_start.run_once()
+    assert len(tapped_in(PLUS_BOX, fresh_start.device.taps)) == config.SPEED_MAX_TAPS
+
+
+def test_speed_max_waits_for_the_battle_screen(
+    bot_on_workshop: Callable[[Shopping], TowerBot],
+) -> None:
+    """Off IN_RUN the arrow point is a spot on a menu - tapping it buys."""
+    bot = bot_on_workshop(Shopping())
+    bot._speed_maxed = False
+    bot.run_once()
+
+    assert not tapped_in(PLUS_BOX, bot.device.taps)
+    assert bot._speed_maxed is False
+
+
+def test_a_command_on_the_first_scan_still_lands(fresh_start: TowerBot) -> None:
+    fresh_start.controls.request("speed_down")
+    fresh_start.run_once()
+
+    assert len(tapped_in(PLUS_BOX, fresh_start.device.taps)) == config.SPEED_MAX_TAPS
+    assert len(tapped_in(MINUS_BOX, fresh_start.device.taps)) == 1

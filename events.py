@@ -481,7 +481,7 @@ class SpeedAdjusted(Event):
     """
 
     direction: str  # up | down
-    source: str = "policy"  # policy | web
+    source: str = "policy"  # policy | web | startup
     # Both None for a manual nudge from the dashboard: that path deliberately
     # does not read the widget first, because a button press means "one step
     # from wherever it is now", not "move toward a value".

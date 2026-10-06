@@ -1000,6 +1000,13 @@ SPEED_VALUES: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0, 2.5)
 # and the dashboard reports "running" the entire time.
 TARGET_SPEEDS: tuple[float, ...] = tuple(v for v in SPEED_VALUES if v > 0.0)
 
+# Blind + taps the bot makes on its first safe battle scan after starting.
+# The game can come back below the researched speed, and the readout only
+# recognises up to x2.5, so policy alone cannot climb past it. Taps beyond
+# the account's ceiling do nothing, so this is sized for the whole widget:
+# x0.0 -> x1.0 -> x1.5 ... -> x5.0 (a maxed Game Speed lab) is nine steps.
+SPEED_MAX_TAPS: int = 9
+
 # A readout must match its template at least this well to be believed. Higher
 # than DEFAULT_THRESHOLD: the labels differ by a single glyph, so a loose
 # threshold reads x1.0 as x4.0 rather than failing honestly.

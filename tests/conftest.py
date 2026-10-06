@@ -236,6 +236,9 @@ def _shopping_bot(
     )
     if not battle_menu_opt_in:
         bot.battle_menu = BattleMenuVisit(bus, templates, _InertBattleMenuState())
+    # The startup speed burst is its own feature (tests/test_speed_loop.py);
+    # loop tests about anything else count taps and must not see it.
+    bot._speed_maxed = True
     image = _frame(frame_name)
     bot._screen = image
     bot.refresh_screen = lambda: bot._screen  # no real device to capture from
