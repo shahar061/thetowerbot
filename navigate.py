@@ -46,6 +46,7 @@ class Navigator:
         go_home: bool = False,
         menu_page: str | None = None,
         dismiss: bool = False,
+        cooldown: float | None = None,
     ) -> str | None:
         """Tap this screen's nav button, if there is one and it is due.
 
@@ -99,11 +100,8 @@ class Navigator:
         # transition, so jitter may only lengthen it. Shortening it is how
         # the second tap lands mid-animation - the double-navigation the
         # cooldown exists to prevent.
-        due = (
-            self._cooldown
-            if tuning is None
-            else jitter.stretch(self._cooldown, tuning.timing_jitter)
-        )
+        base = self._cooldown if cooldown is None else cooldown
+        due = base if tuning is None else jitter.stretch(base, tuning.timing_jitter)
         if moment - self._last < due:
             return None
 

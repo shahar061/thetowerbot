@@ -128,3 +128,12 @@ def test_returning_to_current_state_resets_a_partial_streak() -> None:
 
     # Step 5: only now does the second B reading fire the transition
     assert tracker.observe(reading(ScreenState.IN_RUN)) is ScreenState.IN_RUN
+
+
+def test_pending_is_true_only_while_a_streak_builds() -> None:
+    tracker = ScreenTracker(confirmations=2)
+    assert tracker.pending is False
+    tracker.observe(reading(ScreenState.MAIN_MENU))
+    assert tracker.pending is True
+    tracker.observe(reading(ScreenState.MAIN_MENU))
+    assert tracker.pending is False

@@ -91,8 +91,8 @@ class UnlockHarness:
                                                               unlock_slots=(2,))) -> None:
         assert self.visit.request(options)
 
-    def scan(self, text: tuple[ocr.TextBox, ...], name: str = IMAGE):
-        self.time += 1
+    def scan(self, text: tuple[ocr.TextBox, ...], name: str = IMAGE, step: float = 1.):
+        self.time += step
         return self.visit.advance(frame(name), text, self.device, self.time,
                                   observed_at=self.time, capture_scope=self.scope)
 
@@ -301,7 +301,7 @@ def test_an_unreadable_post_tap_screen_halts_the_canary_and_keeps_the_hold(tmp_p
     promote_canary(h.rollout)
     h.open()
     h.leave(locked_boxes())
-    results = [h.scan(dialog_boxes()) for _ in range(3)]
+    results = [h.scan(dialog_boxes(), step=10.) for _ in range(3)]
     assert results[-1] is not None and h.visit.recovery_status == "lab_unlock_uncertain"
     assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
     state = h.rollout.slot(2)
@@ -383,7 +383,7 @@ def test_a_failed_evidence_save_still_halts_the_canary(tmp_path, monkeypatch, fa
     promote_canary(h.rollout)
     h.open()
     h.leave(locked_boxes())
-    results = [h.scan(dialog_boxes()) for _ in range(3)]
+    results = [h.scan(dialog_boxes(), step=10.) for _ in range(3)]
     assert results[-1] is not None and h.visit.recovery_status == "lab_unlock_uncertain"
     state = h.rollout.slot(2)
     assert state.stage == "halted" and len(state.evidence) == (0 if failure == "mkdir" else 1)
@@ -463,6 +463,36 @@ def test_a_lagging_gem_header_after_the_tap_does_not_halt(tmp_path, monkeypatch,
             for e in h.of(events.LabSlotUnlocked)] == [(2, 100, 150, 50)]
 
 
+def test_fast_scans_do_not_make_an_unproven_unlock_uncertain_before_its_wall_time(
+        tmp_path, monkeypatch) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    h.leave(locked_boxes())
+    # Past the scan count (8) and the strike count (3), but only 12 s after the tap.
+    results = [h.scan(dialog_boxes(), step=0.5) for _ in range(24)]
+    assert results == [None] * 24 and h.time - h.visit._unlock_tapped_at < 20.
+    assert h.visit.recovery_status != "lab_unlock_uncertain"
+    assert h.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+    assert h.rollout.slot(2).stage == "canary"
+    # Both conditions hold once 20 s have passed since the tap.
+    result = h.scan(dialog_boxes(), step=10.)
+    assert result is not None and h.visit.recovery_status == "lab_unlock_uncertain"
+    assert h.rollout.slot(2).halted_reason == "post-tap screen was not understood"
+
+
+def test_an_unproven_unlock_is_uncertain_when_the_scans_and_the_wall_time_both_pass(
+        tmp_path, monkeypatch) -> None:
+    h = UnlockHarness(tmp_path, monkeypatch)
+    promote_canary(h.rollout)
+    h.open()
+    h.leave(locked_boxes())
+    results = [h.scan(dialog_boxes(), step=7.) for _ in range(3)]  # 21 s, three strikes
+    assert results[:2] == [None] * 2 and results[2] is not None
+    assert h.visit.recovery_status == "lab_unlock_uncertain"
+    assert h.rollout.slot(2).stage == "halted"
+
+
 @pytest.mark.parametrize("gems", ["150", None], ids=["unchanged", "unreadable"])
 def test_a_gem_header_that_never_shows_the_debit_halts_after_three_strikes(tmp_path, monkeypatch, gems) -> None:
     h = UnlockHarness(tmp_path, monkeypatch)
@@ -472,7 +502,7 @@ def test_a_gem_header_that_never_shows_the_debit_halts_after_three_strikes(tmp_p
     text = tuple(box for box in owned_boxes() if box.text != "50") if gems is None else owned_boxes(gems=gems)
     if gems is None:  # The header's own crop reads nothing either.
         monkeypatch.setattr(ocr, "read_region", lambda *_args, **_kwargs: ())
-    results = [h.scan(text) for _ in range(4)]
+    results = [h.scan(text, step=10.) for _ in range(4)]
     assert results[:3] == [None] * 3 and results[3] is not None
     assert h.visit.recovery_status == "lab_unlock_uncertain"
     assert h.rollout.slot(2).halted_reason == "gem debit was not proven"

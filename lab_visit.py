@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
 import time
-from typing import Callable, Iterable
+from typing import Callable, ClassVar, Iterable
 
 from account_state import AccountState
 from evidence_scope import BalanceInterval, FactScope
@@ -20,7 +20,7 @@ from geometry import anchored_point, supported_frame
 from lab_plan import LabDecision, LabVisitOptions, decide
 from fleet.resource_blocks import LabAction
 from lab_picker import PickerSearch, SWIPE_SECONDS
-from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading, LockedSlot,
+from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading, LockedSlot, PickerCard,
                         read_confirmation, read_gem_unlock_confirmation, read_home, read_picker, read_slots,
                         read_picker_page, read_selected_home, read_selected_picker,
                         read_repeat_controls)
@@ -53,6 +53,14 @@ class LabVisitResult:
     transaction_key: str | None = None
     unlock_transaction_key: str | None = None
     unlocked_slot: int | None = None
+    # Slots proven started in this visit, in order; direct start fills several.
+    started_slots: tuple[int, ...] = ()
+    # The research each proven start began, in the same order as started_slots.
+    started_research: tuple[str, ...] = ()
+    # The visit re-planned from a fresh strip after its last proven start.
+    replanned: bool = False
+    # A later attempt that ended after a proven start; the started result is kept.
+    attempt: LabVisitResult | None = None
 
 
 # Post-tap reads: an unclassified frame counts toward the limit only after the
@@ -62,8 +70,29 @@ _UNLOCK_SCANS = 8
 # A start tap that has neither proven nor refuted itself after this many scans
 # is uncertain: the hold stays and a canary halts its slot.
 _START_SCANS = 8
+# Scan counts are a proxy for time, and between games scans run ~3x faster
+# (config.MENU_FAST_SCAN_SECONDS), so each count limit also needs this much of
+# the visit's own clock: since the start tap, and since an 8-scan stage or the
+# 24-scan picker search began. At the ~2 s menu interval the count binds.
+LAB_START_PROOF_MIN_SECONDS = 20.0
+# The same floor for a gem unlock tap: its strike and scan limits (and the
+# confirmation-remained limit) also need this much of the visit's clock since the tap.
+LAB_UNLOCK_PROOF_MIN_SECONDS = 20.0
+LAB_STAGE_MIN_SECONDS = 16.0
+LAB_SEARCH_STAGE_MIN_SECONDS = 40.0
 # Picker-search frames kept as a miss's evidence: the first and the last three.
 _SEARCH_FRAMES_KEPT = 4
+
+
+def _picker_unknown_reason(card: PickerCard | None) -> str:
+    """Why a picker frame gave no decision for its research, for the log."""
+    if card is None:
+        return 'card missing'
+    if not card.fully_visible:
+        return 'card clipped'
+    if card.price is None and not card.maxed:
+        return 'price unread'
+    return 'entry unread'
 
 
 def _squash(name: str | None) -> str | None:
@@ -137,9 +166,14 @@ class LabVisit:
         self._rehearsing = False
         self._search: PickerSearch | None = None
         self._search_frames: list[Image] = []
+        # Picker frames of one start (the first and the last three), saved on a stage timeout.
+        self._picker_frames: list[Image] = []
+        self._picker_unknown_logged = False
         self._start_tap: tuple[str, int] | None = None
         self._start_frames: list[Image] = []
         self._start_scans = 0
+        # The visit clock (advance's `now`) at this start's Research tap.
+        self._start_tapped_at = 0.
         self._unsafe_tap = False
         self._picker_seconds: float | None = None
         # (transaction key, coin read) of the last _recover read that saw the
@@ -172,6 +206,8 @@ class LabVisit:
         self._unlock_frames: list[Image] = []
         self._unlock_scans = 0
         self._unlock_strikes = 0
+        # The visit clock (advance's `now`) at this unlock's gem tap.
+        self._unlock_tapped_at = 0.
         self._debit_strike = False
         self._unlanded_signature: tuple[int, LockedSlot, int] | None = None
         self._unlock_dialog_signature: tuple[int, int, tuple[int, int]] | None = None
@@ -191,9 +227,29 @@ class LabVisit:
         self._repeat_at = float('-inf')
         self._repeat_failed = False
 
+    # One start's state, with the values request() gives a fresh visit. Between
+    # starts _next_start clears exactly these; the visit's scan and time budget,
+    # unlock state, options and journal carry over.
+    _PER_START_DEFAULTS: ClassVar[dict[str, object]] = {
+        'selected_action': None, 'pending_action': None, '_slot': None, '_purchase': None,
+        '_search': None, '_search_frames': [], '_picker_frames': [],
+        '_picker_signature': None, '_picker_reads': 0, '_dialog_signature': None, '_dialog_reads': 0,
+        '_unavailable_signature': None, '_unavailable_reads': 0, '_picker_name': None,
+        '_picker_seconds': None,
+        '_start_tap': None, '_start_scans': 0, '_start_tapped_at': 0., '_start_frames': [],
+        '_rehearsing': False,
+    }
+    _PER_START_FIELDS: ClassVar[tuple[str, ...]] = tuple(_PER_START_DEFAULTS)
+
     @property
     def active(self) -> bool:
         return self._state != "idle"
+
+    def _reset_start(self) -> None:
+        """Clear one start's state; a list default is copied, never shared."""
+        for name in self._PER_START_FIELDS:
+            default = self._PER_START_DEFAULTS[name]
+            setattr(self, name, list(default) if isinstance(default, list) else default)
 
     def request(self, action: LabAction | LabVisitOptions | None = None, *,
                 options: LabVisitOptions | None = None) -> bool:
@@ -213,7 +269,8 @@ class LabVisit:
             if gate.mode == 'blocked' or (action.operation == 'start' and not gate.enabled):
                 self.recovery_status = 'starter_gate_refused'
                 return False
-        self.selected_action = action
+        self._reset_start()
+        self.selected_action = self.pending_action = action
         self._rehearsing = action is not None and action.operation == 'rehearse'
         self._options = options or LabVisitOptions()
         self._repeat_seen = self._repeat_pending = None
@@ -224,15 +281,6 @@ class LabVisit:
         self._state = "open"
         self._started_at = 0.
         self._scans = 0
-        self._picker_signature = None
-        self._picker_reads = 0
-        self._unavailable_signature = None
-        self._unavailable_reads = 0
-        self._picker_name = None
-        self._dialog_signature = None
-        self._dialog_reads = 0
-        self._slot = None
-        self._purchase = None
         self._outcome = None
         self._home_seen = None
         self._unlock_signature = None
@@ -243,18 +291,13 @@ class LabVisit:
         self._unlock_frames = []
         self._unlock_scans = 0
         self._unlock_strikes = 0
+        self._unlock_tapped_at = 0.
         self._unlanded_signature = None
         self._unlock_dialog_signature = None
         self._unlock_dialog_reads = 0
         self._unlock_confirmation_tapped = False
         self._boxes = ()
-        self._search = None
-        self._search_frames = []
-        self._start_tap = None
-        self._start_frames = []
-        self._start_scans = 0
         self._unsafe_tap = False
-        self._picker_seconds = None
         self._idle_refute = None
         self.last_tap = None
         self.recovery_status = None
@@ -514,7 +557,7 @@ class LabVisit:
                     self._note_start(txn, 'bought')
                     self._start_tap = None
                     reason = 'game_speed_confirmed' if txn.before['research_id'] == 'labs.game-speed' else 'research_confirmed'
-                    self._return(LabVisitResult('started', reason, self._purchase,
+                    self._next_start(LabVisitResult('started', reason, self._purchase,
                         confirmed_job=job, observed_coin_spend=outcome.spent, transaction_key=txn.key))
                 else:
                     # A canary's tap settled on a later visit (the tapping one was
@@ -620,6 +663,12 @@ class LabVisit:
         self.last_tap = (action, *point)
 
     def _finish(self, outcome: LabVisitResult) -> LabVisitResult:
+        prior = self._outcome
+        if prior is not None and prior.started_slots and not outcome.started_slots:
+            # A failure after proven starts still reports which slots started.
+            outcome = replace(outcome, started_slots=prior.started_slots,
+                              started_research=prior.started_research,
+                              replanned=prior.replanned)
         self._state = "idle"
         self._outcome = outcome
         return outcome
@@ -686,6 +735,41 @@ class LabVisit:
         self._outcome = outcome
         self._state = "return"
 
+    def _next_start(self, outcome: LabVisitResult) -> None:
+        """After a proven start, fill the next idle slot under direct start, else return.
+
+        It runs only once the journal settled the previous start, so one
+        transaction is open at a time; the planner hook re-plans from the next
+        fresh, complete strip read, with every per-start check applied again.
+        """
+        slot, research = outcome.decision.slot, outcome.decision.research_id
+        prior = self._outcome
+        slots = (prior.started_slots if prior is not None else ()) + (
+            (slot,) if slot is not None else ())
+        started = (prior.started_research if prior is not None else ()) + (
+            (research,) if research is not None else ())
+        outcome = replace(outcome, started_slots=slots, started_research=started, replanned=False)
+        # Loop only where the planner hook in advance() can choose the next start.
+        if not (self._options.direct_start and self._options.start_research
+                and self._options.native_repeat == 'unchanged' and not self._unlock_done
+                and self.plan_action is not None and self.runtime is not None):
+            self._return(outcome)
+            return
+        # A later timeout or empty plan still reports "started"; the visit
+        # re-reads the strip after this start, so no follow-up visit is owed.
+        self._outcome = replace(outcome, replanned=True)
+        self._reset_start()
+        self._state = "home"
+
+    def _end_attempt(self, outcome: LabVisitResult) -> None:
+        """Return to battle; a start proven earlier in this visit keeps its result."""
+        prior = self._outcome
+        if prior is not None and prior.status == 'started':
+            logger.info("Lab attempt after started slots %s ended: %s (%s)",
+                        prior.started_slots, outcome.status, outcome.reason)
+            outcome = replace(prior, attempt=outcome)
+        self._return(outcome)
+
     def _emit(self, event: events.Event) -> None:
         if self.event_sink is not None:
             self.event_sink(event)
@@ -699,7 +783,8 @@ class LabVisit:
     def _skip(self, slot: int, reason: str) -> None:
         self._emit(events.Skipped(action='lab_unlock', reason=reason, detail=f'Lab {slot}'))
 
-    def _unlock_slot(self, home: LabHomeReading, screen: Image, device: AdbDevice) -> bool:
+    def _unlock_slot(self, home: LabHomeReading, screen: Image, device: AdbDevice,
+                     now: float) -> bool:
         """On the way out, rehearse or unlock the gem lane's next slot once per visit.
 
         True keeps the visit on Labs this scan: a first read, or a tap that needs
@@ -753,7 +838,7 @@ class LabVisit:
                 self.rollout.halt(slot, f"Slot {slot} read {price} gems; the catalog says {catalog}"))
             return False
         if self.unlock_allowed(slot, scope.account_id):
-            return self._tap_unlock(locked, gems, screen, device)
+            return self._tap_unlock(locked, gems, screen, device, now)
         if state.stage == 'dry_run':
             change = self.rollout.note_dry_run(slot, self.worker, price, gems, self.wall_clock(),
                                                account_id=scope.account_id)
@@ -789,7 +874,8 @@ class LabVisit:
                 self._publish_change(self.rollout.halt_canary(
                     slot, self.worker, scope.account_id, f"Slot {slot} owned without a proven canary unlock"))
 
-    def _tap_unlock(self, locked: LockedSlot, gems: int, screen: Image, device: AdbDevice) -> bool:
+    def _tap_unlock(self, locked: LockedSlot, gems: int, screen: Image, device: AdbDevice,
+                    now: float) -> bool:
         assert locked.price is not None and locked.point is not None
         if not self._safe(locked.point):
             # Refuse before preparing: a refused tap must never leave an acted transaction.
@@ -808,6 +894,7 @@ class LabVisit:
         self._unlock_tap = (txn.key, locked.slot)
         self._unlock_frames = [screen]
         self._unlock_scans = self._unlock_strikes = 0
+        self._unlock_tapped_at = now
         self._debit_strike = False
         self._unlanded_signature = None
         self._unlock_dialog_signature = None
@@ -826,7 +913,7 @@ class LabVisit:
             slot=txn.before['slot'])
 
     def _settle_own_unlock(self, txn: transactions.Transaction, home: LabHomeReading,
-                           screen: Image) -> LabVisitResult | None:
+                           screen: Image, now: float) -> LabVisitResult | None:
         """Sort this visit's own unlock tap into bought, not landed, or uncertain.
 
         Bought: slot N confirmed owned since the tap and the gems down by the price.
@@ -834,7 +921,8 @@ class LabVisit:
         still the first locked tile at its price and the gems unchanged. A debit
         that provably is not the price is uncertain at once. Anything else is a
         strike, including a confirmed owned slot whose gem header is unreadable or
-        not yet down; three strikes, or eight post-tap scans, is uncertain.
+        not yet down; three strikes, or eight post-tap scans, is uncertain once
+        LAB_UNLOCK_PROOF_MIN_SECONDS of the visit's clock have passed since the tap.
         """
         assert self._unlock_tap is not None
         key, slot = self._unlock_tap
@@ -879,7 +967,8 @@ class LabVisit:
             self._unlock_strikes += 1
             self._debit_strike = False
             self._unlanded_signature = None
-        if self._unlock_strikes >= _UNLOCK_STRIKES or self._unlock_scans >= _UNLOCK_SCANS:
+        if ((self._unlock_strikes >= _UNLOCK_STRIKES or self._unlock_scans >= _UNLOCK_SCANS)
+                and now - self._unlock_tapped_at >= LAB_UNLOCK_PROOF_MIN_SECONDS):
             return self._unlock_uncertain(txn, slot, 'gem debit was not proven' if self._debit_strike
                                           else 'post-tap screen was not understood')
         return None
@@ -943,7 +1032,7 @@ class LabVisit:
         self._emit(events.LabStartRehearsed(slot=purchase.slot, research_id=purchase.research_id,
                                             level=purchase.target_level, price=price,
                                             seconds=self._picker_seconds))
-        self._return(LabVisitResult('observed', 'research_rehearsed', purchase))
+        self._end_attempt(LabVisitResult('observed', 'research_rehearsed', purchase))
 
     def _note_miss(self, research: str) -> None:
         """Record the miss first; frames are written only for a miss the rollout kept."""
@@ -1047,6 +1136,9 @@ class LabVisit:
             self._started_at = now
         self._scans += 1
         scan_cap, time_cap = (64, 120.) if self._search is not None else (48, 90.)
+        # Each start proven in this visit buys the next one a full budget.
+        extra = len(self._outcome.started_slots) if self._outcome is not None else 0
+        scan_cap, time_cap = scan_cap + 48 * extra, time_cap + 90. * extra
         if self._scans > scan_cap or now - self._started_at > time_cap:
             pending = self.pending_transaction
             # This visit's own start tap, still unproven, is uncertain: keep the
@@ -1149,7 +1241,8 @@ class LabVisit:
                                                       'gem confirmation did not match pending unlock')
                     if self._unlock_confirmation_tapped:
                         self._unlock_scans += 1
-                        if self._unlock_scans >= _UNLOCK_STRIKES:
+                        if (self._unlock_scans >= _UNLOCK_STRIKES
+                                and now - self._unlock_tapped_at >= LAB_UNLOCK_PROOF_MIN_SECONDS):
                             return self._unlock_uncertain(pending, slot,
                                                           'gem confirmation remained after tap')
                         return None
@@ -1166,25 +1259,39 @@ class LabVisit:
                             self._unlock_scans = self._unlock_strikes = 0
                     return None
                 self._unlock_dialog_signature, self._unlock_dialog_reads = None, 0
-                return self._settle_own_unlock(pending, home, screen)
+                return self._settle_own_unlock(pending, home, screen, now)
             if self._start_tap is not None and pending.key == self._start_tap[0]:
                 self._start_frames.append(screen)
                 self._start_scans += 1
-                if self._start_scans > _START_SCANS:
+                if (self._start_scans > _START_SCANS
+                        and now - self._start_tapped_at >= LAB_START_PROOF_MIN_SECONDS):
                     return self._start_uncertain(pending)
             self._recover(pending, home, picker, confirmation, screen, device)
             return None
         if self._stage_name != self._state:
             self._stage_name, self._stage_scans, self._stage_started = self._state, 0, now
+            self._picker_unknown_logged = False
         self._stage_scans += 1
         searching = self._search is not None
         budget = 6 if self._state == 'return' else 24 if self._state == 'picker' and searching else 8
         if self._options.native_repeat != 'unchanged' and self._state in {'home', 'return'}:
             budget = 32
+        # Fast between-games scans spend a count in a fraction of its intended
+        # time: the 8- and 24-scan budgets also need their minimum wall time.
+        floor = (LAB_SEARCH_STAGE_MIN_SECONDS if budget == 24
+                 else LAB_STAGE_MIN_SECONDS if budget == 8 else 0.)
+        elapsed = now - self._stage_started
         repeat_stage = self._options.native_repeat != 'unchanged' and self._state in {'home', 'return'}
-        if self._stage_scans > budget or now - self._stage_started > (60 if searching or repeat_stage else 30):
-            outcome = self._outcome or LabVisitResult('failed',
-                f'{self._state}_stage_timeout', LabDecision('unknown'))
+        if ((self._stage_scans > budget and elapsed >= floor)
+                or elapsed > (60 if searching or repeat_stage else 30)):
+            timeout = LabVisitResult('failed', f'{self._state}_stage_timeout', LabDecision('unknown'))
+            if self._state == 'picker':
+                target = selected.research if selected is not None else 'labs.game-speed'
+                self._save_evidence(f"lab-picker-timeout-{target}", self._capture_at, self._picker_frames)
+            outcome = self._outcome or timeout
+            if self._state != 'return' and outcome.status == 'started':
+                # A start proven earlier in this visit keeps its result; this attempt rides along.
+                outcome = replace(outcome, attempt=timeout)
             if self._state == 'return' or not (home.page or picker.page or confirmation.page):
                 return self._finish(outcome)
             self._return(outcome)
@@ -1225,8 +1332,8 @@ class LabVisit:
                     return None
             if decision.kind == "inspect" and not self._options.start_research:
                 # Auto-start is off: read the slot, never open the picker.
-                self._return(LabVisitResult("observed", "auto_start_off", decision,
-                                             confirmed_job=home.job))
+                self._end_attempt(LabVisitResult("observed", "auto_start_off", decision,
+                                                  confirmed_job=home.job))
             elif decision.kind == "inspect" and home.slot_point is not None:
                 # A slot confirmed on an earlier visit stays confirmed; the spend
                 # boundary needs its idle proof from this visit's own strip read.
@@ -1243,21 +1350,32 @@ class LabVisit:
                 # tap target within the existing home-stage timeout.
                 return None
             else:
-                self._return(LabVisitResult("observed", decision.kind, decision,
-                                             confirmed_job=home.job))
+                self._end_attempt(LabVisitResult("observed", decision.kind, decision,
+                                                  confirmed_job=home.job))
             return None
 
         if self._state == "picker":
             if not picker.page or self._slot is None:
                 return None
-            general = selected is not None and selected.research != 'labs.game-speed'
-            if general:
+            self._picker_frames.append(screen)
+            if len(self._picker_frames) > _SEARCH_FRAMES_KEPT:
+                del self._picker_frames[1]
+            target = selected.research if selected is not None else 'labs.game-speed'
+            general = target != 'labs.game-speed'
+            page = read_picker_page(screen, boxes)
+            if self._search is None and not general:
+                # The game keeps the picker's scroll position: a Game Speed card
+                # that is not fully on the page is searched for like any other.
+                card = page.card(target)
+                if page.open and (card is None or not card.fully_visible):
+                    self._search = PickerSearch(target, screen.shape[1])
+            if general or self._search is not None:
                 # Every general selection goes through the search: "found" (the card is
                 # fully inside the list) falls through to the two-read selection below.
                 # A clipped card must scroll, not read as unaffordable.
                 if self._search is None:
-                    self._search = PickerSearch(selected.research, screen.shape[1])
-                step = self._search.step(read_picker_page(screen, boxes))
+                    self._search = PickerSearch(target, screen.shape[1])
+                step = self._search.step(page)
                 if step.kind != 'found':
                     # Evidence of a miss: the first page and the last three.
                     self._search_frames.append(screen)
@@ -1268,8 +1386,10 @@ class LabVisit:
                     self._picker_signature, self._picker_reads = None, 0
                     return None
                 if step.kind == 'not_found':
-                    self._note_miss(selected.research)
-                    self._return(LabVisitResult('failed', 'research_not_found', LabDecision('unknown')))
+                    if general:
+                        # Game Speed stays out of the starter rollout's miss records.
+                        self._note_miss(target)
+                    self._end_attempt(LabVisitResult('failed', 'research_not_found', LabDecision('unknown')))
                     return None
                 if step.kind == 'wait':
                     return None
@@ -1280,7 +1400,7 @@ class LabVisit:
                 if (picker.entry is not None
                         and (picker.entry.concept_id != selected.research
                              or picker.entry.level != selected.target_level)):
-                    self._return(LabVisitResult('failed', 'selected_research_mismatch', decision))
+                    self._end_attempt(LabVisitResult('failed', 'selected_research_mismatch', decision))
                     return None
             if decision.kind != "start":
                 self._picker_signature, self._picker_reads = None, 0
@@ -1300,14 +1420,18 @@ class LabVisit:
                     else:
                         self._unavailable_reads += 1
                     if self._unavailable_reads >= 2:
-                        self._return(LabVisitResult('observed', 'research_unavailable', decision))
+                        self._end_attempt(LabVisitResult('observed', 'research_unavailable', decision))
                     return None
                 self._unavailable_signature, self._unavailable_reads = None, 0
                 if decision.kind == 'unknown':
                     # OCR and card visibility can flicker. Stay in the picker
                     # until the bounded stage timeout instead of aborting on one frame.
+                    if not self._picker_unknown_logged:
+                        self._picker_unknown_logged = True
+                        logger.info("Lab picker read unknown for %s: %s", target,
+                                    _picker_unknown_reason(page.card(target)))
                     return None
-                self._return(LabVisitResult("observed", decision.kind, decision))
+                self._end_attempt(LabVisitResult("observed", decision.kind, decision))
                 return None
             self._unavailable_signature, self._unavailable_reads = None, 0
             assert picker.buy_point is not None
@@ -1342,8 +1466,8 @@ class LabVisit:
                     or confirmation.price is not None and confirmation.price != purchase.price
                     or confirmation.coin_balance is not None
                     and confirmation.coin_balance != purchase.wallet_coins):
-                self._return(LabVisitResult("failed", "confirmation_mismatch",
-                                             LabDecision("unknown")))
+                self._end_attempt(LabVisitResult("failed", "confirmation_mismatch",
+                                                  LabDecision("unknown")))
                 return None
             if (confirmation.name is None or confirmation.research_id is None
                     or confirmation.target_level is None or confirmation.price is None
@@ -1372,12 +1496,13 @@ class LabVisit:
                 return self._finish(LabVisitResult('failed', 'unsafe_tap_target', LabDecision('unknown')))
             txn = self._prepare('lab_start', confirmation.coin_balance, confirmation.price)
             if txn is None:
-                self._return(LabVisitResult('failed', f'lab_preparation_refused:{self.preparation_refusal}',
-                                            LabDecision('unknown')))
+                self._end_attempt(LabVisitResult('failed', f'lab_preparation_refused:{self.preparation_refusal}',
+                                                 LabDecision('unknown')))
                 return None
             self._tap(device, confirmation.research_point, "confirm_game_speed" if purchase.research_id == "labs.game-speed" else "confirm_research")
             if (purchase.slot, purchase.research_id) != (1, 'labs.game-speed'):
                 self._start_tap, self._start_frames, self._start_scans = (txn.key, purchase.slot), [screen], 0
+                self._start_tapped_at = now
             self._state = "confirm"
             return None
 
@@ -1397,7 +1522,7 @@ class LabVisit:
             if home.page:
                 if self._reconcile_repeat(screen, device):
                     return None
-                if self._unlock_slot(home, screen, device):
+                if self._unlock_slot(home, screen, device, now):
                     return None if self.active else self._outcome
                 point = self._match(screen, "nav/tab_battle.png")
                 if point is not None:

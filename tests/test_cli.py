@@ -1072,6 +1072,83 @@ def test_run_forever_uses_the_menu_interval_outside_battle(monkeypatch) -> None:
     assert waits == [5.0, 0.5]
 
 
+def _between_games_waits(monkeypatch, flags, pending=None, stop_after: int = 2,
+                         paused: bool = False) -> list[float]:
+    """Run run_forever with scripted (in_battle, between_games) flags per scan
+    and return the sleeps. `pending` seeds the screen tracker's streak."""
+    import events
+    import vision
+    from tower_bot import TowerBot
+
+    bot = TowerBot(
+        device=MagicMock(),
+        templates=vision.TemplateCache(Path(__file__).parent.parent / "templates"),
+        bus=events.EventBus(),
+    )
+    bot.controls.apply({"interval": 5.0, "menu_interval": 2.0, "timing_jitter": 0.0})
+    if paused:
+        bot.controls.apply({"paused": True})
+    if pending is not None:
+        bot.tracker._pending = pending
+    scripted = iter(flags)
+    waits: list[float] = []
+
+    def run_once(max_runs=None) -> bool:
+        bot._last_scan_in_battle, bot._last_scan_between_games = next(scripted)
+        return True
+
+    def wait(seconds: float) -> bool:
+        waits.append(seconds)
+        if len(waits) == stop_after:
+            bot.stop()
+        return False
+
+    monkeypatch.setattr(bot, "run_once", run_once)
+    monkeypatch.setattr(bot._stopping, "wait", wait)
+    bot.run_forever()
+    return waits
+
+
+def test_run_forever_uses_fast_menu_interval_between_games(monkeypatch) -> None:
+    waits = _between_games_waits(monkeypatch, [(True, False), (False, True)])
+
+    assert waits == [5.0, config.MENU_FAST_SCAN_SECONDS]
+
+
+def test_fast_profile_never_applies_in_battle_context(monkeypatch) -> None:
+    waits = _between_games_waits(monkeypatch, [(True, False), (True, False)])
+
+    assert waits == [5.0, 5.0]
+
+
+def test_pending_confirmation_uses_the_short_gap(monkeypatch) -> None:
+    import screens
+
+    waits = _between_games_waits(
+        monkeypatch, [(False, True)], pending=screens.ScreenState.MAIN_MENU, stop_after=1)
+
+    assert waits == [config.MENU_CONFIRM_GAP_SECONDS]
+
+
+def test_a_paused_bot_scans_at_the_menu_interval_between_games(monkeypatch) -> None:
+    """Paused bots can sit on a menu for hours: no fast scans, no short gap."""
+    import screens
+
+    waits = _between_games_waits(
+        monkeypatch, [(False, True)], pending=screens.ScreenState.MAIN_MENU,
+        stop_after=1, paused=True)
+
+    assert waits == [2.0]
+
+
+def test_kill_switch_restores_menu_interval(monkeypatch) -> None:
+    monkeypatch.setattr(config, "MENU_FAST_PROFILE", False)
+
+    waits = _between_games_waits(monkeypatch, [(False, True)], stop_after=1)
+
+    assert waits == [2.0]
+
+
 @pytest.mark.parametrize('enabled', [True, False])
 def test_run_forever_scans_at_the_battle_pace_while_buying(monkeypatch, enabled: bool) -> None:
     """A step that bought, confirmed or headed for a purchase is followed

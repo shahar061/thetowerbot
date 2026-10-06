@@ -270,6 +270,10 @@ FLOATING_GEM_COOLDOWN_SECONDS: float = 30.0
 # never be raced. At a ~2s interval this is roughly twenty seconds of
 # genuinely stuck before anything changes course.
 HELD_PAGE_SCAN_LIMIT: int = 10
+# The scan count is a proxy for time, and between games scans run 3x faster
+# (MENU_FAST_SCAN_SECONDS), so the release also needs this much wall time since
+# the hold began. At a ~2s interval the count binds, as before.
+HELD_PAGE_MIN_SECONDS: float = 20.0
 
 # Consecutive recovery-blocked scans an armed walk (collect stats, missions
 # visit or claim, milestones claim) may sit through before it is ended. A
@@ -277,6 +281,10 @@ HELD_PAGE_SCAN_LIMIT: int = 10
 # end it; this does. Thirty is ~a minute at the ~2s interval - far past the
 # few blocked scans a tap's frame transition legitimately costs.
 RECOVERY_BLOCKED_WALK_LIMIT: int = 30
+# As with HELD_PAGE_MIN_SECONDS: the walk is ended only once the scan count is
+# passed AND this much wall time has elapsed since the blocked streak began, so
+# fast between-games scans do not cut the minute short.
+RECOVERY_BLOCKED_WALK_MIN_SECONDS: float = 60.0
 
 # The no-progress watchdog (stall_watchdog.py). Five inputs in a row that each
 # changed nothing, or five minutes blocked on an UNKNOWN frame, is a worker
@@ -310,6 +318,20 @@ UNKNOWN_HASH_DISTANCE: int = 8
 # Templates are not scale-invariant. A different emulator resolution
 # invalidates every one of them.
 EXPECTED_RESOLUTION: tuple[int, int] = (1080, 2400)
+
+# --- Between-games timing -------------------------------------------------
+# From a run ending (GAME_OVER) until the next run starts, nothing animates for
+# long and every tap is one step of a menu walk, so the loop runs faster than
+# the menu pace. Battle timing is untouched: this applies only when the last
+# scan was not in a run (see TowerBot._last_scan_between_games).
+MENU_FAST_PROFILE: bool = True  # kill switch: False restores the menu interval
+MENU_FAST_SCAN_SECONDS: float = 0.6
+# The next scan while a screen change awaits its confirming reading.
+MENU_CONFIRM_GAP_SECONDS: float = 0.3
+# Navigator cooldown between taps while between games.
+MENU_FAST_NAV_COOLDOWN_SECONDS: float = 1.0
+# Seconds of between-games idleness after which the watchdog acts.
+MENU_IDLE_WATCHDOG_SECONDS: float = 20.0
 
 # --- Auto-navigation ------------------------------------------------------
 # Buttons are located by template match, never by fixed coordinates: the

@@ -73,6 +73,7 @@ def bot(planned: LabAction | None, *, plan: Any = None, options: LabVisitOptions
     instance._lab_visit_revision = REVISION
     instance._lab_action_last = None
     instance._lab_unavailable = {}
+    instance._lab_picker_failures = {}
     return instance
 
 
@@ -552,3 +553,172 @@ def test_planning_sweeps_a_canary_that_left_the_pool(tmp_path: Path) -> None:
     b.lab_visit.starter, b.lab_visit.worker = starter, 'Air_1'
     b._plan_lab_action(1000.)
     assert starter.state().rollout('start:2').stage == 'dry_run'
+
+
+def test_a_multi_start_visit_clears_only_a_started_actions_backoff() -> None:
+    """Direct start re-plans inside one visit: the visit's last planned action
+    may be a later attempt that failed, while the result keeps the earlier
+    proven start. Only a slot in started_slots clears the backoff."""
+    from dataclasses import replace
+    from lab_visit import LabVisitResult
+    b = bot(action(2, 'labs.attack-speed', 1), options=LabVisitOptions(direct_start=True))
+    held = (2, 'labs.attack-speed', 1, REVISION, 'start'), None, 2000.
+    b._lab_action_last = held
+    b.lab_visit.selected_action = action(2, 'labs.attack-speed', 1)
+    started = LabVisitResult('started', 'game_speed_confirmed', decision(), started_slots=(1,))
+    b._settle_planned_lab_attempt(started)
+    assert b._lab_action_last == held
+    # The planner had nothing after slot 2 started: no selected action remains.
+    b.lab_visit.selected_action = None
+    b._settle_planned_lab_attempt(replace(started, started_slots=(1, 2)))
+    assert b._lab_action_last == (held[0], held[1], 0.)
+    assert b._lab_followup_due
+
+
+def test_a_visit_that_replanned_after_its_last_start_owes_no_followup() -> None:
+    """The visit already re-read the strip after its last start; a follow-up
+    visit would only re-read an exhausted strip."""
+    from lab_visit import LabVisitResult
+    b = bot(action(), options=LabVisitOptions(direct_start=True))
+    b._lab_followup_due = False
+    b._lab_action_last = (1, 'labs.game-speed', 4, REVISION, 'start'), None, 2000.
+    b.lab_visit.selected_action = None
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'game_speed_confirmed', decision(),
+                                                 started_slots=(1, 2), replanned=True))
+    assert b._lab_action_last[2] == 0.
+    assert not b._lab_followup_due
+
+
+def test_a_started_visit_without_a_replan_still_owes_a_followup() -> None:
+    from lab_visit import LabVisitResult
+    b = bot(action(), options=LabVisitOptions(direct_start=True))
+    b._lab_followup_due = False
+    b._lab_action_last = (1, 'labs.game-speed', 4, REVISION, 'start'), None, 2000.
+    b.lab_visit.selected_action = action()
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'game_speed_confirmed', decision(),
+                                                 started_slots=(1,)))
+    assert b._lab_followup_due
+
+
+def test_a_finished_visit_logs_its_started_slots(caplog: pytest.LogCaptureFixture) -> None:
+    from lab_visit import LabVisitResult
+    b = bot(None)
+    b._notifications = SimpleNamespace(snapshot=lambda: {'kinds': {'labs': {'in_flight': False}}})
+    b.reroll_progress = RecordingProgress()
+    result = LabVisitResult('started', 'research_confirmed', decision(3, 'labs.health', 1),
+                            started_slots=(1, 3))
+    with caplog.at_level('INFO', logger='tower_bot'):
+        b._finish_lab_visit(result)
+    assert 'started slots (1, 3)' in caplog.text
+
+
+def test_research_unavailable_after_a_proven_start_still_excludes_that_research() -> None:
+    """A later attempt's research_unavailable rides on the kept started result."""
+    from lab_visit import LabVisitResult
+    b = bot(action(2, 'labs.coins-kill-bonus', 1), options=LabVisitOptions(direct_start=True))
+    b.lab_visit.selected_action = action(2, 'labs.coins-kill-bonus', 1)
+    unavailable = LabVisitResult('observed', 'research_unavailable', LabDecision(
+        'unknown', price=50, wallet_coins=20000, game_speed_level=1,
+        slot=2, research_id='labs.coins-kill-bonus', strategy_revision=REVISION))
+    started = LabVisitResult('started', 'game_speed_confirmed', decision(), started_slots=(1,),
+                             attempt=unavailable)
+    b._settle_planned_lab_attempt(started)
+    key = (b._lab_account_id(), REVISION, 'labs.coins-kill-bonus')
+    assert key in b._lab_unavailable
+    assert 'labs.coins-kill-bonus' in b._excluded_lab_research(time.time())
+
+
+def picker_failure(reason: str = 'picker_stage_timeout') -> Any:
+    from lab_visit import LabVisitResult
+    return LabVisitResult('failed', reason, LabDecision('unknown'))
+
+
+def picker_bot() -> Any:
+    b = bot(action(), options=LabVisitOptions(direct_start=True))
+    b.lab_visit.selected_action = action()
+    return b
+
+
+def test_two_picker_failures_skip_the_lab_for_thirty_minutes(caplog: pytest.LogCaptureFixture) -> None:
+    b = picker_bot()
+    with caplog.at_level('INFO', logger='tower_bot'):
+        b._settle_planned_lab_attempt(picker_failure('picker_stage_timeout'))
+        b._settle_planned_lab_attempt(picker_failure('research_not_found'))
+    key = (b._lab_account_id(), REVISION, 'labs.game-speed')
+    assert b._lab_unavailable[key] == pytest.approx(time.time() + 1800, abs=5)
+    assert 'labs.game-speed' in b._excluded_lab_research(time.time())
+    assert b._lab_followup_due
+    assert key not in b._lab_picker_failures
+    assert 'Skipping labs.game-speed for 30 min after 2 picker failures' in caplog.text
+
+
+def test_one_picker_failure_does_not_skip() -> None:
+    b = picker_bot()
+    b._settle_planned_lab_attempt(picker_failure('research_not_found'))
+    assert 'labs.game-speed' not in b._excluded_lab_research(time.time())
+
+
+def test_other_failures_are_not_picker_failures() -> None:
+    b = picker_bot()
+    for _ in range(3):
+        b._settle_planned_lab_attempt(picker_failure('home_stage_timeout'))
+    assert not b._lab_unavailable
+
+
+def test_a_picker_failure_after_a_proven_start_still_counts() -> None:
+    from dataclasses import replace
+    b = picker_bot()
+    b.lab_visit.selected_action = action(2, 'labs.attack-speed', 1)
+    started = replace(picker_failure(), status='started', reason='game_speed_confirmed',
+                      decision=decision(), started_slots=(1,), attempt=picker_failure())
+    b._settle_planned_lab_attempt(started)
+    b._settle_planned_lab_attempt(started)
+    assert 'labs.attack-speed' in b._excluded_lab_research(time.time())
+    assert 'labs.game-speed' not in b._excluded_lab_research(time.time())
+
+
+def test_starting_the_lab_resets_its_picker_failures() -> None:
+    from lab_visit import LabVisitResult
+    b = picker_bot()
+    b._settle_planned_lab_attempt(picker_failure())
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'game_speed_confirmed', decision(),
+                                                 started_slots=(1,)))
+    b._settle_planned_lab_attempt(picker_failure())
+    assert 'labs.game-speed' not in b._excluded_lab_research(time.time())
+
+
+def test_another_labs_start_keeps_this_labs_picker_failures() -> None:
+    from lab_visit import LabVisitResult
+    b = picker_bot()
+    b._settle_planned_lab_attempt(picker_failure())
+    # Slot 1 failed earlier; this visit proved slot 3 only.
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'research_confirmed',
+                                                 decision(3, 'labs.health', 1), started_slots=(3,)))
+    b._settle_planned_lab_attempt(picker_failure())
+    assert 'labs.game-speed' in b._excluded_lab_research(time.time())
+
+
+def test_every_research_started_in_the_visit_resets_its_picker_failures() -> None:
+    from lab_visit import LabVisitResult
+    b = picker_bot()
+    b.lab_visit.selected_action = action(2, 'labs.attack-speed', 1)
+    b._settle_planned_lab_attempt(picker_failure())
+    # A later visit started slot 2's lab, then slot 1's; its last planned
+    # action (slot 3) is a later attempt that never started.
+    b.lab_visit.selected_action = action(3, 'labs.health', 1)
+    b._settle_planned_lab_attempt(LabVisitResult(
+        'started', 'game_speed_confirmed', decision(), started_slots=(2, 1),
+        started_research=('labs.attack-speed', 'labs.game-speed')))
+    b.lab_visit.selected_action = action(2, 'labs.attack-speed', 1)
+    b._settle_planned_lab_attempt(picker_failure())
+    assert 'labs.attack-speed' not in b._excluded_lab_research(time.time())
+
+
+def test_settling_without_a_lab_visit_is_a_no_op() -> None:
+    from lab_visit import LabVisitResult
+    b = bot(None)
+    b.lab_visit = None
+    b._settle_planned_lab_attempt(LabVisitResult('failed', 'purchase_unconfirmed', LabDecision('unknown')))
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'game_speed_confirmed', decision(),
+                                                 started_slots=(1,)))
+    assert b._lab_action_last is None

@@ -74,6 +74,8 @@ from adbutils import AdbDevice
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from fleet.resource_blocks import LabAction
+
 import claim_schedule
 import config
 import db
@@ -131,6 +133,14 @@ _FAILED_MILESTONES_RETRY_SECONDS = 60.
 # the same (slot, research, level, revision) and slot evidence until this passes.
 LAB_ACTION_BACKOFF_SECONDS = 900.
 LAB_DIRECT_CHECK_SECONDS = 300.
+# A lab the picker failed to find this many times in a row is skipped this long.
+LAB_PICKER_SKIP_SECONDS = 1800.
+LAB_PICKER_FAILURES_TO_SKIP = 2
+_LAB_PICKER_FAILURES = frozenset({'research_not_found', 'picker_stage_timeout'})
+# A strip whose every slot claims to be running is re-read this rarely (spec 3.5 d).
+LAB_STRIP_REFRESH_SECONDS = 6 * 3600.
+# A running lab whose timer ends within this window is treated as already finished (spec 3.5 b).
+LAB_FINISH_LOOKAHEAD_SECONDS = 30.
 
 
 def popup_flags(boxes: tuple[ocr.TextBox, ...]) -> tuple[bool, bool]:
@@ -250,7 +260,11 @@ class TowerBot:
         # Last armed planned Lab start: (key, slot evidence, backoff-until).
         self._lab_action_last: tuple[tuple, tuple | None, float] | None = None
         self._lab_followup_due = False
+        # A due lab start already claimed the GAME_OVER detour; held until a visit arms or a run starts.
+        self._lab_home_pending: bool = False
         self._lab_unavailable: dict[tuple[str | None, int | None, str], float] = {}
+        # Picker failures in a row per (account, strategy revision, research).
+        self._lab_picker_failures: dict[tuple[str | None, int | None, str], int] = {}
         self._lab_direct_check: tuple[tuple[str | None, int | None], float] | None = None
         self.lab_visit: LabVisit | None = (LabVisit(templates, journal=safety_journal,
             account_state=account_state, slot_observer=self._observe_lab_runtime,
@@ -346,6 +360,8 @@ class TowerBot:
         # Consecutive scans a menu page has held every action with nothing
         # walking. See the deadlock note in run_once.
         self._held_scans = 0
+        # When that streak began (time.monotonic), for HELD_PAGE_MIN_SECONDS.
+        self._held_since = 0.0
         # When the IN_RUN preflight last read the whole frame. See
         # _preflight_boxes: the backstop for a popup the bands cannot see.
         self._battle_full_read_at = float("-inf")
@@ -361,6 +377,8 @@ class TowerBot:
         # Consecutive scans device recovery has blocked while a walk was
         # armed. See the note beside the recovery gate in run_once.
         self._recovery_blocked_scans = 0
+        # When that streak began (time.monotonic), for RECOVERY_BLOCKED_WALK_MIN_SECONDS.
+        self._recovery_blocked_since = 0.0
         self.runs = RunTracker(first_run_id)
         # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
@@ -412,6 +430,10 @@ class TowerBot:
         # Which pace run_forever waits at after this scan - see
         # Strategy.interval_for. Starts False: the first frame is usually home.
         self._last_scan_in_battle = False
+        self._last_scan_between_games = False
+        # When the bot first sat idle on the main menu with nothing active;
+        # see the watchdog in _run_once. None whenever it is not idling.
+        self._menu_idle_since: float | None = None
         self._running = True
         # Makes the between-scan sleep interruptible. A plain time.sleep()
         # ignores stop(): PEP 475 means it resumes after a signal handler
@@ -1557,6 +1579,7 @@ class TowerBot:
                      or now - previous_repeat[1] >= 600)
                 and self.lab_visit.request(None, options=replace(options, start_research=False, unlock_slots=()))):
             self._lab_repeat_check = (repeat_key, now)
+            self._lab_home_pending = False
             return True
         action = self._plan_lab_action(now)
         if action is not None:
@@ -1572,6 +1595,7 @@ class TowerBot:
                     # Pessimistic: only a verified start clears the backoff.
                     self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
                     self._lab_followup_due = False
+                    self._lab_home_pending = False
                     return True
                 # The gate refused between plan and request (e.g. another
                 # worker moved the starter rollout this scan): no backoff is
@@ -1579,28 +1603,63 @@ class TowerBot:
                 # refusing the whole scan and retrying every pass.
         if (due or getattr(self, '_lab_followup_due', False)) and self.lab_visit.request(None, options=options):
             self._lab_followup_due = False
+            self._lab_home_pending = False
             return True
         return False
 
     def _settle_planned_lab_attempt(self, result: Any) -> None:
         """A verified start ends the backoff; the due requirement still applies."""
         selected = self.lab_visit.selected_action if self.lab_visit is not None else None
-        if (selected is not None and result.reason == 'research_unavailable'
-                and result.decision.research_id == selected.research
-                and result.decision.target_level == selected.target_level
-                and result.decision.price is not None
-                and result.decision.wallet_coins is not None
-                and result.decision.wallet_coins >= result.decision.price):
+        # After a proven start the visit keeps the started result; the later
+        # attempt that ended it rides along and still excludes its research.
+        attempt = getattr(result, 'attempt', None) or result
+        if (selected is not None and attempt.reason == 'research_unavailable'
+                and attempt.decision.research_id == selected.research
+                and attempt.decision.target_level == selected.target_level
+                and attempt.decision.price is not None
+                and attempt.decision.wallet_coins is not None
+                and attempt.decision.wallet_coins >= attempt.decision.price):
             account_id = self._lab_account_id()
             revision = selected.strategy_revision
             self._lab_unavailable[(account_id, revision, selected.research)] = time.time() + LAB_ACTION_BACKOFF_SECONDS
             self._lab_followup_due = True
+        self._count_lab_picker_failure(result, attempt, selected)
         last = self._lab_action_last
-        if last is not None and self.lab_visit.selected_action is not None and result.status == 'started':
+        # Direct start fills several slots in one visit: the last planned action
+        # may be a later attempt that failed while the result keeps an earlier
+        # proven start, so only an action whose slot started clears its backoff.
+        # `selected` is None when no LabVisit is attached.
+        started_slots = getattr(result, 'started_slots', ())
+        if (last is not None and result.status == 'started'
+                and (last[0][0] in started_slots if started_slots else selected is not None)):
             self._lab_action_last = (last[0], last[1], 0.)
-            if (self.reroll_progress is not None
+            # A visit that re-planned after its last start already read the
+            # strip it left; only one that returned straight away owes a look.
+            if (self.reroll_progress is not None and not getattr(result, 'replanned', False)
                     and self.reroll_progress.lab_visit_options().direct_start):
                 self._lab_followup_due = True
+
+    def _count_lab_picker_failure(self, result: Any, attempt: Any, selected: LabAction | None) -> None:
+        """Two picker failures in a row for one lab skip it for 30 min; its start resets the count."""
+        failures = self._lab_picker_failures
+        if result.status == 'started':
+            started_slots = getattr(result, 'started_slots', ())
+            proven = {getattr(result.decision, 'research_id', None),
+                      *getattr(result, 'started_research', ())}
+            if selected is not None and (selected.slot in started_slots if started_slots else True):
+                proven.add(selected.research)
+            for key in [key for key in failures if key[2] in proven]:
+                del failures[key]
+        if selected is None or attempt.reason not in _LAB_PICKER_FAILURES:
+            return
+        key = (self._lab_account_id(), selected.strategy_revision, selected.research)
+        failures[key] = failures.get(key, 0) + 1
+        if failures[key] < LAB_PICKER_FAILURES_TO_SKIP:
+            return
+        del failures[key]
+        self._lab_unavailable[key] = time.time() + LAB_PICKER_SKIP_SECONDS
+        self._lab_followup_due = True
+        logger.info("Skipping %s for 30 min after 2 picker failures", selected.research)
 
     def _lab_account_id(self) -> str | None:
         scope = getattr(self.account_state, 'verified_scope', None)
@@ -1614,13 +1673,24 @@ class TowerBot:
         return frozenset(research for (account, route, research), expiry in blocked.items()
                          if account == account_id and route == revision and now < expiry)
 
-    def _direct_lab_visit_due(self, now: float) -> bool:
-        """Inspect owned labs after game over if a direct-start slot may be free."""
-        if self.reroll_progress is None or self.lab_runtime is None:
+    def _arm_lab_visit_bookkeeping(self, lab_notice_due: bool) -> None:
+        """Record the route revision and badge generation for a just-armed Labs visit."""
+        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        self._lab_visit_revision = route_runtime.current().revision if route_runtime is not None else None
+        if lab_notice_due:
+            self._notifications.begin("labs", time.time())
+        logger.info("Armed Labs check from the confirmed unlocked tab.")
+
+    def _lab_start_due(self, now: float) -> bool:
+        """Whether a lab start is due, from slot state alone (never the wallet)."""
+        if self.reroll_progress is None:
             return False
         options = self.reroll_progress.lab_visit_options()
-        if not (options.start_research and options.direct_start):
+        if not options.start_research:
             return False
+        if self.lab_runtime is None:
+            # No slot state to read: keep the legacy cadence for this route.
+            return bool(self.reroll_progress.lab_due(now))
         if not self.reroll_progress.lab_unlocked():
             return False
         route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
@@ -1636,11 +1706,11 @@ class TowerBot:
             self._lab_followup_due = True
             return True
         stale = (snapshot.observed_at is None
-                 or now - snapshot.observed_at >= LAB_DIRECT_CHECK_SECONDS)
+                 or now - snapshot.observed_at >= LAB_STRIP_REFRESH_SECONDS)
         for slot in range(1, owned + 1):
             record = next((row for row in snapshot.slots if row.slot == slot), None)
             if (record is None or not record.confirmed or record.state != 'researching'
-                    or record.expected_finish is None or record.expected_finish <= now):
+                    or record.expected_finish is None or record.expected_finish <= now + LAB_FINISH_LOOKAHEAD_SECONDS):
                 self._lab_direct_check = (key, now + LAB_DIRECT_CHECK_SECONDS)
                 self._lab_followup_due = True
                 return True
@@ -1651,6 +1721,8 @@ class TowerBot:
             self._lab_followup_due = True
             return True
         return False
+
+    _direct_lab_visit_due = _lab_start_due  # alias kept for one release
 
     def _finish_lab_visit(self, result: Any) -> None:
         """Record only verified research and lab-slot purchases."""
@@ -1711,7 +1783,8 @@ class TowerBot:
                 and result.status in ('started', 'observed')
                 and decision.kind != 'unknown' and result.reason != 'research_rehearsed'):
             self.reroll_progress.note_other_lab_research()
-        logger.info("Lab %s visit ended: %s (%s)%s", decision.slot, result.status, result.reason,
+        logger.info("Lab %s visit ended: %s (%s), started slots %s%s", decision.slot, result.status,
+                    result.reason, getattr(result, 'started_slots', ()),
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
 
     def run_once(self, max_runs: int | None = None) -> bool:
@@ -1823,11 +1896,19 @@ class TowerBot:
         ticket = None
         escape = None
         preflight_boxes = None
-        battle_context = (reading.state in (screens.ScreenState.IN_RUN,
-                                            screens.ScreenState.GAME_OVER)
-                          or (reading.state is screens.ScreenState.UNKNOWN
-                              and reading.cash_top_left is not None))
+        in_run = (reading.state is screens.ScreenState.IN_RUN
+                  or (reading.state is screens.ScreenState.UNKNOWN
+                      and reading.cash_top_left is not None))
+        battle_context = in_run or reading.state is screens.ScreenState.GAME_OVER
         self._last_scan_in_battle = battle_context
+        # GAME_OVER is in both: it paces like battle today, and is also dead
+        # time between runs. Only an actual run (or a run-HUD UNKNOWN) is not.
+        # A paused bot can sit on a menu for hours: it keeps the menu pace.
+        self._last_scan_between_games = not in_run and not settings.paused
+        if reading.state is not screens.ScreenState.MAIN_MENU:
+            # Any other screen (a claim walk's pages included) ends the idling,
+            # even on passes that return before the watchdog below is reached.
+            self._menu_idle_since = None
         self._card_observed_state = reading.state.value
         self._card_in_run = (reading.state is screens.ScreenState.IN_RUN or
             reading.state is screens.ScreenState.UNKNOWN and self.tracker.state is screens.ScreenState.IN_RUN
@@ -2029,7 +2110,11 @@ class TowerBot:
                 # instead, the same four cancels the runner makes on a stop.
                 if self._any_walk_active():
                     self._recovery_blocked_scans += 1
-                    if self._recovery_blocked_scans > config.RECOVERY_BLOCKED_WALK_LIMIT:
+                    if self._recovery_blocked_scans == 1:
+                        self._recovery_blocked_since = time.monotonic()
+                    if (self._recovery_blocked_scans > config.RECOVERY_BLOCKED_WALK_LIMIT
+                            and time.monotonic() - self._recovery_blocked_since
+                            >= config.RECOVERY_BLOCKED_WALK_MIN_SECONDS):
                         self._cancel_walks(
                             "recovery_blocked",
                             "Device recovery blocked every scan for too long; "
@@ -2207,6 +2292,8 @@ class TowerBot:
                 self.autopilot.suspend("Run boundary", clear_battle=True)
 
         state = self.tracker.state
+        if state not in (screens.ScreenState.GAME_OVER, screens.ScreenState.MAIN_MENU):
+            self._lab_home_pending = False  # a run started: the detour is moot
         shopping_policy = settings.strategy.shopping
         # The menu header, read once per menu frame. The reroll policy below
         # must see this frame's balance: after an unconfirmed spend the
@@ -2496,6 +2583,8 @@ class TowerBot:
             return recovered
         if (panel or missions_page or milestones_page) and not walking_now:
             self._held_scans += 1
+            if self._held_scans == 1:
+                self._held_since = time.monotonic()
         else:
             self._held_scans = 0
 
@@ -2505,7 +2594,8 @@ class TowerBot:
         # the rest of the pass, and with it navigation, whose NAV_DISMISS set
         # already carries the skip and claim-reward buttons these ceremonies
         # are built from.
-        deadlocked = self._held_scans > config.HELD_PAGE_SCAN_LIMIT
+        deadlocked = (self._held_scans > config.HELD_PAGE_SCAN_LIMIT
+                      and time.monotonic() - self._held_since >= config.HELD_PAGE_MIN_SECONDS)
 
         if not deadlocked and (
                 panel or missions_page or milestones_page or self.collection.active
@@ -2997,31 +3087,34 @@ class TowerBot:
             elif self._offer_cards_intro():
                 logger.info("Armed the first Cards visit from the main menu.")
             elif self.lab_visit is not None and self.reroll_progress is not None:
-                armed = self._offer_claim(settings)
-                if armed is not None:
-                    logger.info("Armed a %s claim from the main menu.", armed)
+                now = time.time()
+                # Persist only an explicit lock or unlocked-tab match.
+                # An ambiguous frame remains unknown and never authorizes
+                # a tap into Labs.
+                labs_tab_status = self.lab_visit.tab_status(self.screen)
+                if labs_tab_status == "unlocked":
+                    self.reroll_progress.note_lab_unlocked("labs_tab")
+                elif labs_tab_status == "locked":
+                    self.reroll_progress.note_lab_locked("labs_tab")
+                lab_notice_due = self._notifications.eligible("labs", now)
+                # A due lab start outranks claims and the Workshop. The start
+                # probe has pacing side effects, so it runs once per frame.
+                # A GAME_OVER detour latched the paced check: it is still due.
+                lab_due_now = (labs_tab_status == "unlocked" and (
+                    lab_notice_due or self._lab_home_pending or self._lab_start_due(now)
+                    or self.reroll_progress.lab_unlock_due(wallet_gems=menu_gems)))
+                if lab_due_now and self._request_planned_lab_visit(now, True):
+                    self._arm_lab_visit_bookkeeping(lab_notice_due)
                 else:
-                    # Persist only an explicit lock or unlocked-tab match.
-                    # An ambiguous frame remains unknown and never authorizes
-                    # a tap into Labs.
-                    labs_tab_status = self.lab_visit.tab_status(self.screen)
-                    if labs_tab_status == "unlocked":
-                        self.reroll_progress.note_lab_unlocked("labs_tab")
-                    elif labs_tab_status == "locked":
-                        self.reroll_progress.note_lab_locked("labs_tab")
-                    lab_notice_due = self._notifications.eligible("labs", time.time())
-                    if (labs_tab_status == "unlocked"
-                            and self._request_planned_lab_visit(time.time(), lab_notice_due or self.reroll_progress.lab_due(
-                                wallet_coins=menu_coins, wallet_gems=menu_gems,
-                            ))):
-                        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
-                        self._lab_visit_revision = route_runtime.current().revision if route_runtime is not None else None
-                        if lab_notice_due:
-                            self._notifications.begin("labs", time.time())
-                        logger.info("Armed Labs check from the confirmed unlocked tab.")
-                    else:
-                        if self._menu_tab_unlocked("workshop"):
-                            self.shopping.begin(shopping_policy, self.runs.completed)
+                    armed = self._offer_claim(settings)
+                    if armed is not None:
+                        logger.info("Armed a %s claim from the main menu.", armed)
+                    # Not due: a pending planned-action follow-up can still arm.
+                    elif (labs_tab_status == "unlocked"
+                            and self._request_planned_lab_visit(now, False)):
+                        self._arm_lab_visit_bookkeeping(lab_notice_due)
+                    elif self._menu_tab_unlocked("workshop"):
+                        self.shopping.begin(shopping_policy, self.runs.completed)
             elif not self.shopping.begin(shopping_policy, self.runs.completed):
                 armed = self._offer_claim(settings)
                 if armed is not None:
@@ -3035,7 +3128,7 @@ class TowerBot:
                 duration_ms=(time.monotonic()-started)*1000, wallet=None))
             return False
 
-        if (
+        navigation_clear = (
             settings.strategy.auto_navigate
             and not settings.paused
             and not self.run_cap_reached(max_runs, settings.strategy)
@@ -3044,7 +3137,10 @@ class TowerBot:
             and not self.cards_intro.active
             and not (self.card_runtime is not None and self.card_runtime.active)
             and not (self.lab_visit is not None and self.lab_visit.active)
-        ):
+        )
+        tier_selecting = False
+        nav_tapped = False
+        if navigation_clear:
             # Navigator taps BATTLE on MAIN_MENU on a cooldown - left alone
             # it would start a run in the middle of a shopping errand.
             #
@@ -3066,11 +3162,16 @@ class TowerBot:
             # here, one screen early, or the bot never reaches the menu to
             # be asked at all. Same gate begin() uses, so a detour is only
             # taken when the visit it exists for will actually start.
-            if not (state is screens.ScreenState.MAIN_MENU
-                    and self._advance_tier(settings)):
-                lab_direct_due = (state is screens.ScreenState.GAME_OVER
-                                  and self._direct_lab_visit_due(time.time()))
-                self.navigator.maybe_navigate(
+            tier_selecting = (state is screens.ScreenState.MAIN_MENU
+                              and self._advance_tier(settings))
+            if not tier_selecting:
+                # _lab_start_due spends its pacing on the first True; latch it so
+                # a declined navigation pass cannot lose the detour to RETRY.
+                lab_start_due = (state is screens.ScreenState.GAME_OVER
+                                 and (self._lab_home_pending or self._lab_start_due(time.time())))
+                if lab_start_due:
+                    self._lab_home_pending = True
+                nav_tapped = self.navigator.maybe_navigate(
                     self.screen,
                     state,
                     self.device,
@@ -3093,10 +3194,10 @@ class TowerBot:
                              or (state is screens.ScreenState.GAME_OVER
                                  and self.reroll_progress is not None
                                  and self.reroll_progress.stats_due())
+                             or lab_start_due
                              or (state is screens.ScreenState.GAME_OVER
                                  and self.reroll_progress is not None
-                                 and self.reroll_progress.lab_due())
-                             or lab_direct_due),
+                                 and self.reroll_progress.lab_unlock_due())),
                     # The way off a menu page. NAV_BUTTONS is keyed by
                     # ScreenState, which has no member for one, so the bot could
                     # neither act on the workshop (the loop above gates on
@@ -3112,7 +3213,31 @@ class TowerBot:
                     # the released guard buys nothing: navigation looks for a
                     # menu page's exit, finds none, and taps nothing forever.
                     dismiss=deadlocked,
-                )
+                    cooldown=(config.MENU_FAST_NAV_COOLDOWN_SECONDS
+                              if config.MENU_FAST_PROFILE and self._last_scan_between_games
+                              else None),
+                ) is not None
+
+        # Backstop for the idle gap between games: the visits above normally
+        # finish and the navigation above taps BATTLE within seconds, but
+        # nothing else bounds a menu that stays quiet. Idle means the same
+        # gate navigation uses, plus a plain missions visit and tier selection.
+        # A pass whose navigation tapped is not idle: one tap per frame.
+        if (navigation_clear and not tier_selecting and not nav_tapped and not self.visit.active
+                and state is screens.ScreenState.MAIN_MENU
+                and reading.state is screens.ScreenState.MAIN_MENU):
+            idle_now = time.monotonic()
+            if self._menu_idle_since is None:
+                self._menu_idle_since = idle_now
+            elif (idle_now - self._menu_idle_since >= config.MENU_IDLE_WATCHDOG_SECONDS
+                    and self.navigator.maybe_navigate(
+                        self.screen, state, self.device, now=idle_now,
+                        tuning=settings.strategy, go_home=False, cooldown=0.0) is not None):
+                logger.warning("between_games_idle_watchdog: %.0f s idle on the main menu; "
+                               "started the next run", idle_now - self._menu_idle_since)
+                self._menu_idle_since = None
+        else:
+            self._menu_idle_since = None
 
         # Checked after navigation, and begin() checked after advance() below:
         # a visit that just ended this same scan must not restart within it,
@@ -3260,6 +3385,13 @@ class TowerBot:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.
                 current_interval = min(current_interval, config.BATTLE_FOLLOWUP_SECONDS)
+            # Paused since the scan: the menu pace, not the fast profile.
+            if (interval is None and config.MENU_FAST_PROFILE and self._last_scan_between_games
+                    and not self.controls.snapshot().paused):
+                current_interval = min(current_interval, max(MIN_INTERVAL, jitter.spread(
+                    config.MENU_FAST_SCAN_SECONDS, live.timing_jitter)))
+                if self.tracker.pending:
+                    current_interval = min(current_interval, config.MENU_CONFIRM_GAP_SECONDS)
             current_interval = self.maintenance.wait_seconds(time.time(), current_interval)
             self._stopping.wait(current_interval)
         logger.info("Bot stopped.")

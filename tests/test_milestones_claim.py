@@ -555,7 +555,7 @@ def test_the_milestones_screens_hold_actions_with_no_walk_armed(
 
 
 def test_stranded_milestones_ladder_returns_to_game_after_guard_budget(
-        bot_on_main_menu: Any, monkeypatch: Any) -> None:
+        bot_on_main_menu: Any, monkeypatch: Any, scan_clock: Any) -> None:
     """After a worker restart loses its claim walk, the ladder needs an exit."""
     import ocr
     from strategy import Shopping
@@ -567,6 +567,7 @@ def test_stranded_milestones_ladder_returns_to_game_after_guard_budget(
     monkeypatch.setattr(ocr, 'read', lambda *a, **k: boxes)
     for _ in range(config.HELD_PAGE_SCAN_LIMIT + 1):
         bot.run_once()
+        scan_clock.advance(2.0)
     assert bot.device.taps == [RETURN_CONTROL]
 
 
@@ -713,7 +714,7 @@ def test_claim_all_paying_an_unlock_card_taps_its_ok(
 
 
 def test_a_walk_blocked_by_recovery_is_ended_rather_than_left_running(
-        bot_on_main_menu: Any, monkeypatch: Any) -> None:
+        bot_on_main_menu: Any, monkeypatch: Any, scan_clock: Any) -> None:
     """A blocked pass never reaches advance(), so the walk's own budget can't
     end it - some unrecognised card would otherwise hold it 'running' for as
     long as the card stays up."""
@@ -735,6 +736,7 @@ def test_a_walk_blocked_by_recovery_is_ended_rather_than_left_running(
     assert bot.milestones_claim.request()
     for _ in range(config.RECOVERY_BLOCKED_WALK_LIMIT):
         bot.run_once()
+        scan_clock.advance(2.0)
     assert bot.milestones_claim.active
     bot.run_once()
     ended = bot.milestones_claim.snapshot()

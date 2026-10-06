@@ -91,6 +91,17 @@ def test_cooldown_prevents_a_double_tap(nav: Navigator) -> None:
     assert nav.maybe_navigate(frame("game_over"), ScreenState.GAME_OVER, dev, now=4.0)
 
 
+def test_cooldown_override_replaces_the_default_for_one_call(nav: Navigator) -> None:
+    dev = MagicMock()
+    assert nav.maybe_navigate(frame("game_over"), ScreenState.GAME_OVER, dev, now=0.0)
+    # Within the default 3.0 s, so refused without an override.
+    assert nav.maybe_navigate(frame("game_over"), ScreenState.GAME_OVER, dev, now=0.5) is None
+    assert nav.maybe_navigate(
+        frame("game_over"), ScreenState.GAME_OVER, dev, now=0.5, cooldown=0.0)
+    # The override did not stick: the default applies again.
+    assert nav.maybe_navigate(frame("game_over"), ScreenState.GAME_OVER, dev, now=1.0) is None
+
+
 def test_now_none_reads_a_fresh_clock_each_call(monkeypatch: pytest.MonkeyPatch) -> None:
     """Omitting `now` must sample a live clock on every call, not freeze at a
     fixed value. The buggy `moment = 0.0 if now is None else now` froze

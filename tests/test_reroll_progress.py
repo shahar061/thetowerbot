@@ -46,6 +46,31 @@ def test_lab_checks_wait_for_account_bound_unlock_observation(tmp_path: Path) ->
     assert restarted.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
 
 
+def test_lab_unlock_due_is_the_slot_purchase_half_of_lab_due(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    assert not progress.lab_unlock_due(now=1000., wallet_gems=500)  # Labs not unlocked yet
+    progress.note_lab_unlocked("unlock_card", caption="Labunlocked", now=999.)
+    progress.note_lab_slots({2: "locked"}, 65, now=1000.)
+    assert not progress.lab_unlock_due(now=1100., wallet_gems=65)
+    assert progress.lab_unlock_due(now=1100., wallet_gems=500)
+    # Research waiting on coins is not an unlock: only lab_due stays True for it.
+    progress.note_lab_observation(
+        LabDecision("wait_coins", price=300, wallet_coins=122, game_speed_level=1), now=1000.)
+    assert not progress.lab_unlock_due(now=1100., wallet_gems=65)
+    assert progress.lab_due(now=1300., wallet_coins=300, wallet_gems=65)
+
+
+def test_lab_unlock_due_is_false_when_auto_unlock_is_off(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    route = RouteDocument.compatibility().to_dict()
+    route["baseline"]["rules"]["gems"].update(auto_unlock_lab_slots=False)
+    (tmp_path / "build-route.json").write_text(json.dumps(route))
+    progress.route_runtime = BuildRouteRuntime(tmp_path, progress.root.name, "ACCOUNT-A")
+    progress.note_lab_unlocked("unlock_card", caption="Labunlocked", now=999.)
+    progress.note_lab_slots({2: "locked"}, 500, now=1000.)
+    assert not progress.lab_unlock_due(now=1100., wallet_gems=500)
+
+
 def test_lab_visit_applies_saved_repeat_preference_when_bot_starts_are_off(tmp_path: Path) -> None:
     progress = worker(tmp_path)
     route = RouteDocument.compatibility().to_dict()
@@ -543,6 +568,52 @@ def test_unaffordable_target_skips_visits_until_run_coins_cover_it(tmp_path: Pat
     end_run(progress, 4, 15)
     assert progress.workshop_worthwhile()
     assert progress.shopping_policy(base).workshop
+
+
+def test_workshop_not_worthwhile_when_only_lab_savings_cover_the_price(tmp_path: Path) -> None:
+    # Wallet 210 (80 read + 130 run payout) covers the 120 price, but 100 is held for labs.
+    progress = worker_without_verified_utility_debits(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    end_run(progress, 1, 130)
+    progress._route_jar = 100
+    assert progress.workshop_worthwhile() is False
+
+
+def test_workshop_worthwhile_when_spendable_covers_the_price(tmp_path: Path) -> None:
+    progress = worker_without_verified_utility_debits(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    end_run(progress, 1, 130)
+    progress._route_jar = 5
+    assert progress.workshop_worthwhile() is True
+    progress._route_jar = 90
+    assert progress.workshop_worthwhile() is True
+    progress._route_jar = 91
+    assert progress.workshop_worthwhile() is False
+
+
+def test_workshop_skip_for_lab_savings_names_the_coins_above_them(tmp_path: Path) -> None:
+    progress = worker_without_verified_utility_debits(tmp_path)
+    progress.observe_price("damage", 80, 120)
+    end_run(progress, 1, 130)
+    progress._route_jar = 100
+    assert not progress.workshop_worthwhile()
+    assert "110 coins above lab savings" in progress._last_skip_note
+
+
+def test_unknown_balance_still_detours_regardless_of_the_jar(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", None, 120)
+    progress._route_jar = 1_000_000
+    assert progress.workshop_worthwhile(detour=True)
+
+
+def test_unknown_price_still_detours_when_coins_sit_above_the_jar(tmp_path: Path) -> None:
+    progress = worker(tmp_path)
+    progress.observe_price("damage", 80, None)
+    progress._route_jar = 10
+    assert progress.workshop_worthwhile(detour=True)
+    progress._route_jar = 80
+    assert not progress.workshop_worthwhile(detour=True)
 
 
 def test_a_menu_balance_reanchors_the_wallet_after_a_lost_run_payout(tmp_path: Path) -> None:

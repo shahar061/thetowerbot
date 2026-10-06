@@ -106,7 +106,7 @@ def test_reroll_lab_check_arms_before_workshop(bot_on_main_menu) -> None:
     progress = Mock()
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     progress.lab_visit_options.return_value = LabVisitOptions()
     progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress
@@ -128,7 +128,7 @@ def test_confirmed_lab_dot_arms_visit_before_periodic_lab_due() -> None:
     progress = Mock()
     progress.shopping_policy.return_value = a_policy(enabled=False)
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = False
+    progress.lab_unlock_due.return_value = False
     progress.lab_visit_options.return_value = LabVisitOptions(start_research=False)
     progress.initial_workshop_due.return_value = False
     bot.reroll_progress = progress
@@ -141,7 +141,96 @@ def test_confirmed_lab_dot_arms_visit_before_periodic_lab_due() -> None:
     bot.run_once()
     assert bot.lab_visit.active
     assert bot._notifications.snapshot()["kinds"]["labs"]["in_flight"]
-    progress.lab_due.assert_called_once()
+    progress.lab_unlock_due.assert_called_once()
+
+
+def _due_lab_bot():
+    from tests.conftest import _shopping_bot
+
+    bot = _shopping_bot("menu_main_labs_unlocked", state=tower_bot.screens.ScreenState.MAIN_MENU,
+                        policy=a_policy(), auto_navigate=True)
+    progress = Mock()
+    progress.shopping_policy.return_value = a_policy()
+    progress.stats_due.return_value = False
+    progress.lab_unlock_due.return_value = False
+    progress.lab_visit_options.return_value = LabVisitOptions()
+    progress.initial_workshop_due.return_value = False
+    bot.reroll_progress = progress
+    bot.lab_visit = LabVisit(bot.templates)
+    return bot
+
+
+def test_due_lab_arms_before_an_owed_claim_and_the_workshop() -> None:
+    bot = _due_lab_bot()
+    bot._lab_start_due = lambda now: True
+    offered: list[str] = []
+    bot._offer_claim = lambda settings: offered.append("claim") or "missions"
+    armed: list[bool] = []
+    bot._request_planned_lab_visit = lambda now, due: armed.append(due) or True
+
+    bot.run_once()
+
+    assert armed == [True]
+    assert offered == []  # the claim waits for the next frame
+    assert not bot.shopping.visit_in_progress
+
+
+def test_a_latched_game_over_lab_detour_arms_before_an_owed_claim() -> None:
+    """GAME_OVER spent the paced lab check on the detour: the latch, not a
+    second due probe, puts the lab visit ahead of the claim on the menu."""
+    bot = _due_lab_bot()
+    bot._lab_start_due = lambda now: False
+    bot._lab_home_pending = True
+    offered: list[str] = []
+    bot._offer_claim = lambda settings: offered.append("claim") or "missions"
+    armed: list[bool] = []
+    bot._request_planned_lab_visit = lambda now, due: armed.append(due) or True
+
+    bot.run_once()
+
+    assert armed == [True]
+    assert offered == []
+
+
+def test_claim_still_arms_when_no_lab_is_due() -> None:
+    bot = _due_lab_bot()
+    bot._lab_start_due = lambda now: False
+    offered: list[str] = []
+    bot._offer_claim = lambda settings: offered.append("claim") or "missions"
+    armed: list[bool] = []
+    bot._request_planned_lab_visit = lambda now, due: armed.append(due) or True
+
+    bot.run_once()
+
+    assert offered == ["claim"]
+    assert armed == []
+
+
+def test_unarmed_claim_still_tries_the_non_due_lab_visit_before_the_workshop() -> None:
+    bot = _due_lab_bot()
+    bot._lab_start_due = lambda now: False
+    bot._offer_claim = lambda settings: None
+    armed: list[bool] = []
+    bot._request_planned_lab_visit = lambda now, due: armed.append(due) or True
+
+    bot.run_once()
+
+    assert armed == [False]
+    assert not bot.shopping.visit_in_progress
+
+
+def test_due_lab_that_does_not_arm_falls_back_to_the_claim_and_probes_start_once() -> None:
+    bot = _due_lab_bot()
+    probes: list[float] = []
+    bot._lab_start_due = lambda now: probes.append(now) or True
+    offered: list[str] = []
+    bot._offer_claim = lambda settings: offered.append("claim") or "missions"
+    bot._request_planned_lab_visit = lambda now, due: False
+
+    bot.run_once()
+
+    assert offered == ["claim"]
+    assert len(probes) == 1
 
 
 def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu) -> None:
@@ -155,7 +244,7 @@ def test_reroll_lab_check_arms_with_the_route_computed_options(bot_on_main_menu)
     progress = Mock()
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     options = LabVisitOptions(start_research=False, keep_gems=50)
     progress.lab_visit_options.return_value = options
     progress.initial_workshop_due.return_value = False
@@ -176,7 +265,7 @@ def test_reroll_does_not_open_labs_without_a_visible_unlocked_tab(bot_on_main_me
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.initial_workshop_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
 
@@ -185,7 +274,7 @@ def test_reroll_does_not_open_labs_without_a_visible_unlocked_tab(bot_on_main_me
     assert not bot.lab_visit.active
     progress.note_lab_unlocked.assert_not_called()
     progress.note_lab_locked.assert_called_once_with("labs_tab")
-    progress.lab_due.assert_not_called()
+    progress.lab_unlock_due.assert_not_called()
 
 
 def test_reroll_does_not_open_labs_when_the_tab_is_unreadable(bot_on_main_menu) -> None:
@@ -195,7 +284,7 @@ def test_reroll_does_not_open_labs_when_the_tab_is_unreadable(bot_on_main_menu) 
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
     progress.initial_workshop_due.return_value = False
-    progress.lab_due.return_value = True
+    progress.lab_unlock_due.return_value = True
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
 
@@ -204,7 +293,7 @@ def test_reroll_does_not_open_labs_when_the_tab_is_unreadable(bot_on_main_menu) 
     assert not bot.lab_visit.active
     progress.note_lab_unlocked.assert_not_called()
     progress.note_lab_locked.assert_not_called()
-    progress.lab_due.assert_not_called()
+    progress.lab_unlock_due.assert_not_called()
 
 
 def test_reroll_workshop_resumes_when_lab_check_not_due(bot_on_main_menu) -> None:
@@ -212,7 +301,7 @@ def test_reroll_workshop_resumes_when_lab_check_not_due(bot_on_main_menu) -> Non
     progress = Mock()
     progress.shopping_policy.return_value = a_policy()
     progress.stats_due.return_value = False
-    progress.lab_due.return_value = False
+    progress.lab_unlock_due.return_value = False
     bot.reroll_progress = progress
     bot.lab_visit = LabVisit(bot.templates)
 

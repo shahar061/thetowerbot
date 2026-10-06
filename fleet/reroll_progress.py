@@ -145,21 +145,25 @@ class RerollProgress:
                            self.account_id, exc)
             return RouteRules()
 
+    def lab_unlock_due(self, now: float | None = None, *, wallet_gems: int | None = None) -> bool:
+        """Whether the next lab slot is worth a gem-purchase visit."""
+        moment = time.time() if now is None else now
+        if not self.lab_unlocked() or self.lab_cadence.backing_off(moment):
+            return False
+        rules = self.resource_rules()
+        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
+        price = lab_catalog.lab_slot_gems(slot) if slot is not None else None
+        return price is not None and self.lab_cadence.slot_due(slot, moment, wallet_gems,
+                                                                min_gems=price + rules.gems.keep)
+
     def lab_due(self, now: float | None = None, *,
                 wallet_coins: int | None = None,
                 wallet_gems: int | None = None) -> bool:
         moment = time.time() if now is None else now
         if not self.lab_unlocked() or self.lab_cadence.backing_off(moment):
             return False
-        rules = self.resource_rules()
-        unlock = False
-        slot = self.next_unlock_slot() if rules.gems.auto_unlock_lab_slots else None
-        price = lab_catalog.lab_slot_gems(slot) if slot is not None else None
-        if price is not None:
-            unlock = self.lab_cadence.slot_due(slot, moment, wallet_gems,
-                                               min_gems=price + rules.gems.keep)
-        research = rules.labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
-        return unlock or research
+        research = self.resource_rules().labs.auto_start and self.lab_cadence.due(moment, wallet_coins)
+        return self.lab_unlock_due(moment, wallet_gems=wallet_gems) or research
 
     def lab_visit_options(self) -> LabVisitOptions:
         rules = self.resource_rules()
@@ -1009,18 +1013,26 @@ class RerollProgress:
                                             "estimated from run payouts)")
         else:
             plan = self.decision()
+        # Coins held back for labs (the jar) are not the Workshop's to spend;
+        # only what sits above them can buy the planned row.
+        spendable = (None if plan.wallet_coins is None else
+                     coin_share.spendable_wallet(plan.wallet_coins, getattr(self, "_route_jar", 0) or 0))
         worthwhile = (plan.upgrade_id is not None and
-                      (plan.wallet_coins is None or plan.wallet_coins > 0) and
-                      (plan.price is None or plan.wallet_coins is None or plan.wallet_coins >= plan.price))
-        if detour and worthwhile and (plan.price is None or plan.wallet_coins is None):
+                      (spendable is None or spendable > 0) and
+                      (plan.price is None or spendable is None or spendable >= plan.price))
+        if detour and worthwhile and (plan.price is None or spendable is None):
             worthwhile = self._unknown_detour_due(plan.upgrade_id)
         note = (None if worthwhile else
                 f"workshop skipped: {plan.item} price or balance still unread; next read within "
-                f"{UNKNOWN_PLAN_DETOUR_RUNS} runs" if plan.price is None or plan.wallet_coins is None else
-                f"workshop skipped: {plan.wallet_coins} coins; {plan.item} needs {plan.price}")
+                f"{UNKNOWN_PLAN_DETOUR_RUNS} runs" if plan.price is None or spendable is None else
+                f"workshop skipped: {spendable} coins above lab savings; {plan.item} needs {plan.price}")
         if note is not None and note != self._last_skip_note:
             RerollJournal(self.root.parent.parent).append(
                 instance=self.root.name, level="info", kind="workshop_skip", message=note)
+            if spendable is not None and plan.price is not None:
+                # Same rate limit as the journal line: once per changed note.
+                logger.info("Skipping the Workshop: %s coins above lab savings, cheapest planned %s",
+                            spendable, plan.price)
             if publish_estimate:
                 self._publish(plan)
         self._last_skip_note = note

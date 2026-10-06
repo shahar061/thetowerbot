@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+import config
 import screens
 from strategy import Shopping
 from tests.conftest import _shopping_bot
@@ -50,12 +51,13 @@ def test_the_guard_holds_at_first_because_a_walk_may_be_about_to_arm():
     assert bot.device.taps == []
 
 
-def test_a_held_page_with_nothing_walking_eventually_lets_navigation_recover():
+def test_a_held_page_with_nothing_walking_eventually_lets_navigation_recover(scan_clock):
     # The actual bug. Without a floor this loop taps nothing, forever.
     bot = stuck_bot()
 
     for _ in range(15):
         bot.run_once()
+        scan_clock.advance(2.0)
 
     assert bot.device.taps, (
         "the guard held every action for 15 scans with no transaction armed - "
@@ -66,6 +68,31 @@ def test_a_held_page_with_nothing_walking_eventually_lets_navigation_recover():
     # recovery that taps a random point is not a recovery.
     x, y = bot.device.taps[0]
     assert 800 <= x <= 990 and 230 <= y <= 350, f"tapped {x},{y}, not SKIP"
+
+
+def test_fast_scans_hitting_the_scan_limit_do_not_release_the_hold_early(scan_clock):
+    # Between games scans run ~0.6 s apart, so the scan count alone would
+    # release the hold in a few seconds. The limit also needs its wall time.
+    bot = stuck_bot()
+
+    for _ in range(config.HELD_PAGE_SCAN_LIMIT + 5):
+        bot.run_once()
+        scan_clock.advance(0.6)
+
+    assert bot.device.taps == []
+
+
+def test_the_hold_releases_once_the_scan_limit_and_the_minimum_seconds_both_hold(scan_clock):
+    bot = stuck_bot()
+
+    for _ in range(config.HELD_PAGE_SCAN_LIMIT + 5):
+        bot.run_once()
+        scan_clock.advance(0.6)
+    assert bot.device.taps == []
+    scan_clock.advance(config.HELD_PAGE_MIN_SECONDS)
+    bot.run_once()
+
+    assert bot.device.taps
 
 
 def test_a_reward_modal_is_claimed_before_it_is_skipped():

@@ -227,6 +227,31 @@ def _filler(slot: int, entries: list[Mapping[str, Any]], facts: LabFacts, ctx: S
     return best[1] if best else None
 
 
+def _last_resort(slot: int, entries: list[Mapping[str, Any]], facts: LabFacts, ctx: SlotContext,
+                 elsewhere: set[str], claimed: set[str], wallet: int,
+                 target: SlotNext | None) -> tuple[SlotNext | None, int | None]:
+    """Step 5: the cheapest affordable entry, so an idle slot never waits empty.
+
+    Ties go to the shorter research, then to rank. Returns the pick and the cheapest
+    price seen among eligible entries (for the "nothing affordable" line).
+    """
+    best: tuple[tuple[int, float, int], SlotNext] | None = None
+    cheapest: int | None = None
+    for rank, entry in enumerate(entries):
+        if target is not None and entry["lab_id"] == target.lab_id:
+            continue
+        option, _ = _candidate(entry, slot, facts, ctx, elsewhere, claimed)
+        if option is None:
+            continue
+        cheapest = option.price if cheapest is None else min(cheapest, option.price)
+        if option.price > wallet:
+            continue
+        key = (option.price, float("inf") if option.seconds is None else option.seconds, rank)
+        if best is None or key < best[0]:
+            best = (key, option)
+    return (best[1] if best else None), cheapest
+
+
 def _evaluate_slots(route: Any, facts: LabFacts,
                     ctx: SlotContext) -> tuple[list[SlotPlan], list[SlotSaving], int | None]:
     """Each owned slot's plan, the targets the saving plan must fund, and the wallet left
@@ -273,9 +298,17 @@ def _evaluate_slots(route: Any, facts: LabFacts,
                                  rate, rules.labs.filler)
                 if filler is None:
                     why.append("No filler fits the price cap and the gap")
+                    filler, cheapest = _last_resort(slot, entries, facts, ctx, elsewhere, claimed,
+                                                    wallet, target)
+                    if filler is not None:
+                        why.append("last-resort filler: keeps the slot busy")
+                    elif cheapest is not None:
+                        why.append(f"Nothing affordable: cheapest is {cheapest:,} coins")
+                    else:
+                        why.append("Nothing affordable: no eligible lab")
             if filler is not None:
                 next_, role, saving_for = filler, "filler", target
-                needed_at = facts.now + filler.seconds
+                needed_at = facts.now + (filler.seconds or 0)
                 why.append(f"Filler {filler.name} L{filler.level} while saving"
                            + (f" for {target.name} L{target.level}" if target else ""))
         starts_now = idle and next_ is not None and wallet is not None and next_.price <= wallet

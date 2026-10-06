@@ -110,7 +110,24 @@ def test_picker_has_its_own_bounded_observation_budget(tmp_path: Path, monkeypat
     h.scan('menu_labs_slot1_affordable')
     h.scan('menu_labs_slot1_affordable')
     for _ in range(9):
-        h.scan('menu_labs_slot1_affordable')
+        h.scan('menu_labs_slot1_affordable', step=2.)
+    assert h.visit._outcome.reason == 'picker_stage_timeout'
+    assert h.journal.open_transactions() == ()
+
+
+def test_fast_picker_scans_wait_for_the_stage_minimum_wall_time(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Between games scans run 0.6 s apart: eight scans alone are not a timeout."""
+    from lab_visit import LAB_STAGE_MIN_SECONDS
+    h = LabHarness(tmp_path, monkeypatch)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    assert h.visit._state == 'picker'
+    started = h.time + .5
+    for _ in range(12):
+        h.scan('menu_labs_slot1_affordable', step=.5)
+    assert h.visit.active and h.visit._outcome is None
+    h.scan('menu_labs_slot1_affordable', step=started + LAB_STAGE_MIN_SECONDS - h.time)
     assert h.visit._outcome.reason == 'picker_stage_timeout'
     assert h.journal.open_transactions() == ()
 
@@ -121,7 +138,7 @@ def test_unlock_needs_a_rollout_record_and_a_worker() -> None:
     visit.request(LabVisitOptions(unlock_slots=(2,)))
     home = lab_screen.LabHomeReading(True, 'idle', None, None, gem_balance=150,
         next_locked=lab_screen.LockedSlot(2, 100, (586, 906), (0, 654, 1080, 396)))
-    assert not visit._unlock_slot(home, frame('menu_labs_slot1_idle'), Device())
+    assert not visit._unlock_slot(home, frame('menu_labs_slot1_idle'), Device(), 0.)
     assert not gem_automated({'type': 'unlock_lab_slot', 'slot': 2})
 
 
@@ -203,3 +220,245 @@ def test_offline_general_executor_binds_the_selected_slot_research_and_account(t
 @pytest.mark.parametrize('text', ['Game Speed Lv.1', 'GameSpeed Lv.1', 'Game  Speed Lv.1', 'game speed Lv.1'])
 def test_research_identity_tolerates_ocr_spacing_like_the_legacy_filter(text: str) -> None:
     assert lab_screen._research_identity(text) == 'labs.game-speed'
+
+
+def test_direct_start_visit_replans_after_a_proven_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    planned: list[LabAction | None] = [action(), None]
+    calls: list[float] = []
+    h.visit.plan_action = lambda at: calls.append(at) or (planned.pop(0) if planned else None)
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.confirmation()
+    h.scan('menu_labs_game_speed_confirmation')
+    assert len(h.journal.open_transactions()) == 1
+    h.scan('menu_labs_game_speed_running')   # still pending
+    assert h.visit._state == 'confirm'
+    h.scan('menu_labs_game_speed_running')   # the journal proves the start
+    assert h.journal.open_transactions() == ()
+    # Proven: instead of returning to battle, the visit is back on the slot strip.
+    assert h.visit.active and h.visit._state == 'home'
+    assert h.visit._outcome.status == 'started' and h.visit._outcome.started_slots == (1,)
+    assert h.visit.selected_action is None and h.visit.pending_action is None
+    planned_before = len(calls)
+    # The planner is asked again on the next fresh strip; it has nothing more,
+    # so the visit returns with the accumulated result.
+    h.scan('menu_labs_game_speed_running')
+    assert len(calls) == planned_before + 1
+    assert h.visit._state == 'return'
+    h.scan('menu_labs_game_speed_running')
+    h.time += 1
+    result = h.visit.advance(frame('menu_main_labs_unlocked'), (), h.device, h.time,
+                             observed_at=h.time, capture_scope=h.scope)
+    assert not h.visit.active
+    assert result is not None and result.status == 'started'
+    assert result.reason == 'game_speed_confirmed' and result.started_slots == (1,)
+    point = lab_screen.read_confirmation(frame('menu_labs_game_speed_confirmation'),
+                                         boxes('menu_labs_game_speed_confirmation')).research_point
+    assert h.device.taps.count(point) == 1
+
+
+def test_without_direct_start_a_proven_start_still_returns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    assert h.visit.request(action(), options=LabVisitOptions())
+    h.confirmation()
+    h.scan('menu_labs_game_speed_confirmation')
+    for _ in range(3):
+        h.scan('menu_labs_game_speed_running')
+    assert h.visit._state == 'return'
+    assert h.visit._outcome.started_slots == (1,)
+
+
+def test_second_start_waits_for_first_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    calls: list[float] = []
+    h.visit.plan_action = lambda at: calls.append(at) or action()
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.confirmation()
+    h.scan('menu_labs_game_speed_confirmation')
+    planned_before_proof = len(calls)
+    h.scan('menu_labs_game_speed_running')   # first post-tap scan: still pending
+    h.scan('menu_labs_game_speed_running', same_capture=True)
+    assert len(calls) == planned_before_proof
+    assert len(h.journal.open_transactions()) == 1
+    assert h.visit.selected_action == action()
+
+
+def test_started_slots_accumulate_in_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'research_confirmed', LabDecision('start', slot=3)))
+    assert h.visit._state == 'home' and h.visit._outcome.started_slots == (3,)
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed', LabDecision('start', slot=1)))
+    assert h.visit._state == 'home'
+    assert h.visit._outcome.started_slots == (3, 1)
+    assert h.visit._outcome.reason == 'game_speed_confirmed'
+
+
+def test_a_replanned_visit_reports_it_and_every_started_research(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'research_confirmed',
+                                       LabDecision('start', slot=3, research_id='labs.health')))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed',
+                                       LabDecision('start', slot=1, research_id='labs.game-speed')))
+    assert h.visit._outcome.replanned
+    assert h.visit._outcome.started_research == ('labs.health', 'labs.game-speed')
+    # The re-planned strip had nothing more: the ending attempt keeps both.
+    h.visit._end_attempt(LabVisitResult('observed', 'wait_running', LabDecision('wait_running')))
+    assert h.visit._outcome.replanned and h.visit._outcome.started_research == ('labs.health', 'labs.game-speed')
+
+
+def test_a_visit_that_returns_after_its_start_has_not_replanned(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    assert h.visit.request(action(), options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed',
+                                       LabDecision('start', slot=1, research_id='labs.game-speed')))
+    assert h.visit._state == 'return'
+    assert not h.visit._outcome.replanned
+    assert h.visit._outcome.started_research == ('labs.game-speed',)
+
+
+def test_each_proven_start_extends_the_visit_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    planned: list[LabAction | None] = [action()]
+    h.visit.plan_action = lambda at: planned.pop(0) if planned else None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.confirmation()
+    h.scan('menu_labs_game_speed_confirmation')
+    for _ in range(2):
+        h.scan('menu_labs_game_speed_running')
+    assert h.visit._state == 'home'
+    h.visit._scans = 48    # the single-start scan cap is spent
+    h.scan('menu_labs_game_speed_running')
+    assert h.visit.active and h.visit._state == 'return'
+
+
+def test_no_next_start_where_the_planner_hook_cannot_replan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True, native_repeat='on'))
+    h.visit._next_start(LabVisitResult('started', 'research_confirmed', LabDecision('start', slot=2)))
+    assert h.visit._state == 'return' and h.visit._outcome.started_slots == (2,)
+
+
+def test_a_later_attempt_rides_on_the_kept_started_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed', LabDecision('start', slot=1)))
+    later = LabVisitResult('observed', 'research_unavailable', LabDecision('unknown', slot=2))
+    h.visit._end_attempt(later)
+    assert h.visit._state == 'return'
+    assert h.visit._outcome.status == 'started' and h.visit._outcome.started_slots == (1,)
+    assert h.visit._outcome.attempt == later
+
+
+def scrolled_picker(h: LabHarness, monkeypatch: pytest.MonkeyPatch, *, scrolls_back: bool = True) -> list[tuple]:
+    """The game kept the picker scrolled down: Game Speed is off the page until an up swipe."""
+    import lab_visit
+    real, scrolled, swipes = lab_screen.read_picker_page, [True], []
+
+    def read(screen: object, text: tuple) -> lab_screen.PickerPage:
+        page = real(screen, text)
+        if not scrolled[0] or not page.open:
+            return page
+        return replace(page, cards=tuple(c for c in page.cards if c.lab_id != 'labs.game-speed'))
+
+    def swipe(x1: int, y1: int, x2: int, y2: int, seconds: float) -> None:
+        swipes.append((x1, y1, x2, y2))
+        if scrolls_back and y2 > y1:
+            scrolled[0] = False
+
+    monkeypatch.setattr(lab_screen, 'read_picker_page', read)
+    monkeypatch.setattr(lab_visit, 'read_picker_page', read)
+    h.device.swipe = swipe
+    return swipes
+
+
+@pytest.mark.parametrize('selected', [action(), None])
+def test_a_scrolled_picker_swipes_up_to_game_speed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                   selected: LabAction | None) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.request(selected, options=LabVisitOptions())
+    swipes = scrolled_picker(h, monkeypatch)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    for _ in range(12):
+        h.scan('menu_labs_game_speed_affordable')
+        assert h.visit._outcome is None or h.visit._outcome.reason != 'picker_stage_timeout'
+        if h.visit._state == 'dialog':
+            break
+    assert swipes and swipes[0][3] > swipes[0][1]  # the first swipe scrolls toward the top
+    assert h.visit._state == 'dialog'
+
+
+def test_a_game_speed_card_never_found_ends_research_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.request(action(), options=LabVisitOptions())
+    swipes = scrolled_picker(h, monkeypatch, scrolls_back=False)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    for _ in range(12):
+        h.scan('menu_labs_game_speed_affordable')
+    assert swipes
+    assert h.visit._outcome.reason == 'research_not_found'
+
+
+def test_a_picker_timeout_saves_its_frames_and_logs_why_once(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.request(action(), options=LabVisitOptions())
+    h.visit.evidence_dir = tmp_path / 'evidence'
+    h.visit.picker_reader = lambda screen, text: lab_screen.LabPickerReading(True, None, None, None)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    with caplog.at_level('INFO', logger='lab_visit'):
+        for _ in range(9):
+            h.scan('menu_labs_game_speed_affordable', step=2.)
+    assert h.visit._outcome.reason == 'picker_stage_timeout'
+    saved = sorted(p.name for p in (tmp_path / 'evidence').iterdir())
+    assert saved and all(name.startswith('lab-picker-timeout-labs.game-speed-') for name in saved)
+    assert caplog.text.count('read unknown') == 1
+
+
+def test_a_picker_timeout_after_a_proven_start_rides_on_the_started_result(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed', LabDecision('start', slot=1)))
+    h.visit._state = 'picker'
+    h.visit.picker_reader = lambda screen, text: lab_screen.LabPickerReading(True, None, None, None)
+    for _ in range(9):
+        h.scan('menu_labs_game_speed_affordable', step=2.)
+    assert h.visit._outcome.status == 'started' and h.visit._outcome.started_slots == (1,)
+    assert h.visit._outcome.attempt.reason == 'picker_stage_timeout'

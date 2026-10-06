@@ -154,7 +154,7 @@ def test_pausing_the_bot_ends_a_visit_in_flight(bot: Any, monkeypatch) -> None:
 
 
 def test_recovery_that_keeps_blocking_ends_the_cards_visit(
-        bot: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        bot: Any, monkeypatch: pytest.MonkeyPatch, scan_clock: Any) -> None:
     """Recovery returns before the visit can spend its own wait budget."""
     from supervisor import RecoveryState
 
@@ -170,6 +170,7 @@ def test_recovery_that_keeps_blocking_ends_the_cards_visit(
     assert bot.cards_intro.request()
     for _ in range(config.RECOVERY_BLOCKED_WALK_LIMIT):
         bot.run_once()
+        scan_clock.advance(2.0)
     assert bot.cards_intro.active
 
     bot.run_once()
@@ -178,6 +179,33 @@ def test_recovery_that_keeps_blocking_ends_the_cards_visit(
     assert result['status'] == 'failed'
     assert result['reason'] == 'recovery_blocked'
     assert bot.device.taps == []
+
+
+def test_fast_blocked_scans_do_not_end_the_cards_visit_before_the_minimum_seconds(
+        bot: Any, monkeypatch: pytest.MonkeyPatch, scan_clock: Any) -> None:
+    """Between games scans are ~0.6 s apart; the scan count alone would end
+    the walk in a fraction of its intended minute."""
+    from supervisor import RecoveryState
+
+    class AlwaysBlocks:
+        current_account = 'account-a'
+
+        def observe(self, **evidence: Any) -> RecoveryState:
+            return RecoveryState.BLOCKED
+
+    bot.supervisor = AlwaysBlocks()
+    bot._screen = image('menu_main')
+    monkeypatch.setattr(ocr, 'read', lambda *args, **kwargs: ())
+    assert bot.cards_intro.request()
+    for _ in range(config.RECOVERY_BLOCKED_WALK_LIMIT + 5):
+        bot.run_once()
+        scan_clock.advance(0.6)
+    assert bot.cards_intro.active
+
+    scan_clock.advance(config.RECOVERY_BLOCKED_WALK_MIN_SECONDS)
+    bot.run_once()
+
+    assert bot.cards_intro.snapshot()['result']['reason'] == 'recovery_blocked'
 
 
 # --- the popup detector ---------------------------------------------------

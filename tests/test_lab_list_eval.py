@@ -271,7 +271,9 @@ def test_filler_over_price_cap_is_refused() -> None:
                                     "labs.coins-wave": 9, "labs.coins-kill-bonus": 29})
     assert result.slots[0].role == "target" and result.slots[0].next.lab_id == "labs.game-speed"
     assert result.slots[0].covered is False
-    assert result.slots[0].why[-1] == "No filler fits the price cap and the gap"
+    # Step 4 refuses; step 5 finds nothing within the 5,000 wallet (cheapest eligible is Coins/Wave L10).
+    assert "No filler fits the price cap and the gap" in result.slots[0].why
+    assert result.slots[0].why[-1] == "Nothing affordable: cheapest is 6,180 coins"
 
 
 def test_filler_longer_than_gap_is_refused() -> None:
@@ -285,8 +287,12 @@ def test_filler_longer_than_gap_is_refused() -> None:
     assert slow.slots[0].role == "filler" and slow.slots[0].next.level == 7
     fast = plan(Route(entries, FILLER_RULES), wallet_coins=49_000, available_coins=49_000,
                 coins_per_hour=10_000_000.0, completed_levels=levels)
-    assert fast.slots[0].role == "target" and fast.slots[0].next.lab_id == "labs.game-speed"
-    assert fast.slots[0].why[-1] == "No filler fits the price cap and the gap"
+    # Step 4 refuses the 1.9h filler (gap collapses to 1h), but step 5 still runs it rather than idle.
+    assert "No filler fits the price cap and the gap" in fast.slots[0].why
+    assert fast.slots[0].role == "filler" and fast.slots[0].covered is True
+    assert (fast.slots[0].next.lab_id, fast.slots[0].next.level) == ("labs.coins-kill-bonus", 7)
+    assert fast.slots[0].saving_for.lab_id == "labs.game-speed"
+    assert "last-resort filler: keeps the slot busy" in fast.slots[0].why
 
 
 def test_unknown_income_caps_filler_at_min_hours() -> None:
@@ -298,7 +304,10 @@ def test_unknown_income_caps_filler_at_min_hours() -> None:
     assert known.slots[0].role == "filler" and known.slots[0].next.level == 6
     unknown = plan(Route(entries, FILLER_RULES), wallet_coins=20_000, available_coins=20_000,
                    coins_per_hour=None, completed_levels=levels)
-    assert unknown.slots[0].role == "target" and unknown.slots[0].next.lab_id == "labs.game-speed"
+    # Step 4 refuses it (over the 1h min_hours); step 5 starts it anyway so the slot is not idle.
+    assert "No filler fits the price cap and the gap" in unknown.slots[0].why
+    assert unknown.slots[0].role == "filler" and unknown.slots[0].next.level == 6
+    assert "last-resort filler: keeps the slot busy" in unknown.slots[0].why
     # A filler within min_hours still runs: Coins/Wave L3 takes 960 s.
     short = plan(Route(rules=FILLER_RULES), wallet_coins=20_000, available_coins=20_000, coins_per_hour=None)
     assert short.slots[0].role == "filler" and short.slots[0].next.seconds == 960
@@ -311,8 +320,9 @@ def test_slot_without_a_target_says_no_filler_fits() -> None:
     plans, savings, _ = evaluate(Route(entries, FILLER_RULES), wallet_coins=2_000, available_coins=2_000,
                                  completed_levels={"labs.game-speed": 7, "labs.coins-wave": 9})
     assert plans[0].next is None and plans[0].covered is None
-    assert plans[0].why[-2].startswith("No entry can run now")
-    assert plans[0].why[-1] == "No filler fits the price cap and the gap"
+    assert plans[0].why[-3].startswith("No entry can run now")
+    assert plans[0].why[-2] == "No filler fits the price cap and the gap"
+    assert plans[0].why[-1] == "Nothing affordable: cheapest is 6,180 coins"
     assert savings == []
 
 
@@ -390,3 +400,46 @@ def test_stale_revision_never_lowers_the_slot1_game_speed_reading() -> None:
     # A stale revision can't resurrect the pin for a Game Speed the slot-1 record reads as maxed.
     maxed = plan(slot1={**record, "kind": "done"}, completed_levels=stale)
     assert maxed.slots[0].next is None or maxed.slots[0].next.lab_id != "labs.game-speed"
+
+
+def test_last_resort_filler_takes_cheapest_affordable_when_no_filler_fits() -> None:
+    # Wallet 49,000: Game Speed L4 (50,000) is unaffordable. The 10% cap is 4,900, but every
+    # capped entry is longer than the 0.25 h (900 s) gap, so step 4 finds nothing. Step 5 must pick the
+    # cheapest affordable entry instead of leaving slot 1 idle.
+    rules = {"coins": {"lab_share": {"mode": "just_in_time", "pct": 25}},
+             "labs": {"filler": {"enabled": True, "max_price_pct_of_wallet": 10, "min_hours": 0.25}}}
+    plans, savings, _ = evaluate(Route(rules=rules), wallet_coins=49_000, available_coins=49_000,
+                                 coins_per_hour=10_000_000.0)
+    slot1 = plans[0]
+    assert slot1.role == "filler" and slot1.covered is True
+    assert slot1.saving_for is not None and slot1.saving_for.lab_id == "labs.game-speed"
+    assert "last-resort filler: keeps the slot busy" in slot1.why
+    # The rule: cheapest price, then shortest research, then rank. Computed from the catalog.
+    candidates = [(lab_catalog.level(lab, lvl + 1).coins, lab_catalog.level(lab, lvl + 1).seconds, rank, lab)
+                  for rank, (lab, lvl) in enumerate((("labs.labs-speed", 10), ("labs.coins-wave", 2),
+                                                     ("labs.coins-kill-bonus", 5)))]
+    expected = min(c for c in candidates if c[0] <= 49_000)
+    assert slot1.next.lab_id == expected[3] and slot1.next.price == expected[0]
+    assert any(s.slot == 1 and s.target.lab_id == "labs.game-speed" for s in savings)
+
+
+def test_last_resort_reports_cheapest_price_when_nothing_affordable() -> None:
+    # Game Speed is maxed and the 100-coin wallet buys nothing on the list.
+    plans, _, _ = evaluate(Route(rules=FILLER_RULES), wallet_coins=100, available_coins=100,
+                           completed_levels={"labs.game-speed": 7, "labs.labs-speed": 10,
+                                             "labs.coins-wave": 9, "labs.coins-kill-bonus": 5})
+    slot1 = plans[0]
+    assert slot1.covered is not True
+    assert any(line.startswith("Nothing affordable: cheapest is ") for line in slot1.why)
+
+
+def test_last_resort_needs_a_read_wallet() -> None:
+    plans, _, _ = evaluate(Route(rules=FILLER_RULES), wallet_coins=None, available_coins=None)
+    assert all("last-resort filler: keeps the slot busy" not in p.why for p in plans)
+
+
+def test_last_resort_respects_fillers_off() -> None:
+    rules = {"coins": {"lab_share": {"mode": "just_in_time", "pct": 25}},
+             "labs": {"filler": {"enabled": False}}}
+    plans, _, _ = evaluate(Route(rules=rules), wallet_coins=49_000, available_coins=49_000)
+    assert plans[0].covered is False and "Fillers off" in plans[0].why

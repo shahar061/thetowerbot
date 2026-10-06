@@ -161,8 +161,15 @@ def test_reroll_game_over_only_goes_home_when_the_target_may_be_affordable(
         def stats_due(self):
             return False
 
-        def lab_due(self):
+        def lab_due(self, *args, **kwargs):
             return False
+
+        def lab_unlock_due(self, *args, **kwargs):
+            return False
+
+        def lab_visit_options(self):
+            from lab_plan import LabVisitOptions
+            return LabVisitOptions()
 
     bot = _shopping_bot(
         "game_over", state=screens.ScreenState.GAME_OVER,
@@ -198,6 +205,9 @@ def test_game_over_detours_for_an_idle_direct_start_lab(
         def lab_due(self) -> bool:
             return False
 
+        def lab_unlock_due(self, *args, **kwargs) -> bool:
+            return False
+
         def stats_due(self) -> bool:
             return False
 
@@ -220,6 +230,102 @@ def test_game_over_detours_for_an_idle_direct_start_lab(
     assert bot._lab_followup_due is expected
 
 
+def _due_bot(states, finishes, *, direct_start=False, observed_at=None):
+    from tests.conftest import _shopping_bot
+    from lab_plan import LabVisitOptions
+
+    class Progress:
+        def lab_visit_options(self) -> LabVisitOptions:
+            return LabVisitOptions(direct_start=direct_start)
+
+        def lab_unlocked(self) -> bool:
+            return True
+
+        def lab_due(self, *a, **k) -> bool:
+            return False
+
+        def lab_unlock_due(self, *a, **k) -> bool:
+            return False
+
+        def stats_due(self) -> bool:
+            return False
+
+    bot = _shopping_bot('game_over', state=screens.ScreenState.GAME_OVER,
+                        policy=Shopping(), auto_navigate=True)
+    bot.reroll_progress = Progress()
+    now = time.time()
+    snapshot = SimpleNamespace(
+        slots_owned=len(states), observed_at=now if observed_at is None else observed_at,
+        slots=tuple(SimpleNamespace(state=s, confirmed=True, slot=i, expected_finish=f)
+                    for i, (s, f) in enumerate(zip(states, finishes), 1)))
+    bot.lab_runtime = SimpleNamespace(snapshot=lambda: snapshot)
+    return bot, now
+
+
+def test_lab_start_due_without_direct_start_for_an_idle_slot() -> None:
+    bot, now = _due_bot(('researching', 'idle'), (time.time() + 3600, None))
+    assert bot._lab_start_due(now) is True
+
+
+def test_lab_start_due_false_while_every_slot_runs_with_known_finish() -> None:
+    bot, now = _due_bot(('researching', 'researching'), (time.time() + 3600, time.time() + 7200))
+    assert bot._lab_start_due(now) is False
+
+
+def test_lab_start_due_when_a_timer_has_ended() -> None:
+    bot, now = _due_bot(('researching', 'researching'), (time.time() - 1, time.time() + 7200))
+    assert bot._lab_start_due(now) is True
+
+
+def test_unknown_finish_is_due_once_then_paced() -> None:
+    bot, now = _due_bot(('researching',), (None,))
+    assert bot._lab_start_due(now) is True
+    assert bot._lab_start_due(now + 10) is False
+    assert bot._lab_start_due(now + 301) is True
+
+
+def test_lab_start_due_ignores_wallet() -> None:
+    # No wallet input at all: the answer comes from slot state only.
+    bot, now = _due_bot(('idle',), (None,))
+    assert bot._lab_start_due(now) is True
+
+
+def test_stale_strip_refreshes_after_six_hours_not_five_minutes() -> None:
+    old = time.time() - 600
+    bot, now = _due_bot(('researching',), (time.time() + 86400,), observed_at=old)
+    assert bot._lab_start_due(now) is False
+    bot2, now2 = _due_bot(('researching',), (time.time() + 86400,), observed_at=time.time() - 7 * 3600)
+    assert bot2._lab_start_due(now2) is True
+
+
+def test_lab_start_due_looks_ahead_thirty_seconds() -> None:
+    # Spec 3.5(b): a timer ending within 30 s is due now; one 40 s out is not.
+    bot, now = _due_bot(('researching',), (time.time() + 20,))
+    assert bot._lab_start_due(now) is True
+    bot2, now2 = _due_bot(('researching',), (time.time() + 40,))
+    assert bot2._lab_start_due(now2) is False
+
+
+def test_lab_start_due_without_a_lab_runtime_defers_to_the_legacy_cadence() -> None:
+    bot, now = _due_bot(('idle',), (None,))
+    bot.lab_runtime = None
+    bot.reroll_progress.lab_due = lambda *a, **k: True
+    assert bot._lab_start_due(now) is True
+    bot.reroll_progress.lab_due = lambda *a, **k: False
+    assert bot._lab_start_due(now) is False
+
+
+def test_game_over_lab_detour_survives_a_declined_navigation_pass() -> None:
+    bot, _ = _due_bot(('idle',), (None,))
+    bot._update_maintenance = lambda *args: None
+    asked: list[bool] = []
+    bot.navigator.maybe_navigate = lambda *args, **kwargs: asked.append(kwargs['go_home'])
+    bot.run_once()
+    bot.run_once()  # the 300 s pacing is spent; the latch must carry the detour
+    assert asked == [True, True]
+    assert bot._lab_home_pending is True
+
+
 def test_direct_lab_detour_paces_idle_and_stale_running_checks() -> None:
     from tests.conftest import _shopping_bot
     from lab_plan import LabVisitOptions
@@ -235,11 +341,13 @@ def test_direct_lab_detour_paces_idle_and_stale_running_checks() -> None:
     assert bot._direct_lab_visit_due(1000.)
     assert not bot._direct_lab_visit_due(1001.)
     assert bot._direct_lab_visit_due(1301.)
-    slot.state, slot.expected_finish = 'researching', 5000.
+    slot.state, slot.expected_finish = 'researching', 100_000.
     snapshot.observed_at = 1301.
     assert not bot._direct_lab_visit_due(1302.)
-    assert bot._direct_lab_visit_due(1602.)  # old running proof must be refreshed
-    assert not bot._direct_lab_visit_due(1603.)
+    # Spec 3.5(d): an all-running strip is re-read after 6 h, not every 300 s.
+    assert not bot._direct_lab_visit_due(1602.)
+    assert bot._direct_lab_visit_due(1301. + 6 * 3600.)
+    assert not bot._direct_lab_visit_due(1302. + 6 * 3600.)
 
 # -- Claim cadence in the loop ---------------------------------------------
 def test_a_due_claim_is_armed_from_the_main_menu(bot_on_main_menu: Callable[..., TowerBot]) -> None:
@@ -580,3 +688,120 @@ def test_the_battle_policy_learns_which_tab_is_open(
     monkeypatch.setattr(bot.autopilot, 'step', lambda *args, **kwargs: False)
     bot.run_once()
     assert ('policy', tab) in progress.calls
+
+
+def test_a_paused_scan_is_not_a_between_games_scan(
+    bot_on_main_menu: Callable[..., TowerBot],
+) -> None:
+    """The fast menu profile is for the gap between games, not a paused bot."""
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    bot.run_once()
+    assert bot._last_scan_between_games
+    bot.controls.apply({'paused': True})
+    bot.run_once()
+    assert not bot._last_scan_between_games
+
+
+# --- Home-screen idle watchdog -----------------------------------------------
+
+
+def test_watchdog_taps_battle_after_twenty_idle_seconds(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    # Normal navigation taps nothing (its cooldown); the watchdog's call taps.
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or (
+        "BATTLE" if k.get("cooldown") == 0.0 else None)
+    bot.run_once()
+    assert not any(k.get("cooldown") == 0.0 for k in calls)
+    assert bot._menu_idle_since is not None
+    clock[0] += 21
+    bot.run_once()
+    assert any(k.get("cooldown") == 0.0 and k.get("go_home") is False for k in calls)
+    assert bot._menu_idle_since is None
+
+
+def test_watchdog_never_taps_again_on_a_pass_navigation_tapped(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or None
+    bot.run_once()
+    assert bot._menu_idle_since is not None
+    clock[0] += 21
+    # This pass, ordinary navigation taps BATTLE itself.
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or "BATTLE"
+    calls.clear()
+    bot.run_once()
+    assert len(calls) == 1 and calls[0].get("cooldown") != 0.0
+
+
+def test_watchdog_that_tapped_nothing_keeps_its_idle_clock(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k) or None
+    bot.run_once()
+    idle_since = bot._menu_idle_since
+    clock[0] += 21
+    with caplog.at_level("WARNING", logger="tower_bot"):
+        bot.run_once()
+    assert any(k.get("cooldown") == 0.0 for k in calls)
+    assert bot._menu_idle_since == idle_since
+    assert "between_games_idle_watchdog" not in caplog.text
+
+
+def test_watchdog_quiet_before_the_threshold(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    bot.run_once()
+    clock[0] += 10
+    bot.run_once()
+    assert not any(k.get("cooldown") == 0.0 for k in calls)
+
+
+def test_watchdog_quiet_while_a_visit_is_active(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=True))
+    monkeypatch.setattr(type(bot.shopping), "visit_in_progress", property(lambda self: True))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    bot.run_once()
+    clock[0] += 60
+    bot.run_once()
+    assert bot._menu_idle_since is None
+    assert not calls
+
+
+def test_watchdog_quiet_while_tier_selection_is_active(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    monkeypatch.setattr(bot, "_advance_tier", lambda settings: True)
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    bot.run_once()
+    clock[0] += 60
+    bot.run_once()
+    assert bot._menu_idle_since is None
+    assert not calls
