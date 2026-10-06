@@ -74,6 +74,8 @@ from adbutils import AdbDevice
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from fleet.resource_blocks import LabAction
+
 import claim_schedule
 import config
 import db
@@ -131,6 +133,10 @@ _FAILED_MILESTONES_RETRY_SECONDS = 60.
 # the same (slot, research, level, revision) and slot evidence until this passes.
 LAB_ACTION_BACKOFF_SECONDS = 900.
 LAB_DIRECT_CHECK_SECONDS = 300.
+# A lab the picker failed to find this many times in a row is skipped this long.
+LAB_PICKER_SKIP_SECONDS = 1800.
+LAB_PICKER_FAILURES_TO_SKIP = 2
+_LAB_PICKER_FAILURES = frozenset({'research_not_found', 'picker_stage_timeout'})
 # A strip whose every slot claims to be running is re-read this rarely (spec 3.5 d).
 LAB_STRIP_REFRESH_SECONDS = 6 * 3600.
 # A running lab whose timer ends within this window is treated as already finished (spec 3.5 b).
@@ -255,6 +261,8 @@ class TowerBot:
         # A due lab start already claimed the GAME_OVER detour; held until a visit arms or a run starts.
         self._lab_home_pending: bool = False
         self._lab_unavailable: dict[tuple[str | None, int | None, str], float] = {}
+        # Picker failures in a row per (account, strategy revision, research).
+        self._lab_picker_failures: dict[tuple[str | None, int | None, str], int] = {}
         self._lab_direct_check: tuple[tuple[str | None, int | None], float] | None = None
         self.lab_visit: LabVisit | None = (LabVisit(templates, journal=safety_journal,
             account_state=account_state, slot_observer=self._observe_lab_runtime,
@@ -1597,6 +1605,7 @@ class TowerBot:
             revision = selected.strategy_revision
             self._lab_unavailable[(account_id, revision, selected.research)] = time.time() + LAB_ACTION_BACKOFF_SECONDS
             self._lab_followup_due = True
+        self._count_lab_picker_failure(result, attempt, selected)
         last = self._lab_action_last
         # Direct start fills several slots in one visit: the last planned action
         # may be a later attempt that failed while the result keeps an earlier
@@ -1609,6 +1618,27 @@ class TowerBot:
             if (self.reroll_progress is not None
                     and self.reroll_progress.lab_visit_options().direct_start):
                 self._lab_followup_due = True
+
+    def _count_lab_picker_failure(self, result: Any, attempt: Any, selected: LabAction | None) -> None:
+        """Two picker failures in a row for one lab skip it for 30 min; its start resets the count."""
+        failures = self._lab_picker_failures
+        if result.status == 'started':
+            started_slots = getattr(result, 'started_slots', ())
+            proven = {getattr(result.decision, 'research_id', None)}
+            if selected is not None and (selected.slot in started_slots if started_slots else True):
+                proven.add(selected.research)
+            for key in [key for key in failures if key[2] in proven]:
+                del failures[key]
+        if selected is None or attempt.reason not in _LAB_PICKER_FAILURES:
+            return
+        key = (self._lab_account_id(), selected.strategy_revision, selected.research)
+        failures[key] = failures.get(key, 0) + 1
+        if failures[key] < LAB_PICKER_FAILURES_TO_SKIP:
+            return
+        del failures[key]
+        self._lab_unavailable[key] = time.time() + LAB_PICKER_SKIP_SECONDS
+        self._lab_followup_due = True
+        logger.info("Skipping %s for 30 min after 2 picker failures", selected.research)
 
     def _lab_account_id(self) -> str | None:
         scope = getattr(self.account_state, 'verified_scope', None)

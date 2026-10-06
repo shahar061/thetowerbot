@@ -73,6 +73,7 @@ def bot(planned: LabAction | None, *, plan: Any = None, options: LabVisitOptions
     instance._lab_visit_revision = REVISION
     instance._lab_action_last = None
     instance._lab_unavailable = {}
+    instance._lab_picker_failures = {}
     return instance
 
 
@@ -600,3 +601,73 @@ def test_research_unavailable_after_a_proven_start_still_excludes_that_research(
     key = (b._lab_account_id(), REVISION, 'labs.coins-kill-bonus')
     assert key in b._lab_unavailable
     assert 'labs.coins-kill-bonus' in b._excluded_lab_research(time.time())
+
+
+def picker_failure(reason: str = 'picker_stage_timeout') -> Any:
+    from lab_visit import LabVisitResult
+    return LabVisitResult('failed', reason, LabDecision('unknown'))
+
+
+def picker_bot() -> Any:
+    b = bot(action(), options=LabVisitOptions(direct_start=True))
+    b.lab_visit.selected_action = action()
+    return b
+
+
+def test_two_picker_failures_skip_the_lab_for_thirty_minutes(caplog: pytest.LogCaptureFixture) -> None:
+    b = picker_bot()
+    with caplog.at_level('INFO', logger='tower_bot'):
+        b._settle_planned_lab_attempt(picker_failure('picker_stage_timeout'))
+        b._settle_planned_lab_attempt(picker_failure('research_not_found'))
+    key = (b._lab_account_id(), REVISION, 'labs.game-speed')
+    assert b._lab_unavailable[key] == pytest.approx(time.time() + 1800, abs=5)
+    assert 'labs.game-speed' in b._excluded_lab_research(time.time())
+    assert b._lab_followup_due
+    assert key not in b._lab_picker_failures
+    assert 'Skipping labs.game-speed for 30 min after 2 picker failures' in caplog.text
+
+
+def test_one_picker_failure_does_not_skip() -> None:
+    b = picker_bot()
+    b._settle_planned_lab_attempt(picker_failure('research_not_found'))
+    assert 'labs.game-speed' not in b._excluded_lab_research(time.time())
+
+
+def test_other_failures_are_not_picker_failures() -> None:
+    b = picker_bot()
+    for _ in range(3):
+        b._settle_planned_lab_attempt(picker_failure('home_stage_timeout'))
+    assert not b._lab_unavailable
+
+
+def test_a_picker_failure_after_a_proven_start_still_counts() -> None:
+    from dataclasses import replace
+    b = picker_bot()
+    b.lab_visit.selected_action = action(2, 'labs.attack-speed', 1)
+    started = replace(picker_failure(), status='started', reason='game_speed_confirmed',
+                      decision=decision(), started_slots=(1,), attempt=picker_failure())
+    b._settle_planned_lab_attempt(started)
+    b._settle_planned_lab_attempt(started)
+    assert 'labs.attack-speed' in b._excluded_lab_research(time.time())
+    assert 'labs.game-speed' not in b._excluded_lab_research(time.time())
+
+
+def test_starting_the_lab_resets_its_picker_failures() -> None:
+    from lab_visit import LabVisitResult
+    b = picker_bot()
+    b._settle_planned_lab_attempt(picker_failure())
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'game_speed_confirmed', decision(),
+                                                 started_slots=(1,)))
+    b._settle_planned_lab_attempt(picker_failure())
+    assert 'labs.game-speed' not in b._excluded_lab_research(time.time())
+
+
+def test_another_labs_start_keeps_this_labs_picker_failures() -> None:
+    from lab_visit import LabVisitResult
+    b = picker_bot()
+    b._settle_planned_lab_attempt(picker_failure())
+    # Slot 1 failed earlier; this visit proved slot 3 only.
+    b._settle_planned_lab_attempt(LabVisitResult('started', 'research_confirmed',
+                                                 decision(3, 'labs.health', 1), started_slots=(3,)))
+    b._settle_planned_lab_attempt(picker_failure())
+    assert 'labs.game-speed' in b._excluded_lab_research(time.time())

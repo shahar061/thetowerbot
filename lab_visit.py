@@ -20,7 +20,7 @@ from geometry import anchored_point, supported_frame
 from lab_plan import LabDecision, LabVisitOptions, decide
 from fleet.resource_blocks import LabAction
 from lab_picker import PickerSearch, SWIPE_SECONDS
-from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading, LockedSlot,
+from lab_screen import (LabConfirmationReading, LabHomeReading, LabPickerReading, LockedSlot, PickerCard,
                         read_confirmation, read_gem_unlock_confirmation, read_home, read_picker, read_slots,
                         read_picker_page, read_selected_home, read_selected_picker,
                         read_repeat_controls)
@@ -68,6 +68,17 @@ _UNLOCK_SCANS = 8
 _START_SCANS = 8
 # Picker-search frames kept as a miss's evidence: the first and the last three.
 _SEARCH_FRAMES_KEPT = 4
+
+
+def _picker_unknown_reason(card: PickerCard | None) -> str:
+    """Why a picker frame gave no decision for its research, for the log."""
+    if card is None:
+        return 'card missing'
+    if not card.fully_visible:
+        return 'card clipped'
+    if card.price is None and not card.maxed:
+        return 'price unread'
+    return 'entry unread'
 
 
 def _squash(name: str | None) -> str | None:
@@ -141,6 +152,9 @@ class LabVisit:
         self._rehearsing = False
         self._search: PickerSearch | None = None
         self._search_frames: list[Image] = []
+        # Picker frames of one start (the first and the last three), saved on a stage timeout.
+        self._picker_frames: list[Image] = []
+        self._picker_unknown_logged = False
         self._start_tap: tuple[str, int] | None = None
         self._start_frames: list[Image] = []
         self._start_scans = 0
@@ -200,7 +214,7 @@ class LabVisit:
     # unlock state, options and journal carry over.
     _PER_START_DEFAULTS: ClassVar[dict[str, object]] = {
         'selected_action': None, 'pending_action': None, '_slot': None, '_purchase': None,
-        '_search': None, '_search_frames': [],
+        '_search': None, '_search_frames': [], '_picker_frames': [],
         '_picker_signature': None, '_picker_reads': 0, '_dialog_signature': None, '_dialog_reads': 0,
         '_unavailable_signature': None, '_unavailable_reads': 0, '_picker_name': None,
         '_picker_seconds': None,
@@ -1222,6 +1236,7 @@ class LabVisit:
             return None
         if self._stage_name != self._state:
             self._stage_name, self._stage_scans, self._stage_started = self._state, 0, now
+            self._picker_unknown_logged = False
         self._stage_scans += 1
         searching = self._search is not None
         budget = 6 if self._state == 'return' else 24 if self._state == 'picker' and searching else 8
@@ -1229,8 +1244,14 @@ class LabVisit:
             budget = 32
         repeat_stage = self._options.native_repeat != 'unchanged' and self._state in {'home', 'return'}
         if self._stage_scans > budget or now - self._stage_started > (60 if searching or repeat_stage else 30):
-            outcome = self._outcome or LabVisitResult('failed',
-                f'{self._state}_stage_timeout', LabDecision('unknown'))
+            timeout = LabVisitResult('failed', f'{self._state}_stage_timeout', LabDecision('unknown'))
+            if self._state == 'picker':
+                target = selected.research if selected is not None else 'labs.game-speed'
+                self._save_evidence(f"lab-picker-timeout-{target}", self._capture_at, self._picker_frames)
+            outcome = self._outcome or timeout
+            if self._state != 'return' and outcome.status == 'started':
+                # A start proven earlier in this visit keeps its result; this attempt rides along.
+                outcome = replace(outcome, attempt=timeout)
             if self._state == 'return' or not (home.page or picker.page or confirmation.page):
                 return self._finish(outcome)
             self._return(outcome)
@@ -1296,14 +1317,25 @@ class LabVisit:
         if self._state == "picker":
             if not picker.page or self._slot is None:
                 return None
-            general = selected is not None and selected.research != 'labs.game-speed'
-            if general:
+            self._picker_frames.append(screen)
+            if len(self._picker_frames) > _SEARCH_FRAMES_KEPT:
+                del self._picker_frames[1]
+            target = selected.research if selected is not None else 'labs.game-speed'
+            general = target != 'labs.game-speed'
+            page = read_picker_page(screen, boxes)
+            if self._search is None and not general:
+                # The game keeps the picker's scroll position: a Game Speed card
+                # that is not fully on the page is searched for like any other.
+                card = page.card(target)
+                if page.open and (card is None or not card.fully_visible):
+                    self._search = PickerSearch(target, screen.shape[1])
+            if general or self._search is not None:
                 # Every general selection goes through the search: "found" (the card is
                 # fully inside the list) falls through to the two-read selection below.
                 # A clipped card must scroll, not read as unaffordable.
                 if self._search is None:
-                    self._search = PickerSearch(selected.research, screen.shape[1])
-                step = self._search.step(read_picker_page(screen, boxes))
+                    self._search = PickerSearch(target, screen.shape[1])
+                step = self._search.step(page)
                 if step.kind != 'found':
                     # Evidence of a miss: the first page and the last three.
                     self._search_frames.append(screen)
@@ -1314,7 +1346,9 @@ class LabVisit:
                     self._picker_signature, self._picker_reads = None, 0
                     return None
                 if step.kind == 'not_found':
-                    self._note_miss(selected.research)
+                    if general:
+                        # Game Speed stays out of the starter rollout's miss records.
+                        self._note_miss(target)
                     self._end_attempt(LabVisitResult('failed', 'research_not_found', LabDecision('unknown')))
                     return None
                 if step.kind == 'wait':
@@ -1352,6 +1386,10 @@ class LabVisit:
                 if decision.kind == 'unknown':
                     # OCR and card visibility can flicker. Stay in the picker
                     # until the bounded stage timeout instead of aborting on one frame.
+                    if not self._picker_unknown_logged:
+                        self._picker_unknown_logged = True
+                        logger.info("Lab picker read unknown for %s: %s", target,
+                                    _picker_unknown_reason(page.card(target)))
                     return None
                 self._end_attempt(LabVisitResult("observed", decision.kind, decision))
                 return None

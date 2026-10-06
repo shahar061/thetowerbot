@@ -324,3 +324,91 @@ def test_a_later_attempt_rides_on_the_kept_started_result(tmp_path: Path, monkey
     assert h.visit._state == 'return'
     assert h.visit._outcome.status == 'started' and h.visit._outcome.started_slots == (1,)
     assert h.visit._outcome.attempt == later
+
+
+def scrolled_picker(h: LabHarness, monkeypatch: pytest.MonkeyPatch, *, scrolls_back: bool = True) -> list[tuple]:
+    """The game kept the picker scrolled down: Game Speed is off the page until an up swipe."""
+    import lab_visit
+    real, scrolled, swipes = lab_screen.read_picker_page, [True], []
+
+    def read(screen: object, text: tuple) -> lab_screen.PickerPage:
+        page = real(screen, text)
+        if not scrolled[0] or not page.open:
+            return page
+        return replace(page, cards=tuple(c for c in page.cards if c.lab_id != 'labs.game-speed'))
+
+    def swipe(x1: int, y1: int, x2: int, y2: int, seconds: float) -> None:
+        swipes.append((x1, y1, x2, y2))
+        if scrolls_back and y2 > y1:
+            scrolled[0] = False
+
+    monkeypatch.setattr(lab_screen, 'read_picker_page', read)
+    monkeypatch.setattr(lab_visit, 'read_picker_page', read)
+    h.device.swipe = swipe
+    return swipes
+
+
+@pytest.mark.parametrize('selected', [action(), None])
+def test_a_scrolled_picker_swipes_up_to_game_speed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                   selected: LabAction | None) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.request(selected, options=LabVisitOptions())
+    swipes = scrolled_picker(h, monkeypatch)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    for _ in range(12):
+        h.scan('menu_labs_game_speed_affordable')
+        assert h.visit._outcome is None or h.visit._outcome.reason != 'picker_stage_timeout'
+        if h.visit._state == 'dialog':
+            break
+    assert swipes and swipes[0][3] > swipes[0][1]  # the first swipe scrolls toward the top
+    assert h.visit._state == 'dialog'
+
+
+def test_a_game_speed_card_never_found_ends_research_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.request(action(), options=LabVisitOptions())
+    swipes = scrolled_picker(h, monkeypatch, scrolls_back=False)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    for _ in range(12):
+        h.scan('menu_labs_game_speed_affordable')
+    assert swipes
+    assert h.visit._outcome.reason == 'research_not_found'
+
+
+def test_a_picker_timeout_saves_its_frames_and_logs_why_once(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.request(action(), options=LabVisitOptions())
+    h.visit.evidence_dir = tmp_path / 'evidence'
+    h.visit.picker_reader = lambda screen, text: lab_screen.LabPickerReading(True, None, None, None)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    with caplog.at_level('INFO', logger='lab_visit'):
+        for _ in range(9):
+            h.scan('menu_labs_game_speed_affordable')
+    assert h.visit._outcome.reason == 'picker_stage_timeout'
+    saved = sorted(p.name for p in (tmp_path / 'evidence').iterdir())
+    assert saved and all(name.startswith('lab-picker-timeout-labs.game-speed-') for name in saved)
+    assert caplog.text.count('read unknown') == 1
+
+
+def test_a_picker_timeout_after_a_proven_start_rides_on_the_started_result(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed', LabDecision('start', slot=1)))
+    h.visit._state = 'picker'
+    h.visit.picker_reader = lambda screen, text: lab_screen.LabPickerReading(True, None, None, None)
+    for _ in range(9):
+        h.scan('menu_labs_game_speed_affordable')
+    assert h.visit._outcome.status == 'started' and h.visit._outcome.started_slots == (1,)
+    assert h.visit._outcome.attempt.reason == 'picker_stage_timeout'
