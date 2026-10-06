@@ -132,14 +132,23 @@ def battle_tab_point(screen: Image, category: str) -> tuple[int, int] | None:
     return (int(w * (index + .5) / layouts[0]), h - 50)
 
 
+SCROLL_FRACTION = .4
+SCROLL_SECONDS = .6
+
+
 def scroll_panel(device: Any, screen: Image, heading_y: int, *, down: bool) -> None:
     h, w = screen.shape[:2]
     # Swipe inside the label column, clear of the purchase buttons and tab bar.
     top, bottom = heading_y + 90, h - 160
     if bottom - top < 100:
         return
-    start, end = (bottom, top) if down else (top, bottom)
-    device.swipe(w // 5, start, w // 5, end, .35)
+    # About one row per swipe, slowly enough to stop where the finger lifts.
+    # The panel shows ~2.6 rows and a tile is only read whole: a full-panel
+    # swipe parks a five-row tab at its top and bottom only, clipping the
+    # middle row (Thorns | Lifesteal on Defense) at both.
+    distance = int((bottom - top) * SCROLL_FRACTION)
+    start, end = (bottom, bottom - distance) if down else (top, top + distance)
+    device.swipe(w // 5, start, w // 5, end, SCROLL_SECONDS)
 
 
 def _readable_price(row: ObservedUpgrade | None) -> int | None:
