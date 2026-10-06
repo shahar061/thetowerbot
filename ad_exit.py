@@ -37,8 +37,11 @@ _CLOSE_LABELS = {"close", "close ad", "close video", "dismiss", "dismiss ad"}
 _TOP_LEFT_TEMPLATE = "in_game_ad/end_close_top_left.png"
 _PLAY_STORE_CLOSE_TEMPLATE = "in_game_ad/play_store_close.png"
 # White skip (⏭) and close (×) glyphs, matched by silhouette in either top
-# corner; the close is preferred because it leaves the ad.
-_CORNER_GLYPHS = ("in_game_ad/corner_close.png", "in_game_ad/corner_skip.png")
+# corner; the close is preferred because it leaves the ad. Meta's ▶| skip
+# sits in a translucent circle, so only its white glyph survives a dark
+# creative behind it.
+_CORNER_GLYPHS = ("in_game_ad/corner_close.png", "in_game_ad/corner_skip.png",
+                  "in_game_ad/corner_meta_skip.png")
 _CORNER_SIZE = 280
 _CORNER_THRESHOLD = .9
 _GAME_ACTIVITY = "com.techtreegames.thetower/com.unity3d.player.unityplayeractivity"
