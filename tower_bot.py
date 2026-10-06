@@ -3089,8 +3089,9 @@ class TowerBot:
                 lab_notice_due = self._notifications.eligible("labs", now)
                 # A due lab start outranks claims and the Workshop. The start
                 # probe has pacing side effects, so it runs once per frame.
+                # A GAME_OVER detour latched the paced check: it is still due.
                 lab_due_now = (labs_tab_status == "unlocked" and (
-                    lab_notice_due or self._lab_start_due(now)
+                    lab_notice_due or self._lab_home_pending or self._lab_start_due(now)
                     or self.reroll_progress.lab_unlock_due(wallet_gems=menu_gems)))
                 if lab_due_now and self._request_planned_lab_visit(now, True):
                     self._arm_lab_visit_bookkeeping(lab_notice_due)

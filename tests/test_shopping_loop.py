@@ -175,6 +175,23 @@ def test_due_lab_arms_before_an_owed_claim_and_the_workshop() -> None:
     assert not bot.shopping.visit_in_progress
 
 
+def test_a_latched_game_over_lab_detour_arms_before_an_owed_claim() -> None:
+    """GAME_OVER spent the paced lab check on the detour: the latch, not a
+    second due probe, puts the lab visit ahead of the claim on the menu."""
+    bot = _due_lab_bot()
+    bot._lab_start_due = lambda now: False
+    bot._lab_home_pending = True
+    offered: list[str] = []
+    bot._offer_claim = lambda settings: offered.append("claim") or "missions"
+    armed: list[bool] = []
+    bot._request_planned_lab_visit = lambda now, due: armed.append(due) or True
+
+    bot.run_once()
+
+    assert armed == [True]
+    assert offered == []
+
+
 def test_claim_still_arms_when_no_lab_is_due() -> None:
     bot = _due_lab_bot()
     bot._lab_start_due = lambda now: False
