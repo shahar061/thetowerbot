@@ -429,6 +429,9 @@ class TowerBot:
         # Strategy.interval_for. Starts False: the first frame is usually home.
         self._last_scan_in_battle = False
         self._last_scan_between_games = False
+        # When the bot first sat idle on the main menu with nothing active;
+        # see the watchdog in _run_once. None whenever it is not idling.
+        self._menu_idle_since: float | None = None
         self._running = True
         # Makes the between-scan sleep interruptible. A plain time.sleep()
         # ignores stop(): PEP 475 means it resumes after a signal handler
@@ -1888,6 +1891,10 @@ class TowerBot:
         # GAME_OVER is in both: it paces like battle today, and is also dead
         # time between runs. Only an actual run (or a run-HUD UNKNOWN) is not.
         self._last_scan_between_games = not in_run
+        if reading.state is not screens.ScreenState.MAIN_MENU:
+            # Any other screen (a claim walk's pages included) ends the idling,
+            # even on passes that return before the watchdog below is reached.
+            self._menu_idle_since = None
         self._card_observed_state = reading.state.value
         self._card_in_run = (reading.state is screens.ScreenState.IN_RUN or
             reading.state is screens.ScreenState.UNKNOWN and self.tracker.state is screens.ScreenState.IN_RUN
@@ -3106,7 +3113,7 @@ class TowerBot:
                 duration_ms=(time.monotonic()-started)*1000, wallet=None))
             return False
 
-        if (
+        navigation_clear = (
             settings.strategy.auto_navigate
             and not settings.paused
             and not self.run_cap_reached(max_runs, settings.strategy)
@@ -3115,7 +3122,9 @@ class TowerBot:
             and not self.cards_intro.active
             and not (self.card_runtime is not None and self.card_runtime.active)
             and not (self.lab_visit is not None and self.lab_visit.active)
-        ):
+        )
+        tier_selecting = False
+        if navigation_clear:
             # Navigator taps BATTLE on MAIN_MENU on a cooldown - left alone
             # it would start a run in the middle of a shopping errand.
             #
@@ -3137,8 +3146,9 @@ class TowerBot:
             # here, one screen early, or the bot never reaches the menu to
             # be asked at all. Same gate begin() uses, so a detour is only
             # taken when the visit it exists for will actually start.
-            if not (state is screens.ScreenState.MAIN_MENU
-                    and self._advance_tier(settings)):
+            tier_selecting = (state is screens.ScreenState.MAIN_MENU
+                              and self._advance_tier(settings))
+            if not tier_selecting:
                 # _lab_start_due spends its pacing on the first True; latch it so
                 # a declined navigation pass cannot lose the detour to RETRY.
                 lab_start_due = (state is screens.ScreenState.GAME_OVER
@@ -3191,6 +3201,26 @@ class TowerBot:
                               if config.MENU_FAST_PROFILE and self._last_scan_between_games
                               else None),
                 )
+
+        # Backstop for the idle gap between games: the visits above normally
+        # finish and the navigation above taps BATTLE within seconds, but
+        # nothing else bounds a menu that stays quiet. Idle means the same
+        # gate navigation uses, plus a plain missions visit and tier selection.
+        if (navigation_clear and not tier_selecting and not self.visit.active
+                and state is screens.ScreenState.MAIN_MENU
+                and reading.state is screens.ScreenState.MAIN_MENU):
+            idle_now = time.monotonic()
+            if self._menu_idle_since is None:
+                self._menu_idle_since = idle_now
+            elif idle_now - self._menu_idle_since >= config.MENU_IDLE_WATCHDOG_SECONDS:
+                logger.warning("between_games_idle_watchdog: %.0f s idle on the main menu; "
+                               "starting the next run", idle_now - self._menu_idle_since)
+                self.navigator.maybe_navigate(
+                    self.screen, state, self.device, now=idle_now,
+                    tuning=settings.strategy, go_home=False, cooldown=0.0)
+                self._menu_idle_since = None
+        else:
+            self._menu_idle_since = None
 
         # Checked after navigation, and begin() checked after advance() below:
         # a visit that just ended this same scan must not restart within it,

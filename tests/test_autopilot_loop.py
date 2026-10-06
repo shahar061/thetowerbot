@@ -688,3 +688,69 @@ def test_the_battle_policy_learns_which_tab_is_open(
     monkeypatch.setattr(bot.autopilot, 'step', lambda *args, **kwargs: False)
     bot.run_once()
     assert ('policy', tab) in progress.calls
+
+
+# --- Home-screen idle watchdog -----------------------------------------------
+
+
+def test_watchdog_taps_battle_after_twenty_idle_seconds(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    bot.run_once()
+    assert not any(k.get("cooldown") == 0.0 for k in calls)
+    assert bot._menu_idle_since is not None
+    clock[0] += 21
+    bot.run_once()
+    assert any(k.get("cooldown") == 0.0 and k.get("go_home") is False for k in calls)
+    assert bot._menu_idle_since is None
+
+
+def test_watchdog_quiet_before_the_threshold(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    bot.run_once()
+    clock[0] += 10
+    bot.run_once()
+    assert not any(k.get("cooldown") == 0.0 for k in calls)
+
+
+def test_watchdog_quiet_while_a_visit_is_active(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=True))
+    monkeypatch.setattr(type(bot.shopping), "visit_in_progress", property(lambda self: True))
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    bot.run_once()
+    clock[0] += 60
+    bot.run_once()
+    assert bot._menu_idle_since is None
+    assert not calls
+
+
+def test_watchdog_quiet_while_tier_selection_is_active(
+    bot_on_main_menu: Callable[..., TowerBot], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = bot_on_main_menu(Shopping(enabled=False))
+    monkeypatch.setattr(bot, "_advance_tier", lambda settings: True)
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    calls: list[dict] = []
+    bot.navigator.maybe_navigate = lambda *a, **k: calls.append(k)
+    bot.run_once()
+    clock[0] += 60
+    bot.run_once()
+    assert bot._menu_idle_since is None
+    assert not calls
