@@ -132,10 +132,22 @@ def _balance_at(screen: Image, region: config.Rect) -> int | None:
     understates the wallet, and a purchase proven against it still needs
     its row to change.
     """
-    values = [value for box in ocr.read_region(screen, region)
+    boxes = ocr.read_region(screen, region)
+    if any(_lost_suffix(box.text) for box in boxes):
+        return None
+    values = [value for box in boxes
               if box.confidence >= (.8 if box.text.strip() == "0" else .9)
               and (value := price_number(box.text)) is not None]
     return values[0] if len(values) == 1 else None
+
+
+def _lost_suffix(text: str) -> bool:
+    """A fraction with no K/M/B suffix: the game never draws one, so the suffix was clipped.
+
+    Read as written, "46.00" of a "46.00K" balance would be 46 coins.
+    """
+    stripped = text.strip()
+    return "." in stripped and stripped[-1:].isdigit()
 
 
 def _absolute(region: config.Region, top_left: tuple[int, int]) -> config.Rect:

@@ -328,6 +328,21 @@ def test_a_region_holding_two_numbers_still_refuses(monkeypatch) -> None:
     assert shopping_mod.header_numbers(None, "WORKSHOP", (32, 244)) == (None, None)
 
 
+def test_a_fractional_balance_without_its_suffix_is_refused(monkeypatch) -> None:
+    """The header draws a decimal balance only with its K/M/B suffix ("46.00K").
+
+    A read that kept "46.00" but lost the suffix once put a 46,002-coin wallet
+    at 46: the Lab plan switched to a filler, and the confirmation dialog's
+    true balance then switched it back, refusing the start at the spend
+    boundary. A suffix-less fraction is a clipped read, so the balance is unread.
+    """
+    def _read_region(screen, region, **kwargs):
+        return (ocr.TextBox(text="46.00", confidence=0.99, rect=config.Rect(20, 20, 110, 46)),)
+
+    monkeypatch.setattr(shopping_mod.ocr, "read_region", _read_region)
+    assert shopping_mod.header_numbers(None, "MAIN_MENU", (32, 244)) == (None, None)
+
+
 def test_the_header_reads_nothing_off_a_page_that_has_no_header() -> None:
     """MISSIONS, or a frame that failed to classify. Returning a pair of
     Nones rather than raising is what lets the caller treat "no header here"
