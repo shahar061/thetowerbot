@@ -1523,9 +1523,10 @@ def test_a_changed_row_with_an_unreadable_wallet_is_bought_at_its_price_and_kept
     session.begin(policy, run_count=1)
     _step(session, device, policy)  # tap Damage at 1770 coins
 
-    page.rows = (_row("damage", "Damage", 6), _row("attack_speed", "Attack Speed", 5))
+    page.rows = (dataclasses.replace(_row("damage", "Damage", 6), value=2, confidence=.99),
+                 _row("attack_speed", "Attack Speed", 5))
     fake_header["coins"] = None
-    _step(session, device, policy)  # confirmed changed, wallet unreadable
+    _step(session, device, policy)  # its value moved; the wallet is unreadable
 
     (bought,) = session._bus.of_type("Purchased")
     assert (bought.verdict, bought.spent, bought.price) == ("bought", 5, 5)
@@ -1545,6 +1546,35 @@ def test_a_changed_row_with_an_unreadable_wallet_is_bought_at_its_price_and_kept
     assert session._bus.of_type("ShoppingEnded") == []
     assert not any(s.reason in ("unreconciled", "unproven")
                    for s in session._bus.of_type("PurchaseSkipped"))
+
+
+@pytest.mark.parametrize("after", [
+    dict(price=6),                         # only the price moved: it may be an under-read
+    dict(price=6, value=2, confidence=.5),  # the value moved on a low-confidence read
+])
+def test_a_weak_row_change_with_an_unreadable_wallet_is_not_booked(
+    tmp_path, monkeypatch, fake_header, after: dict
+) -> None:
+    """Price OCR carries no confidence of its own, so an under-read price
+    after a no-op tap would look like a rise. Without a legible wallet only
+    a moved value or a maxed row, read confidently, proves the level."""
+    session = _journalled_workshop_session(tmp_path / "bot.db", monkeypatch)
+    session.evidence_dir = tmp_path / "evidence"
+    page = _Page(monkeypatch, _row("damage", "Damage", 5))
+    device = FakeDevice()
+    policy = _workshop_policy()
+    session.begin(policy, run_count=1)
+    _step(session, device, policy)
+
+    page.rows = (dataclasses.replace(_row("damage", "Damage", 5), **after),)
+    fake_header["coins"] = None
+    _step(session, device, policy)
+
+    (bought,) = session._bus.of_type("Purchased")
+    assert (bought.verdict, bought.spent) == ("unproven", None)
+    assert session._coin_spent is None
+    assert session.journal.open_transactions()[0].stage is transactions.Stage.ACTED
+    assert not list((tmp_path / "evidence").glob("workshop-wallet-unread-*"))
 
 
 def test_an_unproven_spend_stops_a_bounded_visit_budget(

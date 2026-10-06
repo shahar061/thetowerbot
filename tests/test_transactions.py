@@ -698,3 +698,15 @@ def test_the_workshop_price_rule_does_not_reach_other_operations() -> None:
     outcome = transactions.judge("k", price=15, wallet_before=14_560,
                                  wallet_after=None, effect_changed=True)
     assert outcome.spent is None
+
+
+def test_a_labs_row_is_never_booked_by_the_workshop_rule(tmp_path) -> None:
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal, wallet=14_560)
+    txn = journal.prepare(_intent(item='Game Speed', category='LABS', price=108, wallet_before=14_560),
+                          scope=scope, balance=balance)
+    journal.record_action(txn.key, at=2.)
+
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, category='LABS', wallet_after=None), now=3.)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)

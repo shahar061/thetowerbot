@@ -1222,6 +1222,13 @@ class ShoppingSession:
         unlocked = (same_category and is_unlock and after is None and coins is not None
                     and coins <= pending.coins - before.price
                     and any(r.upgrade_id not in pending.visible_ids for r in observation.rows))
+        # Price OCR has no confidence of its own: a rise alone may be an
+        # under-read. Without a legible wallet only a moved value or a maxed
+        # row, read confidently, proves the level (as recovery requires).
+        row_proven = changed and math.isfinite(after.confidence) and .9 <= after.confidence <= 1 and (
+            after.status == "maxed"
+            or after.value is not None and before.value is not None and after.value != before.value
+            and _target_reached(before.upgrade_id, after.value, before.value))
         if changed or unlocked:
             confirmed = after if changed else replace(before, status="unlocked", price=None,
                                                      observed_at=observation.observed_at)
@@ -1231,8 +1238,9 @@ class ShoppingSession:
                 self._completed_unlocks.add(before.upgrade_id)
             outcome = self._close(pending.key, price=before.price, wallet_before=pending.coins,
                                   wallet_after=coins, effect_changed=True,
-                                  evidence_ref=observation.frame_digest, observed_at=observation.observed_at)
-            if coins is None:
+                                  evidence_ref=observation.frame_digest, observed_at=observation.observed_at,
+                                  effect_without_wallet=row_proven)
+            if coins is None and outcome.verdict == transactions.Verdict.BOUGHT:
                 # The row proved the level; only the coin counter was illegible,
                 # so the journal booked the read price. Keep what OCR could not read.
                 evidence = (f"tab={observation.category} tile={'gone' if after is None else after.status}"
@@ -1639,6 +1647,7 @@ class ShoppingSession:
         self, key: str | None, *, price: int | None, wallet_before: int | None,
         wallet_after: int | None, effect_changed: bool | None,
         evidence_ref: str = '', observed_at: float | None = None,
+        effect_without_wallet: bool = True,
     ) -> transactions.Outcome:
         """Answer one attempt with the evidence that followed.
 
@@ -1652,7 +1661,7 @@ class ShoppingSession:
                 key, wallet_after=wallet_after, effect_changed=effect_changed,
                 ts=observed_at if observed_at is not None else time.time(),
                 scope=self.account_state.verified_scope if self.account_state is not None else None,
-                evidence_ref=evidence_ref,
+                evidence_ref=evidence_ref, effect_without_wallet=effect_without_wallet,
             )
             if outcome.verdict != transactions.Verdict.UNPROVEN:
                 # The live caller tallies/publishes this outcome. Keep its durable

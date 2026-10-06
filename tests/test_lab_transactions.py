@@ -600,3 +600,20 @@ def test_refuting_an_unlanded_tap_fences_recovery_reads(tmp_path: Path, monkeypa
     monkeypatch.setattr(transactions.TransactionJournal, '_refute_unlanded', refute)
     getattr(journal, method)('k', None, now=1.)
     assert seen == [1]
+
+
+@pytest.mark.parametrize('operation', ['lab_start', 'lab_unlock'])
+def test_a_lab_effect_with_an_unreadable_wallet_stays_unproven(tmp_path: Path, operation: str) -> None:
+    """The Workshop's book-the-read-price rule never reaches Labs."""
+    _, journal, scope = authority(tmp_path)
+    txn = prepared(journal, scope, operation=operation)
+    unlock = operation == 'lab_unlock'
+    proof = RecoveryEvidence(category='LABS', currency='gems' if unlock else 'coins', wallet_after=None,
+        effect_changed=True, observed_at=12., frame_digest='after', scope=scope,
+        operation=operation, slot=2 if unlock else 1,
+        research_id=None if unlock else 'labs.game-speed', target_level=None if unlock else 1)
+
+    outcome = journal.reconcile(txn.key, proof, now=12.)
+
+    assert (outcome.verdict, outcome.spent) == (Verdict.UNPROVEN, None)
+    assert journal.open_transactions()[0].key == txn.key

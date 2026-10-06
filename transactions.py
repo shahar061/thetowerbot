@@ -215,6 +215,10 @@ class RecoveryEvidence:
     card_operation_id: str | None = None
     card_result: dict[str, Any] | None = None
     card_snapshot: dict[str, Any] | None = None
+    # The effect was a moved value or a maxed row read confidently, not a
+    # price rise alone (price OCR has no confidence of its own). Only such an
+    # effect may book a Workshop buy whose wallet could not be read.
+    effect_without_wallet: bool = True
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -429,12 +433,15 @@ class TransactionJournal:
         ts: float | None = None,
         scope: FactScope | None = None,
         evidence_ref: str = '',
+        effect_without_wallet: bool = True,
     ) -> Outcome:
         """Close a transaction against the evidence that followed it.
 
         `effect_changed` is three-valued like everything else here: True
         means the item provably changed, False means it provably did not,
         and None means nothing readable said either way.
+        `effect_without_wallet` (see RecoveryEvidence) says the change alone,
+        without a wallet reading, may prove a scoped Workshop buy.
         """
         row = self._row(key)
         if row is None:
@@ -445,7 +452,7 @@ class TransactionJournal:
             return self.reconcile(key, RecoveryEvidence(
                 category=txn.category, currency=txn.currency, wallet_after=wallet_after,
                 effect_changed=effect_changed, observed_at=ts or 0., frame_digest=evidence_ref,
-                scope=scope), now=ts or 0.)
+                scope=scope, effect_without_wallet=effect_without_wallet), now=ts or 0.)
 
         outcome = judge(
             key,
@@ -671,9 +678,10 @@ class TransactionJournal:
                 # A scoped Workshop level buy is proven by its row; an illegible
                 # coin counter does not unprove it (judge books the read price).
                 workshop = (txn.scope is not None and txn.operation == 'workshop_buy'
-                            and txn.currency == 'coins' and txn.category != 'CARDS'
+                            and txn.currency == 'coins' and txn.category not in ('CARDS', 'LABS')
                             and not txn.before.get('card_operation_id'))
                 if (workshop and not relevant and inspected and evidence.wallet_after is None
+                        and evidence.effect_without_wallet
                         and txn.price is not None and txn.price > 0
                         and txn.wallet_before is not None and txn.wallet_before >= 0):
                     relevant = True
