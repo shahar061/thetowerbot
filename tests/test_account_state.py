@@ -432,7 +432,7 @@ def _old_runtime_with_a_job(tmp_path: Path, research: str, target: int, finish: 
               'evidence_status': 'historical'} for slot in range(1, 6)]
     slots[0].update(state='researching', research_id=research, source_level=target - 1,
                     target_level=target, expected_finish=finish, observed_at=1.,
-                    generation='job', frame_digest='strip')
+                    generation='job', frame_digest='strip', confirmed=True, evidence_status='verified')
     key = hashlib.sha256(b'acct').hexdigest()
     (tmp_path / f'lab-runtime-{key}.json').write_text(json.dumps(
         {'version': 1, 'scope': old, 'slots': slots, 'slots_owned': 2, 'observed_at': 1.,
@@ -449,7 +449,7 @@ def test_a_job_that_finished_while_the_bot_was_down_counts_and_plans_the_next_le
         ('labs.game-speed', 3, 'verified', 'acct'), ('labs.labs-speed', 10, 'verified', 'acct'),
         ('labs.coins-wave', 2, 'verified', 'acct'), ('labs.coins-kill-bonus', 5, 'verified', 'acct'),
     ))
-    _old_runtime_with_a_job(tmp_path, 'labs.game-speed', 4, finish=5.)
+    _old_runtime_with_a_job(tmp_path, 'labs.game-speed', 4, finish=8.)  # after the stored read at 5
     restarted = LabRuntime(tmp_path, 'acct', lease_id='lease', generation='new', epoch=1).snapshot()
     runtime = replaced(_idle_strip(now), job_history=restarted.job_history)
     facts = state.lab_facts(runtime, now=now)
@@ -469,3 +469,15 @@ def test_a_job_still_running_by_its_timer_does_not_count_yet(tmp_path):
     restarted = LabRuntime(tmp_path, 'acct', lease_id='lease', generation='new', epoch=1).snapshot()
     runtime = replaced(_idle_strip(11.), job_history=restarted.job_history)
     assert state.lab_facts(runtime, now=11.).completed_levels == {'labs.game-speed': 3}
+
+
+def test_a_picker_reading_newer_than_a_finished_job_outranks_its_history() -> None:
+    """A misread high target in the history never overrides a later picker reading."""
+    from account_state import completed_lab_levels
+    read_at_200 = {'concept_id': 'labs.game-speed', 'status': 'available', 'value': 4,
+                   'scope': {'account_id': 'acct'}, 'evidence': {'observed_at': 200.}}
+    assert completed_lab_levels([read_at_200], 'acct', finished_jobs=[('labs.game-speed', 7, 100.)],
+                                now=300.) == {'labs.game-speed': 3}
+    # A job that finished after that reading still counts.
+    assert completed_lab_levels([read_at_200], 'acct', finished_jobs=[('labs.game-speed', 5, 250.)],
+                                now=300.) == {'labs.game-speed': 5}

@@ -269,7 +269,8 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
     belongs to ``unscoped_account``. When one lab has several facts, the
     newest reading wins. A ``finished_jobs`` entry ``(lab, target, finish)``
     with ``finish <= now`` raises its lab to ``target``: the job completed,
-    possibly while the bot was down and no picker could show it.
+    possibly while the bot was down and no picker could show it. It never
+    outranks a stored reading taken after it finished.
     """
     import lab_catalog
     newest: dict[str, tuple[float, int]] = {}
@@ -292,8 +293,9 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
     levels = {concept_id: level for concept_id, (_, level) in newest.items()}
     for concept_id, target, finish in finished_jobs if now is not None else ():
         entry = lab_catalog.lab(concept_id)
+        read_at = newest[concept_id][0] if concept_id in newest else -math.inf
         if (entry is not None and type(target) is int and 1 <= target <= entry.max_level
-                and finish <= now and target > levels.get(concept_id, -1)):
+                and read_at < finish <= now and target > levels.get(concept_id, -1)):
             levels[concept_id] = target
     return levels
 
@@ -446,7 +448,12 @@ class AccountState:
                     and 0 <= now-self._identity.observed_at <= max_age)
 
     def lab_facts(self, runtime: Any, *, now: float) -> Any | None:
-        """Adapt only current confirmed facts to L3; timers never imply completion."""
+        """Adapt only current confirmed facts to L3.
+
+        A running slot's timer never implies completion. The one exception is
+        a confirmed job whose expected finish has passed since its lab was last
+        read: it counts as completed (`completed_lab_levels`).
+        """
         from fleet.resource_blocks import LabFacts
         from lab_runtime import LabScope
         scope = self.verified_scope

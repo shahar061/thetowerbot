@@ -90,7 +90,9 @@ def _history_rows(payload: dict[str, Any]) -> dict[str, tuple[int, float]]:
         if isinstance(row, (list, tuple)) and len(row) == 3:
             _remember(history, *row)
     for row in payload.get("slots") or ():
-        if isinstance(row, dict) and row.get("state") == "researching":
+        # Only a record this runtime confirmed; legacy and unconfirmed rows are guesses.
+        if (isinstance(row, dict) and row.get("state") == "researching"
+                and row.get("confirmed") is True and row.get("evidence_status") == "verified"):
             _remember(history, row.get("research_id"), row.get("target_level"),
                       row.get("expected_finish"))
     return history

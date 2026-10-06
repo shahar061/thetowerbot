@@ -267,3 +267,25 @@ def test_a_job_seen_researching_outlives_the_idle_strip_of_a_later_generation(tm
     assert (before.research_id, before.target_level, before.expected_finish) in again.job_history
     assert all(row[0] != before.research_id
                for row in runtime(tmp_path, "ACCOUNT-B").snapshot().job_history)
+
+
+
+@pytest.mark.parametrize("confirmed,status,kept", [
+    (True, "verified", True), (False, "verified", False), (True, "historical", False), (None, None, False)])
+def test_job_history_comes_only_from_confirmed_researching_records(
+        tmp_path: Path, confirmed: bool | None, status: str | None, kept: bool) -> None:
+    """A legacy or unconfirmed row never becomes a completed level."""
+    import hashlib
+    import json
+    from lab_runtime import LabRuntime, read_job_history
+    scope = {"account_id": "ACCOUNT-A", "lease_id": "l", "generation": "g", "epoch": 0}
+    row = {"scope": scope, "slot": 1, "state": "researching", "research_id": "labs.game-speed",
+           "target_level": 4, "expected_finish": 50.}
+    if confirmed is not None:
+        row.update(confirmed=confirmed, evidence_status=status)
+    path = tmp_path / f"lab-runtime-{hashlib.sha256(b'ACCOUNT-A').hexdigest()}.json"
+    path.write_text(json.dumps({"version": 1, "scope": scope, "slots": [row],
+                                "slots_owned": 1, "observed_at": 1.}))
+    expected = (("labs.game-speed", 4, 50.),) if kept else ()
+    assert read_job_history(tmp_path, "ACCOUNT-A") == expected
+    assert LabRuntime(tmp_path, "ACCOUNT-A", generation="g2").snapshot().job_history == expected
