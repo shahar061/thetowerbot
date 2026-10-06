@@ -55,6 +55,8 @@ class LabVisitResult:
     unlocked_slot: int | None = None
     # Slots proven started in this visit, in order; direct start fills several.
     started_slots: tuple[int, ...] = ()
+    # A later attempt that ended after a proven start; the started result is kept.
+    attempt: LabVisitResult | None = None
 
 
 # Post-tap reads: an unclassified frame counts toward the limit only after the
@@ -724,7 +726,7 @@ class LabVisit:
         if prior is not None and prior.status == 'started':
             logger.info("Lab attempt after started slots %s ended: %s (%s)",
                         prior.started_slots, outcome.status, outcome.reason)
-            outcome = prior
+            outcome = replace(prior, attempt=outcome)
         self._return(outcome)
 
     def _emit(self, event: events.Event) -> None:

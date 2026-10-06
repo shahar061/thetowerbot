@@ -309,3 +309,18 @@ def test_no_next_start_where_the_planner_hook_cannot_replan(tmp_path: Path, monk
     assert h.visit.request(None, options=LabVisitOptions(direct_start=True, native_repeat='on'))
     h.visit._next_start(LabVisitResult('started', 'research_confirmed', LabDecision('start', slot=2)))
     assert h.visit._state == 'return' and h.visit._outcome.started_slots == (2,)
+
+
+def test_a_later_attempt_rides_on_the_kept_started_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_plan import LabDecision
+    from lab_visit import LabVisitResult
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    h.visit.plan_action = lambda at: None
+    assert h.visit.request(None, options=LabVisitOptions(direct_start=True))
+    h.visit._next_start(LabVisitResult('started', 'game_speed_confirmed', LabDecision('start', slot=1)))
+    later = LabVisitResult('observed', 'research_unavailable', LabDecision('unknown', slot=2))
+    h.visit._end_attempt(later)
+    assert h.visit._state == 'return'
+    assert h.visit._outcome.status == 'started' and h.visit._outcome.started_slots == (1,)
+    assert h.visit._outcome.attempt == later

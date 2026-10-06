@@ -1584,12 +1584,15 @@ class TowerBot:
     def _settle_planned_lab_attempt(self, result: Any) -> None:
         """A verified start ends the backoff; the due requirement still applies."""
         selected = self.lab_visit.selected_action if self.lab_visit is not None else None
-        if (selected is not None and result.reason == 'research_unavailable'
-                and result.decision.research_id == selected.research
-                and result.decision.target_level == selected.target_level
-                and result.decision.price is not None
-                and result.decision.wallet_coins is not None
-                and result.decision.wallet_coins >= result.decision.price):
+        # After a proven start the visit keeps the started result; the later
+        # attempt that ended it rides along and still excludes its research.
+        attempt = getattr(result, 'attempt', None) or result
+        if (selected is not None and attempt.reason == 'research_unavailable'
+                and attempt.decision.research_id == selected.research
+                and attempt.decision.target_level == selected.target_level
+                and attempt.decision.price is not None
+                and attempt.decision.wallet_coins is not None
+                and attempt.decision.wallet_coins >= attempt.decision.price):
             account_id = self._lab_account_id()
             revision = selected.strategy_revision
             self._lab_unavailable[(account_id, revision, selected.research)] = time.time() + LAB_ACTION_BACKOFF_SECONDS

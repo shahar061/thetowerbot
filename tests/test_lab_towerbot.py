@@ -584,3 +584,19 @@ def test_a_finished_visit_logs_its_started_slots(caplog: pytest.LogCaptureFixtur
     with caplog.at_level('INFO', logger='tower_bot'):
         b._finish_lab_visit(result)
     assert 'started slots (1, 3)' in caplog.text
+
+
+def test_research_unavailable_after_a_proven_start_still_excludes_that_research() -> None:
+    """A later attempt's research_unavailable rides on the kept started result."""
+    from lab_visit import LabVisitResult
+    b = bot(action(2, 'labs.coins-kill-bonus', 1), options=LabVisitOptions(direct_start=True))
+    b.lab_visit.selected_action = action(2, 'labs.coins-kill-bonus', 1)
+    unavailable = LabVisitResult('observed', 'research_unavailable', LabDecision(
+        'unknown', price=50, wallet_coins=20000, game_speed_level=1,
+        slot=2, research_id='labs.coins-kill-bonus', strategy_revision=REVISION))
+    started = LabVisitResult('started', 'game_speed_confirmed', decision(), started_slots=(1,),
+                             attempt=unavailable)
+    b._settle_planned_lab_attempt(started)
+    key = (b._lab_account_id(), REVISION, 'labs.coins-kill-bonus')
+    assert key in b._lab_unavailable
+    assert 'labs.coins-kill-bonus' in b._excluded_lab_research(time.time())
