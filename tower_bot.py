@@ -358,6 +358,8 @@ class TowerBot:
         # Consecutive scans a menu page has held every action with nothing
         # walking. See the deadlock note in run_once.
         self._held_scans = 0
+        # When that streak began (time.monotonic), for HELD_PAGE_MIN_SECONDS.
+        self._held_since = 0.0
         # When the IN_RUN preflight last read the whole frame. See
         # _preflight_boxes: the backstop for a popup the bands cannot see.
         self._battle_full_read_at = float("-inf")
@@ -373,6 +375,8 @@ class TowerBot:
         # Consecutive scans device recovery has blocked while a walk was
         # armed. See the note beside the recovery gate in run_once.
         self._recovery_blocked_scans = 0
+        # When that streak began (time.monotonic), for RECOVERY_BLOCKED_WALK_MIN_SECONDS.
+        self._recovery_blocked_since = 0.0
         self.runs = RunTracker(first_run_id)
         # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
@@ -1876,17 +1880,14 @@ class TowerBot:
         ticket = None
         escape = None
         preflight_boxes = None
-        battle_context = (reading.state in (screens.ScreenState.IN_RUN,
-                                            screens.ScreenState.GAME_OVER)
-                          or (reading.state is screens.ScreenState.UNKNOWN
-                              and reading.cash_top_left is not None))
+        in_run = (reading.state is screens.ScreenState.IN_RUN
+                  or (reading.state is screens.ScreenState.UNKNOWN
+                      and reading.cash_top_left is not None))
+        battle_context = in_run or reading.state is screens.ScreenState.GAME_OVER
         self._last_scan_in_battle = battle_context
         # GAME_OVER is in both: it paces like battle today, and is also dead
         # time between runs. Only an actual run (or a run-HUD UNKNOWN) is not.
-        self._last_scan_between_games = not (
-            reading.state is screens.ScreenState.IN_RUN
-            or (reading.state is screens.ScreenState.UNKNOWN
-                and reading.cash_top_left is not None))
+        self._last_scan_between_games = not in_run
         self._card_observed_state = reading.state.value
         self._card_in_run = (reading.state is screens.ScreenState.IN_RUN or
             reading.state is screens.ScreenState.UNKNOWN and self.tracker.state is screens.ScreenState.IN_RUN
@@ -2088,7 +2089,11 @@ class TowerBot:
                 # instead, the same four cancels the runner makes on a stop.
                 if self._any_walk_active():
                     self._recovery_blocked_scans += 1
-                    if self._recovery_blocked_scans > config.RECOVERY_BLOCKED_WALK_LIMIT:
+                    if self._recovery_blocked_scans == 1:
+                        self._recovery_blocked_since = time.monotonic()
+                    if (self._recovery_blocked_scans > config.RECOVERY_BLOCKED_WALK_LIMIT
+                            and time.monotonic() - self._recovery_blocked_since
+                            >= config.RECOVERY_BLOCKED_WALK_MIN_SECONDS):
                         self._cancel_walks(
                             "recovery_blocked",
                             "Device recovery blocked every scan for too long; "
@@ -2557,6 +2562,8 @@ class TowerBot:
             return recovered
         if (panel or missions_page or milestones_page) and not walking_now:
             self._held_scans += 1
+            if self._held_scans == 1:
+                self._held_since = time.monotonic()
         else:
             self._held_scans = 0
 
@@ -2566,7 +2573,8 @@ class TowerBot:
         # the rest of the pass, and with it navigation, whose NAV_DISMISS set
         # already carries the skip and claim-reward buttons these ceremonies
         # are built from.
-        deadlocked = self._held_scans > config.HELD_PAGE_SCAN_LIMIT
+        deadlocked = (self._held_scans > config.HELD_PAGE_SCAN_LIMIT
+                      and time.monotonic() - self._held_since >= config.HELD_PAGE_MIN_SECONDS)
 
         if not deadlocked and (
                 panel or missions_page or milestones_page or self.collection.active

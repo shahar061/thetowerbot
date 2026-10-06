@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -243,6 +244,24 @@ def _shopping_bot(
     bot.tracker._confirmed = True
     bot.snapshots = _RecordingSnapshotWriter()
     return bot
+
+
+class ScanClock:
+    """A controllable time.monotonic: frozen until `advance` moves it."""
+
+    def __init__(self) -> None:
+        self.now = time.monotonic()
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def scan_clock(monkeypatch: pytest.MonkeyPatch) -> ScanClock:
+    """Freeze the monotonic clock so a test sets the cadence between scans."""
+    clock = ScanClock()
+    monkeypatch.setattr(time, "monotonic", lambda: clock.now)
+    return clock
 
 
 @pytest.fixture
