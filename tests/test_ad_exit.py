@@ -214,6 +214,18 @@ def test_unity_end_card_close_is_found_without_a_label() -> None:
     assert abs(x - 999) <= 6 and abs(y - 105) <= 6
 
 
+def test_unity_close_is_found_where_its_circle_greys_a_white_page() -> None:
+    # Emulator 83 stalled on a Rapidata survey: the close's translucent circle
+    # turns the white page above it grey, which still read as white and
+    # swallowed the X, and a "report" flag touches its lower arm.
+    fixtures = ROOT / "tests/fixtures/in_game_ad"
+    screen = cv2.imread(str(fixtures / "unity_rapidata_83.jpg"))
+    device = Device((fixtures / "unity_focus_82.txt").read_text(), "")
+
+    x, y = ad_exit.find_close(screen, TEMPLATES, device)
+    assert abs(x - 994) <= 6 and abs(y - 108) <= 6
+
+
 def test_corner_close_glyph_generalizes_to_another_creative() -> None:
     screen = cv2.imread(str(ROOT / "tests/fixtures/in_game_ad/end_card.jpg"))
     focus = (ROOT / "tests/fixtures/in_game_ad/unity_focus_82.txt").read_text()

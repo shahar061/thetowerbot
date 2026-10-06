@@ -44,6 +44,11 @@ _CORNER_GLYPHS = ("in_game_ad/corner_close.png", "in_game_ad/corner_skip.png",
                   "in_game_ad/corner_meta_skip.png")
 _CORNER_SIZE = 280
 _CORNER_THRESHOLD = .9
+# Glyph strokes are thinner than this, a white page or panel is wider.
+_STROKE_BACKGROUND = cv2.getStructuringElement(cv2.MORPH_RECT, (41, 41))
+_STROKE_CONTRAST = 25
+# Only pixels this close to a glyph's silhouette count towards its match.
+_GLYPH_SURROUND = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 _GAME_ACTIVITY = "com.techtreegames.thetower/com.unity3d.player.unityplayeractivity"
 
 
@@ -121,21 +126,35 @@ def _white(image: Image) -> Image:
     return ((low >= 200) & (high - low <= 40)).astype(np.float32)
 
 
+def _white_strokes(image: Image) -> Image:
+    """Near-white strokes brighter than what surrounds them.
+
+    A translucent circle over a white page greys it just enough to pass as
+    white, merging with the glyph it holds; the glyph is still brighter.
+    """
+    low = image.min(axis=2)
+    lift = cv2.morphologyEx(low, cv2.MORPH_TOPHAT, _STROKE_BACKGROUND)
+    return _white(image) * (lift >= _STROKE_CONTRAST)
+
+
 def _corner_glyph(screen: Image, templates: TemplateCache) -> tuple[int, int] | None:
     """Locate one white close or skip glyph in a top corner of an ad."""
     width = screen.shape[1]
     if screen.shape[0] < _CORNER_SIZE or width < 2 * _CORNER_SIZE:
         return None
-    corners = [(x0, _white(screen[:_CORNER_SIZE, x0:x0 + _CORNER_SIZE]))
+    corners = [(x0, _white_strokes(screen[:_CORNER_SIZE, x0:x0 + _CORNER_SIZE]))
                for x0 in (0, width - _CORNER_SIZE)]
     for name in _CORNER_GLYPHS:
         template = templates.get(name)
         if template is None:
             continue
-        glyph = _white(template)
+        glyph = _white_strokes(template)
+        # An icon beside the glyph, like a survey's report flag, is ignored.
+        surround = cv2.dilate(glyph, _GLYPH_SURROUND)
         points: list[tuple[int, int]] = []
         for x0, corner in corners:
-            scores = np.nan_to_num(cv2.matchTemplate(corner, glyph, cv2.TM_CCORR_NORMED))
+            scores = np.nan_to_num(cv2.matchTemplate(
+                corner, glyph, cv2.TM_CCORR_NORMED, mask=surround), posinf=0)
             for y, x in zip(*np.nonzero(scores >= _CORNER_THRESHOLD)):
                 point = (x0 + int(x) + glyph.shape[1] // 2, int(y) + glyph.shape[0] // 2)
                 if all(abs(point[0] - px) > 40 or abs(point[1] - py) > 40
