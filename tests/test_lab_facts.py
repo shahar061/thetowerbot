@@ -78,3 +78,27 @@ def test_persisted_lab_facts_completed_levels_missing_revision_is_none(tmp_path:
     facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
                                           db_path=path)
     assert facts.completed_levels is None
+
+
+def test_persisted_lab_facts_reads_an_unaffordable_row_like_an_available_one(tmp_path: Path) -> None:
+    """One rule with the bot: an unaffordable picker Lv.N also prices level N, so N-1 is
+    completed; another account's scoped level and an unclaimable status are ignored."""
+    path = _db(tmp_path)
+    db.bind_account(path, "acct")
+    revision = {
+        "account_id": "acct",
+        "lab_levels": [
+            {"concept_id": "labs.coins-kill-bonus", "status": "unavailable", "value": 3},
+            {"concept_id": "labs.damage", "status": "verified", "value": 9,
+             "scope": {"account_id": "other", "lease_id": "l", "generation": "g", "epoch": 0}},
+            {"concept_id": "labs.health", "status": "verified", "value": 4,
+             "scope": {"account_id": "acct", "lease_id": "l", "generation": "old", "epoch": 0}},
+            {"concept_id": "labs.attack-speed", "status": "unreadable", "value": 2},
+        ],
+    }
+    with db.connect(path) as connection:
+        connection.execute("INSERT INTO account_revisions(detail) VALUES (?)",
+                           (json.dumps(revision),))
+    facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
+                                          db_path=path)
+    assert facts.completed_levels == {"labs.coins-kill-bonus": 2, "labs.health": 4}

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import db
-from account_state import completed_lab_level
+from account_state import completed_lab_levels
 from fleet.build_route_preview_facts import read_lab_slots
 from fleet.coin_share import LabCoinJar, jit_hold
 from fleet.reroll_lifetime import read_lifetime
@@ -59,16 +59,9 @@ def _completed_levels(db_path: Path, account_id: str) -> dict[str, int] | None:
         return None
     if not isinstance(revision, dict) or revision.get("account_id") not in (None, account_id):
         return None
-    known: dict[str, int] = {}
-    for fact in revision.get("lab_levels") or ():
-        if not isinstance(fact, dict):
-            continue
-        concept_id = fact.get("concept_id")
-        if not isinstance(concept_id, str):
-            continue
-        level = completed_lab_level(fact.get("status"), fact.get("value"))
-        if level is not None:
-            known[concept_id] = level
+    # The bot's own reader (`AccountState.lab_facts`), so both plan from the same levels.
+    known = completed_lab_levels(revision.get("lab_levels") or (), account_id,
+                                 unscoped_account=revision.get("account_id") or account_id)
     return known or None
 
 
