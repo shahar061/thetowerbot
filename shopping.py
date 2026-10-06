@@ -228,15 +228,16 @@ UNCONFIRMED_KEEP = 20
 
 
 def save_unconfirmed_evidence(directory: Path, pending: PendingPurchase,
-                              observation: Observation, evidence: str) -> Path | None:
+                              observation: Observation, evidence: str,
+                              prefix: str = "unconfirmed") -> Path | None:
     """Keep the frames of a purchase whose acknowledgement was inconclusive.
 
     Diagnostic only: a failure here is logged and never touches the purchase.
-    Capped to the newest UNCONFIRMED_KEEP folders.
+    Capped to the newest UNCONFIRMED_KEEP folders per prefix.
     """
     try:
         import cv2
-        stem = f"unconfirmed-{time.strftime('%Y%m%d-%H%M%S')}-{pending.row.upgrade_id}"
+        stem = f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{pending.row.upgrade_id}"
         folder = Path(directory) / stem
         folder.mkdir(parents=True, exist_ok=True)
         if pending.before_frame is not None:
@@ -253,7 +254,7 @@ def save_unconfirmed_evidence(directory: Path, pending: PendingPurchase,
                                  "heading_y": observation.heading_y,
                                  "rows": [r.upgrade_id for r in observation.rows]},
         }, indent=2) + "\n", encoding="utf-8")
-        for stale in sorted(Path(directory).glob("unconfirmed-*"))[:-UNCONFIRMED_KEEP]:
+        for stale in sorted(Path(directory).glob(f"{prefix}-*"))[:-UNCONFIRMED_KEEP]:
             for child in stale.iterdir():
                 child.unlink()
             stale.rmdir()
@@ -1231,6 +1232,18 @@ class ShoppingSession:
             outcome = self._close(pending.key, price=before.price, wallet_before=pending.coins,
                                   wallet_after=coins, effect_changed=True,
                                   evidence_ref=observation.frame_digest, observed_at=observation.observed_at)
+            if coins is None:
+                # The row proved the level; only the coin counter was illegible,
+                # so the journal booked the read price. Keep what OCR could not read.
+                evidence = (f"tab={observation.category} tile={'gone' if after is None else after.status}"
+                            f" coins=None before={pending.coins} price={before.price}"
+                            f" verdict={outcome.verdict.value} spent={outcome.spent}")
+                saved = (save_unconfirmed_evidence(self.evidence_dir, pending, observation, evidence,
+                                                   prefix="workshop-wallet-unread")
+                         if self.evidence_dir is not None else None)
+                logger.warning("%s: confirmed with an unreadable coin counter; booked %s (%s)%s",
+                               before.name, outcome.spent, outcome.reason,
+                               f"; frames: {saved}" if saved is not None else "")
             self._record_purchase(before, pending.coins, dry_run=False, verified=confirmed,
                                   outcome=outcome)
             self._pending = None

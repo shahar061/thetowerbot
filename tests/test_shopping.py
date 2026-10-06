@@ -1215,23 +1215,42 @@ def test_restart_workshop_proof_updates_account_ledger_and_visit_without_a_tap(
     assert device.taps == []
 
 
-@pytest.mark.parametrize("fault", ["missing_wallet", "unchanged", "wrong_identity", "low_confidence", "wrong_context", "stale", "geometry", "income"])
-def test_restart_ambiguous_workshop_stays_blocked_across_resets_and_visits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_header: dict, fault: str,
+@pytest.mark.parametrize("coins", [None, 1768])  # unreadable; income cut the debit short
+def test_restart_workshop_row_change_proves_the_read_price_without_an_exact_wallet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_header: dict, coins: int | None,
 ) -> None:
     session, page, clock, path = _restart_workshop(tmp_path, monkeypatch, fake_header)
     page.rows = (dataclasses.replace(page.rows[0], value=2, price=6),)
-    fake_header["coins"] = 1765
-    if fault == "missing_wallet":
-        fake_header["coins"] = None
-    elif fault == "unchanged":
+    fake_header["coins"] = coins
+    device = FakeDevice()
+    policy = _workshop_policy()
+    _step(session, device, policy)
+    clock[0] += 1
+    _step(session, device, policy)
+    assert device.taps == []
+    assert session.journal.open_transactions() == ()
+    assert not session.reconciliation_pending
+    assert (session._spent, session._coin_spent) == (5, 5)
+    purchase, = session._bus.of_type("Purchased")
+    assert (purchase.verdict, purchase.spent) == ("bought", 5)
+    with db.reader(path) as conn:
+        assert conn.execute("SELECT delta FROM ledger").fetchone()[0] == -5
+
+
+@pytest.mark.parametrize("coins", [1765, None])  # an illegible wallet cannot rescue an unproven row
+@pytest.mark.parametrize("fault", ["unchanged", "wrong_identity", "low_confidence", "wrong_context", "stale", "geometry"])
+def test_restart_ambiguous_workshop_stays_blocked_across_resets_and_visits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_header: dict, fault: str, coins: int | None,
+) -> None:
+    session, page, clock, path = _restart_workshop(tmp_path, monkeypatch, fake_header)
+    page.rows = (dataclasses.replace(page.rows[0], value=2, price=6),)
+    fake_header["coins"] = coins
+    if fault == "unchanged":
         page.rows = (dataclasses.replace(page.rows[0], value=1, price=5),)
     elif fault == "wrong_identity":
         page.rows = (dataclasses.replace(page.rows[0], upgrade_id="health"),)
     elif fault == "low_confidence":
         page.rows = (dataclasses.replace(page.rows[0], confidence=.2),)
-    elif fault == "income":
-        fake_header["coins"] = 1768
     else:
         observe = shopping_mod.observe_frame
         changes = {"wrong_context": {"context": "battle"}, "stale": {"observed_at": 10.},
@@ -1482,6 +1501,50 @@ def test_a_proven_workshop_purchase_debits_what_the_wallet_lost(
     assert ledger.classify(bought)[0].delta == -5
     assert (session._coin_spent, session._spent) == (5, 5)
     assert session.journal.open_transactions() == ()
+
+
+def test_a_changed_row_with_an_unreadable_wallet_is_bought_at_its_price_and_kept(
+    tmp_path, monkeypatch, fake_header
+) -> None:
+    """The row moved on but the coin counter read nothing. The level landed
+    at the row's price: no 60 s hold, no ended visit, and the frames that
+    could not be read are kept for diagnosis."""
+    import ledger
+
+    session = _journalled_workshop_session(tmp_path / "bot.db", monkeypatch)
+    session.evidence_dir = tmp_path / "evidence"
+    page = _Page(monkeypatch, _row("damage", "Damage", 5),
+                 _row("attack_speed", "Attack Speed", 5))
+    device = FakeDevice()
+    policy = a_policy(armed=True, coin_budget=100, workshop=(
+        ShoppingRule(name="Damage", category="ATTACK", target=2),
+        ShoppingRule(name="Attack Speed", category="ATTACK", target=2),
+    ))
+    session.begin(policy, run_count=1)
+    _step(session, device, policy)  # tap Damage at 1770 coins
+
+    page.rows = (_row("damage", "Damage", 6), _row("attack_speed", "Attack Speed", 5))
+    fake_header["coins"] = None
+    _step(session, device, policy)  # confirmed changed, wallet unreadable
+
+    (bought,) = session._bus.of_type("Purchased")
+    assert (bought.verdict, bought.spent, bought.price) == ("bought", 5, 5)
+    assert ledger.classify(bought)[0].delta == -5
+    assert (session._coin_spent, session._spent) == (5, 5)
+    assert session.journal.open_transactions() == ()
+    assert not session.reconciliation_pending
+    (saved,) = (tmp_path / "evidence").glob("workshop-wallet-unread-*")
+    assert saved.name.endswith("-damage")
+    assert (saved / "before.png").exists() and (saved / "frame-1.png").exists()
+    assert "coins=None" in (saved / "detail.json").read_text()
+
+    fake_header["coins"] = 1765
+    _step(session, device, policy)  # the visit carries on to Attack Speed
+
+    assert len(device.taps) == 2
+    assert session._bus.of_type("ShoppingEnded") == []
+    assert not any(s.reason in ("unreconciled", "unproven")
+                   for s in session._bus.of_type("PurchaseSkipped"))
 
 
 def test_an_unproven_spend_stops_a_bounded_visit_budget(
