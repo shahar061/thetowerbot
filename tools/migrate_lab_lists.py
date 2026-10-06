@@ -139,14 +139,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     url = f"http://127.0.0.1:{args.port}/api/fleet/reroll/strategies"
     library = _request(url)
-    revision, failed = library["revision"], 0
+    revision, failed, saved = library["revision"], 0, []
     for row in library["strategies"]:
         try:
             new, notes = migrate_baseline(row["baseline"])
             RouteBaseline.from_dict(new)
-        except ValueError as exc:
-            print(f"SKIP {row['name']}: {exc}")
+        except (ValueError, KeyError, TypeError) as exc:
+            print(f"SKIP {row.get('name')}: {exc!r}")
             failed += 1
+            continue
+        if new == row["baseline"]:
+            print(f"== {row['name']} (v{row['version']}): unchanged")
             continue
         old_labs, new_labs = row["baseline"]["labs"], new["labs"]
         print(f"== {row['name']} (v{row['version']}): "
@@ -162,10 +165,18 @@ def main(argv: list[str] | None = None) -> int:
                                      "source_template": row["source_template"],
                                      "baseline": new, "strategy_id": row["id"]})
             revision = library["revision"]
+            saved.append(row["name"])
             print(f"   saved (library revision {revision})")
         except urllib.error.HTTPError as exc:
             print(f"   SAVE FAILED {exc.code}: {exc.read().decode()[:300]}")
             failed += 1
+            if exc.code == 409:  # Stale revision: every later save would 409 too.
+                print("   stopping: the library changed underneath us; re-run to continue")
+                break
+        except OSError as exc:  # URLError and timeouts: the coordinator is unreachable or slow.
+            print(f"   SAVE FAILED for {row['name']}: {exc!r}")
+            print(f"saved so far: {', '.join(saved) or 'none'}")
+            return 1
     return 1 if failed else 0
 
 

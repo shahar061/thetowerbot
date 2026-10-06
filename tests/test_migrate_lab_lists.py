@@ -102,3 +102,89 @@ def test_slot_3_plus_research_is_unpinned_and_ordered_after_slot_2_pins() -> Non
                        ("labs.unlock-perks", None)]
     # Pool and multi-slot research follow the former slot-3+ research.
     assert ids.index(("labs.unlock-perks", None)) < ids.index(("labs.coins-kill-bonus", None))
+
+
+# ---- main() against a fake coordinator (no network) -------------------------------------------
+
+def _row(name: str, baseline: dict[str, Any]) -> dict[str, Any]:
+    return {"id": name.lower(), "name": name, "version": 1, "source_template": "t", "baseline": baseline}
+
+
+class _Fake:
+    """Stands in for m._request: serves a library and records POSTs, chaining revisions."""
+
+    def __init__(self, rows: list[dict[str, Any]], fail_on_post: dict[int, Exception] | None = None) -> None:
+        self.rows, self.revision = rows, 10
+        self.gets: list[str] = []
+        self.posts: list[dict[str, Any]] = []
+        self.fail_on_post = fail_on_post or {}
+
+    def __call__(self, url: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        if body is None:
+            self.gets.append(url)
+        else:
+            self.posts.append(body)
+            if len(self.posts) in self.fail_on_post:
+                raise self.fail_on_post[len(self.posts)]
+            self.revision += 1
+        return {"revision": self.revision, "strategies": self.rows}
+
+
+def _http_error(code: int) -> m.urllib.error.HTTPError:
+    import io
+    return m.urllib.error.HTTPError("http://x", code, "err", {}, io.BytesIO(b"nope"))  # type: ignore[arg-type]
+
+
+def _run(monkeypatch, fake: _Fake, *argv: str) -> int:
+    monkeypatch.setattr(m, "_request", fake)
+    return m.main(list(argv))
+
+
+def test_main_chains_revisions_between_saves(monkeypatch) -> None:
+    fake = _Fake([_row("A", _baseline(STEPS)), _row("B", _baseline(STEPS))])
+    assert _run(monkeypatch, fake) == 0
+    assert [p["expected_revision"] for p in fake.posts] == [10, 11]
+
+
+def test_main_dry_run_never_posts(monkeypatch) -> None:
+    fake = _Fake([_row("A", _baseline(STEPS))])
+    assert _run(monkeypatch, fake, "--dry-run") == 0
+    assert fake.posts == [] and len(fake.gets) == 1
+
+
+def test_main_409_stops_the_loop(monkeypatch, capsys) -> None:
+    fake = _Fake([_row(n, _baseline(STEPS)) for n in "ABC"], fail_on_post={2: _http_error(409)})
+    assert _run(monkeypatch, fake) == 1
+    assert len(fake.posts) == 2  # C is never attempted
+
+
+def test_main_unchanged_baseline_is_not_posted(monkeypatch, capsys) -> None:
+    done, _ = m.migrate_baseline(_baseline(STEPS))
+    fake = _Fake([_row("A", done), _row("B", _baseline(STEPS))])
+    assert _run(monkeypatch, fake) == 0
+    assert [p["name"] for p in fake.posts] == ["B"]
+    assert "unchanged" in capsys.readouterr().out
+
+
+def test_main_url_error_midrun_reports_saved_and_fails(monkeypatch, capsys) -> None:
+    fake = _Fake([_row(n, _baseline(STEPS)) for n in "ABC"],
+                 fail_on_post={2: m.urllib.error.URLError("down")})
+    assert _run(monkeypatch, fake) == 1
+    out = capsys.readouterr().out
+    assert "saved so far: A" in out
+    assert len(fake.posts) == 2
+
+
+def test_main_timeout_midrun_returns_one(monkeypatch, capsys) -> None:
+    fake = _Fake([_row(n, _baseline(STEPS)) for n in "AB"], fail_on_post={1: TimeoutError("slow")})
+    assert _run(monkeypatch, fake) == 1
+    assert "saved so far: none" in capsys.readouterr().out
+
+
+def test_main_malformed_baseline_is_skipped(monkeypatch, capsys) -> None:
+    fake = _Fake([_row("Bad", {"labs": {"mode": "blocks", "blocks": [{"type": "slot_track", "slots": [1],
+                                                                       "children": [{"type": "research"}]}]},
+                               "rules": {}}), _row("Good", _baseline(STEPS))])
+    assert _run(monkeypatch, fake) == 1
+    assert "SKIP Bad" in capsys.readouterr().out
+    assert [p["name"] for p in fake.posts] == ["Good"]
