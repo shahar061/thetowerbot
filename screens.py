@@ -121,6 +121,11 @@ class ScreenTracker:
         """True once any state has been confirmed by consecutive readings."""
         return self._confirmed
 
+    @property
+    def pending(self) -> bool:
+        """True while an unconfirmed state streak is building."""
+        return self._pending is not None
+
     def observe(self, reading: ScreenReading) -> ScreenState | None:
         """Feed one reading. Returns the new state on a confirmed transition."""
         # `self._confirmed` guards the short-circuit deliberately: before the

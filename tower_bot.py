@@ -424,6 +424,7 @@ class TowerBot:
         # Which pace run_forever waits at after this scan - see
         # Strategy.interval_for. Starts False: the first frame is usually home.
         self._last_scan_in_battle = False
+        self._last_scan_between_games = False
         self._running = True
         # Makes the between-scan sleep interruptible. A plain time.sleep()
         # ignores stop(): PEP 475 means it resumes after a signal handler
@@ -1880,6 +1881,12 @@ class TowerBot:
                           or (reading.state is screens.ScreenState.UNKNOWN
                               and reading.cash_top_left is not None))
         self._last_scan_in_battle = battle_context
+        # GAME_OVER is in both: it paces like battle today, and is also dead
+        # time between runs. Only an actual run (or a run-HUD UNKNOWN) is not.
+        self._last_scan_between_games = not (
+            reading.state is screens.ScreenState.IN_RUN
+            or (reading.state is screens.ScreenState.UNKNOWN
+                and reading.cash_top_left is not None))
         self._card_observed_state = reading.state.value
         self._card_in_run = (reading.state is screens.ScreenState.IN_RUN or
             reading.state is screens.ScreenState.UNKNOWN and self.tracker.state is screens.ScreenState.IN_RUN
@@ -3172,6 +3179,9 @@ class TowerBot:
                     # the released guard buys nothing: navigation looks for a
                     # menu page's exit, finds none, and taps nothing forever.
                     dismiss=deadlocked,
+                    cooldown=(config.MENU_FAST_NAV_COOLDOWN_SECONDS
+                              if config.MENU_FAST_PROFILE and self._last_scan_between_games
+                              else None),
                 )
 
         # Checked after navigation, and begin() checked after advance() below:
@@ -3320,6 +3330,11 @@ class TowerBot:
                 # A tap is waiting on the frame that confirms it - and that
                 # decides the next one - so fetch it promptly.
                 current_interval = min(current_interval, config.BATTLE_FOLLOWUP_SECONDS)
+            if interval is None and config.MENU_FAST_PROFILE and self._last_scan_between_games:
+                current_interval = min(current_interval, max(MIN_INTERVAL, jitter.spread(
+                    config.MENU_FAST_SCAN_SECONDS, live.timing_jitter)))
+                if self.tracker.pending:
+                    current_interval = min(current_interval, config.MENU_CONFIRM_GAP_SECONDS)
             current_interval = self.maintenance.wait_seconds(time.time(), current_interval)
             self._stopping.wait(current_interval)
         logger.info("Bot stopped.")

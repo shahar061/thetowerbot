@@ -316,6 +316,20 @@ EXPECTED_RESOLUTION: tuple[int, int] = (1080, 2400)
 # death modal shifts ~46px vertically depending on whether the
 # "New Highest Wave!" line is present.
 NAVIGATION_COOLDOWN_SECONDS: float = 3.0
+
+# --- Between-games timing -------------------------------------------------
+# From a run ending (GAME_OVER) until the next run starts, nothing animates for
+# long and every tap is one step of a menu walk, so the loop runs faster than
+# the menu pace. Battle timing is untouched: this applies only when the last
+# scan was not in a run (see TowerBot._last_scan_between_games).
+MENU_FAST_PROFILE: bool = True  # kill switch: False restores the menu interval
+MENU_FAST_SCAN_SECONDS: float = 0.6
+# The next scan while a screen change awaits its confirming reading.
+MENU_CONFIRM_GAP_SECONDS: float = 0.3
+# Navigator cooldown between taps while between games.
+MENU_FAST_NAV_COOLDOWN_SECONDS: float = 1.0
+# Seconds of between-games idleness after which the watchdog acts.
+MENU_IDLE_WATCHDOG_SECONDS: float = 20.0
 #
 # A tuple of candidates per screen, tried in order, because one screen can
 # draw one slot two ways. MAIN_MENU is the case that forced it: a run
