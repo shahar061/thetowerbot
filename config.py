@@ -1006,6 +1006,8 @@ TARGET_SPEEDS: tuple[float, ...] = tuple(v for v in SPEED_VALUES if v > 0.0)
 # the account's ceiling do nothing, so this is sized for the whole widget:
 # x0.0 -> x1.0 -> x1.5 ... -> x5.0 (a maxed Game Speed lab) is nine steps.
 SPEED_MAX_TAPS: int = 9
+# Unmeasured; a short gap so each step registers before the next tap.
+SPEED_MAX_TAP_GAP_SECONDS: float = 0.1
 
 # A readout must match its template at least this well to be believed. Higher
 # than DEFAULT_THRESHOLD: the labels differ by a single glyph, so a loose

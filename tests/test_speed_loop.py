@@ -558,7 +558,15 @@ def test_first_battle_scan_taps_plus_to_the_ceiling(fresh_start: TowerBot) -> No
     assert len(plus) == config.SPEED_MAX_TAPS
     assert len(fresh_start.device.taps) == config.SPEED_MAX_TAPS
     sources = [e.source for e in fresh_start.bus.published if isinstance(e, events.SpeedAdjusted)]
-    assert sources == ["startup"] * config.SPEED_MAX_TAPS
+    assert sources == ["startup"]
+
+
+def test_speed_max_is_one_supervised_input(fresh_start: TowerBot) -> None:
+    """The device supervisor allows one input per fresh frame and refuses the
+    next one. Nine separate taps failed on the second and retried every scan."""
+    fresh_start.run_once()
+
+    assert fresh_start.device.bursts == [(*fresh_start.device.taps[0], config.SPEED_MAX_TAPS)]
 
 
 def test_max_taps_cover_the_whole_widget() -> None:
@@ -596,9 +604,10 @@ def test_speed_max_waits_for_the_battle_screen(
     assert bot._speed_maxed is False
 
 
-def test_a_command_on_the_first_scan_still_lands(fresh_start: TowerBot) -> None:
+def test_a_command_on_the_first_scan_yields_to_the_speed_max(fresh_start: TowerBot) -> None:
+    """A second input in the burst's scan would be refused by the supervisor."""
     fresh_start.controls.request("speed_down")
     fresh_start.run_once()
 
     assert len(tapped_in(PLUS_BOX, fresh_start.device.taps)) == config.SPEED_MAX_TAPS
-    assert len(tapped_in(MINUS_BOX, fresh_start.device.taps)) == 1
+    assert not tapped_in(MINUS_BOX, fresh_start.device.taps)

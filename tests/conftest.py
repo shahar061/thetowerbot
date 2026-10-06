@@ -132,9 +132,15 @@ class _FakeDevice:
 
     def __init__(self) -> None:
         self.taps: list[tuple[int, int]] = []
+        self.bursts: list[tuple[int, int, int]] = []
 
     def click(self, x: int, y: int) -> None:
         self.taps.append((x, y))
+
+    def tap_burst(self, x: int, y: int, n: int, gap_s: float) -> None:
+        """One supervised input: recorded as `n` taps and one burst."""
+        self.bursts.append((x, y, n))
+        self.taps.extend([(x, y)] * n)
 
 
 class _RecordingBus:

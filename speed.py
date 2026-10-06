@@ -20,7 +20,7 @@ import config
 import events
 import jitter
 import vision
-from device import Image, tap
+from device import Image, tap, tap_burst
 from strategy import Strategy
 
 logger = logging.getLogger("tower_bot.speed")
@@ -55,6 +55,19 @@ def read(
         if score >= threshold and (best is None or score > best[1]):
             best = (value, score)
     return None if best is None else best[0]
+
+
+def _arrow_point(
+    direction: str, anchor: tuple[int, int], tuning: Strategy | None,
+) -> tuple[int, int]:
+    """The centre of one arrow, jittered and paced like every other tap."""
+    region = config.SPEED_PLUS_REGION if direction == "up" else config.SPEED_MINUS_REGION
+    x = anchor[0] + region.dx + region.w // 2
+    y = anchor[1] + region.dy + region.h // 2
+    if tuning is not None:
+        x, y = jitter.point(x, y, tuning.tap_jitter_px)
+        jitter.pause(tuning.tap_delay, tuning.timing_jitter)
+    return x, y
 
 
 class SpeedController:
@@ -150,14 +163,7 @@ class SpeedController:
         rediscover a fixed offset. The death-modal rule that forces template
         matching elsewhere is about a screen that genuinely shifts.
         """
-        region = (
-            config.SPEED_PLUS_REGION if direction == "up" else config.SPEED_MINUS_REGION
-        )
-        x = anchor[0] + region.dx + region.w // 2
-        y = anchor[1] + region.dy + region.h // 2
-        if tuning is not None:
-            x, y = jitter.point(x, y, tuning.tap_jitter_px)
-            jitter.pause(tuning.tap_delay, tuning.timing_jitter)
+        x, y = _arrow_point(direction, anchor, tuning)
         tap(device, x, y)
 
         if self._bus is not None:
@@ -169,6 +175,24 @@ class SpeedController:
                     target=target,
                 )
             )
+
+    def max_out(
+        self,
+        device: Any,
+        anchor: tuple[int, int],
+        *,
+        tuning: Strategy | None = None,
+    ) -> None:
+        """Tap + config.SPEED_MAX_TAPS times as ONE supervised input.
+
+        One burst, not a loop of tap(): the device supervisor allows a single
+        input per fresh frame and refuses the next, so separate taps would
+        land one and raise on the second.
+        """
+        x, y = _arrow_point("up", anchor, tuning)
+        tap_burst(device, x, y, config.SPEED_MAX_TAPS, config.SPEED_MAX_TAP_GAP_SECONDS)
+        if self._bus is not None:
+            self._bus.publish(events.SpeedAdjusted(direction="up", source="startup"))
 
     def settle(
         self,

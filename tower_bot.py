@@ -817,11 +817,14 @@ class TowerBot:
                 and 0 <= time.time()-captured <= 30.):
             self.lab_runtime.observe_speed(current, observed_at=captured)
 
-        maxing = not self._speed_maxed
-        if maxing:
-            for _ in range(config.SPEED_MAX_TAPS):
-                self.speed.tap(self.device, "up", anchor, tuning=settings.strategy, source="startup")
+        if not self._speed_maxed:
+            # The burst is this scan's one supervised input, so a command
+            # drained alongside it is dropped rather than refused mid-scan.
+            # A refused burst sent nothing and raises before the flag flips,
+            # so the next scan retries it from a fresh frame.
+            self.speed.max_out(self.device, anchor, tuning=settings.strategy)
             self._speed_maxed = True
+            return True
         for command in commands:
             self.speed.tap(
                 self.device,
@@ -830,7 +833,7 @@ class TowerBot:
                 tuning=settings.strategy,
                 source="web",
             )
-        if commands or maxing:
+        if commands:
             return True
 
         manual = settings.strategy.target_speed
