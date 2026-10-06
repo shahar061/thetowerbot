@@ -75,6 +75,9 @@ _START_SCANS = 8
 # the visit's own clock: since the start tap, and since an 8-scan stage or the
 # 24-scan picker search began. At the ~2 s menu interval the count binds.
 LAB_START_PROOF_MIN_SECONDS = 20.0
+# The same floor for a gem unlock tap: its strike and scan limits (and the
+# confirmation-remained limit) also need this much of the visit's clock since the tap.
+LAB_UNLOCK_PROOF_MIN_SECONDS = 20.0
 LAB_STAGE_MIN_SECONDS = 16.0
 LAB_SEARCH_STAGE_MIN_SECONDS = 40.0
 # Picker-search frames kept as a miss's evidence: the first and the last three.
@@ -203,6 +206,8 @@ class LabVisit:
         self._unlock_frames: list[Image] = []
         self._unlock_scans = 0
         self._unlock_strikes = 0
+        # The visit clock (advance's `now`) at this unlock's gem tap.
+        self._unlock_tapped_at = 0.
         self._debit_strike = False
         self._unlanded_signature: tuple[int, LockedSlot, int] | None = None
         self._unlock_dialog_signature: tuple[int, int, tuple[int, int]] | None = None
@@ -286,6 +291,7 @@ class LabVisit:
         self._unlock_frames = []
         self._unlock_scans = 0
         self._unlock_strikes = 0
+        self._unlock_tapped_at = 0.
         self._unlanded_signature = None
         self._unlock_dialog_signature = None
         self._unlock_dialog_reads = 0
@@ -777,7 +783,8 @@ class LabVisit:
     def _skip(self, slot: int, reason: str) -> None:
         self._emit(events.Skipped(action='lab_unlock', reason=reason, detail=f'Lab {slot}'))
 
-    def _unlock_slot(self, home: LabHomeReading, screen: Image, device: AdbDevice) -> bool:
+    def _unlock_slot(self, home: LabHomeReading, screen: Image, device: AdbDevice,
+                     now: float) -> bool:
         """On the way out, rehearse or unlock the gem lane's next slot once per visit.
 
         True keeps the visit on Labs this scan: a first read, or a tap that needs
@@ -831,7 +838,7 @@ class LabVisit:
                 self.rollout.halt(slot, f"Slot {slot} read {price} gems; the catalog says {catalog}"))
             return False
         if self.unlock_allowed(slot, scope.account_id):
-            return self._tap_unlock(locked, gems, screen, device)
+            return self._tap_unlock(locked, gems, screen, device, now)
         if state.stage == 'dry_run':
             change = self.rollout.note_dry_run(slot, self.worker, price, gems, self.wall_clock(),
                                                account_id=scope.account_id)
@@ -867,7 +874,8 @@ class LabVisit:
                 self._publish_change(self.rollout.halt_canary(
                     slot, self.worker, scope.account_id, f"Slot {slot} owned without a proven canary unlock"))
 
-    def _tap_unlock(self, locked: LockedSlot, gems: int, screen: Image, device: AdbDevice) -> bool:
+    def _tap_unlock(self, locked: LockedSlot, gems: int, screen: Image, device: AdbDevice,
+                    now: float) -> bool:
         assert locked.price is not None and locked.point is not None
         if not self._safe(locked.point):
             # Refuse before preparing: a refused tap must never leave an acted transaction.
@@ -886,6 +894,7 @@ class LabVisit:
         self._unlock_tap = (txn.key, locked.slot)
         self._unlock_frames = [screen]
         self._unlock_scans = self._unlock_strikes = 0
+        self._unlock_tapped_at = now
         self._debit_strike = False
         self._unlanded_signature = None
         self._unlock_dialog_signature = None
@@ -904,7 +913,7 @@ class LabVisit:
             slot=txn.before['slot'])
 
     def _settle_own_unlock(self, txn: transactions.Transaction, home: LabHomeReading,
-                           screen: Image) -> LabVisitResult | None:
+                           screen: Image, now: float) -> LabVisitResult | None:
         """Sort this visit's own unlock tap into bought, not landed, or uncertain.
 
         Bought: slot N confirmed owned since the tap and the gems down by the price.
@@ -912,7 +921,8 @@ class LabVisit:
         still the first locked tile at its price and the gems unchanged. A debit
         that provably is not the price is uncertain at once. Anything else is a
         strike, including a confirmed owned slot whose gem header is unreadable or
-        not yet down; three strikes, or eight post-tap scans, is uncertain.
+        not yet down; three strikes, or eight post-tap scans, is uncertain once
+        LAB_UNLOCK_PROOF_MIN_SECONDS of the visit's clock have passed since the tap.
         """
         assert self._unlock_tap is not None
         key, slot = self._unlock_tap
@@ -957,7 +967,8 @@ class LabVisit:
             self._unlock_strikes += 1
             self._debit_strike = False
             self._unlanded_signature = None
-        if self._unlock_strikes >= _UNLOCK_STRIKES or self._unlock_scans >= _UNLOCK_SCANS:
+        if ((self._unlock_strikes >= _UNLOCK_STRIKES or self._unlock_scans >= _UNLOCK_SCANS)
+                and now - self._unlock_tapped_at >= LAB_UNLOCK_PROOF_MIN_SECONDS):
             return self._unlock_uncertain(txn, slot, 'gem debit was not proven' if self._debit_strike
                                           else 'post-tap screen was not understood')
         return None
@@ -1230,7 +1241,8 @@ class LabVisit:
                                                       'gem confirmation did not match pending unlock')
                     if self._unlock_confirmation_tapped:
                         self._unlock_scans += 1
-                        if self._unlock_scans >= _UNLOCK_STRIKES:
+                        if (self._unlock_scans >= _UNLOCK_STRIKES
+                                and now - self._unlock_tapped_at >= LAB_UNLOCK_PROOF_MIN_SECONDS):
                             return self._unlock_uncertain(pending, slot,
                                                           'gem confirmation remained after tap')
                         return None
@@ -1247,7 +1259,7 @@ class LabVisit:
                             self._unlock_scans = self._unlock_strikes = 0
                     return None
                 self._unlock_dialog_signature, self._unlock_dialog_reads = None, 0
-                return self._settle_own_unlock(pending, home, screen)
+                return self._settle_own_unlock(pending, home, screen, now)
             if self._start_tap is not None and pending.key == self._start_tap[0]:
                 self._start_frames.append(screen)
                 self._start_scans += 1
@@ -1510,7 +1522,7 @@ class LabVisit:
             if home.page:
                 if self._reconcile_repeat(screen, device):
                     return None
-                if self._unlock_slot(home, screen, device):
+                if self._unlock_slot(home, screen, device, now):
                     return None if self.active else self._outcome
                 point = self._match(screen, "nav/tab_battle.png")
                 if point is not None:

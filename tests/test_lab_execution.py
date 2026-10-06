@@ -138,7 +138,7 @@ def test_unlock_needs_a_rollout_record_and_a_worker() -> None:
     visit.request(LabVisitOptions(unlock_slots=(2,)))
     home = lab_screen.LabHomeReading(True, 'idle', None, None, gem_balance=150,
         next_locked=lab_screen.LockedSlot(2, 100, (586, 906), (0, 654, 1080, 396)))
-    assert not visit._unlock_slot(home, frame('menu_labs_slot1_idle'), Device())
+    assert not visit._unlock_slot(home, frame('menu_labs_slot1_idle'), Device(), 0.)
     assert not gem_automated({'type': 'unlock_lab_slot', 'slot': 2})
 
 
