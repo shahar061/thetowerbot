@@ -25,8 +25,8 @@ def test_v2_replaces_only_the_workshop_program_and_is_idempotent() -> None:
     updated = blender_v2_workshop(baseline)
     assert baseline == original
     assert updated["battle"] == baseline["battle"] and updated["labs"] == baseline["labs"]
-    assert [block["id"] for block in updated["workshop"]["blocks"]] == ["bv2.unlocks", "bv2.value", "bv2.wait"]
-    assert updated["workshop"]["blocks"][1]["selection"] == "value"
+    assert [block["id"] for block in updated["workshop"]["blocks"]] == ["bv2.unlocks", "bv2.free_unlocks", "bv2.value", "bv2.wait"]
+    assert updated["workshop"]["blocks"][2]["selection"] == "value"
     RouteBaseline.from_dict(updated)
     assert blender_v2_workshop(updated) == updated
 

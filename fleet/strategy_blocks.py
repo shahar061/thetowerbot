@@ -277,16 +277,19 @@ _ECONOMY_WEIGHTS = {'unlock_cash_bonuses': 100, 'cash_per_wave': 200, 'unlock_co
 _FILLER_CAPS = {'cash_per_wave': 5, 'coins_per_kill_bonus': 5, 'cash_bonus': 5, 'damage': 3, 'attack_speed': 3}
 # Blender v2: coin weights for value-per-coin buying (sum 100) and stop targets.
 _BLENDER_WEIGHTS = {
-    'coins_per_kill_bonus': 18, 'defense_percent': 12, 'attack_speed': 10, 'health': 9,
+    'coins_per_kill_bonus': 15, 'defense_percent': 12, 'attack_speed': 10, 'health': 9,
     'knockback_chance': 6, 'thorns': 6, 'damage': 4, 'lifesteal': 4, 'orb_speed': 4,
     'free_utility_upgrade': 3, 'free_defense_upgrade': 3, 'cash_bonus': 3, 'orbs': 3,
-    'knockback_force': 3, 'free_attack_upgrade': 2, 'coins_per_wave': 2, 'cash_per_wave': 2,
-    'critical_chance': 2, 'multishot_targets': 2, 'multishot_chance': 1, 'critical_factor': 1,
+    'knockback_force': 3, 'bounce_shot_chance': 3, 'free_attack_upgrade': 2, 'coins_per_wave': 2,
+    'cash_per_wave': 2, 'critical_chance': 2, 'bounce_shot_targets': 2, 'bounce_shot_range': 1,
+    'critical_factor': 1,
 }
-_BLENDER_TARGETS = {'thorns': 51, 'lifesteal': 3.5, 'orbs': 3, 'multishot_targets': 5}
-# Every gated pool skill, plus Recovery Packages (whose path buys Interest).
-_BLENDER_UNLOCKS = (*(uid for uid in _BLENDER_WEIGHTS if gate_for(uid) is not None),
-                    'max_recovery', 'package_chance')
+_BLENDER_TARGETS = {'thorns': 51, 'lifesteal': 3.5, 'orbs': 3}
+# Every gated pool skill: the Orbs and Bounce Shot chains come first, Free
+# Upgrades only once they are owned. Nothing here leads to Interest.
+_BLENDER_LATER_UNLOCKS = ('free_utility_upgrade', 'free_defense_upgrade', 'free_attack_upgrade')
+_BLENDER_CORE_UNLOCKS = tuple(uid for uid in _BLENDER_WEIGHTS
+                              if gate_for(uid) is not None and uid not in _BLENDER_LATER_UNLOCKS)
 _OLDER_BUILTIN_WORKSHOP_IDS = {
     'opening': ('opening.starter', 'opening.economy', 'opening.objectives', 'opening.filler'),
     'turtle': ('turtle.economy', 'turtle.attack', 'turtle.objectives',
@@ -358,7 +361,10 @@ def _blender_workshop_template(policy: str) -> dict[str, Any]:
             'field': 'best_tier_1_wave', 'op': 'gte', 'value': 450,
             'then': [
                 {'id': f'{policy}.blender.unlocks', 'type': 'unlock',
-                 'label': 'Unlock missing skills', 'upgrade_ids': list(_BLENDER_UNLOCKS),
+                 'label': 'Unlock Orbs and Bounce Shot', 'upgrade_ids': list(_BLENDER_CORE_UNLOCKS),
+                 'max_price': 20000, 'hold': True},
+                {'id': f'{policy}.blender.free_unlocks', 'type': 'unlock',
+                 'label': 'Unlock Free Upgrades', 'upgrade_ids': list(_BLENDER_LATER_UNLOCKS),
                  'max_price': 20000, 'hold': True},
                 {'id': f'{policy}.blender.value', 'type': 'pool', 'label': 'Blender value per coin',
                  'upgrade_ids': list(_BLENDER_WEIGHTS), 'selection': 'value',
