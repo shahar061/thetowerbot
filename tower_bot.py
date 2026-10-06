@@ -242,6 +242,8 @@ class TowerBot:
         self.maintenance = MaintenanceSchedule()
         self.maintenance_status: str | None = None
         self._deadline_speed: DueAction | None = None
+        # Once per process: see config.SPEED_MAX_TAPS.
+        self._speed_maxed = False
         self._lab_visit_revision: int | None = None
         # Planned Lab choices whose route is uncalibrated: visible, never executed.
         self.lab_route_pending: tuple[str, ...] = ()
@@ -815,6 +817,11 @@ class TowerBot:
                 and 0 <= time.time()-captured <= 30.):
             self.lab_runtime.observe_speed(current, observed_at=captured)
 
+        maxing = not self._speed_maxed
+        if maxing:
+            for _ in range(config.SPEED_MAX_TAPS):
+                self.speed.tap(self.device, "up", anchor, tuning=settings.strategy, source="startup")
+            self._speed_maxed = True
         for command in commands:
             self.speed.tap(
                 self.device,
@@ -823,7 +830,7 @@ class TowerBot:
                 tuning=settings.strategy,
                 source="web",
             )
-        if commands:
+        if commands or maxing:
             return True
 
         manual = settings.strategy.target_speed
