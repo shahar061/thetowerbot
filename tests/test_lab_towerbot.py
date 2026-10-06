@@ -774,3 +774,46 @@ def test_settling_without_a_lab_visit_is_a_no_op() -> None:
     b._settle_planned_lab_attempt(LabVisitResult('started', 'game_speed_confirmed', decision(),
                                                  started_slots=(1,)))
     assert b._lab_action_last is None
+
+
+@dataclass
+class SlotsAccount(FakeAccount):
+    """The planner's slot order: the first action whose research is not excluded."""
+    actions: tuple[LabAction, ...] = ()
+
+    def lab_action(self, plan: Any, runtime: Any, *, revision: int, now: float) -> LabAction | None:
+        self.calls.append(revision)
+        return next((a for a in self.actions if a.research not in plan.excluded), None)
+
+
+class ExcludingProgress(FakeProgress):
+    def lab_strategy_plan(self, runtime: Any, *, available_coins: int | None, now: float,
+                          excluded_research: frozenset[str] = frozenset()) -> Any:
+        self.excluded_research = excluded_research
+        return SimpleNamespace(excluded=excluded_research, slots=(),
+                               gems=SimpleNamespace(next=None, why=()))
+
+
+def test_a_backed_off_action_lets_the_planner_move_on_to_the_next_slot() -> None:
+    """Slot 1's held action excludes only its research; slots 2 and 3 still get a turn."""
+    from lab_visit import LabVisitResult
+    slot1, slot2 = action(1, 'labs.coins-wave', 1), action(2, 'labs.coins-kill-bonus', 3)
+    b = bot(None, options=LabVisitOptions(direct_start=True))
+    b.account_state = SlotsAccount(None, actions=(slot1, slot2))
+    b.reroll_progress = ExcludingProgress(None, options=LabVisitOptions(direct_start=True))
+    b.lab_visit.worker = 'Air_1'
+    b.lab_visit.account_state = SimpleNamespace(verified_scope=SimpleNamespace(account_id='a'))
+    assert b._request_planned_lab_visit(1000., due=False)
+    assert b.lab_visit.selected_action == slot1
+    b.lab_visit.cancel('refused')
+    b._settle_planned_lab_attempt(LabVisitResult('failed', 'selected_research_mismatch',
+                                                 LabDecision('unknown')))
+    assert b._plan_lab_action(1001.) == slot2
+    assert b._request_planned_lab_visit(1001., due=False)
+    assert b.lab_visit.selected_action == slot2
+    # The spend boundary re-plans the same way, though slot 2 is now the last attempt.
+    assert b._authorize_lab('lab_start', decision(2, 'labs.coins-kill-bonus', 3), 1002.)
+    b.lab_visit.cancel('refused')
+    # Both held: nothing to arm until a backoff runs out; slot 1's own backoff is kept.
+    assert b._plan_lab_action(1003.) is None
+    assert b._plan_lab_action(1000. + 901.) == slot1

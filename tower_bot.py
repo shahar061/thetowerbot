@@ -259,6 +259,8 @@ class TowerBot:
         self.lab_route_pending: tuple[str, ...] = ()
         # Last armed planned Lab start: (key, slot evidence, backoff-until).
         self._lab_action_last: tuple[tuple, tuple | None, float] | None = None
+        # Every held planned action: key -> (slot evidence, backoff-until).
+        self._lab_action_holds: dict[tuple, tuple[tuple | None, float]] = {}
         self._lab_followup_due = False
         # A due lab start already claimed the GAME_OVER detour; held until a visit arms or a run starts.
         self._lab_home_pending: bool = False
@@ -1488,10 +1490,9 @@ class TowerBot:
         facts = self.account_state.lab_facts(snapshot, now=now)
         if facts is None:
             return False
-        plan = self.reroll_progress.lab_strategy_plan(
-            snapshot, available_coins=facts.available_coins, now=now,
-            excluded_research=self._excluded_lab_research(now))
-        action = self.account_state.lab_action(plan, snapshot, revision=revision, now=now) if plan else None
+        # Re-plan the way the visit chose: held actions step aside, this one excepted.
+        _, action = self._choose_lab_action(snapshot, facts, revision, now,
+                                            keep=(slot, research, target, revision, 'start'))
         return (action is not None and action.operation == 'start' and action.slot == slot
                 and action.research == research and action.target_level == target
                 and action.strategy_revision == revision)
@@ -1514,16 +1515,73 @@ class TowerBot:
         facts = self.account_state.lab_facts(snapshot, now=now)
         if facts is None:
             return None
-        plan = self.reroll_progress.lab_strategy_plan(
-            snapshot, available_coins=facts.available_coins, now=now,
-            excluded_research=self._excluded_lab_research(now))
+        plan, action = self._choose_lab_action(snapshot, facts, route_runtime.current().revision, now)
         if plan is None:
             return None
         self._note_lab_route_pending(plan)
-        action = self.account_state.lab_action(plan, snapshot, revision=route_runtime.current().revision, now=now)
         if action is None or action.operation not in ('start', 'rehearse'):
             return None
         return action
+
+    def _choose_lab_action(self, snapshot: Any, facts: Any, revision: int | None, now: float, *,
+                           keep: tuple | None = None) -> tuple[Any | None, Any | None]:
+        """The first plan and its action, with every held action's research stepped aside.
+
+        A held action (one in its backoff) excludes only its own research for
+        this choice, the way an unavailable lab does, so the planner moves on
+        to the next slot or lab instead of idling every slot behind it. The
+        action ``keep`` names is the one being authorized and never steps aside.
+        """
+        excluded = self._excluded_lab_research(now)
+        first = None
+        for _ in range(6):  # five slots, each held at most once, then the answer
+            plan = self.reroll_progress.lab_strategy_plan(
+                snapshot, available_coins=facts.available_coins, now=now,
+                excluded_research=excluded)
+            first = plan if first is None else first
+            if plan is None:
+                return first, None
+            action = self.account_state.lab_action(plan, snapshot, revision=revision, now=now)
+            if action is None or not self._lab_action_held(action, now, keep=keep):
+                return first, action
+            if action.research in excluded:
+                return first, None  # the plan ignored the exclusion; never arm a held action
+            excluded = excluded | {action.research}
+        return first, None
+
+    def _lab_action_key(self, action: Any) -> tuple[tuple, tuple | None]:
+        """A planned action's backoff key and the slot evidence it was held against."""
+        key = (action.slot, action.research, action.target_level,
+               action.strategy_revision, action.operation)
+        record = next((r for r in getattr(self.lab_runtime.snapshot(), 'slots', ())
+                       if getattr(r, 'slot', None) == action.slot), None)
+        return key, ((record.state, record.research_id, record.transaction_id)
+                     if record is not None else None)
+
+    def _lab_holds(self) -> dict[tuple, tuple[tuple | None, float]]:
+        holds = getattr(self, '_lab_action_holds', None)
+        if holds is None:
+            holds = self._lab_action_holds = {}
+        return holds
+
+    def _hold_lab_action(self, key: tuple, evidence: tuple | None, now: float) -> None:
+        """Back one action off; it stays held after a later attempt becomes the last."""
+        until = now + LAB_ACTION_BACKOFF_SECONDS
+        self._lab_action_last = (key, evidence, until)
+        holds = self._lab_holds()
+        for stale in [k for k, (_, expiry) in holds.items() if expiry <= now]:
+            del holds[stale]
+        holds[key] = (evidence, until)
+
+    def _lab_action_held(self, action: Any, now: float, *, keep: tuple | None = None) -> bool:
+        key, evidence = self._lab_action_key(action)
+        if key == keep:
+            return False
+        last = self._lab_action_last
+        held = [(last[1], last[2])] if last is not None and last[0] == key else []
+        if key in self._lab_holds():
+            held.append(self._lab_holds()[key])
+        return any(seen == evidence and now < until for seen, until in held)
 
     def _note_lab_route_pending(self, plan: Any) -> None:
         """Publish uncalibrated planned work once per change, never per scan."""
@@ -1550,16 +1608,8 @@ class TowerBot:
         options = self.reroll_progress.lab_visit_options()
         if self.lab_visit.gate(action.slot, action.research, options=options).mode != action.operation:
             return None
-        key = (action.slot, action.research, action.target_level,
-               action.strategy_revision, action.operation)
-        record = next((r for r in self.lab_runtime.snapshot().slots
-                       if getattr(r, 'slot', None) == action.slot), None)
-        evidence = ((record.state, record.research_id, record.transaction_id)
-                    if record is not None else None)
-        last = self._lab_action_last
-        if last is not None and last[0] == key and last[1] == evidence and now < last[2]:
-            return None
-        self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
+        # The plan already stepped around every held action.
+        self._hold_lab_action(*self._lab_action_key(action), now)
         return action
 
     def _request_planned_lab_visit(self, now: float, due: bool) -> bool:
@@ -1584,17 +1634,13 @@ class TowerBot:
             return True
         action = self._plan_lab_action(now)
         if action is not None:
-            key = (action.slot, action.research, action.target_level, action.strategy_revision, action.operation)
-            record = next((r for r in getattr(self.lab_runtime.snapshot(), 'slots', ())
-                           if getattr(r, 'slot', None) == action.slot), None)
-            evidence = ((record.state, record.research_id, record.transaction_id)
-                        if record is not None else None)
+            key, evidence = self._lab_action_key(action)
             last = self._lab_action_last
             repeat = last is not None and last[0] == key and last[1] == evidence
             if not (repeat and (now < last[2] or (not due and not options.direct_start))):
                 if self.lab_visit.request(action, options=options):
                     # Pessimistic: only a verified start clears the backoff.
-                    self._lab_action_last = (key, evidence, now + LAB_ACTION_BACKOFF_SECONDS)
+                    self._hold_lab_action(key, evidence, now)
                     self._lab_followup_due = False
                     self._lab_home_pending = False
                     return True
@@ -1634,6 +1680,7 @@ class TowerBot:
         if (last is not None and result.status == 'started'
                 and (last[0][0] in started_slots if started_slots else selected is not None)):
             self._lab_action_last = (last[0], last[1], 0.)
+            self._lab_holds().pop(last[0], None)
             # A visit that re-planned after its last start already read the
             # strip it left; only one that returned straight away owes a look.
             if (self.reroll_progress is not None and not getattr(result, 'replanned', False)
