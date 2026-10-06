@@ -512,3 +512,46 @@ def test_verified_ad_reward_is_recorded_once_if_return_tap_is_refused():
     assert step(v, d, "store_ad_claimed", 5, claimed) is Outcome.TAPPED
     assert len([e for e in v._bus.published
                 if isinstance(e, events.DailyAdGemClaimed)]) == 1
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
+def test_daily_ad_recovery_closes_an_ad_that_ignores_back() -> None:
+    ads = FIX.parent / "in_game_ad"
+
+    class UnityDevice(Device):
+        hierarchy = (ads / "unity_playable_82.xml").read_text()
+
+        def shell(self, command: str) -> str:
+            if command.startswith("dumpsys window"):
+                return (ads / "unity_focus_82.txt").read_text()
+            if command.startswith("uiautomator dump"):
+                return self.hierarchy
+            raise AssertionError(command)
+
+    def ad(name, now):
+        return v.observe(screen=cv2.imread(str(ads / f"unity_{name}_82.jpg")),
+                         boxes=lambda: (), device=d, policy=POLICY, now=now, in_run=True)
+
+    state = BattleMenuState(None)
+    state.handled("event", battle_menu.Badge("blue"), now=0)
+    v, d = visitor(state), UnityDevice()
+    step(v, d, "collapsed_badged", 0)
+    step(v, d, "open_badged", 1)
+    step(v, d, "store_ad_ready", 2, ocr.read(frame("store_ad_ready")))
+    for now in (33, 36, 39):  # Skip taps the ad did not act on.
+        assert ad("playable", now) is Outcome.TAPPED
+    taps = len(d.taps)
+    assert ad("playable", 183) is Outcome.TAPPED
+    assert d.backs == 1 and len(d.taps) == taps
+    assert ad("playable", 186) is Outcome.TAPPED
+    assert len(d.taps) == taps + 1
+    d.hierarchy = (ads / "unity_end_82.xml").read_text()
+    assert ad("end", 190) is Outcome.TAPPED
+    assert d.taps[-1] == (999, 105)
+    claim = ocr.read(frame("ad_reward_claim"))
+    assert step(v, d, "ad_reward_claim", 193, claim) is Outcome.TAPPED
+    assert d.taps[-1] == battle_menu.ad_reward_claim(frame("ad_reward_claim"), claim)
+    assert step(v, d, "store_ad_claimed", 195,
+                ocr.read(frame("store_ad_claimed"))) is Outcome.TAPPED
+    assert any(isinstance(e, events.DailyAdGemClaimed) for e in v._bus.published)
+    assert d.backs == 1

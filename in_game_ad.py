@@ -140,6 +140,7 @@ class InGameAdClaim:
                     self._phase = "recovering"
                     self._recover_started = self._last_back = now
                     self._backs = 1
+                    self._closes = 0
                 else:
                     self._uncertain("ad_timeout")
             elif in_run and now - self._started >= 8:
@@ -165,6 +166,15 @@ class InGameAdClaim:
                 else:
                     self._uncertain("ad_timeout")
                 return True
+            # Some ads (Unity's WebView) ignore back; their own controls still work.
+            if (self._closes < 3 and now - self._last_close >= 3
+                    and ad_exit.ad_foreground(device)):
+                close = ad_exit.find_close(screen, self._templates, device)
+                if close is not None:
+                    self._tap(device, policy, close)
+                    self._closes += 1
+                    self._last_close = now
+                    return True
             if (self._backs < 3 and now - self._last_back >= 5
                     and ad_exit.ad_foreground(device)):
                 device.press_back()

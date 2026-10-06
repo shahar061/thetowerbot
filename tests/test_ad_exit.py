@@ -156,3 +156,43 @@ def test_game_return_dialogs_from_emulator_83_have_specific_safe_actions() -> No
     assert ad_exit.return_dialog(cloud, ocr.read(cloud), game) == ("maybe_later", (539, 1638))
     assert ad_exit.return_dialog(resume, ocr.read(resume), play) is None
     assert ad_exit.return_dialog(cloud, ocr.read(cloud), play) is None
+
+
+def unity_ad(name: str, hierarchy: str | None = None) -> tuple[Any, Device]:
+    """A Unity Ads WebView frame from emulator 82 with its focus and tree."""
+    fixtures = ROOT / "tests/fixtures/in_game_ad"
+    screen = cv2.imread(str(fixtures / f"unity_{name}_82.jpg"))
+    if hierarchy is None:
+        hierarchy = (fixtures / f"unity_{name}_82.xml").read_text()
+    return screen, Device((fixtures / "unity_focus_82.txt").read_text(), hierarchy)
+
+
+def test_unity_playable_skip_is_found_over_its_artwork() -> None:
+    screen, device = unity_ad("playable")
+
+    assert ad_exit.ad_foreground(device)
+    x, y = ad_exit.find_close(screen, TEMPLATES, device)
+    assert abs(x - 995) <= 6 and abs(y - 110) <= 6
+
+
+def test_unity_end_card_uses_its_labelled_close() -> None:
+    screen, device = unity_ad("end")
+    assert ad_exit.find_close(screen, TEMPLATES, device) == (999, 105)
+
+
+def test_unity_end_card_close_is_found_without_a_label() -> None:
+    screen, device = unity_ad("end", hierarchy="")
+    x, y = ad_exit.find_close(screen, TEMPLATES, device)
+    assert abs(x - 999) <= 6 and abs(y - 105) <= 6
+
+
+def test_corner_close_glyph_generalizes_to_another_creative() -> None:
+    screen = cv2.imread(str(ROOT / "tests/fixtures/in_game_ad/end_card.jpg"))
+    focus = (ROOT / "tests/fixtures/in_game_ad/unity_focus_82.txt").read_text()
+    x, y = ad_exit.find_close(screen, TEMPLATES, Device(focus, ""))
+    assert abs(x - 81) <= 6 and abs(y - 104) <= 6
+
+
+def test_corner_glyphs_are_ignored_while_the_game_has_focus() -> None:
+    screen, _ = unity_ad("playable")
+    assert ad_exit.find_close(screen, TEMPLATES, Device(FOCUSED_GAME, "")) is None
