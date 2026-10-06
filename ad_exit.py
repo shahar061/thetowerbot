@@ -75,6 +75,11 @@ def _window_state(device: Any) -> str:
         return ""
 
 
+def _unity_ad_has_focus(window_dump: str) -> bool:
+    focus = _focus_line(window_dump)
+    return any(package in focus for package in _AD_SDK_PACKAGES)
+
+
 def ad_foreground(device: Any) -> bool:
     """Whether Android reports a full-screen ad above the game."""
     return _ad_has_focus(_window_state(device))
@@ -213,15 +218,18 @@ def _accessible_close(hierarchy: str, screen: Image) -> tuple[str, tuple[int, in
 
 def find_close(screen: Image, templates: TemplateCache, device: Any) -> tuple[int, int] | None:
     """Return one witnessed close button, or None when evidence is unclear."""
-    if play_store_overlay_foreground(device):
+    window = _window_state(device)
+    if _play_store_overlay_has_focus(window):
         return _play_store_close(screen, templates)
     read_hierarchy = getattr(device, "ad_accessibility_hierarchy", None)
     if not callable(read_hierarchy):
         shell = getattr(device, "shell", None)
         if callable(shell):
             read_hierarchy = lambda: shell("uiautomator dump /dev/tty")
-    ad_focused = ad_foreground(device)
-    if callable(read_hierarchy) and ad_focused:
+    ad_focused = _ad_has_focus(window)
+    # A Unity WebView never idles, so its dump outlasts the 5 s a frame may
+    # authorize a tap for; its close glyph is matched by silhouette instead.
+    if callable(read_hierarchy) and ad_focused and not _unity_ad_has_focus(window):
         try:
             status, point = _accessible_close(read_hierarchy(), screen)
             if status == "ambiguous":

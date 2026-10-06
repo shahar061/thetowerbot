@@ -175,9 +175,19 @@ def test_unity_playable_skip_is_found_over_its_artwork() -> None:
     assert abs(x - 995) <= 6 and abs(y - 110) <= 6
 
 
-def test_unity_end_card_uses_its_labelled_close() -> None:
-    screen, device = unity_ad("end")
-    assert ad_exit.find_close(screen, TEMPLATES, device) == (999, 105)
+@pytest.mark.parametrize("name", ["playable", "end"])
+def test_unity_ad_close_skips_the_slow_accessibility_dump(name: str) -> None:
+    # A Unity WebView never idles, so its dump took 5.5 s live on emulator 82
+    # and the supervisor refused every close tap as stale (limit 5 s).
+    screen, device = unity_ad(name)
+    read = device.shell
+    commands: list[str] = []
+    device.shell = lambda command: commands.append(command) or read(command)
+
+    x, y = ad_exit.find_close(screen, TEMPLATES, device)
+
+    assert abs(x - 997) <= 8 and abs(y - 108) <= 8
+    assert not any(command.startswith("uiautomator") for command in commands)
 
 
 def test_unity_end_card_close_is_found_without_a_label() -> None:

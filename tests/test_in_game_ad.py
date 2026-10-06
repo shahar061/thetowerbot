@@ -335,7 +335,8 @@ def test_unity_ad_skips_then_closes_its_end_card() -> None:
     assert abs(x - 995) <= 6 and abs(y - 110) <= 6
     device.hierarchy = (FIX / "unity_end_82.xml").read_text()
     assert claim.observe(frame("unity_end_82"), None, device, POLICY, 35, 7, False)
-    assert device.taps[-1] == (999, 105)
+    x, y = device.taps[-1]
+    assert abs(x - 999) <= 6 and abs(y - 105) <= 6
     assert claim.observe(frame("reward"), None, device, POLICY, 38, 7, False)
     assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 40, 7, True)
     assert bus.events == [events.InGameAdGemClaimed(
@@ -357,7 +358,8 @@ def test_recovery_closes_an_ad_that_ignores_back() -> None:
     assert abs(x - 995) <= 6 and abs(y - 110) <= 6
     device.hierarchy = (FIX / "unity_end_82.xml").read_text()
     assert claim.observe(frame("unity_end_82"), None, device, POLICY, 188, 7, False)
-    assert device.taps[-1] == (999, 105)
+    x, y = device.taps[-1]
+    assert abs(x - 999) <= 6 and abs(y - 105) <= 6
     assert device.backs == 1
     assert claim.observe(frame("reward"), None, device, POLICY, 191, 7, False)
     assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 193, 7, True)
