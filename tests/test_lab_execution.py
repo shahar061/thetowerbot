@@ -110,7 +110,24 @@ def test_picker_has_its_own_bounded_observation_budget(tmp_path: Path, monkeypat
     h.scan('menu_labs_slot1_affordable')
     h.scan('menu_labs_slot1_affordable')
     for _ in range(9):
-        h.scan('menu_labs_slot1_affordable')
+        h.scan('menu_labs_slot1_affordable', step=2.)
+    assert h.visit._outcome.reason == 'picker_stage_timeout'
+    assert h.journal.open_transactions() == ()
+
+
+def test_fast_picker_scans_wait_for_the_stage_minimum_wall_time(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Between games scans run 0.6 s apart: eight scans alone are not a timeout."""
+    from lab_visit import LAB_STAGE_MIN_SECONDS
+    h = LabHarness(tmp_path, monkeypatch)
+    h.scan('menu_labs_slot1_affordable')
+    h.scan('menu_labs_slot1_affordable')
+    assert h.visit._state == 'picker'
+    started = h.time + .5
+    for _ in range(12):
+        h.scan('menu_labs_slot1_affordable', step=.5)
+    assert h.visit.active and h.visit._outcome is None
+    h.scan('menu_labs_slot1_affordable', step=started + LAB_STAGE_MIN_SECONDS - h.time)
     assert h.visit._outcome.reason == 'picker_stage_timeout'
     assert h.journal.open_transactions() == ()
 
@@ -423,7 +440,7 @@ def test_a_picker_timeout_saves_its_frames_and_logs_why_once(
     h.scan('menu_labs_slot1_affordable')
     with caplog.at_level('INFO', logger='lab_visit'):
         for _ in range(9):
-            h.scan('menu_labs_game_speed_affordable')
+            h.scan('menu_labs_game_speed_affordable', step=2.)
     assert h.visit._outcome.reason == 'picker_stage_timeout'
     saved = sorted(p.name for p in (tmp_path / 'evidence').iterdir())
     assert saved and all(name.startswith('lab-picker-timeout-labs.game-speed-') for name in saved)
@@ -442,6 +459,6 @@ def test_a_picker_timeout_after_a_proven_start_rides_on_the_started_result(
     h.visit._state = 'picker'
     h.visit.picker_reader = lambda screen, text: lab_screen.LabPickerReading(True, None, None, None)
     for _ in range(9):
-        h.scan('menu_labs_game_speed_affordable')
+        h.scan('menu_labs_game_speed_affordable', step=2.)
     assert h.visit._outcome.status == 'started' and h.visit._outcome.started_slots == (1,)
     assert h.visit._outcome.attempt.reason == 'picker_stage_timeout'

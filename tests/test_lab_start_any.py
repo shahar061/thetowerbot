@@ -136,12 +136,60 @@ def test_an_unproven_canary_start_halts_with_evidence(tmp_path: Path, monkeypatc
     assert h.visit.request(act())
     h.walk()
     for _ in range(9):
-        h.scan('menu_labs_game_speed_picker')   # neither the slot nor the wallet can be read
+        h.scan('menu_labs_game_speed_picker', step=3.)   # neither the slot nor the wallet can be read
     record = h.starter.state().rollout("start:2")
     assert record.stage == "halted" and record.halted_reason == "Start was not proven"
     assert record.evidence and all(Path(p).name.startswith("lab-start-slot2-") for p in record.evidence)
     assert h.journal.open_transactions()          # the hold stays
     assert h.visit.recovery_status == "lab_start_uncertain"
+
+
+def test_fast_post_tap_scans_wait_for_the_proof_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Eight unproven scans 0.5 s apart are not uncertain until 20 s after the tap."""
+    from lab_visit import LAB_START_PROOF_MIN_SECONDS
+    h = StartHarness(tmp_path, monkeypatch, stage="canary")
+    h.visit.cancel("new request")
+    assert h.visit.request(act())
+    h.walk()
+    tapped = h.time
+    assert h.journal.open_transactions()
+    for _ in range(12):
+        h.scan('menu_labs_game_speed_picker', step=.5)
+    assert h.visit.active and h.visit.recovery_status != "lab_start_uncertain"
+    assert h.starter.state().rollout("start:2").stage == "canary"
+    h.scan('menu_labs_game_speed_picker', step=tapped + LAB_START_PROOF_MIN_SECONDS - h.time)
+    assert h.visit.recovery_status == "lab_start_uncertain"
+    assert h.starter.state().rollout("start:2").stage == "halted"
+    assert h.journal.open_transactions()          # the hold stays
+
+
+def test_a_fast_search_waits_for_the_search_stage_minimum(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab_picker import SearchStep
+    from lab_visit import LAB_SEARCH_STAGE_MIN_SECONDS
+    h = StartHarness(tmp_path, monkeypatch, stage="dry_run")
+    monkeypatch.setattr(lab_visit, 'read_selected_picker',
+                        lambda image, text, *, research_id: lab_screen.LabPickerReading(True, None, 613, None))
+
+    class EndlessSearch:
+        def __init__(self, research: str, width: int) -> None:
+            pass
+
+        def step(self, page: object) -> SearchStep:
+            return SearchStep('swipe', swipe=(540, 1800, 540, 900))
+
+    monkeypatch.setattr(lab_visit, 'PickerSearch', EndlessSearch)
+    h.visit.cancel("new request")
+    assert h.visit.request(LabAction(2, "labs.labs-speed", 1, "rehearse", 7, "route next"))
+    h.scan('menu_labs_active')
+    h.scan('menu_labs_active')
+    h.scan('menu_labs_game_speed_picker', step=.5)
+    started = h.time
+    assert h.visit._search is not None
+    for _ in range(30):
+        h.scan('menu_labs_game_speed_picker', step=.5)
+    assert h.visit.active and h.visit._outcome is None
+    h.scan('menu_labs_game_speed_picker', step=started + LAB_SEARCH_STAGE_MIN_SECONDS - h.time)
+    assert h.visit._outcome.reason == 'picker_stage_timeout'
 
 
 def test_a_lab_missing_from_the_picker_is_a_miss_not_a_halt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -70,6 +70,13 @@ _UNLOCK_SCANS = 8
 # A start tap that has neither proven nor refuted itself after this many scans
 # is uncertain: the hold stays and a canary halts its slot.
 _START_SCANS = 8
+# Scan counts are a proxy for time, and between games scans run ~3x faster
+# (config.MENU_FAST_SCAN_SECONDS), so each count limit also needs this much of
+# the visit's own clock: since the start tap, and since an 8-scan stage or the
+# 24-scan picker search began. At the ~2 s menu interval the count binds.
+LAB_START_PROOF_MIN_SECONDS = 20.0
+LAB_STAGE_MIN_SECONDS = 16.0
+LAB_SEARCH_STAGE_MIN_SECONDS = 40.0
 # Picker-search frames kept as a miss's evidence: the first and the last three.
 _SEARCH_FRAMES_KEPT = 4
 
@@ -162,6 +169,8 @@ class LabVisit:
         self._start_tap: tuple[str, int] | None = None
         self._start_frames: list[Image] = []
         self._start_scans = 0
+        # The visit clock (advance's `now`) at this start's Research tap.
+        self._start_tapped_at = 0.
         self._unsafe_tap = False
         self._picker_seconds: float | None = None
         # (transaction key, coin read) of the last _recover read that saw the
@@ -222,7 +231,8 @@ class LabVisit:
         '_picker_signature': None, '_picker_reads': 0, '_dialog_signature': None, '_dialog_reads': 0,
         '_unavailable_signature': None, '_unavailable_reads': 0, '_picker_name': None,
         '_picker_seconds': None,
-        '_start_tap': None, '_start_scans': 0, '_start_frames': [], '_rehearsing': False,
+        '_start_tap': None, '_start_scans': 0, '_start_tapped_at': 0., '_start_frames': [],
+        '_rehearsing': False,
     }
     _PER_START_FIELDS: ClassVar[tuple[str, ...]] = tuple(_PER_START_DEFAULTS)
 
@@ -1241,7 +1251,8 @@ class LabVisit:
             if self._start_tap is not None and pending.key == self._start_tap[0]:
                 self._start_frames.append(screen)
                 self._start_scans += 1
-                if self._start_scans > _START_SCANS:
+                if (self._start_scans > _START_SCANS
+                        and now - self._start_tapped_at >= LAB_START_PROOF_MIN_SECONDS):
                     return self._start_uncertain(pending)
             self._recover(pending, home, picker, confirmation, screen, device)
             return None
@@ -1253,8 +1264,14 @@ class LabVisit:
         budget = 6 if self._state == 'return' else 24 if self._state == 'picker' and searching else 8
         if self._options.native_repeat != 'unchanged' and self._state in {'home', 'return'}:
             budget = 32
+        # Fast between-games scans spend a count in a fraction of its intended
+        # time: the 8- and 24-scan budgets also need their minimum wall time.
+        floor = (LAB_SEARCH_STAGE_MIN_SECONDS if budget == 24
+                 else LAB_STAGE_MIN_SECONDS if budget == 8 else 0.)
+        elapsed = now - self._stage_started
         repeat_stage = self._options.native_repeat != 'unchanged' and self._state in {'home', 'return'}
-        if self._stage_scans > budget or now - self._stage_started > (60 if searching or repeat_stage else 30):
+        if ((self._stage_scans > budget and elapsed >= floor)
+                or elapsed > (60 if searching or repeat_stage else 30)):
             timeout = LabVisitResult('failed', f'{self._state}_stage_timeout', LabDecision('unknown'))
             if self._state == 'picker':
                 target = selected.research if selected is not None else 'labs.game-speed'
@@ -1473,6 +1490,7 @@ class LabVisit:
             self._tap(device, confirmation.research_point, "confirm_game_speed" if purchase.research_id == "labs.game-speed" else "confirm_research")
             if (purchase.slot, purchase.research_id) != (1, 'labs.game-speed'):
                 self._start_tap, self._start_frames, self._start_scans = (txn.key, purchase.slot), [screen], 0
+                self._start_tapped_at = now
             self._state = "confirm"
             return None
 

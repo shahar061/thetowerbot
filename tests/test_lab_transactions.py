@@ -44,9 +44,9 @@ class LabHarness:
             assert self.journal.open_transactions()[0].stage.value == 'acted'
             raise RuntimeError('crashed after dispatch')
 
-    def scan(self, name: str, *, same_capture: bool = False) -> None:
+    def scan(self, name: str, *, same_capture: bool = False, step: float = 1.) -> None:
         if not same_capture:
-            self.time += 1
+            self.time += step
         self.visit.advance(frame(name), boxes(name), self.device, self.time,
                            observed_at=self.time, capture_scope=self.scope)
 
