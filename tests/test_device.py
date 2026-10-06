@@ -74,3 +74,26 @@ def test_standalone_entry_point_refuses_an_already_leased_device(monkeypatch) ->
     monkeypatch.setattr(tower_bot, "_main", lambda *_: 0)
     with reserve_endpoint("127.0.0.1:5555"):
         assert tower_bot.main(["--host", "127.0.0.1", "--port", "5555", "--once"]) == 1
+
+
+def test_burst_command_is_one_shell_line() -> None:
+    assert device.burst_command(10, 20, 3, 0) == "input tap 10 20; input tap 10 20; input tap 10 20"
+    assert device.burst_command(10, 20, 2, 0.05) == "input tap 10 20; sleep 0.05; input tap 10 20"
+    for bad in (0, -1, 1.5, True):
+        with pytest.raises(ValueError):
+            device.burst_command(10, 20, bad, 0)
+    with pytest.raises(ValueError):
+        device.burst_command(10, 20, 2, -0.1)
+
+
+def test_tap_burst_sends_one_shell_command_to_a_raw_device() -> None:
+    fake = MagicMock(spec=["shell"])
+    device.tap_burst(fake, 10, 20, 3, 0)
+    fake.shell.assert_called_once_with("input tap 10 20; input tap 10 20; input tap 10 20")
+
+
+def test_tap_burst_defers_to_a_supervised_device() -> None:
+    fake = MagicMock(spec=["shell", "tap_burst"])
+    device.tap_burst(fake, 10, 20, 3, 0.05)
+    fake.tap_burst.assert_called_once_with(10, 20, 3, 0.05)
+    fake.shell.assert_not_called()

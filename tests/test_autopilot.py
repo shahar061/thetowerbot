@@ -21,6 +21,9 @@ class Device:
     def swipe(self, x: int, y: int, x2: int, y2: int, duration: float) -> None:
         self.actions.append(("swipe", x, y, x2, y2))
 
+    def tap_burst(self, x: int, y: int, n: int, gap_s: float) -> None:
+        self.actions.append(("burst", x, y, n))
+
 
 def parts() -> tuple:
     from autopilot import BattleAutopilot
@@ -550,15 +553,17 @@ def test_modeled_batch_reuses_confirmation_frames_and_stops_after_five(batch_siz
     for index in range(1, batch_size + 1):
         bot.step(frame, device, configured(index - 1), cash=1000,
                  observation=observed(index), run_id=7, refresh_policy=refresh,
-                 record_receipt=receipts.append)
+                 record_receipt=lambda sequence, upgrade_id, levels: receipts.append(sequence))
     assert len(device.actions) == batch_size
     assert bot.state.snapshot()['verified_purchases'] == batch_size
     assert calls == list(range(batch_size - 1))
-    assert receipts == list(range(batch_size))  # the final receipt installs a fence too
+    assert receipts == list(range(batch_size))  # every level's receipt feeds the tally
     assert bot.pending is None
 
 
-def test_modeled_batch_never_replays_a_receipt_while_counter_is_stale() -> None:
+def test_modeled_batch_never_replays_a_receipt_while_counter_is_stale(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the one-level receipt
     from policy import UpgradeRule
     bot, device, frame, obs, policy = parts()
     row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
@@ -577,7 +582,9 @@ def test_modeled_batch_never_replays_a_receipt_while_counter_is_stale() -> None:
 
 
 @pytest.mark.parametrize('interruption', ['wave', 'maxed', 'pause', 'route'])
-def test_modeled_batch_stops_for_changed_evidence_or_controls(interruption: str) -> None:
+def test_modeled_batch_stops_for_changed_evidence_or_controls(
+        monkeypatch: pytest.MonkeyPatch, interruption: str) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the one-level receipt
     from policy import UpgradeRule
     bot, device, frame, obs, policy = parts()
     row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
@@ -603,3 +610,390 @@ def test_modeled_batch_stops_for_changed_evidence_or_controls(interruption: str)
     assert len(device.actions) == 1
     if interruption in {'wave', 'route'}:
         assert not calls
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_a_model_quote_from_an_earlier_wave_still_authorizes_the_tap(
+        monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    quote = dict(account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+                 status='available', verified=True, price=5, value=row.value,
+                 wave=int(obs.combat['wave']) - 1)
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+                     decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=quote)
+    bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
+    assert len(device.actions) == (1 if enabled else 0)
+
+
+def test_a_modeled_receipt_names_the_upgrade_and_its_levels() -> None:
+    from policy import UpgradeRule
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    policy = replace(policy, rules=(UpgradeRule('attack_speed'),), single_purchase=True,
+        decision_token='a:1:7:0', modeled_pool=True, battle_price_quote=dict(
+            account_id='a', run_id=7, upgrade_id='attack_speed', source='model',
+            status='available', verified=True, price=5, value=row.value,
+            wave=int(obs.combat['wave']), sequence=6))
+    bot.step(frame, device, policy, cash=100, observation=obs, run_id=7)
+    receipts: list[tuple] = []
+    changed = replace(obs, observed_at=102, rows=(replace(row, value=row.value + .05, observed_at=102),))
+    bot.step(frame, device, policy, cash=95, observation=changed, run_id=7,
+             record_receipt=lambda *args: receipts.append(args))
+    assert receipts == [(6, 'attack_speed', 1)]
+
+
+def curve_of(upgrade_id: str) -> list[int]:
+    from fleet.battle_prices import catalog
+    return catalog()['curves'][upgrade_id]
+
+
+def modeled(policy: Any, row: Any, index: int, *, sequence: int = 0,
+            ceiling: int | None = None, wave: int = 1) -> Any:
+    """A Blender-style single-purchase policy holding a verified model quote."""
+    from policy import UpgradeRule
+    curve = curve_of(row.upgrade_id)
+    return replace(policy, rules=(UpgradeRule(row.upgrade_id),), single_purchase=True,
+        decision_token=f'a:1:7:{sequence}', modeled_pool=True, burst_price_ceiling=ceiling,
+        battle_price_quote=dict(account_id='a', run_id=7, upgrade_id=row.upgrade_id,
+            source='model', status='available', verified=True, price=curve[index],
+            index=index, value=row.value + index * .05, wave=wave, sequence=sequence,
+            batch_size=5, rule_id='cheap'))
+
+
+def shown(observation: Any, row: Any, index: int, at: float, **changes: Any) -> Any:
+    """`observation` showing only `row`, priced at curve level `index`."""
+    price = curve_of(row.upgrade_id)[index]
+    fields = dict(price=price, raw_price=f'${price}', value=row.value + index * .05,
+                  observed_at=at)
+    return replace(observation, observed_at=at, rows=(replace(row, **{**fields, **changes}),))
+
+
+def test_burst_size_stops_at_cash_ceiling_curve_end_and_the_maximum() -> None:
+    from autopilot import burst_size
+    curve = [5, 7, 10, 15, 21, 28, 36]
+    assert burst_size(curve, 0, 100, 10_000) == 6  # 86 fits, 122 does not
+    assert burst_size(curve, 0, 80, 10_000) == 5   # 58 fits, 86 does not
+    assert burst_size(curve, 0, 100, 20) == 4      # 21 is over the ceiling
+    assert burst_size(curve, 5, 10_000, 10_000) == 2  # only two levels left
+    assert burst_size([1] * 30, 0, 10_000, 10_000) == config.BATTLE_BURST_MAX
+    assert burst_size(curve, 0, 4, 10_000) == 0
+
+
+@pytest.mark.parametrize('reserve, spend_pct, ceiling, taps', [
+    (0, 100, 10_000, 6),   # 5+7+10+15+21+28 = 86 of 100
+    (20, 100, 10_000, 5),  # the reserve applies to the whole burst
+    (0, 50, 10_000, 4),    # so does the route spend limit
+    (0, 100, 20, 4),       # no level above the ceiling
+    (0, 100, None, 1),     # no ceiling: one tap, as today
+])
+def test_a_modeled_purchase_bursts_within_cash_reserve_and_ceiling(
+        reserve: int, spend_pct: int, ceiling: int | None, taps: int) -> None:
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    policy = replace(modeled(policy, row, 0, ceiling=ceiling), cash_reserve=reserve,
+                     cash_spend_limit_pct=spend_pct)
+    bot.step(frame, device, policy, cash=100, observation=shown(obs, row, 0, at=100), run_id=7)
+    assert device.actions == [('tap', *row.tap) if taps == 1 else ('burst', *row.tap, taps)]
+    assert (bot._pending_index, bot._pending_k) == (0, taps)
+
+
+def test_a_ceiling_below_the_next_level_saves_instead_of_tapping() -> None:
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    bot.step(frame, device, modeled(policy, row, 0, ceiling=4), cash=100,
+             observation=shown(obs, row, 0, at=100), run_id=7)
+    assert device.actions == []
+    assert bot.state.snapshot()['phase'] == 'saving'
+
+
+def test_the_kill_switch_keeps_one_tap_per_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    bot.step(frame, device, modeled(policy, row, 0, ceiling=10_000), cash=100,
+             observation=shown(obs, row, 0, at=100), run_id=7)
+    assert device.actions == [('tap', *row.tap)]
+    assert (bot._pending_curve, bot._pending_k) == ((), 1)
+
+
+def after_burst(index: int = 0, ceiling: int = 10_000, cash: int = 100) -> tuple:
+    """A bot that has just sent a burst on Attack Speed from curve level `index`."""
+    from autopilot import BattleAutopilot
+    _, device, frame, obs, policy = parts()
+    bus = Bus()
+    bot = BattleAutopilot(bus=bus)
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    bot.step(frame, device, modeled(policy, row, index, sequence=10, ceiling=ceiling),
+             cash=cash, observation=shown(obs, row, index, at=100), run_id=7)
+    return bot, device, frame, obs, policy, row, bus
+
+
+def confirm(bot: Any, device: Any, frame: Any, policy: Any, row: Any, observation: Any,
+            receipts: list, invalidated: list, index: int = 0) -> None:
+    bot.step(frame, device, modeled(policy, row, index, sequence=10, ceiling=10_000),
+             cash=10, observation=observation, run_id=7,
+             record_receipt=lambda *args: receipts.append(args),
+             invalidate_quote=invalidated.append)
+
+
+def purchases(bus: Bus) -> list[tuple[str, int | None]]:
+    import events
+    return [(e.upgrade_id, e.price) for e in bus.published if isinstance(e, events.BattlePurchased)]
+
+
+def test_a_burst_counts_the_levels_its_price_jump_proves() -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    assert device.actions == [('burst', *row.tap, 6)]
+    receipts: list = []
+    invalidated: list = []
+    confirm(bot, device, frame, policy, row, shown(obs, row, 4, at=101), receipts, invalidated)
+    assert purchases(bus) == [('attack_speed', price) for price in (5, 7, 10, 15)]
+    assert receipts == [(13, 'attack_speed', 4)]  # the last level's sequence
+    assert invalidated == []
+    assert bot.state.snapshot()['verified_purchases'] == 4
+    assert bot.pending is None
+
+
+def test_a_jump_past_the_burst_counts_at_most_its_taps() -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst(ceiling=20)
+    assert device.actions == [('burst', *row.tap, 4)]
+    confirm(bot, device, frame, policy, row, shown(obs, row, 6, at=101), [], [])
+    assert len(purchases(bus)) == 4
+
+
+def test_a_maxed_row_confirms_a_burst_that_reached_the_curve_end() -> None:
+    curve = curve_of('attack_speed')
+    bot, device, frame, obs, policy, row, bus = after_burst(index=len(curve) - 3, cash=30_000)
+    assert device.actions == [('burst', *row.tap, 3)]
+    receipts: list = []
+    invalidated: list = []
+    maxed = shown(obs, row, 0, at=101, status='maxed', price=None, raw_price=None)
+    confirm(bot, device, frame, policy, row, maxed, receipts, invalidated, index=len(curve) - 3)
+    assert purchases(bus) == [('attack_speed', price) for price in curve[-3:]]
+    assert receipts == [(12, 'attack_speed', 3)] and invalidated == []
+
+
+def test_a_maxed_row_short_of_the_curve_end_counts_one_level_and_reconciles() -> None:
+    # The in-game maximum can sit below the curve's last level, so MAX
+    # proves only that the first tap landed.
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    assert device.actions == [('burst', *row.tap, 6)]
+    receipts: list = []
+    invalidated: list = []
+    maxed = shown(obs, row, 0, at=101, status='maxed', price=None, raw_price=None)
+    confirm(bot, device, frame, policy, row, maxed, receipts, invalidated)
+    assert purchases(bus) == [('attack_speed', 5)]
+    assert receipts == [(10, 'attack_speed', 1)]
+    assert invalidated == ['attack_speed']  # the next read re-indexes the row
+    assert bot.pending is None
+
+
+@pytest.mark.parametrize('changes', [
+    dict(price=None, raw_price=None, status='unreadable'),  # no price at all
+    dict(price=6, raw_price='$6'),                          # matches no curve level
+    dict(price=21, raw_price='$5'),                         # digits disagree with the parse
+    dict(price=1000, raw_price='$1K'),                      # matches several curve levels
+    dict(),                                                 # still at the starting level
+])
+def test_an_undecidable_price_waits_then_falls_back_to_the_value(changes: dict[str, Any]) -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    receipts: list = []
+    invalidated: list = []
+    for at in (101, 104, 107.9):
+        confirm(bot, device, frame, policy, row, shown(obs, row, 0, at=at, **changes),
+                receipts, invalidated)
+        assert bot.pending is not None and purchases(bus) == []
+    confirm(bot, device, frame, policy, row,
+            shown(obs, row, 0, at=108, **{**changes, 'value': row.value + .3}), receipts, invalidated)
+    assert purchases(bus) == [('attack_speed', 5)]
+    assert receipts == [(10, 'attack_speed', 1)]
+    assert invalidated == ['attack_speed']  # the next read re-indexes the row
+
+
+def test_a_burst_row_scrolled_out_of_view_waits_then_blocks() -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    receipts: list = []
+    invalidated: list = []
+    for at in (101, 104, 107.9):
+        confirm(bot, device, frame, policy, row, replace(obs, observed_at=at, rows=()),
+                receipts, invalidated)
+        assert bot.pending is not None and purchases(bus) == []
+    confirm(bot, device, frame, policy, row, replace(obs, observed_at=108, rows=()),
+            receipts, invalidated)
+    assert purchases(bus) == [] and receipts == [] and invalidated == []
+    assert bot.pending is None and bot._blocked['attack_speed'] == 168
+
+
+def test_an_unconfirmed_burst_with_an_unchanged_value_blocks_the_row() -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    receipts: list = []
+    invalidated: list = []
+    confirm(bot, device, frame, policy, row,
+            shown(obs, row, 0, at=108, price=None, raw_price=None, status='unreadable'),
+            receipts, invalidated)
+    assert purchases(bus) == [] and receipts == [] and invalidated == []
+    assert bot.pending is None and bot._blocked['attack_speed'] == 168
+
+
+def test_a_price_behind_the_model_counts_nothing_and_reconciles() -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst(index=3)
+    assert device.actions == [('burst', *row.tap, 4)]
+    receipts: list = []
+    invalidated: list = []
+    confirm(bot, device, frame, policy, row, shown(obs, row, 1, at=101), receipts, invalidated,
+            index=3)
+    assert purchases(bus) == [] and receipts == []
+    assert invalidated == ['attack_speed']
+    assert bot.pending is None and 'attack_speed' not in bot._blocked
+
+
+def test_a_wave_change_does_not_discard_a_pending_burst() -> None:
+    bot, device, frame, obs, policy, row, bus = after_burst()
+    later = shown(obs, row, 2, at=101)
+    later = replace(later, combat={**later.combat, 'wave': later.combat['wave'] + 1})
+    confirm(bot, device, frame, policy, row, later, [], [])
+    assert purchases(bus) == [('attack_speed', 5), ('attack_speed', 7)]
+
+
+def test_a_quote_for_another_row_never_sizes_a_burst() -> None:
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    policy = modeled(policy, row, 0, ceiling=10_000)
+    # Defense % also starts at $5: only the quote's own row may size a burst.
+    policy = replace(policy, battle_price_quote={**policy.battle_price_quote,
+                                                 'upgrade_id': 'defense_percent'})
+    bot.step(frame, device, policy, cash=100, observation=shown(obs, row, 0, at=100), run_id=7)
+    assert device.actions == [('tap', *row.tap)]
+    assert (bot._pending_curve, bot._pending_index, bot._pending_k) == ((), None, 1)
+
+
+@pytest.mark.parametrize('ending', ['confirmed', 'unconfirmed', 'behind', 'identity', 'run_end'])
+def test_every_way_a_pending_burst_ends_forgets_its_curve(ending: str) -> None:
+    from combat_context import RunIdentity
+    bot, device, frame, obs, policy, row, bus = after_burst(index=3 if ending == 'behind' else 0)
+    assert bot._pending_curve and bot._pending_k > 1
+    if ending == 'confirmed':
+        confirm(bot, device, frame, policy, row, shown(obs, row, 4, at=101), [], [])
+    elif ending == 'unconfirmed':
+        confirm(bot, device, frame, policy, row,
+                shown(obs, row, 0, at=108, price=None, raw_price=None, status='unreadable'), [], [])
+    elif ending == 'behind':
+        confirm(bot, device, frame, policy, row, shown(obs, row, 1, at=101), [], [], index=3)
+    elif ending == 'identity':
+        for at, run in ((101, 7), (102, 8)):  # the first only names the run it was already in
+            bot.step(frame, device, modeled(policy, row, 0, sequence=10, ceiling=10_000), cash=10,
+                     observation=shown(obs, row, 0, at=at), run_id=7, identity=RunIdentity(run_id=run))
+    else:
+        bot.suspend('Run ended', clear_battle=True)
+    assert (bot.pending, bot._pending_curve, bot._pending_index, bot._pending_k) == (None, (), None, 1)
+
+
+@pytest.mark.parametrize('enabled, down', [(True, True), (False, False)])
+def test_seek_scrolls_toward_the_target_in_catalog_order(
+        monkeypatch: pytest.MonkeyPatch, enabled: bool, down: bool) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot, device, frame, observation, policy = parts()
+    # Multishot Chance is listed after every visible Attack row.
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('multishot_chance'),)),
+             cash=100, observation=observation)
+    (kind, _, y, _, y2), = device.actions
+    assert kind == 'swipe' and (y > y2) == down  # a downward scroll swipes upward
+
+
+def test_seek_scrolls_up_for_a_target_listed_before_the_visible_rows(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, observation, policy = parts()
+    lower = tuple(replace(r, upgrade_id=uid) for r, uid in zip(
+        observation.rows, ('range', 'damage_per_meter', 'multishot_chance', 'multishot_targets')))
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('damage'),)),
+             cash=100, observation=replace(observation, rows=lower))
+    (kind, _, y, _, y2), = device.actions
+    assert kind == 'swipe' and y < y2
+
+
+def test_seek_sweeps_when_catalog_order_cannot_place_the_target(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, observation, policy = parts()
+    # Visible rows on both sides of Critical Chance, but not Critical Chance.
+    rows = tuple(r for r in observation.rows if r.upgrade_id in ('damage', 'critical_factor'))
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('critical_chance'),)),
+             cash=100, observation=replace(observation, rows=rows))
+    (kind, _, y, _, y2), = device.actions
+    assert kind == 'swipe' and y < y2  # the sweep starts upward
+
+
+def test_a_directed_seek_that_stops_moving_restarts_as_a_full_sweep(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, observation, policy = parts()
+    policy = replace(policy, rules=(UpgradeRule('multishot_chance'),))
+    for n in range(2):  # the panel never moves
+        bot.step(frame, device, policy, cash=100, observation=replace(observation, observed_at=100 + n))
+    (_, _, down_y, _, down_y2), (_, _, up_y, _, up_y2) = device.actions
+    assert down_y > down_y2 and up_y < up_y2
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_a_confirmed_purchase_skips_the_post_tap_cooldown(
+        monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot, device, frame, obs, policy = parts()
+    row = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    bot.step(frame, device, modeled(policy, row, 0), cash=100,
+             observation=shown(obs, row, 0, at=100), run_id=7, cooldown=1.0)
+    bot.step(frame, device, modeled(policy, row, 0), cash=95,
+             observation=shown(obs, row, 1, at=100.4), run_id=7, cooldown=1.0,
+             refresh_policy=lambda sequence: modeled(policy, row, 1, sequence=1),
+             record_receipt=lambda *args: None)
+    # The confirming frame buys again only when the cooldown is skipped.
+    assert len(device.actions) == (2 if enabled else 1)
+
+
+def test_buying_follows_the_last_battle_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, obs, policy = parts()
+    bot.step(frame, device, policy, cash=100, observation=obs)
+    assert bot.buying  # tapped a purchase
+    bot.suspend("Run ended", clear_battle=True)
+    assert not bot.buying
+    bot.step(frame, device, replace(policy, cash_reserve=95), cash=100,
+             observation=replace(obs, observed_at=105))
+    assert not bot.buying  # saving
+    damage = next(r for r in obs.rows if r.upgrade_id == 'damage')
+    bot.state.observe(replace(obs, rows=(replace(damage, upgrade_id='health', name='Health',
+                                                 category='DEFENSE'),)))  # cached off-tab
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('health'),)), cash=100,
+             observation=replace(obs, observed_at=110))
+    assert bot.buying  # opening the tab that holds the target
+    bot.step(frame, device, replace(policy, rules=(UpgradeRule('health'),)), cash=100,
+             observation=replace(obs, observed_at=110.3), cooldown=1.0)
+    assert bot.buying  # a cooldown-skipped scan keeps the previous pace
+    bot.step(frame, device, replace(policy, observe_only=True), cash=100,
+             observation=replace(obs, observed_at=115))
+    assert not bot.buying  # observing only
+
+
+def test_a_tap_on_another_row_than_the_quoted_one_expects_no_next_price(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from policy import UpgradeRule
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    bot, device, frame, obs, policy = parts()
+    quoted = next(r for r in obs.rows if r.upgrade_id == 'attack_speed')
+    damage = next(r for r in obs.rows if r.upgrade_id == 'damage')
+    other = replace(damage, upgrade_id='health', name='Health')  # has its own curve
+    # The quote prices Attack Speed; the rule taps Health.
+    policy = replace(modeled(policy, quoted, 0), rules=(UpgradeRule('health'),))
+    bot.step(frame, device, policy, cash=100, run_id=7,
+             observation=replace(obs, rows=(other, quoted)))
+    assert bot.pending is not None and bot.pending[0].upgrade_id == 'health'
+    assert bot._pending_next_price is None

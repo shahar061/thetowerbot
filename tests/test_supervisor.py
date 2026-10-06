@@ -558,3 +558,35 @@ def test_scope_invalidation_failure_does_not_mask_disconnect(tmp_path: Path) -> 
     sut.recover()
     sut.disconnected()
     assert sut.status().reason == "device_disconnected"
+
+
+class ShellDevice(Device):
+    def __init__(self) -> None:
+        super().__init__()
+        self.commands: list[str] = []
+
+    def shell(self, command: str) -> str:
+        self.commands.append(command)
+        return ""
+
+
+def test_a_tap_burst_is_one_checkpointed_input(tmp_path: Path) -> None:
+    from device import burst_command
+    clock = Clock()
+    device = ShellDevice()
+    sut = supervisor(tmp_path / "supervisor.json", clock, [device])
+    sut.recover()
+    with pytest.raises(RuntimeError):
+        GuardedDevice(sut).tap_burst(7, 8, 10, 0.0)  # no fresh frame yet
+    assert device.commands == []
+    assert observed(sut, clock, "before") is RecoveryState.READY
+    GuardedDevice(sut).tap_burst(7, 8, 10, 0.0)
+    assert device.commands == [burst_command(7, 8, 10, 0.0)]
+    assert sut.status().reason == "action_unconfirmed"
+    # Ten taps are still one input: nothing else goes out before a new frame.
+    with pytest.raises(RuntimeError):
+        sut.tap_burst(7, 8, 10, 0.0)
+    with pytest.raises(RuntimeError):
+        sut.tap(7, 8)
+    assert device.commands == [burst_command(7, 8, 10, 0.0)]
+    assert device.taps == []

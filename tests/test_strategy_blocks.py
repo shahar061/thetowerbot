@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 import pytest
+import config
 
 from fleet.build_route import CoinRules, RouteRules
 from fleet.build_route_eval import RouteFacts
@@ -1164,7 +1165,9 @@ def test_modeled_pool_uses_cash_curve_without_observed_price_ttl() -> None:
     assert result.trace.price_source == 'model'
 
 
-def test_model_pool_reconciles_cheapest_stale_wave_before_spending() -> None:
+def test_model_pool_reconciles_cheapest_stale_wave_before_spending(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the wave reconcile trip
     block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')
     quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
     f = replace(battle_facts(), battle_price_quotes={
@@ -1193,7 +1196,9 @@ def test_model_pool_rejects_wrong_lane_selection_and_missing_curve() -> None:
             blocks.validate_program([{**pool(upgrade_ids=['health'], selection='cheapest', price_source='model'), **extra}], lane)
 
 
-def test_assigned_model_pool_advances_only_after_persisted_receipt(tmp_path: Path) -> None:
+def test_assigned_model_pool_advances_only_after_persisted_receipt(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the receipt fence
     import json
     import time
     import db
@@ -1254,7 +1259,9 @@ def test_modeled_visible_batch_is_bounded_and_keeps_price_tolerance(
                  price_source='model', batch_size=5, max_price_premium_pct=25)
     blocks.validate_program([block], 'battle')
     quote = dict(account_id='account', run_id=7, status='available', source='model', value=1, verified=True)
-    f = replace(battle_facts(), visible_upgrade_ids=('health',), battle_batch_purchases=count, battle_batch_rule_id='cheap',
+    # battle_cash 99 keeps this below the rich multiple (10 x 10), where the
+    # premium-to-stay batch rule applies unchanged.
+    f = replace(battle_facts(), battle_cash=99, visible_upgrade_ids=('health',), battle_batch_purchases=count, battle_batch_rule_id='cheap',
         battle_price_quotes={'health': dict(quote, price=local_price), 'attack_speed': dict(quote, price=10)})
     result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
     assert result.decision.upgrade_id == chosen
@@ -1268,7 +1275,9 @@ def test_batch_options_reject_unsafe_or_incompatible_values(extra: dict[str, Any
             **{**dict(price_source='model', batch_size=5, max_price_premium_pct=25), **extra})], 'battle')
 
 
-def test_visible_batch_cannot_skip_a_stale_cheaper_quote() -> None:
+def test_visible_batch_cannot_skip_a_stale_cheaper_quote(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', False)  # pins the wave reconcile trip
     block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest',
                  price_source='model', batch_size=5, max_price_premium_pct=25)
     quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
@@ -1557,3 +1566,164 @@ def test_blender_v2_weights_sum_to_100_and_unlock_every_gated_pool_skill() -> No
     assert gated <= set(unlocks['upgrade_ids'])
     assert {'max_recovery', 'package_chance'} <= set(unlocks['upgrade_ids'])
     assert (unlocks['max_price'], unlocks['hold']) == (20000, True)
+
+
+def test_burst_mode_buys_the_cheapest_quote_without_a_wave_reconcile_trip(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    block = pool(upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model')
+    quote = dict(account_id='account', run_id=7, status='available', source='model', value=1)
+    f = replace(battle_facts(), battle_price_quotes={
+        'health': dict(quote, price=10, verified=True),
+        'attack_speed': dict(quote, price=5, verified=False)})
+    result = blocks.evaluate_program(route([block], lane='battle'), f, None, 'battle')
+    assert result.trace.observation_ids == ()
+    assert result.status == 'observed' and result.decision.upgrade_id == 'attack_speed'
+
+
+def _assigned_model_progress(tmp_path: Path) -> tuple[Any, Path, dict[str, dict[str, Any]], Any]:
+    """A registered worker whose assigned battle route is one modeled cheapest pool."""
+    import time
+    from account_state import AccountState
+    from fleet.build_route import RouteDocument
+    from fleet.build_route_store import BuildRouteStore
+    from fleet.build_route_runtime import BuildRouteRuntime
+    from fleet.reroll_progress import RerollProgress
+    from policy import AutopilotPolicy
+    from tests.test_build_route_integration import _registered
+    root = _registered(tmp_path, 'Air_38', 'account')
+    raw = RouteDocument.compatibility().to_dict()
+    raw['baseline']['battle'].update(mode='blocks', blocks=[pool(
+        upgrade_ids=['health', 'attack_speed'], selection='cheapest', price_source='model',
+        batch_size=5, max_price_premium_pct=25)])
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, 'operator')
+    progress = RerollProgress(root, 'account', AccountState())
+    progress.route_runtime = BuildRouteRuntime(tmp_path, 'Air_38', 'account')
+    rows = {uid: dict(status='available', value=1, price=price, observed_at=time.time())
+            for uid, price in [('health', 10), ('attack_speed', 5)]}
+    return progress, root, rows, AutopilotPolicy(enabled=True)
+
+
+def _purchases(root: Path, run_id: int, *seqs: int) -> None:
+    """What the async event sink commits: one BattlePurchased row per level."""
+    import json
+    import db
+    with db.connect(root / 'tower_bot.db') as conn:
+        for seq in seqs:
+            conn.execute("INSERT INTO events(seq,run_id,ts,type,detail) VALUES(?,?,1,'BattlePurchased',?)",
+                         (seq, run_id, json.dumps({'upgrade_id': 'attack_speed'})))
+
+
+def test_the_in_memory_tally_replaces_the_receipt_fence(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    progress, root, rows, base = _assigned_model_progress(tmp_path)
+    _purchases(root, 2, 1)  # bought before this process started
+
+    def policy(run_id: int = 2, **extra: Any) -> Any:
+        return progress.battle_policy(base, rows, run_id=run_id, wave=2, cash=100, **extra)
+
+    assert policy().decision_token.endswith(':1')  # the tally starts from the database
+    rows['attack_speed'].update(price=None, status='unreadable')
+    progress.note_battle_levels(2, 'attack_speed', 3)
+    confirmed = policy(after_receipt_sequence=3)
+    assert confirmed.enabled  # no fence: the receipt never disables buying
+    assert confirmed.decision_token.endswith(':4')
+    _purchases(root, 2, 2, 3)  # the sink catches up partway
+    assert policy().decision_token.endswith(':4')  # max(db, tally), never the sum
+    _purchases(root, 2, 4, 5)
+    assert policy().decision_token.endswith(':5')  # the database may lead too
+    assert policy(run_id=3).decision_token.endswith(':0')  # a new run starts over
+    progress.note_battle_levels(2, 'attack_speed', 9)  # a receipt for the old run
+    assert policy(run_id=3).decision_token.endswith(':0')
+
+
+def rich_pool() -> dict[str, Any]:
+    return pool(upgrade_ids=['attack_speed', 'multishot_chance', 'health', 'thorns'],
+                selection='cheapest', price_source='model', batch_size=5, max_price_premium_pct=25)
+
+
+def rich_facts(cash: int, tab: str | None, visible: tuple[str, ...]) -> RouteFacts:
+    quote = dict(account_id='account', run_id=7, status='available', source='model',
+                 value=1, verified=True)
+    prices = {'attack_speed': 50, 'multishot_chance': 40, 'health': 10, 'thorns': 30,
+              'defense_absolute': 1}  # defense_absolute is not in the pool
+    return replace(battle_facts(), battle_cash=cash, battle_tab=tab, visible_upgrade_ids=visible,
+                   battle_price_quotes={uid: dict(quote, price=p) for uid, p in prices.items()})
+
+
+@pytest.mark.parametrize('tab, visible, chosen', [
+    ('ATTACK', ('attack_speed',), 'attack_speed'),          # visible on the open tab
+    ('ATTACK', (), 'multishot_chance'),                       # elsewhere on the open tab
+    ('UTILITY', (), 'health'),                                # nothing on the tab: global
+    (None, ('attack_speed',), 'health'),                      # tab unknown: global
+    ('DEFENSE', ('defense_absolute', 'thorns'), 'thorns'),    # never outside the pool
+])
+def test_rich_mode_prefers_visible_then_tab_then_global(
+        monkeypatch: pytest.MonkeyPatch, tab: str | None, visible: tuple[str, ...], chosen: str) -> None:
+    from fleet.battle_prices import catalog
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    program = blocks.validate_program([rich_pool()], 'battle')
+    result = blocks.evaluate_program(route(list(program), lane='battle'),
+                                     rich_facts(1000, tab, visible), None, 'battle')
+    assert result.decision.upgrade_id == chosen
+    assert result.decision.burst_price_ceiling == max(catalog()['curves'][chosen])
+
+
+def test_rich_burst_ceiling_does_not_follow_live_cash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    program = blocks.validate_program([rich_pool()], 'battle')
+    ceilings = {blocks.evaluate_program(route(list(program), lane='battle'),
+                                        rich_facts(cash, None, ()), None, 'battle').decision.burst_price_ceiling
+                for cash in (1000, 1234, 5000)}
+    assert len(ceilings) == 1  # a policy that changed every frame would reset the row search
+    assert None not in ceilings
+
+
+@pytest.mark.parametrize('cash', [1000, 99])  # rich and not
+@pytest.mark.parametrize('limit', [
+    dict(level_caps={'health': {'base': 5}}),
+    dict(price_cap=100_000),
+    dict(max_purchases=50),
+    dict(wallet_share_pct=100),
+    dict(targets={'health': 1_000_000}),
+])
+def test_a_pool_with_count_or_funds_limits_never_bursts(
+        monkeypatch: pytest.MonkeyPatch, cash: int, limit: dict[str, Any]) -> None:
+    # Those limits are checked for the first level only; a burst would buy
+    # past them, so the pool keeps one tap per decision.
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', True)
+    program = blocks.validate_program([{**rich_pool(), **limit}], 'battle')
+    facts = replace(rich_facts(cash, None, ()), run_purchases={'health': 3})
+    result = blocks.evaluate_program(route(list(program), lane='battle'), facts, None, 'battle')
+    assert result.decision.upgrade_id == 'health'
+    assert result.decision.burst_price_ceiling is None
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_outside_rich_mode_the_cheapest_choice_is_unchanged(
+        monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    program = blocks.validate_program([rich_pool()], 'battle')
+    result = blocks.evaluate_program(route(list(program), lane='battle'),
+                                     rich_facts(99, 'ATTACK', ('attack_speed',)), None, 'battle')
+    assert result.decision.upgrade_id == 'health'
+    assert result.decision.burst_price_ceiling == (12 if enabled else None)  # 10 x 125%
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_battle_policy_carries_the_open_tab_and_burst_ceiling(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    from fleet.battle_prices import catalog
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    progress, root, rows, base = _assigned_model_progress(tmp_path)
+    shared = dict(run_id=2, wave=2, battle_tab='DEFENSE', visible_upgrade_ids=('health',))
+    rich = progress.battle_policy(base, rows, cash=1000, **shared)
+    poor = progress.battle_policy(base, rows, cash=40, **shared)
+    if enabled:
+        assert rich.rules[0].upgrade_id == 'health'
+        assert rich.burst_price_ceiling == max(catalog()['curves']['health'])
+        assert poor.rules[0].upgrade_id == 'attack_speed' and poor.burst_price_ceiling == 6
+    else:
+        assert rich.rules[0].upgrade_id == 'attack_speed' and rich.burst_price_ceiling is None
+        assert poor.burst_price_ceiling is None

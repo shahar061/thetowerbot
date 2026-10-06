@@ -74,6 +74,8 @@ class RouteFacts:
     # Workshop rows read as MAX with no later buy or priced read. A tuple, not
     # a set: the facts snapshot is written with json.dump(asdict(facts)).
     maxed_ids: tuple[str, ...] = ()
+    # The battle panel's open category (ATTACK, DEFENSE or UTILITY).
+    battle_tab: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,8 @@ class BattleDecision:
     reason: str
     target: float | None = None
     price_source: str = "observed"
+    # Highest single-level price a burst may include; None buys one level.
+    burst_price_ceiling: int | None = None
 
 
 @dataclass(frozen=True)

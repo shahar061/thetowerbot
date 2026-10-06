@@ -1070,3 +1070,43 @@ def test_run_forever_uses_the_menu_interval_outside_battle(monkeypatch) -> None:
     bot.run_forever()
 
     assert waits == [5.0, 0.5]
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_run_forever_scans_at_the_battle_pace_while_buying(monkeypatch, enabled: bool) -> None:
+    """A step that bought, confirmed or headed for a purchase is followed
+    by a 0.6 s scan; saving, observing and idle steps keep the strategy pace."""
+    import events
+    import vision
+    from strategy import MAX_TIMING_JITTER
+    from tower_bot import TowerBot
+
+    monkeypatch.setattr(config, 'BATTLE_BURST_ENABLED', enabled)
+    bot = TowerBot(
+        device=MagicMock(),
+        templates=vision.TemplateCache(Path(__file__).parent.parent / "templates"),
+        bus=events.EventBus(),
+    )
+    bot.controls.apply({"interval": 5.0})
+    waits: list[float] = []
+
+    def run_once(max_runs=None) -> bool:
+        bot._last_scan_in_battle = True
+        bot.autopilot._buying = not waits
+        return True
+
+    def wait(seconds: float) -> bool:
+        waits.append(seconds)
+        if len(waits) == 2:
+            bot.stop()
+        return False
+
+    monkeypatch.setattr(bot, "run_once", run_once)
+    monkeypatch.setattr(bot._stopping, "wait", wait)
+    bot.run_forever()
+
+    if enabled:
+        assert waits[0] <= config.BATTLE_SCAN_INTERVAL_SECONDS * (1 + MAX_TIMING_JITTER)
+    else:
+        assert waits[0] > 4.0
+    assert waits[1] > 4.0

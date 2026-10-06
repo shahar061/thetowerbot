@@ -587,3 +587,13 @@ def test_health_guide_switches_from_economy_after_the_configured_wave() -> None:
     )
     assert decision.phase == "survival"
     assert decision.upgrade_id == "health"
+
+
+def test_burst_price_ceiling_is_runtime_only_and_positive() -> None:
+    assert AutopilotPolicy(burst_price_ceiling=5).burst_price_ceiling == 5
+    assert 'burst_price_ceiling' not in AutopilotPolicy(burst_price_ceiling=5).to_dict()
+    for bad in (0, -1, 2.5, True):
+        with pytest.raises(PolicyError):
+            AutopilotPolicy(burst_price_ceiling=bad)
+    with pytest.raises(PolicyError):
+        AutopilotPolicy.from_dict({'burst_price_ceiling': 5})
