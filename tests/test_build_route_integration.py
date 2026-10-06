@@ -744,10 +744,12 @@ def test_a_multi_start_visit_leaves_no_phantom_jar(tmp_path: Path) -> None:
     (progress.root / "lab-coin-jar.json").write_text(json.dumps(
         {"account_id": "account-a", "amount": 50_000, "visit_key": "after-run:5", "updated_at": 1.0,
          "target": {"lab_id": "labs.game-speed", "level": 4}}))
-    # A stale jar never exceeds the wallet it reads.
+    # The effective jar never exceeds the wallet it reads; the stored one keeps its savings.
     progress.route_facts = _facts("after-run:5", wallet=10_000)  # type: ignore[method-assign]
     progress.shopping_policy(base)
-    assert progress.coin_jar.amount() == 10_000
+    assert progress._route_evaluation.trace.spend_ceiling == 0
+    assert json.loads((progress.root / "build-route-facts.json").read_text())["lab_coin_jar"] == 10_000
+    assert progress.coin_jar.amount() == 50_000
     (progress.root / "lab-coin-jar.json").write_text(json.dumps(
         {"account_id": "account-a", "amount": 50_000, "visit_key": "after-run:5", "updated_at": 1.0,
          "target": {"lab_id": "labs.game-speed", "level": 4}}))

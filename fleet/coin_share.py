@@ -156,7 +156,8 @@ class LabCoinJar:
         """The jar for this Workshop visit; grows at most once per visit key.
 
         save_pct only (other modes, or labs not auto-started, empty it). It grows by pct% of
-        the wallet above it, up to `target`'s price, and never exceeds a known wallet. A new
+        the wallet above it, up to `target`'s price. The returned (effective) jar never
+        exceeds a known wallet; the stored one is not clamped to it. A new
         target starts from zero once `retired` says the old one is researching or finished.
         With no target known (an unread plan, a transient unknown cadence) it neither grows
         nor empties.
@@ -183,12 +184,12 @@ class LabCoinJar:
             if key != visit_key and type(wallet) is int and wallet >= 0:
                 amount = grow_jar(amount, wallet, target.price, rules.coins.lab_share.pct)
                 key = visit_key
-        if type(wallet) is int and wallet >= 0:
-            amount = min(amount, wallet)
         if (record is None or amount != record["amount"] or key != record.get("visit_key")
                 or new_target != stored):
             self._write(amount, key, now, new_target)
-        return amount
+        # Only the effective jar is clamped to the wallet: a misread low wallet must not
+        # destroy the stored savings; a real lab spend reduces them through `spend`.
+        return min(amount, wallet) if type(wallet) is int and wallet >= 0 else amount
 
     def spend(self, coins: int, now: float) -> int:
         """A confirmed lab coin debit takes at most its own price from the jar.

@@ -116,8 +116,18 @@ def test_the_jar_never_exceeds_the_wallet_or_the_target_price(tmp_path: Path) ->
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 50}})
     assert jar.settle(saving, GS4, 200_000, "after-run:1", 10.) == 50_000   # capped at the price
     assert jar.settle(saving, GS4, 1_000, "after-run:1", 11.) == 1_000      # a known wallet clamps it
-    assert jar.amount() == 1_000
     assert jar.settle(saving, None, 400, "after-run:1", 12.) == 400         # with no target too
+    assert jar.amount() == 50_000                                          # ...but only in effect
+
+
+def test_a_misread_wallet_never_shrinks_the_stored_jar(tmp_path: Path) -> None:
+    jar = coin_share.LabCoinJar(tmp_path, "a1")
+    saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
+    jar.path.write_text(json.dumps({"account_id": "a1", "amount": 20_000, "visit_key": "after-run:1",
+                                    "target": {"lab_id": "labs.game-speed", "level": 4}}))
+    assert jar.settle(saving, GS4, 100, "after-run:1", 10.) == 100
+    assert jar.amount() == 20_000
+    assert jar.settle(saving, GS4, 30_000, "after-run:1", 11.) == 20_000
 
 
 def test_an_unknown_target_keeps_the_jar_and_another_mode_empties_it(tmp_path: Path) -> None:
