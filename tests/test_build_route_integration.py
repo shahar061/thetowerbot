@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import db
 from account_state import AccountState
@@ -768,3 +769,40 @@ def test_a_multi_start_visit_leaves_no_phantom_jar(tmp_path: Path) -> None:
     assert progress.coin_jar.amount() == 2_519
     assert _jar(progress)["target"] == {"lab_id": "labs.game-speed", "level": 5}
     assert progress._route_evaluation.trace.spend_ceiling == 7_560
+
+
+def test_a_plan_without_a_target_empties_a_retired_jar_and_ignores_the_cadence(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    import fleet.reroll_progress as reroll_progress
+    progress = _progress(tmp_path)
+    _save_pct_template_route(tmp_path)
+    _game_speed_waits(progress, price=2_500)  # a cadence the plan overrides
+    (progress.root / "lab-coin-jar.json").write_text(json.dumps(
+        {"account_id": "account-a", "amount": 5_000, "visit_key": "after-run:1", "updated_at": 1.0,
+         "target": {"lab_id": "labs.game-speed", "level": 7}}))
+    base = Strategy.from_config().shopping
+    # The plan exists but names nothing for slot 1; Game Speed L7 is not retired yet.
+    monkeypatch.setattr(reroll_progress, "save_pct_target", lambda *a, **k: (None, lambda lab, level: False))
+    progress.route_facts = _facts("after-run:2", wallet=12_000)  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 5_000  # kept, not regrown toward the cadence's 2,500
+    # Game Speed maxed: the residual jar no longer holds Workshop coins.
+    monkeypatch.setattr(reroll_progress, "save_pct_target", lambda *a, **k: (None, lambda lab, level: True))
+    progress.shopping_policy(base)
+    assert progress.coin_jar.amount() == 0
+    assert progress._route_evaluation.trace.spend_ceiling == 12_000
+
+
+def test_a_planner_error_falls_back_to_the_cadence(tmp_path: Path, monkeypatch: Any) -> None:
+    import fleet.reroll_progress as reroll_progress
+    progress = _progress(tmp_path)
+    _save_pct_template_route(tmp_path)
+    _game_speed_waits(progress, price=2_500)
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("odd persisted lab data")
+    monkeypatch.setattr(reroll_progress, "save_pct_target", broken)
+    progress.route_facts = _facts("after-run:1", wallet=1_000)  # type: ignore[method-assign]
+    progress.shopping_policy(Strategy.from_config().shopping)
+    assert progress.coin_jar.amount() == 250
+    assert progress._route_evaluation.trace.spend_ceiling == 750

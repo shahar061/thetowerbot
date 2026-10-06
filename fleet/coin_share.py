@@ -160,7 +160,7 @@ class LabCoinJar:
         exceeds a known wallet; the stored one is not clamped to it. A new
         target starts from zero once `retired` says the old one is researching or finished.
         With no target known (an unread plan, a transient unknown cadence) it neither grows
-        nor empties.
+        nor empties, unless `retired` says its stored target is researching or finished.
         """
         rules = route.rules
         if rules.coins.lab_share.mode != "save_pct" or not rules.labs.auto_start:
@@ -175,7 +175,10 @@ class LabCoinJar:
         key = record.get("visit_key") if record is not None else None
         stored = self._stored_target(record)
         new_target = stored
-        if target is not None:
+        if target is None:
+            if stored is not None and retired is not None and retired(stored["lab_id"], stored["level"]):
+                amount = 0  # its target started or finished and nothing follows: release it
+        else:
             new_target = {"lab_id": target.lab_id, "level": target.level}
             if (stored is not None and stored != new_target and retired is not None
                     and retired(stored["lab_id"], stored["level"])):

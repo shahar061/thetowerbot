@@ -553,6 +553,23 @@ def test_a_multi_start_visit_debits_every_start_and_marks_game_speed_running(tmp
     assert b._research_until == 120_000.
 
 
+def test_each_visit_debits_its_starts_even_when_an_earlier_visit_looked_the_same(tmp_path: Path) -> None:
+    from lab_visit import LabVisitResult
+
+    def failed_after_a_filler() -> LabVisitResult:
+        # A later attempt failed after a proven filler start: no transaction key, no job.
+        return LabVisitResult('failed', 'lab_start_uncertain',
+                              LabDecision('unknown', slot=3, research_id='labs.coins-kill-bonus'),
+                              started_slots=(2,), started_research=('labs.coins-wave',),
+                              started_spends=(('labs.coins-wave', 71),))
+    b = finishing_bot(tmp_path)
+    first = failed_after_a_filler()
+    b._finish_lab_visit(first)
+    b._finish_lab_visit(first)  # the same visit's result again: no second debit
+    b._finish_lab_visit(failed_after_a_filler())  # a later visit, same research and price
+    assert b.reroll_progress.spends == [71, 71]
+
+
 @pytest.mark.parametrize('observed, debited', [(280, 280), (0, 300)], ids=['observed', 'unread'])
 def test_the_journal_proven_spend_is_debited(tmp_path: Path, observed: int, debited: int) -> None:
     from lab_visit import LabVisitResult

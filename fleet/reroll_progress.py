@@ -188,11 +188,16 @@ class RerollProgress:
         now = time.time()
         target, retired = None, None
         if effective.rules.coins.lab_share.mode == "save_pct":
-            planned = save_pct_target(effective, self.root, self.account_id, wallet=wallet,
-                                      db_path=db_path, now=now)
+            try:
+                planned = save_pct_target(effective, self.root, self.account_id, wallet=wallet,
+                                          db_path=db_path, now=now)
+            except Exception as exc:  # odd persisted lab data must not break Workshop
+                logger.warning("Lab plan for the save_pct jar failed (%s); using the slot-1 cadence", exc)
+                planned = None
             if planned is not None:
+                # A plan exists: its (possibly empty) target rules, never the cadence.
                 target, retired = planned
-            if target is None:
+            else:
                 target = coin_share.cadence_target(effective, lab_record)
         return self.coin_jar.settle(effective, target, wallet, visit_key, now, retired=retired)
 

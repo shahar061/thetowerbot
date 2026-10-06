@@ -275,7 +275,7 @@ class TowerBot:
                                           if self.lab_visit is not None else None)
         self._bind_lab_runtime()
         self._last_lab_confirmation: tuple[float | None, int, int] | None = None
-        self._last_lab_debit: tuple[Any, ...] | None = None
+        self._last_lab_debit: Any | None = None
         self._last_wave_progress: tuple[int | None, int] | None = None
         # The last HUD wave the autopilot read. Reported on IN_RUN scans only.
         self._scan_wave: int | None = None
@@ -1811,11 +1811,11 @@ class TowerBot:
             spends = ((decision.research_id, spent),) if spent > 0 else ()
         if not spends:
             return
-        job = result.confirmed_job
-        key = (result.transaction_key, spends, job.completes_at if job is not None else None)
-        if key == getattr(self, '_last_lab_debit', None):
+        # Per visit: each visit hands back its own result object, so a failure-path
+        # result (no transaction key, no job) never swallows a later visit's equal debit.
+        if result is getattr(self, '_last_lab_debit', None):
             return
-        self._last_lab_debit = key
+        self._last_lab_debit = result
         for _, spent in spends:
             self.reroll_progress.note_lab_coin_debit(spent)
 
