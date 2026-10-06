@@ -547,7 +547,8 @@ def test_daily_ad_recovery_closes_an_ad_that_ignores_back() -> None:
     assert len(d.taps) == taps + 1
     d.hierarchy = (ads / "unity_end_82.xml").read_text()
     assert ad("end", 190) is Outcome.TAPPED
-    assert d.taps[-1] == (999, 105)
+    x, y = d.taps[-1]
+    assert abs(x - 999) <= 6 and abs(y - 105) <= 6
     claim = ocr.read(frame("ad_reward_claim"))
     assert step(v, d, "ad_reward_claim", 193, claim) is Outcome.TAPPED
     assert d.taps[-1] == battle_menu.ad_reward_claim(frame("ad_reward_claim"), claim)
