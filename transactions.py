@@ -986,11 +986,11 @@ def judge(
                 spent=price,
                 reason="the item changed; the wallet was unreadable, so it cost its read price",
             )
-        if drop is not None and drop > 0 and abs(drop - price) <= max(slack, price):
-            # Income landing mid-purchase shrinks the drop and the header's
-            # abbreviation blurs it, so a drop between nothing and twice the
-            # price (or the slack) is still that one level. A larger drop, an
-            # unmoved or a grown wallet contradict the price and stay unknown.
+        if drop is not None and 0 < drop <= price + slack:
+            # Income landing mid-purchase can only shrink the drop; the
+            # header's abbreviation blurs it by at most the slack. A drop past
+            # price + slack has no such explanation (the price was misread),
+            # and an unmoved or grown wallet contradicts it: both stay unknown.
             return Outcome(
                 key=key,
                 verdict=Verdict.BOUGHT,

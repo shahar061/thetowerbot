@@ -664,7 +664,17 @@ def test_an_unproven_workshop_effect_with_an_ambiguous_wallet_stays_unproven(
     assert journal.open_transactions()[0].key == txn.key
 
 
+def test_a_workshop_drop_of_price_plus_slack_is_the_price(tmp_path) -> None:
+    """128 = 108 + the 10-coin slack each of the two "K" readings hides."""
+    journal, scope, txn = _scoped_workshop_buy(tmp_path, price=108, wallet=14_560)
+
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=14_560 - 128), now=3.)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.BOUGHT, 108)
+
+
 @pytest.mark.parametrize("after", [
+    14_560 - 129,      # one coin past price + slack: no rounding explains it
     14_560 - 3 * 108,  # three times the price left the wallet
     14_560,            # nothing left it
     15_000,            # it grew
