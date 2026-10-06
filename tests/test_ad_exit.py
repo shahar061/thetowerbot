@@ -58,6 +58,20 @@ def test_meta_audience_network_uses_its_labelled_close() -> None:
     assert ad_exit.find_close(screen, TEMPLATES, device) == (77, 77)
 
 
+def test_meta_video_skip_is_found_before_the_slow_accessibility_dump() -> None:
+    # A playing Meta video never idles: emulator 83's dump ran 12 s and failed,
+    # so the witnessed skip was tapped from a 12-14 s old frame and refused.
+    fixtures = ROOT / "tests/fixtures/in_game_ad"
+    screen = cv2.imread(str(fixtures / "meta_video_83.jpg"))
+    device = Device((fixtures / "meta_audience_network_focus_82.txt").read_text(), "")
+    read = device.shell
+    commands: list[str] = []
+    device.shell = lambda command: commands.append(command) or read(command)
+
+    assert ad_exit.find_close(screen, TEMPLATES, device) == (982, 180)
+    assert not any(command.startswith("uiautomator") for command in commands)
+
+
 @pytest.mark.parametrize("component", [
     "com.other.game/com.facebook.ads.AudienceNetworkActivity",
     "com.TechTreeGames.TheTower/com.facebook.ads.AudienceNetworkActivityHelper",

@@ -1,10 +1,10 @@
 """Locate a rewarded ad's exit without depending on the creative's artwork.
 
-Ad SDK controls are often accessible even when their pixels change. Inspect
-the foreground ad's accessibility tree first. WebView ads such as Unity's
-playables expose no labels while playing, but draw their skip and close
-glyphs in solid white over the creative, so their silhouettes are matched
-next. Witnessed image templates remain for the remaining ad providers.
+Ad SDKs draw their skip and close glyphs in solid white over the creative,
+so their silhouettes are matched first, then witnessed image templates. The
+foreground ad's accessibility tree is read last: its dump waits for the UI
+to idle, which a playing video or WebView ad can hold off for 5-12 s, longer
+than the frame stays fresh enough to authorize the tap.
 """
 from __future__ import annotations
 
@@ -216,35 +216,7 @@ def _accessible_close(hierarchy: str, screen: Image) -> tuple[str, tuple[int, in
     return ("absent", None)
 
 
-def find_close(screen: Image, templates: TemplateCache, device: Any) -> tuple[int, int] | None:
-    """Return one witnessed close button, or None when evidence is unclear."""
-    window = _window_state(device)
-    if _play_store_overlay_has_focus(window):
-        return _play_store_close(screen, templates)
-    read_hierarchy = getattr(device, "ad_accessibility_hierarchy", None)
-    if not callable(read_hierarchy):
-        shell = getattr(device, "shell", None)
-        if callable(shell):
-            read_hierarchy = lambda: shell("uiautomator dump /dev/tty")
-    ad_focused = _ad_has_focus(window)
-    # A Unity WebView never idles, so its dump outlasts the 5 s a frame may
-    # authorize a tap for; its close glyph is matched by silhouette instead.
-    if callable(read_hierarchy) and ad_focused and not _unity_ad_has_focus(window):
-        try:
-            status, point = _accessible_close(read_hierarchy(), screen)
-            if status == "ambiguous":
-                return None
-            if point is not None:
-                return point
-        except Exception:  # noqa: BLE001 - ADB and UI hierarchy failures need visual fallback
-            pass
-    if ad_focused:
-        glyph = _corner_glyph(screen, templates)
-        if glyph is not None:
-            return glyph
-    close = battle_menu.ad_end_card_close(screen, templates)
-    if close is not None:
-        return close
+def _top_left_close(screen: Image, templates: TemplateCache) -> tuple[int, int] | None:
     template = templates.get(_TOP_LEFT_TEMPLATE)
     if template is None:
         return None
@@ -256,3 +228,32 @@ def find_close(screen: Image, templates: TemplateCache, device: Any) -> tuple[in
     if score < .82:
         return None
     return (x + template.shape[1] // 2, y + template.shape[0] // 2)
+
+
+def find_close(screen: Image, templates: TemplateCache, device: Any) -> tuple[int, int] | None:
+    """Return one witnessed close button, or None when evidence is unclear."""
+    window = _window_state(device)
+    if _play_store_overlay_has_focus(window):
+        return _play_store_close(screen, templates)
+    ad_focused = _ad_has_focus(window)
+    if ad_focused:
+        glyph = _corner_glyph(screen, templates)
+        if glyph is not None:
+            return glyph
+    close = (battle_menu.ad_end_card_close(screen, templates)
+             or _top_left_close(screen, templates))
+    if close is not None or not ad_focused or _unity_ad_has_focus(window):
+        return close
+    # The dump waits for the UI to idle, so a playing video or WebView makes it
+    # outlast the 5 s a frame may authorize a tap for; it is read last, and
+    # never for Unity's WebView, which does not idle at all.
+    read_hierarchy = getattr(device, "ad_accessibility_hierarchy", None)
+    if not callable(read_hierarchy):
+        shell = getattr(device, "shell", None)
+        if not callable(shell):
+            return None
+        read_hierarchy = lambda: shell("uiautomator dump /dev/tty")
+    try:
+        return _accessible_close(read_hierarchy(), screen)[1]
+    except Exception:  # noqa: BLE001 - an ADB or UI hierarchy failure is no evidence
+        return None
