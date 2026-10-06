@@ -1422,6 +1422,8 @@ class LabVisit:
                     # stores the level the picker shows and the next plan
                     # targets it instead of mismatching on every visit.
                     signature = (entry.concept_id, entry.level, entry.status)
+                    # A different level breaks any run of matching start reads.
+                    self._picker_signature, self._picker_reads = None, 0
                     if entry.concept_id == selected.research and signature != self._mismatch_signature:
                         self._mismatch_signature = signature
                         return None

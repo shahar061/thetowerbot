@@ -660,3 +660,27 @@ def test_a_mismatched_picker_level_is_stored_so_the_next_plan_targets_it(
     assert facts.completed_levels == {'labs.game-speed': 3}
     slot = evaluate_lab_plan(template_route(), facts).slots[0]
     assert (slot.next.lab_id, slot.next.level) == ('labs.game-speed', 4)
+
+
+def test_a_mismatched_read_between_two_matching_reads_breaks_their_run(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lv.1 / Lv.4 / Lv.1 is not two consecutive reads of Lv.1: no start tap yet."""
+    from fleet.resource_blocks import LabAction
+    h = LabHarness(tmp_path, monkeypatch)
+    h.visit.cancel('new request')
+    assert h.visit.request(LabAction(1, 'labs.game-speed', 1, 'start', 7, 'route next'))
+
+    def scan(name: str, level: int = 1) -> None:
+        h.time += 1.
+        text = tuple(replace(box, text=f'Game Speed Lv.{level}') if box.text == 'Game Speed Lv.1' else box
+                     for box in boxes(name))
+        h.visit.advance(frame(name), text, h.device, h.time, observed_at=h.time, capture_scope=h.scope)
+
+    scan('menu_labs_slot1_affordable')
+    scan('menu_labs_slot1_affordable')
+    scan('menu_labs_game_speed_affordable')
+    scan('menu_labs_game_speed_affordable', level=4)
+    scan('menu_labs_game_speed_affordable')
+    assert h.visit._outcome is None and h.visit._state == 'picker'
+    scan('menu_labs_game_speed_affordable')
+    assert h.visit._state == 'dialog'
