@@ -1,8 +1,10 @@
 """Locate a rewarded ad's exit without depending on the creative's artwork.
 
 Ad SDK controls are often accessible even when their pixels change. Inspect
-the foreground ad's accessibility tree first; keep the witnessed image
-templates for ad providers that do not expose a labelled control.
+the foreground ad's accessibility tree first. WebView ads such as Unity's
+playables expose no labels while playing, but draw their skip and close
+glyphs in solid white over the creative, so their silhouettes are matched
+next. Witnessed image templates remain for the remaining ad providers.
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import cv2
+import numpy as np
 
 import battle_menu
 from ocr import TextBox
@@ -21,6 +24,9 @@ from vision import TemplateCache
 
 _BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 _AD_ACTIVITY = ("adactivity", "rewardedactivity", "interstitialactivity")
+# SDK packages whose every Activity is an ad, e.g. Unity's
+# com.unity3d.ads.adplayer.FullScreenWebViewDisplay.
+_AD_SDK_PACKAGES = ("/com.unity3d.ads.", "/com.unity3d.services.ads.")
 _META_AD_ACTIVITY = (
     "com.techtreegames.thetower/com.facebook.ads.audiencenetworkactivity"
 )
@@ -30,6 +36,11 @@ _PLAY_STORE_OVERLAY = (
 _CLOSE_LABELS = {"close", "close ad", "close video", "dismiss", "dismiss ad"}
 _TOP_LEFT_TEMPLATE = "in_game_ad/end_close_top_left.png"
 _PLAY_STORE_CLOSE_TEMPLATE = "in_game_ad/play_store_close.png"
+# White skip (⏭) and close (×) glyphs, matched by silhouette in either top
+# corner; the close is preferred because it leaves the ad.
+_CORNER_GLYPHS = ("in_game_ad/corner_close.png", "in_game_ad/corner_skip.png")
+_CORNER_SIZE = 280
+_CORNER_THRESHOLD = .9
 _GAME_ACTIVITY = "com.techtreegames.thetower/com.unity3d.player.unityplayeractivity"
 
 
@@ -42,6 +53,7 @@ def _ad_has_focus(window_dump: str) -> bool:
     """Require the foreground window to belong to an ad Activity."""
     focus = _focus_line(window_dump)
     return (any(name in focus for name in _AD_ACTIVITY)
+            or any(package in focus for package in _AD_SDK_PACKAGES)
             or any(token.rstrip("}") == _META_AD_ACTIVITY for token in focus.split())
             or _PLAY_STORE_OVERLAY in focus)
 
@@ -92,6 +104,40 @@ def _play_store_close(screen: Image, templates: TemplateCache) -> tuple[int, int
         return None
     return (790 + x + template.shape[1] // 2,
             480 + y + template.shape[0] // 2)
+
+
+def _white(image: Image) -> Image:
+    """Near-white pixels, independent of the creative drawn behind them."""
+    low = image.min(axis=2).astype(np.int16)
+    high = image.max(axis=2).astype(np.int16)
+    return ((low >= 200) & (high - low <= 40)).astype(np.float32)
+
+
+def _corner_glyph(screen: Image, templates: TemplateCache) -> tuple[int, int] | None:
+    """Locate one white close or skip glyph in a top corner of an ad."""
+    width = screen.shape[1]
+    if screen.shape[0] < _CORNER_SIZE or width < 2 * _CORNER_SIZE:
+        return None
+    corners = [(x0, _white(screen[:_CORNER_SIZE, x0:x0 + _CORNER_SIZE]))
+               for x0 in (0, width - _CORNER_SIZE)]
+    for name in _CORNER_GLYPHS:
+        template = templates.get(name)
+        if template is None:
+            continue
+        glyph = _white(template)
+        points: list[tuple[int, int]] = []
+        for x0, corner in corners:
+            scores = np.nan_to_num(cv2.matchTemplate(corner, glyph, cv2.TM_CCORR_NORMED))
+            for y, x in zip(*np.nonzero(scores >= _CORNER_THRESHOLD)):
+                point = (x0 + int(x) + glyph.shape[1] // 2, int(y) + glyph.shape[0] // 2)
+                if all(abs(point[0] - px) > 40 or abs(point[1] - py) > 40
+                       for px, py in points):
+                    points.append(point)
+        if len(points) > 1:
+            return None
+        if points:
+            return points[0]
+    return None
 
 
 def return_dialog(screen: Image, boxes: Sequence[TextBox],
@@ -174,7 +220,8 @@ def find_close(screen: Image, templates: TemplateCache, device: Any) -> tuple[in
         shell = getattr(device, "shell", None)
         if callable(shell):
             read_hierarchy = lambda: shell("uiautomator dump /dev/tty")
-    if callable(read_hierarchy) and ad_foreground(device):
+    ad_focused = ad_foreground(device)
+    if callable(read_hierarchy) and ad_focused:
         try:
             status, point = _accessible_close(read_hierarchy(), screen)
             if status == "ambiguous":
@@ -183,6 +230,10 @@ def find_close(screen: Image, templates: TemplateCache, device: Any) -> tuple[in
                 return point
         except Exception:  # noqa: BLE001 - ADB and UI hierarchy failures need visual fallback
             pass
+    if ad_focused:
+        glyph = _corner_glyph(screen, templates)
+        if glyph is not None:
+            return glyph
     close = battle_menu.ad_end_card_close(screen, templates)
     if close is not None:
         return close

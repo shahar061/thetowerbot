@@ -1,0 +1,1 @@
+mCurrentFocus=Window{dd520f4 u0 com.TechTreeGames.TheTower/com.unity3d.ads.adplayer.FullScreenWebViewDisplay}

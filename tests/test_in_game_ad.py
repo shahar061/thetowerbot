@@ -309,3 +309,58 @@ def test_scan_loop_claims_reward_after_ad_timeout(
     assert len(hardware.taps) == 2
     assert any(isinstance(event, events.InGameAdGemClaimed)
                for event in bot.bus.published)
+
+
+class UnityDevice(Device):
+    """Emulator 82's Unity WebView ad, which ignores the back button."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hierarchy = (FIX / "unity_playable_82.xml").read_text()
+
+    def shell(self, command: str) -> str:
+        if command.startswith("dumpsys window"):
+            return (FIX / "unity_focus_82.txt").read_text()
+        if command.startswith("uiautomator dump"):
+            return self.hierarchy
+        raise AssertionError(command)
+
+
+def test_unity_ad_skips_then_closes_its_end_card() -> None:
+    bus, device = Bus(), UnityDevice()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 170]), sleep=lambda _: None)
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    assert claim.observe(frame("unity_playable_82"), None, device, POLICY, 31, 7, False)
+    x, y = device.taps[-1]
+    assert abs(x - 995) <= 6 and abs(y - 110) <= 6
+    device.hierarchy = (FIX / "unity_end_82.xml").read_text()
+    assert claim.observe(frame("unity_end_82"), None, device, POLICY, 35, 7, False)
+    assert device.taps[-1] == (999, 105)
+    assert claim.observe(frame("reward"), None, device, POLICY, 38, 7, False)
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 40, 7, True)
+    assert bus.events == [events.InGameAdGemClaimed(
+        gems_before=164, gems_after=170, delta=6, run_id=7)]
+
+
+def test_recovery_closes_an_ad_that_ignores_back() -> None:
+    bus, device = Bus(), UnityDevice()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([164, 170]), sleep=lambda _: None)
+    playable = frame("unity_playable_82")
+    assert claim.observe(frame("battle_available"), (30, 35), device, POLICY, 0, 7, True)
+    for now in (31, 34, 37):  # Skip taps the ad did not act on.
+        assert claim.observe(playable, None, device, POLICY, now, 7, False)
+    assert claim.observe(playable, None, device, POLICY, 181, 7, False)
+    assert device.backs == 1 and len(device.taps) == 4
+    assert claim.observe(playable, None, device, POLICY, 184, 7, False)
+    assert len(device.taps) == 5
+    x, y = device.taps[-1]
+    assert abs(x - 995) <= 6 and abs(y - 110) <= 6
+    device.hierarchy = (FIX / "unity_end_82.xml").read_text()
+    assert claim.observe(frame("unity_end_82"), None, device, POLICY, 188, 7, False)
+    assert device.taps[-1] == (999, 105)
+    assert device.backs == 1
+    assert claim.observe(frame("reward"), None, device, POLICY, 191, 7, False)
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 193, 7, True)
+    assert not claim.active
+    assert bus.events == [events.InGameAdGemClaimed(
+        gems_before=164, gems_after=170, delta=6, run_id=7)]

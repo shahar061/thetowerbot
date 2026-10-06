@@ -214,6 +214,7 @@ class BattleMenuVisit:
                 returning = ad_exit.play_store_overlay_foreground(device)
                 device.press_back()
                 self._ad_returning = returning
+                self._ad_end_close_count = 0
                 self._go(Step.AD_RECOVER)
                 return Outcome.TAPPED
             return self._ad_fail(screen, boxes, device, policy, now, "ad_timeout")
@@ -254,7 +255,26 @@ class BattleMenuVisit:
             if in_run:
                 return self._ad_fail(screen, boxes, device, policy, now,
                                      "ad_returned_without_store")
-        if battle_menu.read_page(boxes()).page == "store":
+        text = boxes()
+        claim = battle_menu.ad_reward_claim(screen, text)
+        if claim is not None:
+            self._tap(device, policy, claim)
+            self._ad_claimed_at = now
+            self._go(Step.AD_CLAIMED)
+            return Outcome.TAPPED
+        # Some ads (Unity's WebView) ignore back; their own controls still work.
+        if (self._ad_end_close_count < 3 and now - self._ad_last_close >= 3
+                and ad_exit.ad_foreground(device)):
+            close = ad_exit.find_close(screen, self._templates, device)
+            if close is not None:
+                returning = ad_exit.play_store_overlay_foreground(device)
+                self._tap(device, policy, close)
+                self._ad_returning = returning
+                self._ad_end_close_count += 1
+                self._ad_last_close = now
+                self._waited = 0
+                return Outcome.TAPPED
+        if battle_menu.read_page(text).page == "store":
             return self._ad_fail(screen, boxes, device, policy, now, "ad_timeout")
         if self._waited >= config.BATTLE_MENU_STEP_FRAMES:
             return self._ad_fail(screen, boxes, device, policy, now, "ad_timeout")
