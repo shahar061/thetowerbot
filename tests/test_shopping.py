@@ -2453,6 +2453,53 @@ def test_a_replan_that_names_the_retired_unlock_again_ends_the_visit(
         "already_unlocked", "already_unlocked"]
 
 
+# -- a price-check pass hands the visit back to the strategy -----------------
+def _price_check(monkeypatch, fake_header) -> Shopping:
+    fake_header["coins"] = 300
+    monkeypatch.setattr(shopping_mod, "observe_frame", lambda screen, *_: physical_observation(
+        screen, Observation("ATTACK", (_tab_row("damage", "Damage"),), {}, None, 1, 270)))
+    return a_policy(armed=True, coin_budget=0, allow_unlocks=False, cards=CardPolicy(enabled=False),
+                    workshop=(ShoppingRule(name="Damage", category="ATTACK"),))
+
+
+def test_a_price_check_asks_the_strategy_again_once_it_has_read_the_prices(
+    session, monkeypatch, fake_header,
+) -> None:
+    """The strategy sent the visit to read a price it had never seen. Once read,
+    the strategy can choose to buy it - the visit used to end instead, and the
+    one-visit-per-run cadence then held the purchase for a whole run."""
+    probe = _price_check(monkeypatch, fake_header)
+    buy = dataclasses.replace(probe, coin_budget=100, allow_unlocks=True)
+    session.reroll_replan = lambda: buy
+    device = FakeDevice()
+    session.begin(probe, run_count=1)
+
+    for _ in range(2):
+        session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                          frame("menu_workshop_attack"), device, probe)
+
+    assert [s.reason for s in session._bus.of_type("PurchaseSkipped")] == ["budget"]
+    assert session._replanned is buy
+    assert device.taps, "the visit ended instead of buying what the price check made affordable"
+
+
+def test_a_price_check_the_strategy_repeats_ends_the_visit(
+    session, monkeypatch, fake_header,
+) -> None:
+    probe = _price_check(monkeypatch, fake_header)
+    asked: list[int] = []
+    session.reroll_replan = lambda: asked.append(1) or probe
+    device = FakeDevice()
+    session.begin(probe, run_count=1)
+
+    for _ in range(6):
+        session._buy_rows(SimpleNamespace(page="workshop", top_left=None),
+                          frame("menu_workshop_attack"), device, probe)
+
+    assert asked == [1]
+    assert device.taps == [] and session._categories == []
+
+
 def test_card_shopping_handoff_queues_once_without_a_second_tapper(session, fake_header) -> None:
     device = FakeDevice()
     received: list[tuple[str, CardPolicy]] = []

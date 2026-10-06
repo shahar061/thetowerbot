@@ -1,8 +1,8 @@
 """Workshop availability shared by planning and presentation.
 
 Groups follow https://the-tower-idle-tower-defense.game-vault.net/wiki/Workshop
-and /wiki/Interest. Costs are reference prices for display, never permission
-to spend. A group without an executable identity does not add a shopping action.
+and /wiki/Interest. Costs are fixed per unlock: reference prices for display
+and planning, never permission to spend. A group without an executable identity does not add a shopping action.
 """
 from __future__ import annotations
 

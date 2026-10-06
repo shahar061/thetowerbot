@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 import upgrades
-from fleet.workshop_prices import CATALOG, PriceQuote, WorkshopPrices, catalog_price
+import workshop_unlocks
+from fleet.workshop_prices import CATALOG, PriceQuote, WorkshopPrices
 
 CHEAPEST_WORKSHOP_PRICE = min(price for upgrade in CATALOG["upgrades"].values()
                               for price in upgrade.get("next_coins", []) if price > 0)
@@ -118,11 +119,13 @@ def replay_quotes(memory: WorkshopPrices, actions: WorkshopActions,
                for uid, entry in memory.entries.items()}
     quotes = memory.quotes(offsets, invalidated=actions.invalidated,
                            changed_at=actions.changed_at, discount_signature=signature)
-    # Preserve the planner's calibrated starter-unlock estimates. These are
-    # planning hints, never evidence that a tile or its children are owned.
-    for uid in ("unlock_cash_bonuses", "unlock_coin_bonuses", "unlock_defense_upgrades", "unlock_thorns"):
-        if uid not in quotes and uid not in actions.invalidated and not purchases.get(uid):
-            price = catalog_price(uid, 0)
-            if price is not None:
-                quotes[uid] = PriceQuote(price, 0, "catalog_estimate")
+    # An unlock has one fixed price, so plan an unread one at its list price
+    # rather than spending a visit only to read it. These are planning hints,
+    # never evidence that a tile or its children are owned; the buyer still
+    # reads the live price before it taps.
+    for group in workshop_unlocks.GROUPS:
+        uid = group.executable_upgrade_id
+        if (uid is not None and group.cost is not None and uid not in quotes
+                and uid not in actions.invalidated and not purchases.get(uid)):
+            quotes[uid] = PriceQuote(group.cost, 0, "catalog_estimate")
     return quotes

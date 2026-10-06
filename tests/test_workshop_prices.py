@@ -94,3 +94,23 @@ def test_unreadable_prices_do_not_destroy_a_valid_observation(tmp_path: Path, pr
     memory.observe("damage", 30, 0, now=100)
     memory.observe("damage", price, 0, now=101)
     assert memory.quotes({})["damage"].price == 30
+
+
+def test_every_unbought_unlock_is_quoted_at_its_fixed_list_price(tmp_path: Path) -> None:
+    """An unlock has one price that never changes, so the planner must not
+    spend a Workshop visit reading it before it may choose to buy it."""
+    from fleet.workshop_prices import PriceQuote
+    from fleet.workshop_replay import WorkshopActions, replay_quotes
+
+    memory = WorkshopPrices(tmp_path, "account-a")
+    nothing = WorkshopActions({}, {}, {}, 0.)
+    quotes = replay_quotes(memory, nothing, {}, signature="unknown")
+
+    assert quotes["unlock_free_upgrades"] == PriceQuote(800, 0, "catalog_estimate")
+    assert quotes["unlock_orbs"].price == 15_000
+    assert quotes["unlock_knockback"].price == 5_000
+    # No executable identity: the bot can never buy it, so it is never planned.
+    assert "unlock_super_crit" not in quotes
+    assert "unlock_orbs" not in replay_quotes(memory, nothing, {"unlock_orbs": 1}, signature="unknown")
+    memory.observe("unlock_orbs", 12_000, 0, now=1)
+    assert replay_quotes(memory, nothing, {}, signature="unknown")["unlock_orbs"].source == "observed"
