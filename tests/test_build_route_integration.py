@@ -398,9 +398,11 @@ def test_purchase_reason_names_a_random_draw_and_its_odds(tmp_path: Path) -> Non
 from lab_plan import LabDecision, LabVisitOptions
 
 
-def _rules_route(root: Path, rules: dict, expected: int = 0) -> RouteDocument:
+def _rules_route(root: Path, rules: dict, expected: int = 0,
+                 priorities: bool = True) -> RouteDocument:
     raw = RouteDocument.compatibility().to_dict()
-    raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
+    if priorities:
+        raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
     for section, values in rules.items():
         raw["baseline"]["rules"][section] = {**raw["baseline"]["rules"][section], **values}
     return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
@@ -489,7 +491,11 @@ def test_save_pct_grows_across_runs_and_a_filler_spends_only_its_price(tmp_path:
 
 def test_the_jar_lowers_the_live_workshop_visit_budget(tmp_path: Path) -> None:
     progress = _progress(tmp_path)
-    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "save_pct", "pct": 20}}})
+    # The legacy planner's visit budget is the jar-lowered wallet ceiling. A
+    # `priorities` route instead bounds each buy to its exact quote, which the
+    # ceiling already admitted, so the jar never shows in that budget.
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "save_pct", "pct": 20}}},
+                 priorities=False)
     _game_speed_waits(progress)
     _bought_once(progress)
     progress.workshop_worthwhile = lambda: True  # type: ignore[method-assign]
