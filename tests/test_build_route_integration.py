@@ -689,13 +689,13 @@ def test_published_gem_step_names_the_canary(tmp_path: Path) -> None:
 
 
 def _save_pct_template_route(root: Path, expected: int = 0) -> RouteDocument:
-    """The real lab-list template with its own rules (save_pct 25)."""
+    """The real lab-list template with its own rules (save_pct 10)."""
     from fleet import resource_blocks as rb
     raw = RouteDocument.compatibility().to_dict()
     raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
     raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
     raw["baseline"]["rules"] = rb.template_lab_list_rules()
-    assert raw["baseline"]["rules"]["coins"]["lab_share"] == {"mode": "save_pct", "pct": 25}
+    assert raw["baseline"]["rules"]["coins"]["lab_share"] == {"mode": "save_pct", "pct": 10}
     return BuildRouteStore(root).publish(RouteDocument.from_dict(raw), expected, "operator")
 
 
@@ -720,14 +720,14 @@ def test_save_pct_saves_toward_the_plans_game_speed_while_a_filler_runs(tmp_path
     base = Strategy.from_config().shopping
     progress.route_facts = _facts("after-run:1", wallet=10_000)  # type: ignore[method-assign]
     progress.shopping_policy(base)
-    assert progress.coin_jar.amount() == 2_500
+    assert progress.coin_jar.amount() == 1_000
     assert _jar(progress)["target"] == {"lab_id": "labs.game-speed", "level": 4}
-    progress.route_facts = _facts("after-run:1", wallet=2_500)  # type: ignore[method-assign]
-    progress.shopping_policy(base)  # the scan after Workshop spent its 7,500
-    progress.route_facts = _facts("after-run:2", wallet=12_500)  # type: ignore[method-assign]
+    progress.route_facts = _facts("after-run:1", wallet=1_000)  # type: ignore[method-assign]
+    progress.shopping_policy(base)  # the scan after Workshop spent its 9,000
+    progress.route_facts = _facts("after-run:2", wallet=11_000)  # type: ignore[method-assign]
     progress.shopping_policy(base)
-    assert progress.coin_jar.amount() == 5_000
-    assert progress._route_evaluation.trace.spend_ceiling == 7_500
+    assert progress.coin_jar.amount() == 2_000
+    assert progress._route_evaluation.trace.spend_ceiling == 9_000
     # Capped at Game Speed L4's 50,000 from the plan, however rich the run.
     progress.route_facts = _facts("after-run:3", wallet=1_000_000)  # type: ignore[method-assign]
     progress.shopping_policy(base)
@@ -776,9 +776,9 @@ def test_a_multi_start_visit_leaves_no_phantom_jar(tmp_path: Path) -> None:
     # The next run saves toward L5; L4 is running, so its old target never caps the jar.
     progress.route_facts = _facts("after-run:6", wallet=10_079)  # type: ignore[method-assign]
     progress.shopping_policy(base)
-    assert progress.coin_jar.amount() == 2_500  # 25% of the 10,000 earned
+    assert progress.coin_jar.amount() == 1_000  # 10% of the 10,000 earned
     assert _jar(progress)["target"] == {"lab_id": "labs.game-speed", "level": 5}
-    assert progress._route_evaluation.trace.spend_ceiling == 7_579
+    assert progress._route_evaluation.trace.spend_ceiling == 9_079
 
 
 def test_a_plan_without_a_target_empties_a_retired_jar_and_ignores_the_cadence(
@@ -814,5 +814,5 @@ def test_a_planner_error_falls_back_to_the_cadence(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(reroll_progress, "save_pct_target", broken)
     progress.route_facts = _facts("after-run:1", wallet=1_000)  # type: ignore[method-assign]
     progress.shopping_policy(Strategy.from_config().shopping)
-    assert progress.coin_jar.amount() == 250
-    assert progress._route_evaluation.trace.spend_ceiling == 750
+    assert progress.coin_jar.amount() == 100
+    assert progress._route_evaluation.trace.spend_ceiling == 900

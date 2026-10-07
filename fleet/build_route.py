@@ -294,7 +294,7 @@ def _flag(value: object, name: str) -> bool:
 @dataclass(frozen=True)
 class LabShareRule:
     mode: str = "when_affordable"
-    pct: int = 25
+    pct: int = 10
 
     @classmethod
     def from_dict(cls, value: object) -> LabShareRule:
@@ -303,7 +303,7 @@ class LabShareRule:
         mode = raw.get("mode", "when_affordable")
         if mode not in LAB_SHARE_MODES:
             raise ValueError("unknown lab_share mode")
-        return cls(mode, _ranged(raw.get("pct", 25), "lab_share pct", 5, 90))
+        return cls(mode, _ranged(raw.get("pct", 10), "lab_share pct", 5, 90))
 
 
 @dataclass(frozen=True)

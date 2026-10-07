@@ -36,7 +36,7 @@ def test_steps_strategy_gets_template_list_and_rules() -> None:
     new, notes = m.migrate_baseline(_baseline(STEPS))
     assert new["labs"]["mode"] == "blocks"
     assert new["labs"]["blocks"] == list(template_lab_list())
-    assert new["rules"]["coins"]["lab_share"] == {"mode": "save_pct", "pct": 25}
+    assert new["rules"]["coins"]["lab_share"] == {"mode": "save_pct", "pct": 10}
     assert new["rules"]["labs"]["direct_start"] is True
     assert new["rules"]["labs"]["filler"]["enabled"] is True
     RouteBaseline.from_dict(new)  # passes server-side validation
