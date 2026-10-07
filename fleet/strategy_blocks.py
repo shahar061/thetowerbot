@@ -240,7 +240,9 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                 if not block['blocks']:
                     raise ValueError('budget requires at least one block')
             elif kind == 'save_for':
-                allowed.add('goal')
+                allowed |= {'goal', 'hold'}
+                if 'hold' in block and type(block['hold']) is not bool:
+                    raise ValueError('hold must be true or false')
                 block['goal'] = list(walk(block.get('goal', []), depth + 1))
                 if len(block['goal']) != 1 or block['goal'][0]['type'] not in {'buy', 'pool'}:
                     raise ValueError('save for goal needs exactly one buy or pool block')
@@ -971,6 +973,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 name = upgrades.by_id(uid).name
                 saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
                                  wait=True, save_price=price)
+                if block.get('hold', False):
+                    # Like a held unlock: no later block spends these coins.
+                    return saving
             elif kind == 'unlock':
                 steps: dict[str, tuple[Any, int]] = {}
                 for skill in block['upgrade_ids']:

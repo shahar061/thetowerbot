@@ -94,7 +94,8 @@ export function blockDetail(block: StrategyBlock): string {
   if (block.type === "condition") return "Known facts choose the branch. Unknown facts stop this decision.";
   if (block.type === "fallback") return "Try each child until one can buy or explicitly waits.";
   if (block.type === "budget") return "Runs its blocks until utility spend reaches the target; never spends past the ceiling.";
-  if (block.type === "save_for") return "Buys the goal when affordable. Otherwise saves for it while later blocks may buy cheaply.";
+  if (block.type === "save_for") return block.hold ? "Buys the goal when affordable. Otherwise holds coins for it; later blocks wait."
+    : "Buys the goal when affordable. Otherwise saves for it while later blocks may buy cheaply.";
   if (block.type === "while_saving") return "Skipped unless a goal above is saving for coins.";
   if (block.type === "wait") return "End this decision without spending. Try again when facts change.";
   return "Requires verified price, unlock and enough available currency.";
@@ -150,7 +151,7 @@ export const GUIDE_BLOCKS: { type: GuideBlockType; title: string; summary: strin
   { type: "condition", title: "If / else", summary: "Checks one fact and follows Then or Else. Unknown facts pause the decision." },
   { type: "fallback", title: "First available", summary: "Tries each path in order until one buys or waits." },
   { type: "budget", title: "Budget", summary: "Runs its blocks until utility spend reaches a target, never past the ceiling." },
-  { type: "save_for", title: "Save for goal", summary: "Buys a goal when affordable; otherwise saves for it and lets later blocks buy cheaply." },
+  { type: "save_for", title: "Save for goal", summary: "Buys a goal when affordable; otherwise saves for it and lets later blocks buy cheaply, unless hold is on." },
   { type: "while_saving", title: "While saving", summary: "Runs only while a goal above is saving, optionally only for one upgrade." },
   { type: "wait", title: "Save & wait", summary: "Ends the decision without spending." },
   { type: "native", title: "Legacy built-in", summary: "An older sealed policy block kept so saved copies still work." },

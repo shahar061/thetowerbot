@@ -8,6 +8,8 @@ import pytest
 import fleet.blender_v2_update as updater
 from fleet.blender_v2_update import blender_v2_workshop
 from fleet.build_route import RouteBaseline, RouteDocument
+from fleet.strategy_blocks import evaluate_program
+from tests.test_strategy_blocks import WORKER_83_PRICES, WORKER_83_PURCHASES, route, worker_83
 
 
 def v7_baseline() -> dict:
@@ -26,8 +28,9 @@ def test_v2_replaces_only_the_workshop_program_and_is_idempotent() -> None:
     assert baseline == original
     assert updated["battle"] == baseline["battle"] and updated["labs"] == baseline["labs"]
     assert [block["id"] for block in updated["workshop"]["blocks"]] == [
-        "bv2.unlocks", "bv2.free_unlocks", "bv2.thorns", "bv2.value", "bv2.wait"]
-    assert updated["workshop"]["blocks"][3]["selection"] == "value"
+        "bv2.orbs_unlock", "bv2.orbs", "bv2.unlocks", "bv2.free_unlocks", "bv2.thorns", "bv2.value",
+        "bv2.wait"]
+    assert updated["workshop"]["blocks"][5]["selection"] == "value"
     RouteBaseline.from_dict(updated)
     assert blender_v2_workshop(updated) == updated
 
@@ -85,3 +88,33 @@ def test_apply_saves_v8_and_assigns_both_workers(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(updater, "_request", request)
     again = updater.update_blender("unused")
     assert (again["save"], again["assign_workers"]) == (False, [])
+
+
+def blender_program() -> list[dict]:
+    return blender_v2_workshop(v7_baseline())["workshop"]["blocks"]
+
+
+def test_orbs_unlock_comes_before_the_other_unlocks() -> None:
+    # Knockback is the Defense step before Orbs, so it is saved for first.
+    first = evaluate_program(route(blender_program()), worker_83(), None, "workshop")
+    assert (first.decision.state, first.decision.upgrade_id) == ("save_coins", "unlock_knockback")
+    owned = {**WORKER_83_PURCHASES, "unlock_knockback": 1}
+    # Bounce Shot (10,000) is affordable and cheaper, but Orbs (15,000) comes first.
+    later = evaluate_program(route(blender_program()),
+        worker_83(wallet_coins=12000, purchases=owned, confirmed_purchases=owned), None, "workshop")
+    assert (later.decision.state, later.decision.upgrade_id) == ("save_coins", "unlock_orbs")
+
+
+@pytest.mark.parametrize("orbs,wallet,expected", [
+    (0, 5000, ("buy", "orbs")),
+    (1, 10000, ("save_coins", "orbs")),  # holds coins rather than unlocking Bounce Shot
+    (2, 10000, ("buy", "unlock_bounce_shot")),
+])
+def test_orbs_reach_level_two_before_the_other_unlocks(orbs: int, wallet: int, expected: tuple) -> None:
+    owned = {**WORKER_83_PURCHASES, "unlock_knockback": 1, "unlock_orbs": 1}
+    prices = {**WORKER_83_PRICES, "orbs": (3000, 20000, 120000)[orbs]}
+    evidence = {uid: {"source": "observed", "observed_at": 99} for uid in prices}
+    facts = worker_83(wallet_coins=wallet, prices=prices, purchases=owned, confirmed_purchases=owned,
+                      values={"orbs": float(orbs)}, price_evidence=evidence)
+    result = evaluate_program(route(blender_program()), facts, None, "workshop")
+    assert (result.decision.state, result.decision.upgrade_id) == expected

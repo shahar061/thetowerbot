@@ -592,6 +592,20 @@ def test_save_for_records_intent_and_lower_block_buys() -> None:
     assert result.decision.upgrade_id == 'damage'
 
 
+def test_held_save_for_keeps_its_coins_from_lower_blocks() -> None:
+    program = [{**save_goal(['thorns'], targets={'thorns': 51}), 'hold': True},
+               {'id': 'cheap', 'type': 'buy', 'upgrade_id': 'damage'}]
+    blocks.validate_program(program, 'workshop')
+    with pytest.raises(ValueError, match='hold'):
+        blocks.validate_program([{**save_goal(['thorns']), 'hold': 'yes'}], 'workshop')
+    poor = replace(facts(), wallet_coins=90)
+    result = blocks.evaluate_program(route(program), poor, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('save_coins', 'thorns')
+    # A reached goal has nothing to save for, so it holds nothing.
+    reached = replace(poor, values={'thorns': 51.0})
+    assert blocks.evaluate_program(route(program), reached, None, 'workshop').decision.upgrade_id == 'damage'
+
+
 def test_save_for_result_when_nothing_else_buys() -> None:
     poor = replace(facts(), wallet_coins=50)
     result = blocks.evaluate_program(route([save_goal(['thorns'])]), poor, None, 'workshop')
