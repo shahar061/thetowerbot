@@ -3,7 +3,7 @@
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRerollWorkspace } from "../RerollWorkspace";
-import { WorkshopMatrix } from "./WorkshopMatrix";
+import { WorkshopViews } from "./WorkshopViews";
 
 export default function FleetWorkshopPage(): React.JSX.Element {
   return <Suspense fallback={<p role="status">Loading fleet…</p>}><WorkshopContent /></Suspense>;
@@ -23,6 +23,7 @@ function WorkshopContent(): React.JSX.Element {
     {error && <p role="alert" className="text-danger">Fleet unavailable: {error}</p>}
     {loading && !pool ? <p role="status">Loading fleet…</p>
       : !members.length ? <p className="rounded-xl border border-dashed p-10 text-center text-muted-foreground">No visible emulators in this fleet.</p>
-      : <WorkshopMatrix members={members} focusWorker={focusWorker} initialView={view} />}
+      : <WorkshopViews members={members} focusWorker={focusWorker} initialView={view}
+          initialTab={params?.get("tab") === "plan" ? "plan" : "upgrades"} />}
   </main>;
 }
