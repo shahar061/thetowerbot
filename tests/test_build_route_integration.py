@@ -457,9 +457,9 @@ def test_save_pct_holds_a_jar_that_workshop_cannot_spend(tmp_path: Path) -> None
     assert progress._route_evaluation.trace.spend_ceiling == 800
     snapshot = json.loads((progress.root / "build-route-facts.json").read_text())
     assert snapshot["lab_coin_jar"] == 200
-    progress.route_facts = _facts("visit-2")  # type: ignore[method-assign]
+    progress.route_facts = _facts("visit-2", wallet=1500)  # type: ignore[method-assign]
     progress.shopping_policy(base)
-    assert progress._route_evaluation.trace.spend_ceiling == 640
+    assert progress._route_evaluation.trace.spend_ceiling == 1200  # 20% of the 500 earned
     progress.note_lab_coin_debit(2500)
     assert progress.coin_jar.amount() == 0
 
@@ -473,6 +473,8 @@ def test_save_pct_grows_across_runs_and_a_filler_spends_only_its_price(tmp_path:
     progress.shopping_policy(base)
     assert progress.coin_jar.amount() == 2_500
     assert progress._route_evaluation.trace.spend_ceiling == 7_500  # Workshop: wallet - jar
+    progress.route_facts = _facts("after-run:1", wallet=2_500)  # type: ignore[method-assign]
+    progress.shopping_policy(base)  # the scan after Workshop spent its 7,500
     progress.route_facts = _facts("after-run:2", wallet=12_500)  # type: ignore[method-assign]
     progress.shopping_policy(base)
     assert progress.coin_jar.amount() == 5_000
@@ -714,6 +716,8 @@ def test_save_pct_saves_toward_the_plans_game_speed_while_a_filler_runs(tmp_path
     progress.shopping_policy(base)
     assert progress.coin_jar.amount() == 2_500
     assert _jar(progress)["target"] == {"lab_id": "labs.game-speed", "level": 4}
+    progress.route_facts = _facts("after-run:1", wallet=2_500)  # type: ignore[method-assign]
+    progress.shopping_policy(base)  # the scan after Workshop spent its 7,500
     progress.route_facts = _facts("after-run:2", wallet=12_500)  # type: ignore[method-assign]
     progress.shopping_policy(base)
     assert progress.coin_jar.amount() == 5_000
@@ -766,9 +770,9 @@ def test_a_multi_start_visit_leaves_no_phantom_jar(tmp_path: Path) -> None:
     # The next run saves toward L5; L4 is running, so its old target never caps the jar.
     progress.route_facts = _facts("after-run:6", wallet=10_079)  # type: ignore[method-assign]
     progress.shopping_policy(base)
-    assert progress.coin_jar.amount() == 2_519
+    assert progress.coin_jar.amount() == 2_500  # 25% of the 10,000 earned
     assert _jar(progress)["target"] == {"lab_id": "labs.game-speed", "level": 5}
-    assert progress._route_evaluation.trace.spend_ceiling == 7_560
+    assert progress._route_evaluation.trace.spend_ceiling == 7_579
 
 
 def test_a_plan_without_a_target_empties_a_retired_jar_and_ignores_the_cadence(

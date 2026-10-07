@@ -39,6 +39,13 @@ def test_jar_grows_by_the_share_of_spare_coins_and_caps_at_the_price() -> None:
     assert coin_share.grow_jar(2400, 10_000, 2500, 50) == 2500
 
 
+def test_jar_grows_only_by_the_share_of_coins_earned() -> None:
+    assert coin_share.grow_jar(200, 1000, 2500, 20, earned=0) == 200
+    assert coin_share.grow_jar(200, 1500, 2500, 20, earned=500) == 300
+    assert coin_share.grow_jar(200, 1000, 2500, 20, earned=-300) == 200   # a lab spend: no growth
+    assert coin_share.grow_jar(900, 1000, 2500, 20, earned=5000) == 920   # never past the spare coins
+
+
 def test_ceiling_never_goes_negative_and_jar_never_exceeds_price() -> None:
     assert coin_share.workshop_ceiling(route(), 300, 500) == 0
     assert coin_share.grow_jar(500, 300, 2500, 20) == 500   # wallet below the jar: no growth
@@ -83,9 +90,10 @@ def test_settle_grows_once_per_visit(tmp_path: Path) -> None:
     assert target == coin_share.SaveTarget("labs.game-speed", 2, 2500)
     assert jar.settle(saving, target, 1000, "visit-1", 10.) == 200
     assert jar.settle(saving, target, 1000, "visit-1", 11.) == 200   # same visit, no regrowth
-    assert jar.settle(saving, target, 1000, "visit-2", 12.) == 360
+    assert jar.settle(saving, target, 1000, "visit-2", 12.) == 200   # nothing earned since
+    assert jar.settle(saving, target, 1500, "visit-3", 13.) == 300   # 20% of the 500 earned
     record = json.loads(jar.path.read_text())
-    assert record["account_id"] == "a1" and record["amount"] == 360
+    assert record["account_id"] == "a1" and record["amount"] == 300 and record["wallet"] == 1500
     assert record["target"] == {"lab_id": "labs.game-speed", "level": 2}
 
 
@@ -95,9 +103,30 @@ def test_save_pct_keeps_a_share_of_each_run_across_runs(tmp_path: Path) -> None:
     saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
     assert jar.settle(saving, GS4, 10_000, "after-run:1", 10.) == 2_500
     assert coin_share.workshop_ceiling(saving, 10_000, 2_500) == 7_500
-    # Workshop spent its 7,500; the next run earned 10,000 more.
+    # Workshop spent its 7,500 (the next menu scan sees it); the next run earned 10,000 more.
+    assert jar.settle(saving, GS4, 2_500, "after-run:1", 10.5) == 2_500
     assert jar.settle(saving, GS4, 12_500, "after-run:2", 11.) == 5_000
     assert coin_share.workshop_ceiling(saving, 12_500, 5_000) == 7_500
+
+
+def test_workshop_savings_are_not_taxed_again_each_run(tmp_path: Path) -> None:
+    """A Workshop saving for a dear upgrade keeps its coins: only new income is shared."""
+    jar = coin_share.LabCoinJar(tmp_path, "a1")
+    saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
+    jar.settle(saving, GS4, 10_000, "after-run:1", 10.)                  # 2,500 jar, 7,500 saved
+    assert jar.settle(saving, GS4, 20_000, "after-run:2", 11.) == 5_000  # +25% of 10,000 earned
+    assert jar.settle(saving, GS4, 30_000, "after-run:3", 12.) == 7_500
+    assert coin_share.workshop_ceiling(saving, 30_000, 7_500) == 22_500  # 75% of all income
+
+
+def test_an_older_jar_without_a_wallet_starts_counting_income_from_now(tmp_path: Path) -> None:
+    jar = coin_share.LabCoinJar(tmp_path, "a1")
+    saving = route(coins={"lab_share": {"mode": "save_pct", "pct": 25}})
+    jar.path.write_text(json.dumps({"account_id": "a1", "amount": 60_000, "visit_key": "after-run:1",
+                                    "target": {"lab_id": "labs.game-speed", "level": 5}}))
+    gs5 = coin_share.SaveTarget("labs.game-speed", 5, 150_000)
+    assert jar.settle(saving, gs5, 80_000, "after-run:2", 10.) == 60_000  # unknown income: no growth
+    assert jar.settle(saving, gs5, 90_000, "after-run:3", 11.) == 62_500
 
 
 def test_a_lab_debit_takes_only_its_price_from_the_jar(tmp_path: Path) -> None:
@@ -154,9 +183,10 @@ def test_the_jar_empties_once_its_target_is_researching_or_finished(tmp_path: Pa
     # The plan moved on but L4 is neither running nor done: the savings carry over.
     assert jar.settle(saving, gs5, 20_000, "after-run:1", 11., retired=lambda lab, level: False) == 5_000
     jar.settle(saving, GS4, 20_000, "after-run:1", 12.)
-    # L4 started (or finished): its savings are spent, saving for L5 starts from zero.
-    assert jar.settle(saving, gs5, 20_000, "after-run:2", 13.,
-                      retired=lambda lab, level: (lab, level) in started) == 5_000
+    # L4 started (or finished): its savings are spent, saving for L5 starts from zero
+    # and takes its share of the 10,000 earned since.
+    assert jar.settle(saving, gs5, 30_000, "after-run:2", 13.,
+                      retired=lambda lab, level: (lab, level) in started) == 2_500
     assert json.loads(jar.path.read_text())["target"] == {"lab_id": "labs.game-speed", "level": 5}
 
 

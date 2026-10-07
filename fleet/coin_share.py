@@ -43,9 +43,17 @@ def workshop_ceiling(route: Any, wallet: int, jar: int) -> int:
     return spendable_wallet(wallet, jar) * workshop_limit_pct(route) // 100
 
 
-def grow_jar(jar: int, wallet: int, price: int, pct: int) -> int:
+def grow_jar(jar: int, wallet: int, price: int, pct: int, earned: int | None = None) -> int:
+    """pct% of the coins earned since the last visit, never past the coins above the jar.
+
+    `earned` None (a first visit) counts every coin above the jar. Counting only
+    income keeps coins Workshop is saving from being shared again every visit.
+    """
     jar = max(0, jar)
-    return min(price, jar + pct * max(0, wallet - jar) // 100)
+    spare = max(0, wallet - jar)
+    if earned is not None:
+        spare = min(spare, max(0, earned))
+    return min(price, jar + pct * spare // 100)
 
 
 def waiting_lab_price(route: Any, lab_record: Mapping[str, Any] | None) -> int | None:
@@ -136,12 +144,19 @@ class LabCoinJar:
         return record["amount"] if record is not None else 0
 
     def _write(self, amount: int, visit_key: str | None, now: float,
-               target: Mapping[str, Any] | None = None) -> None:
+               target: Mapping[str, Any] | None = None, wallet: int | None = None) -> None:
         if self.read_only:
             return
         _write_json_atomic(self.path, {"account_id": self.account_id, "amount": amount,
                                        "visit_key": visit_key, "updated_at": now,
-                                       **({"target": dict(target)} if target is not None else {})})
+                                       **({"target": dict(target)} if target is not None else {}),
+                                       **({"wallet": wallet} if wallet is not None else {})})
+
+    @staticmethod
+    def _stored_wallet(record: Mapping[str, Any] | None) -> int | None:
+        """The last wallet a menu scan read: the base for the next visit's income."""
+        wallet = record.get("wallet") if record is not None else None
+        return wallet if type(wallet) is int and wallet >= 0 else None
 
     @staticmethod
     def _stored_target(record: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -156,7 +171,8 @@ class LabCoinJar:
         """The jar for this Workshop visit; grows at most once per visit key.
 
         save_pct only (other modes, or labs not auto-started, empty it). It grows by pct% of
-        the wallet above it, up to `target`'s price. The returned (effective) jar never
+        the coins earned since the last scan's wallet, up to `target`'s price; an older jar
+        with no stored wallet starts counting from this visit. The returned (effective) jar never
         exceeds a known wallet; the stored one is not clamped to it. A new
         target starts from zero once `retired` says the old one is researching or finished.
         With no target known (an unread plan, a transient unknown cadence) it neither grows
@@ -166,7 +182,8 @@ class LabCoinJar:
         if rules.coins.lab_share.mode != "save_pct" or not rules.labs.auto_start:
             record = self._record(quiet=True)
             if record is not None and record["amount"] != 0:
-                self._write(0, record.get("visit_key"), now, self._stored_target(record))
+                self._write(0, record.get("visit_key"), now, self._stored_target(record),
+                            self._stored_wallet(record))
             return 0
         record = self._record(quiet=target is None)
         if record is None and target is None:
@@ -174,6 +191,7 @@ class LabCoinJar:
         amount = record["amount"] if record is not None else 0
         key = record.get("visit_key") if record is not None else None
         stored = self._stored_target(record)
+        seen = self._stored_wallet(record)
         new_target = stored
         if target is None:
             if stored is not None and retired is not None and retired(stored["lab_id"], stored["level"]):
@@ -185,11 +203,14 @@ class LabCoinJar:
                 amount = 0
             amount = min(amount, target.price)
             if key != visit_key and type(wallet) is int and wallet >= 0:
-                amount = grow_jar(amount, wallet, target.price, rules.coins.lab_share.pct)
+                earned = None if record is None else 0 if seen is None else wallet - seen
+                amount = grow_jar(amount, wallet, target.price, rules.coins.lab_share.pct, earned)
                 key = visit_key
+        # Every scan moves the base, so Workshop buys are not counted as lost income.
+        new_seen = wallet if type(wallet) is int and wallet >= 0 else seen
         if (record is None or amount != record["amount"] or key != record.get("visit_key")
-                or new_target != stored):
-            self._write(amount, key, now, new_target)
+                or new_target != stored or new_seen != seen):
+            self._write(amount, key, now, new_target, new_seen)
         # Only the effective jar is clamped to the wallet: a misread low wallet must not
         # destroy the stored savings; a real lab spend reduces them through `spend`.
         return min(amount, wallet) if type(wallet) is int and wallet >= 0 else amount
@@ -204,5 +225,6 @@ class LabCoinJar:
         if record is None:
             return 0
         amount = max(0, record["amount"] - max(0, coins))
-        self._write(amount, record.get("visit_key"), now, self._stored_target(record))
+        self._write(amount, record.get("visit_key"), now, self._stored_target(record),
+                    self._stored_wallet(record))
         return amount
