@@ -672,8 +672,8 @@ def test_blender_unlocks_the_defense_path_in_order(policy: str, owned: tuple[str
 def test_blender_buys_workshop_thorns_only_while_cheaper_than_core_picks(
         thorns_price: int, expected: str | None) -> None:
     gate = blocks.template_program('turtle', 'workshop')[0]
-    thorns, value = gate['then'][2:4]
-    assert 'thorns' not in value['upgrade_ids']
+    thorns, save = gate['then'][2:4]
+    assert 'thorns' not in save['goal'][0]['upgrade_ids']
     prices = {uid: 50 for uid in thorns['cheaper_than_upgrade_ids']} | {'thorns': thorns_price}
     owned = {'unlock_defense_upgrades': 1, 'unlock_thorns': 1, 'unlock_knockback': 1, 'unlock_coin_bonuses': 1}
     sample = replace(facts(), wallet_coins=1000, prices=prices, purchases=owned, confirmed_purchases=owned,
@@ -1394,13 +1394,36 @@ def test_value_pool_validation(extra: dict[str, Any], message: str) -> None:
         blocks.validate_program([pool(selection='value', **extra)], 'workshop')
 
 
-def test_value_selection_is_workshop_only_and_not_a_saving_goal() -> None:
+def test_value_selection_is_workshop_only_and_can_be_a_saving_goal() -> None:
     good = pool(selection='value', weights={'damage': 1, 'attack_speed': 1})
     blocks.validate_program([good], 'workshop')
     with pytest.raises(ValueError, match='only available in the Workshop'):
         blocks.validate_program([good], 'battle')
-    with pytest.raises(ValueError, match='value pool'):
-        blocks.validate_program([{'id': 'save', 'type': 'save_for', 'goal': [good]}], 'workshop')
+    blocks.validate_program([{'id': 'save', 'type': 'save_for', 'hold': True, 'goal': [good]}], 'workshop')
+
+
+def value_goal(**extra: Any) -> dict[str, Any]:
+    return {'id': 'save', 'type': 'save_for', 'hold': True, 'goal': [value_pool(**extra)]}
+
+
+def test_value_saving_goal_buys_the_best_value_when_affordable() -> None:
+    result = blocks.evaluate_program(route([value_goal()]), facts(), None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'attack_speed')  # 81 / 4 beats 80 / 1
+
+
+def test_value_saving_goal_holds_coins_for_the_best_value_it_cannot_afford() -> None:
+    # Damage is affordable, but Attack Speed is the better value: save, and no later block spends.
+    sample = replace(facts(), wallet_coins=80)
+    program = [value_goal(), pool(id='later', upgrade_ids=['damage'])]
+    result = blocks.evaluate_program(route(program), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('save_coins', 'attack_speed')
+
+
+def test_value_saving_goal_reads_an_unpriced_item_before_saving() -> None:
+    goal = value_goal(upgrade_ids=['damage', 'attack_speed', 'health'],
+                      weights={'damage': 1, 'attack_speed': 4, 'health': 1})
+    result = blocks.evaluate_program(route([goal]), replace(facts(), wallet_coins=80), None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('observe_price', 'health')
 
 
 def unlock(**extra: Any) -> dict[str, Any]:
@@ -1582,8 +1605,24 @@ def test_blender_v2_spends_by_value_once_unlocks_are_done() -> None:
     result = blocks.evaluate_program(route(blender_v2()),
         worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned,
                   price_evidence=evidence), None, 'workshop')
-    # Crit Chance 50 / 2 = 25 beats Free Defense 90 / 3 = 30; Regen is cheaper but not in the pool.
-    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'critical_chance')
+    # Free Attack 75 / 2 = 37.5 is the best value; Crit Chance (50) is cheaper but not in the pool.
+    assert (result.decision.state, result.decision.upgrade_id) == ('buy', 'free_attack_upgrade')
+
+
+def test_blender_v2_saves_for_attack_speed_instead_of_cheaper_skills() -> None:
+    owned = {**WORKER_83_PURCHASES, **{uid: 1 for uid in (
+        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_bounce_shot')}}
+    pool_ids = blocks._BLENDER_VALUE_WEIGHTS
+    prices = {**WORKER_83_PRICES, **{uid: 10**6 for uid in pool_ids},
+              'attack_speed': 600, 'free_attack_upgrade': 200, 'damage': 1, 'critical_chance': 1}
+    evidence = {uid: {'source': 'observed', 'observed_at': 99} for uid in prices}
+    sample = worker_83(wallet_coins=300, prices=prices, purchases=owned, confirmed_purchases=owned,
+                       price_evidence=evidence)
+    # Attack Speed 600 / 12 = 50 beats Free Attack 200 / 2 = 100: keep the coins for it.
+    saving = blocks.evaluate_program(route(blender_v2()), sample, None, 'workshop')
+    assert (saving.decision.state, saving.decision.upgrade_id) == ('save_coins', 'attack_speed')
+    bought = blocks.evaluate_program(route(blender_v2()), replace(sample, wallet_coins=700), None, 'workshop')
+    assert (bought.decision.state, bought.decision.upgrade_id) == ('buy', 'attack_speed')
 
 
 def test_blender_v2_never_buys_defense_absolute() -> None:
@@ -1596,9 +1635,14 @@ def test_blender_v2_never_buys_defense_absolute() -> None:
 
 
 def test_blender_v2_weights_sum_to_100_and_unlock_every_gated_pool_skill() -> None:
-    core, later, thorns, value, stop = blender_v2()
+    core, later, thorns, save, stop = blender_v2()
+    (value,) = save['goal']
+    assert (save['type'], save['hold']) == ('save_for', True)
     assert sum(value['weights'].values()) + blocks._BLENDER_WEIGHTS['thorns'] == 100
     assert value['selection'] == 'value' and stop['type'] == 'wait'
+    # The eHP guide: no Damage or Crit; Coins / Kill weighs most.
+    assert not {'damage', 'critical_chance', 'critical_factor', 'damage_per_meter'} & set(value['upgrade_ids'])
+    assert max(value['weights'], key=value['weights'].get) == 'coins_per_kill_bonus'
     assert thorns['upgrade_ids'] == ['thorns'] and 'thorns' not in value['upgrade_ids']
     gated = {uid for uid in [*thorns['upgrade_ids'], *value['upgrade_ids']] if blocks.gate_for(uid) is not None}
     assert gated <= set(core['upgrade_ids']) | set(later['upgrade_ids'])

@@ -7,7 +7,7 @@ import pytest
 
 from fleet.build_route import RouteBaseline, RouteDocument
 from fleet.blender_battle_update import (
-    COMBAT_IDS, DEF_ABS_LEVELS, ECONOMY_IDS, ORB_LEVELS, THORNS_LEVELS, configure_battle)
+    COMBAT_IDS, DEF_ABS_LEVELS, ECONOMY_IDS, ORB_LEVELS, configure_battle)
 from fleet.build_route_eval import RouteFacts
 from fleet.strategy_blocks import evaluate_program
 
@@ -23,11 +23,12 @@ def test_configure_battle_uses_unlimited_pools_split_at_wave_twenty() -> None:
     assert orbs["level_caps"] == {"orbs": {"base": ORB_LEVELS}}
     assert (condition["type"], condition["field"], condition["op"], condition["value"]) == (
         "condition", "wave", "lt", 20)
-    def_abs, thorns = condition["else"][:2]
+    def_abs, _ = condition["else"]
     assert (def_abs["upgrade_ids"], def_abs["hold_until_capped"]) == (["defense_absolute"], True)
     assert def_abs["level_caps"] == {"defense_absolute": {"base": DEF_ABS_LEVELS}}
-    assert (thorns["upgrade_ids"], thorns["level_caps"]) == (["thorns"], {"thorns": {"base": THORNS_LEVELS}})
-    assert "thorns" not in COMBAT_IDS
+    # The eHP guide's run upgrades, uncapped; no Damage, Crit, Multishot or Bounce Shot.
+    assert {"thorns", "lifesteal", "health", "defense_percent", "knockback_chance", "knockback_force",
+            "orb_speed", "attack_speed", "coins_per_kill_bonus", "cash_bonus"} == set(COMBAT_IDS)
     for branch, ids in (("then", ECONOMY_IDS), ("else", COMBAT_IDS)):
         pool = condition[branch][-1]
         assert pool["selection"] == "cheapest"
@@ -41,8 +42,8 @@ def test_configure_battle_uses_unlimited_pools_split_at_wave_twenty() -> None:
 
 
 @pytest.mark.parametrize("wave,economy_price,combat_price,expected", [
-    (1, 10, 1, "cash_bonus"),
-    (19, 10, 1, "cash_bonus"),
+    (1, 10, 1, "cash_per_wave"),
+    (19, 10, 1, "cash_per_wave"),
     (20, 1, 10, "attack_speed"),
     (100, 1, 10, "attack_speed"),
     (19, None, 1, None),
@@ -54,15 +55,15 @@ def test_wave_selects_pool_even_after_twenty_purchases(
     route = SimpleNamespace(revision=1, battle=baseline.battle, workshop=baseline.workshop)
     quote = dict(account_id="account", run_id=7, source="model", verified=True, value=1)
     quotes = {uid: dict(quote, status="available", price=100 + i)
-              for i, uid in enumerate(ECONOMY_IDS + COMBAT_IDS + ("thorns",))}
+              for i, uid in enumerate(ECONOMY_IDS + COMBAT_IDS)}
     if economy_price is None:
         quotes.update({uid: dict(quote, status="maxed", price=None) for uid in ECONOMY_IDS})
     else:
-        quotes["cash_bonus"]["price"] = economy_price
+        quotes["cash_per_wave"]["price"] = economy_price
     quotes["attack_speed"]["price"] = combat_price
     facts = RouteFacts("account", "worker", "battle", 100, 101, run_id=7, wave=wave,
                        battle_cash=1000, run_purchases={uid: 50 for uid in ECONOMY_IDS}
-                       | {"defense_absolute": DEF_ABS_LEVELS, "thorns": THORNS_LEVELS, "orbs": ORB_LEVELS},
+                       | {"defense_absolute": DEF_ABS_LEVELS, "thorns": 60, "orbs": ORB_LEVELS},
                        battle_price_quotes=quotes)
     result = evaluate_program(route, facts, None, "battle")
     assert (result.decision.upgrade_id if result.decision else None) == expected
@@ -73,17 +74,16 @@ def test_wave_selects_pool_even_after_twenty_purchases(
     (DEF_ABS_LEVELS - 1, 0, 50, "defense_absolute"),
     (3, 0, 5000, None),  # holds the cash for Defense Absolute rather than spending it
     (DEF_ABS_LEVELS, 0, 50, "thorns"),
-    (DEF_ABS_LEVELS, THORNS_LEVELS - 1, 50, "thorns"),
-    (DEF_ABS_LEVELS, THORNS_LEVELS, 50, "attack_speed"),
+    (DEF_ABS_LEVELS, 60, 50, "thorns"),  # no Thorns level cap
 ])
-def test_after_the_economy_buys_def_abs_then_thorns_then_combat(
+def test_after_the_economy_buys_def_abs_then_the_cheapest_guide_upgrade(
     def_abs: int, thorns: int, def_abs_price: int, expected: str | None,
 ) -> None:
     baseline = RouteBaseline.from_dict(configure_battle(RouteDocument.compatibility().baseline.to_dict()))
     route = SimpleNamespace(revision=1, battle=baseline.battle, workshop=baseline.workshop)
     quote = dict(account_id="account", run_id=7, source="model", verified=True, value=1, status="available")
     quotes = {uid: dict(quote, price=100) for uid in COMBAT_IDS} | {
-        "attack_speed": dict(quote, price=5), "thorns": dict(quote, price=90)}
+        "attack_speed": dict(quote, price=50), "thorns": dict(quote, price=5)}
     rows = {"defense_absolute": {"status": "available", "value": 10, "price": def_abs_price, "observed_at": 100}}
     facts = RouteFacts("account", "worker", "battle", 100, 101, run_id=7, wave=25, battle_cash=1000,
                        run_purchases={"defense_absolute": def_abs, "thorns": thorns, "orbs": ORB_LEVELS},
@@ -110,7 +110,7 @@ def test_orbs_come_first_and_hold_cash_until_capped(
     rows = {"orbs": dict(orb_row, value=orbs, observed_at=100),
             "defense_absolute": {"status": "available", "value": 10, "price": 50, "observed_at": 100}}
     facts = RouteFacts("account", "worker", "battle", 100, 101, run_id=7, wave=wave, battle_cash=1000,
-                       run_purchases={"orbs": orbs, "defense_absolute": DEF_ABS_LEVELS, "thorns": THORNS_LEVELS},
+                       run_purchases={"orbs": orbs, "defense_absolute": DEF_ABS_LEVELS},
                        upgrade_rows=rows, battle_price_quotes=quotes)
     result = evaluate_program(route, facts, None, "battle")
     assert (result.decision.upgrade_id if result.decision else None) == expected

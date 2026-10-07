@@ -13,7 +13,7 @@ NAMES = {
     "cash_bonus": "Cash Bonus", "cash_per_wave": "Cash / Wave",
     "coins_per_kill_bonus": "Coins / Kill Bonus", "coins_per_wave": "Coins / Wave",
     "attack_speed": "Attack Speed", "health": "Health", "defense_percent": "Defense Percent",
-    "thorns": "Thorns", "orbs": "Orbs", "orb_speed": "Orb Speed",
+    "thorns": "Thorns", "lifesteal": "Lifesteal", "orbs": "Orbs", "orb_speed": "Orb Speed",
     "knockback_force": "Knockback Force", "knockback_chance": "Knockback Chance",
     "multishot_chance": "Multishot Chance", "multishot_targets": "Multishot Targets",
     "bounce_shot_chance": "Bounce Shot Chance", "bounce_shot_targets": "Bounce Shot Targets",
