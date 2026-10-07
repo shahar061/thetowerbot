@@ -21,6 +21,7 @@ import pytest
 
 import config
 import digits
+import ocr
 import pages
 import shopping
 import vision
@@ -71,6 +72,28 @@ def test_every_page_with_a_header_is_covered() -> None:
     """A page that grows header regions without a case here would read
     nothing and abort every visit to it, silently."""
     assert set(config.HEADER_REGIONS) == {page for page, _, _ in HEADER_CASES.values()}
+
+
+# "888.88K" at the header font: digits and K are ~37px wide ("78" boxes at
+# 74px on menu_main), the point ~12px. A narrower coin region clips the K,
+# and a clipped suffix is refused, so a wallet of 100K or more read as unknown
+# and the Workshop never ran again.
+SEVEN_CHARACTER_BALANCE_PX = 235
+
+
+def test_coin_regions_fit_a_six_digit_balance_and_stop_before_the_gems(
+    cache: vision.TemplateCache,
+) -> None:
+    for fixture, (page, _, _) in HEADER_CASES.items():
+        coins = config.HEADER_REGIONS[page][0]
+        assert coins.w >= SEVEN_CHARACTER_BALANCE_PX, f"{page}: coin region clips 100K+ balances"
+        screen = frame(fixture)
+        _, top_left = vision.best_score(screen, cache.get(config.PAGE_ANCHORS[page]))
+        wide = config.Rect(top_left[0] + coins.dx, top_left[1] + coins.dy, coins.w + 300, coins.h)
+        boxes = sorted(ocr.read_region(screen, wide), key=lambda box: box.rect.x)
+        # Box x is in padded-crop coordinates; the first box is the coin balance.
+        after = [box.rect.x - ocr.CROP_PADDING for box in boxes[1:]]
+        assert all(x >= coins.w for x in after), f"{fixture}: the coin region reaches the gems"
 
 
 def test_the_regions_stay_inside_the_frame(cache: vision.TemplateCache) -> None:

@@ -380,9 +380,9 @@ def template_lab_blocks() -> tuple[dict[str, Any], ...]:
 
 
 def template_rules() -> dict[str, Any]:
-    """Save 25% toward each Game Speed level instead of pausing Workshop for 1M."""
+    """Save 10% toward each Game Speed level instead of pausing Workshop for 1M."""
     return {
-        "coins": {"lab_share": {"mode": "save_pct", "pct": 25}, "workshop_spend_limit_pct": 100},
+        "coins": {"lab_share": {"mode": "save_pct", "pct": 10}, "workshop_spend_limit_pct": 100},
         "labs": {"auto_start": True, "idle_fill": "shortest_under_30m",
                  "pool": {"selection": "cheapest", "max_price_pct_of_wallet": 10, "max_seconds": None}},
         "gems": {"auto_unlock_lab_slots": True, "spend_limit_pct": 100, "keep": 0},
@@ -430,12 +430,12 @@ def template_lab_list() -> tuple[dict[str, Any], ...]:
 
 
 def template_lab_list_rules() -> dict[str, Any]:
-    """Save 25% of each run toward the waiting Game Speed level, with a cheap idle filler.
+    """Save 10% of each run toward the waiting Game Speed level, with a cheap idle filler.
 
     Workshop keeps buying with the coins above the jar; labs may spend the whole wallet.
     """
     return {
-        "coins": {"lab_share": {"mode": "save_pct", "pct": 25}, "workshop_spend_limit_pct": 100},
+        "coins": {"lab_share": {"mode": "save_pct", "pct": 10}, "workshop_spend_limit_pct": 100},
         "labs": {"auto_start": True, "direct_start": True, "idle_fill": "leave_idle",
                  "pool": {"selection": "ordered", "max_price_pct_of_wallet": None, "max_seconds": None},
                  "saving": {"income_margin_pct": 75,

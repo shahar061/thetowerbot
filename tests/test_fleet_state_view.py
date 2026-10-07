@@ -211,6 +211,100 @@ def test_a_workshop_plan_from_before_the_active_route_is_replanning() -> None:
     assert state_view.build_next_buy(fresh, "account-a", route)["upgrade_id"] == "unlock_knockback"
     wrong_revision = {**fresh, "route_revision": 65}
     assert state_view.build_next_buy(wrong_revision, "account-a", route)["state"] == "replanning"
+    # A projection that cannot be made keeps the placeholder.
+    assert state_view.build_next_buy(old, "account-a", route, lambda: None)["state"] == "replanning"
+
+
+def _route_doc(mode: str = "save_pct", limit: int = 100, program: list[Any] | None = None) -> Any:
+    """A published-shape route: a held save-for-Thorns program and a lab share mode."""
+    from fleet.build_route import RouteDocument
+
+    raw = RouteDocument.compatibility().to_dict()
+    raw["baseline"]["workshop"].update(mode="blocks", blocks=program or [SAVE_THORNS],
+                                       coin_spend_limit_pct=limit)
+    raw["baseline"]["rules"]["coins"].update(lab_share={"mode": mode, "pct": 25},
+                                             workshop_spend_limit_pct=limit)
+    return RouteDocument.from_dict(raw)
+
+
+def _effective(mode: str = "save_pct", limit: int = 100, program: list[Any] | None = None) -> Any:
+    from fleet.build_route import resolve_route
+
+    return resolve_route(_route_doc(mode, limit, program), "Air_1", "account-a")
+
+
+SAVE_THORNS = {"id": "goal", "type": "save_for", "hold": True,
+               "goal": [{"id": "goal.pool", "type": "pool", "upgrade_ids": ["thorns"],
+                         "selection": "priority"}]}
+FACTS = {"account_id": "account-a", "worker": "Air_1", "screen": "main_menu",
+         "observed_at": 6900., "now": 6901., "best_tier_1_wave": 25, "wallet_coins": 150,
+         "prices": {"thorns": 100}, "purchases": {"unlock_defense_upgrades": 1, "unlock_thorns": 1},
+         "confirmed_purchases": {}, "lab_coin_jar": 0, "maxed_ids": [],
+         "price_evidence": {"thorns": {"source": "observed", "observed_at": 6899.}},
+         "a_field_from_a_newer_worker": True}
+
+
+def test_a_stale_plan_projects_the_current_routes_next_purchase_with_the_jar_held() -> None:
+    effective = _effective()
+    saving = state_view.build_projected_buy(effective, FACTS, "account-a", "Air_1", jar=60)
+    assert saving == {
+        "state": "save_coins", "upgrade_id": "thorns", "name": "Thorns", "category": "defense",
+        "price": 100, "price_source": "observed", "wallet": 150,
+        "reason": saving["reason"], "goal": saving["goal"],
+        "observed_at": "1970-01-01T01:55:00+00:00", "projected": True}
+    buying = state_view.build_projected_buy(effective, FACTS, "account-a", "Air_1", jar=0)
+    assert (buying["state"], buying["upgrade_id"], buying["price"], buying["projected"]) == (
+        "buy", "thorns", 100, True)
+    # The facts were read long before `now`; they are projected as of their own reading.
+    old = {**FACTS, "now": 99999.}
+    assert state_view.build_projected_buy(effective, old, "account-a", "Air_1", jar=0)["state"] == "buy"
+    # A program that decides nothing yet waits, with its reason.
+    waiting = state_view.build_projected_buy(_effective(program=[{"id": "w", "type": "wait"}]),
+                                             FACTS, "account-a", "Air_1", jar=0)
+    assert (waiting["state"], waiting["name"], waiting["wallet"]) == ("waiting", None, 150)
+    assert waiting["reason"]
+
+
+def test_a_projection_with_unread_coins_says_so_and_foreign_facts_project_nothing() -> None:
+    effective = _effective()
+    unread = state_view.build_projected_buy(effective, {**FACTS, "wallet_coins": None},
+                                            "account-a", "Air_1", jar=0)
+    assert (unread["state"], unread["price"], unread["wallet"], unread["projected"]) == (
+        "coins_unread", None, None, True)
+    assert unread["reason"] == "Coins unread at the menu; the next menu read will plan the Workshop"
+    assert state_view.build_projected_buy(effective, FACTS, "account-b", "Air_1", jar=0) is None
+    assert state_view.build_projected_buy(effective, FACTS, "account-a", "Air_2", jar=0) is None
+    assert state_view.build_projected_buy(effective, None, "account-a", "Air_1", jar=0) is None
+    assert state_view.build_projected_buy(None, FACTS, "account-a", "Air_1", jar=0) is None
+    broken = {**FACTS, "prices": "not a mapping"}
+    assert state_view.build_projected_buy(effective, broken, "account-a", "Air_1", jar=0) is None
+
+
+def test_the_coin_split_holds_the_save_pct_jar_toward_its_lab_and_budgets_the_rest() -> None:
+    import lab_catalog
+
+    price = lab_catalog.level("labs.game-speed", 5).coins
+    split = state_view.build_coin_split(_effective(limit=50), 200000, 79300,
+                                        {"lab_id": "labs.game-speed", "level": 5})
+    assert split == {"wallet": 200000, "jar": 79300,
+                     "jar_target": {"lab_id": "labs.game-speed", "name": "Game Speed",
+                                    "level": 5, "price": price},
+                     "share_mode": "save_pct", "share_pct": 25, "workshop_limit_pct": 50,
+                     "workshop_budget": (200000 - 79300) * 50 // 100}
+    # A jar never holds more than a known wallet.
+    assert state_view.build_coin_split(_effective(), 1000, 5000, None)["jar"] == 1000
+    assert state_view.build_coin_split(_effective(), 1000, 5000, None)["workshop_budget"] == 0
+
+
+def test_the_coin_split_has_no_jar_outside_save_pct_and_no_budget_without_a_wallet() -> None:
+    other = state_view.build_coin_split(_effective("when_affordable"), 1000, 700,
+                                        {"lab_id": "labs.game-speed", "level": 5})
+    assert (other["jar"], other["jar_target"], other["workshop_budget"], other["share_mode"]) == (
+        0, None, 1000, "when_affordable")
+    unread = state_view.build_coin_split(_effective(), None, 700, None)
+    assert (unread["wallet"], unread["jar"], unread["workshop_budget"]) == (None, 700, None)
+    unrouted = state_view.build_coin_split(None, 1000, 700, None)
+    assert (unrouted["jar"], unrouted["share_mode"], unrouted["workshop_budget"]) == (0, None, None)
 
 
 def test_a_new_account_with_zero_runs_has_no_tier_no_best_and_no_upgrades() -> None:
@@ -528,6 +622,60 @@ def test_account_column_rejects_a_plan_older_than_its_published_route(tmp_path: 
                                         now=7000.)["accounts"]
     assert account["next_buy"]["state"] == "replanning"
     assert account["next_buy"]["upgrade_id"] is None
+    assert "projected" not in account["next_buy"]  # no Workshop facts file to project from
+
+
+def _stale_plan_worker(root: Path, mode: str = "save_pct") -> Path:
+    """A worker whose Workshop plan predates the published route, with a coin balance."""
+    from fleet.build_route_store import BuildRouteStore
+
+    worker_root = _registered(root, "Air_1", "account-a", 8001)
+    (worker_root / "reroll-plan.json").write_text(json.dumps({
+        "account_id": "account-a", "state": "observe_price", "route_revision": 0,
+        "upgrade_id": "unlock_knockback", "observed_at": 6990.}))
+    BuildRouteStore(root).publish(_route_doc(mode), 0, "operator")
+    with db.connect(worker_root / "tower_bot.db") as conn:
+        conn.execute("INSERT INTO ledger(ts, kind, currency, delta, balance_after, dry_run) "
+                     "VALUES (1, 'RUN_REWARD', 'coins', 150, 150, 0)")
+    return worker_root
+
+
+def test_account_column_projects_a_stale_plan_and_splits_its_coins(tmp_path: Path) -> None:
+    worker_root = _stale_plan_worker(tmp_path)
+    (worker_root / "build-route-facts.json").write_text(json.dumps(FACTS))
+    (worker_root / "lab-coin-jar.json").write_text(json.dumps({
+        "account_id": "account-a", "amount": 60, "visit_key": "v",
+        "target": {"lab_id": "labs.game-speed", "level": 5}}))
+
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}], fetch=_fetch({}),
+                                        now=7000.)["accounts"]
+    buy = account["next_buy"]
+    assert (buy["state"], buy["name"], buy["price"], buy["projected"]) == (
+        "save_coins", "Thorns", 100, True)
+    split = account["coin_split"]
+    assert (split["wallet"], split["jar"], split["workshop_budget"]) == (150, 60, 90)
+    assert split["jar_target"]["name"] == "Game Speed"
+
+
+def test_account_column_without_lab_share_projects_with_the_whole_wallet(tmp_path: Path) -> None:
+    worker_root = _stale_plan_worker(tmp_path, "when_affordable")
+    (worker_root / "build-route-facts.json").write_text(json.dumps(FACTS))
+    (worker_root / "lab-coin-jar.json").write_text(json.dumps({"account_id": "account-a", "amount": 60}))
+
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}], fetch=_fetch({}),
+                                        now=7000.)["accounts"]
+    assert (account["next_buy"]["state"], account["next_buy"]["upgrade_id"]) == ("buy", "thorns")
+    assert (account["coin_split"]["jar"], account["coin_split"]["workshop_budget"]) == (0, 150)
+
+
+def test_account_column_keeps_the_placeholder_for_another_accounts_facts(tmp_path: Path) -> None:
+    worker_root = _stale_plan_worker(tmp_path)
+    (worker_root / "build-route-facts.json").write_text(json.dumps({**FACTS, "account_id": "account-b"}))
+
+    (account,) = state_view.fleet_state(tmp_path, [{"name": "Air_1"}], fetch=_fetch({}),
+                                        now=7000.)["accounts"]
+    assert account["next_buy"]["state"] == "replanning"
+    assert account["coin_split"]["jar"] == 0 and account["coin_split"]["jar_target"] is None
 
 
 def test_an_offline_worker_is_built_from_its_database_with_a_stale_age(tmp_path: Path) -> None:

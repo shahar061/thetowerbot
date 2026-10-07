@@ -41,7 +41,7 @@ def templates() -> list[dict[str, Any]]:
                        "baseline": RouteBaseline.from_dict(purchase_lanes(policy)).to_dict(),
                        "builtin": True})
     # The community Labs & Gems path: Opening's purchase lanes, gem blocks, and
-    # a ranked lab list saving 25% of each run toward Game Speed.
+    # a ranked lab list saving 10% of each run toward Game Speed.
     labs_gems = purchase_lanes("opening")
     labs_gems["gems"].update(mode="blocks", blocks=list(template_gem_blocks()))
     labs_gems["labs"].update(mode="blocks", blocks=list(template_lab_list()))

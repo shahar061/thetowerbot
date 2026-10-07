@@ -143,6 +143,11 @@ class LabCoinJar:
         record = self._record(quiet=quiet)
         return record["amount"] if record is not None else 0
 
+    def saved(self) -> tuple[int, dict[str, Any] | None]:
+        """The stored amount and the `{lab_id, level}` it saves toward, from one quiet read."""
+        record = self._record(quiet=True)
+        return (record["amount"] if record is not None else 0), self._stored_target(record)
+
     def _write(self, amount: int, visit_key: str | None, now: float,
                target: Mapping[str, Any] | None = None, wallet: int | None = None) -> None:
         if self.read_only:

@@ -21,7 +21,7 @@ def test_template_validates_with_pins_and_rules() -> None:
     raw = RouteDocument.compatibility().to_dict()["baseline"]
     raw["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
     raw["rules"] = rb.template_lab_list_rules()
-    assert RouteBaseline.from_dict(raw).rules.coins.lab_share == LabShareRule("save_pct", 25)
+    assert RouteBaseline.from_dict(raw).rules.coins.lab_share == LabShareRule("save_pct", 10)
 
 
 def test_template_excludes_traps_and_irreversible_labs() -> None:
