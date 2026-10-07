@@ -248,8 +248,6 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                     raise ValueError('save for goal needs exactly one buy or pool block')
                 if any(key in block['goal'][0] for key in ('discount_pct', 'cheaper_than_upgrade_ids')):
                     raise ValueError('a saving goal cannot be a price-comparison pool')
-                if block['goal'][0].get('selection') == 'value':
-                    raise ValueError('a saving goal cannot be a value pool')
             elif kind == 'while_saving':
                 allowed |= {'upgrade_id', 'blocks'}
                 if 'upgrade_id' in block and (not isinstance(block['upgrade_id'], str)
@@ -278,13 +276,14 @@ _ECONOMY_WEIGHTS = {'unlock_cash_bonuses': 100, 'cash_per_wave': 200, 'unlock_co
                     'coins_per_kill_bonus': 150, 'cash_bonus': 60}
 _FILLER_CAPS = {'cash_per_wave': 5, 'coins_per_kill_bonus': 5, 'cash_bonus': 5, 'damage': 3, 'attack_speed': 3}
 # Blender v2: coin weights for value-per-coin buying (sum 100) and stop targets.
+# Follows the game-vault Blender (eHP) guide: Coins / Kill first, then eHP and
+# Knockback-into-Orbs; no Damage or Crit.
 _BLENDER_WEIGHTS = {
-    'coins_per_kill_bonus': 15, 'defense_percent': 12, 'attack_speed': 10, 'health': 9,
-    'knockback_chance': 6, 'thorns': 6, 'damage': 4, 'lifesteal': 4, 'orb_speed': 4,
-    'free_utility_upgrade': 3, 'free_defense_upgrade': 3, 'cash_bonus': 3, 'orbs': 3,
-    'knockback_force': 3, 'bounce_shot_chance': 3, 'free_attack_upgrade': 2, 'coins_per_wave': 2,
-    'cash_per_wave': 2, 'critical_chance': 2, 'bounce_shot_targets': 2, 'bounce_shot_range': 1,
-    'critical_factor': 1,
+    'coins_per_kill_bonus': 20, 'health': 14, 'defense_percent': 13, 'attack_speed': 12,
+    'knockback_chance': 7, 'thorns': 6, 'lifesteal': 6, 'knockback_force': 3, 'orb_speed': 3,
+    'orbs': 3, 'free_utility_upgrade': 2, 'free_defense_upgrade': 2, 'free_attack_upgrade': 2,
+    'cash_bonus': 2, 'coins_per_wave': 2, 'cash_per_wave': 1, 'bounce_shot_chance': 1,
+    'bounce_shot_targets': 1,
 }
 _BLENDER_TARGETS = {'lifesteal': 3.5, 'orbs': 3}
 # Thorns has its own pool: bought only while cheaper than each core pick.
@@ -375,9 +374,12 @@ def _blender_workshop_template(policy: str) -> dict[str, Any]:
                 {'id': f'{policy}.blender.thorns', 'type': 'pool', 'label': 'Thorns while cheap',
                  'upgrade_ids': ['thorns'], 'targets': {'thorns': 51},
                  'cheaper_than_upgrade_ids': list(_BLENDER_THORNS_CHEAPER_THAN)},
-                {'id': f'{policy}.blender.value', 'type': 'pool', 'label': 'Blender value per coin',
-                 'upgrade_ids': list(_BLENDER_VALUE_WEIGHTS), 'selection': 'value',
-                 'weights': dict(_BLENDER_VALUE_WEIGHTS), 'targets': dict(_BLENDER_TARGETS)},
+                # Saves for the best value instead of spending on cheaper picks.
+                {'id': f'{policy}.blender.value', 'type': 'save_for', 'label': 'Save for the best value',
+                 'hold': True, 'goal': [
+                     {'id': f'{policy}.blender.value.goal', 'type': 'pool', 'label': 'Blender value per coin',
+                      'upgrade_ids': list(_BLENDER_VALUE_WEIGHTS), 'selection': 'value',
+                      'weights': dict(_BLENDER_VALUE_WEIGHTS), 'targets': dict(_BLENDER_TARGETS)}]},
                 {'id': f'{policy}.blender.wait', 'type': 'wait',
                  'label': 'Wait for an affordable Blender upgrade'},
             ], 'else': _workshop_template(policy)}
@@ -459,6 +461,14 @@ def child_lists(block: Mapping[str, Any]) -> tuple[list[dict[str, Any]], ...]:
     if kind == 'save_for':
         return (block['goal'],)
     return ()
+
+
+def rename_block_ids(program: list[dict[str, Any]], old: str, new: str) -> None:
+    """Replace the leading ``old`` in every block id, nested blocks included."""
+    for block in program:
+        block['id'] = block['id'].replace(old, new, 1)
+        for children in child_lists(block):
+            rename_block_ids(children, old, new)
 
 
 def uses_modeled_prices(program: tuple[dict[str, Any], ...]) -> bool:
@@ -899,7 +909,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         if needs_counts and counts is None:
             rejected.append(f"{goal['id']}: confirmed purchase counts unavailable")
             return None
-        uid = next(iter(pool_candidates(goal, goal['id'], None, ignore_funds=True)), None)
+        candidates = pool_candidates(goal, goal['id'], None, ignore_funds=True)
+        if goal.get('selection') == 'value':
+            # Rank by reference price, so a dearer best value is saved for.
+            candidates = dict.fromkeys(sorted(candidates, key=lambda uid: (
+                price_for(uid, reference=True) / candidates[uid], goal['upgrade_ids'].index(uid))))
+        uid = next(iter(candidates), None)
         return (uid, price_for(uid, reference=True)) if uid else None
 
     def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
@@ -956,7 +971,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 # read the goal items ranked above the pick before any later
                 # block spends the coins this goal is meant to keep.
                 ids = [goal['upgrade_id']] if goal['type'] == 'buy' else list(goal['upgrade_ids'])
-                above = ids[:ids.index(pick[0])] if pick else ids
+                # Any unread value item may be the best value.
+                above = ids[:ids.index(pick[0])] if pick and goal.get('selection') != 'value' else ids
                 if lane == 'workshop' and (observation := observe_prices(
                         identity, [uid for uid in unpriced[before:] if uid in above])):
                     return observation

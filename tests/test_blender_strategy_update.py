@@ -34,13 +34,15 @@ def test_blender_gate_precedes_old_rules_and_is_idempotent(prefix: str, threshol
         f"{prefix}.blender.unlocks", f"{prefix}.blender.free_unlocks", f"{prefix}.blender.thorns",
         f"{prefix}.blender.value", f"{prefix}.blender.wait"]
     assert unlocks["type"] == "unlock" and {"knockback_chance", "orbs"} <= set(unlocks["upgrade_ids"])
-    assert priorities["selection"] == "value"
-    assert "defense_absolute" not in priorities["upgrade_ids"]
+    assert (priorities["type"], priorities["hold"]) == ("save_for", True)
+    (value,) = priorities["goal"]
+    assert (value["id"], value["selection"]) == (f"{prefix}.blender.value.goal", "value")
+    assert "defense_absolute" not in value["upgrade_ids"]
     assert stop["type"] == "wait"
     assert "unlock_range_upgrades" not in updated["workshop"]["banned_upgrade_ids"]
     assert "interest_per_wave" in updated["workshop"]["banned_upgrade_ids"]
     assert not (_ban_closure(frozenset(updated["workshop"]["banned_upgrade_ids"]))
-                & set(priorities["upgrade_ids"]))
+                & set(value["upgrade_ids"]))
     RouteBaseline.from_dict(updated)
     assert add_blender_gate(updated, prefix=prefix, threshold=threshold) == updated
 

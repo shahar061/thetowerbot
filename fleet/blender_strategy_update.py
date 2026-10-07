@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from fleet.build_route import RouteBaseline
 from fleet.reroll_planner import _ban_closure
-from fleet.strategy_blocks import template_program
+from fleet.strategy_blocks import program_upgrade_ids, rename_block_ids, template_program
 
 TARGETS = (("Survivor Ladder", "sl", 450, "Tiramisu64_82"),
            ("Blender Road", "br", 400, "Tiramisu64_83"))
@@ -38,13 +38,12 @@ def add_blender_gate(baseline: Mapping[str, Any], *, prefix: str,
     gate_id = f"{prefix}.blender.active"
     gate.update({"id": gate_id, "label": f"Blender after best Tier 1 wave {threshold}",
                  "value": threshold, "else": []})
-    for child in gate["then"]:
-        child["id"] = child["id"].replace("turtle.blender.", f"{prefix}.blender.", 1)
+    rename_block_ids(gate["then"], "turtle.blender.", f"{prefix}.blender.")
     workshop["blocks"] = [gate, *(block for block in workshop["blocks"]
                                   if block["id"] != gate_id)]
     workshop["banned_upgrade_ids"] = [uid for uid in workshop["banned_upgrade_ids"]
                                        if uid != "unlock_range_upgrades"]
-    priorities = {uid for child in gate["then"] for uid in child.get("upgrade_ids", ())}
+    priorities = set(program_upgrade_ids(tuple(gate["then"])))
     if _ban_closure(frozenset(workshop["banned_upgrade_ids"])) & priorities:
         raise ValueError("a Blender priority is still banned")
     RouteBaseline.from_dict(updated)

@@ -30,14 +30,17 @@ def test_v2_replaces_only_the_workshop_program_and_is_idempotent() -> None:
     assert [block["id"] for block in updated["workshop"]["blocks"]] == [
         "bv2.orbs_unlock", "bv2.orbs", "bv2.unlocks", "bv2.free_unlocks", "bv2.thorns", "bv2.value",
         "bv2.wait"]
-    assert updated["workshop"]["blocks"][5]["selection"] == "value"
+    save = updated["workshop"]["blocks"][5]
+    assert (save["type"], save["hold"], save["goal"][0]["id"]) == ("save_for", True, "bv2.value.goal")
+    assert save["goal"][0]["selection"] == "value"
     RouteBaseline.from_dict(updated)
     assert blender_v2_workshop(updated) == updated
 
 
-def test_v2_refuses_a_banned_pool_skill() -> None:
+@pytest.mark.parametrize("banned", ["thorns", "attack_speed"])
+def test_v2_refuses_a_banned_pool_skill(banned: str) -> None:
     baseline = v7_baseline()
-    baseline["workshop"]["banned_upgrade_ids"] = ["thorns"]
+    baseline["workshop"]["banned_upgrade_ids"] = [banned]
     with pytest.raises(ValueError, match="banned"):
         blender_v2_workshop(baseline)
 

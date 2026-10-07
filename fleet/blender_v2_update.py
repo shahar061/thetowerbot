@@ -15,7 +15,7 @@ from typing import Any, Mapping
 from fleet.blender_strategy_update import _request
 from fleet.build_route import RouteBaseline
 from fleet.reroll_planner import _ban_closure
-from fleet.strategy_blocks import template_program
+from fleet.strategy_blocks import program_upgrade_ids, rename_block_ids, template_program
 
 STRATEGY = "blender"
 PREFIX = "bv2"
@@ -40,10 +40,9 @@ def blender_v2_workshop(baseline: Mapping[str, Any]) -> dict[str, Any]:
     updated = deepcopy(dict(baseline))
     workshop = updated["workshop"]
     program = deepcopy(list(template_program("turtle", "workshop")[0]["then"]))
-    for block in program:
-        block["id"] = block["id"].replace("turtle.blender.", f"{PREFIX}.", 1)
+    rename_block_ids(program, "turtle.blender.", f"{PREFIX}.")
     program[:0] = orbs_first()
-    wanted = {uid for block in program for uid in block.get("upgrade_ids", ())}
+    wanted = set(program_upgrade_ids(tuple(program)))
     if _ban_closure(frozenset(workshop["banned_upgrade_ids"])) & wanted:
         raise ValueError("a Blender v2 skill is banned by Never Buy")
     workshop.update(mode="blocks", blocks=program)

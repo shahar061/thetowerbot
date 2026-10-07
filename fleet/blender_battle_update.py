@@ -14,22 +14,21 @@ from fleet.build_route import RouteBaseline
 
 
 ECONOMY_IDS = ("cash_bonus", "cash_per_wave", "coins_per_kill_bonus", "coins_per_wave")
+# The game-vault Blender (eHP) guide's run upgrades, uncapped. No Damage or
+# Crit; Multishot and Bounce Shot are only for spare cash, which never comes
+# while Health has levels left.
 COMBAT_IDS = (
-    "attack_speed", "health", "defense_percent", "orbs", "orb_speed",
-    "knockback_force", "knockback_chance", "multishot_chance", "multishot_targets",
-    "bounce_shot_chance", "bounce_shot_targets", "bounce_shot_range",
+    "defense_percent", "health", "knockback_chance", "knockback_force", "orb_speed",
+    "attack_speed", "lifesteal", "thorns", "coins_per_kill_bonus", "cash_bonus",
 )
-# In-run levels, not displayed values: the displayed Thorns % already includes
-# the Workshop base, so a 51% target buys next to nothing on a built account.
 DEF_ABS_LEVELS = 25
-THORNS_LEVELS = 20
 # Every in-run Orbs level (300 to 9,000 cash).
 ORB_LEVELS = 4
 
 
 def configure_battle(baseline: Mapping[str, Any]) -> dict[str, Any]:
-    """Buy every Orbs level first, then economy before wave 20, then Defense Absolute,
-    some Thorns and the cheapest combat upgrade.
+    """Buy every Orbs level first, then economy before wave 20, then a Defense
+    Absolute floor and the cheapest guide upgrade.
 
     Orbs and Defense Absolute buy from read prices, and the run holds its cash
     for each until all its levels are bought. A locked or maxed row never holds.
@@ -49,9 +48,6 @@ def configure_battle(baseline: Mapping[str, Any]) -> dict[str, Any]:
              {"id": "blender.battle.def_abs", "type": "pool", "label": "Defense Absolute after the economy",
               "upgrade_ids": ["defense_absolute"], "hold_until_capped": True,
               "level_caps": {"defense_absolute": {"base": DEF_ABS_LEVELS}}},
-             {"id": "blender.battle.thorns", "type": "pool", "label": "Thorns from wave 20",
-              "selection": "cheapest", "price_source": "model", "upgrade_ids": ["thorns"],
-              "level_caps": {"thorns": {"base": THORNS_LEVELS}}},
              {"id": "blender.battle.combat", "type": "pool", "label": "Blender combat from wave 20",
               "selection": "cheapest", "price_source": "model", "upgrade_ids": list(COMBAT_IDS),
               "batch_size": 5, "max_price_premium_pct": 25},
