@@ -248,3 +248,44 @@ def test_legacy_slot_two_file_alone_sets_slots_owned(tmp_path: Path) -> None:
     snapshot = LabRuntime(tmp_path, "ACCOUNT-A").snapshot()
     assert snapshot.slots[1].state == "locked"
     assert snapshot.slots_owned == 1
+
+
+def test_a_job_seen_researching_outlives_the_idle_strip_of_a_later_generation(tmp_path: Path) -> None:
+    """A job that finished while the bot was down keeps its target level on record."""
+    from lab_runtime import LabRuntime
+    before = confirmed(runtime(tmp_path)).slots[0]
+    assert before.state == "researching" and before.research_id
+    later = LabRuntime(tmp_path, "ACCOUNT-A", lease_id="lease-a", generation="worker-2")
+    reading = observation(2000.)
+    idle = replace(reading.jobs[0], status="idle", concept_id=None, raw_name="Lab Offline",
+                   completes_at=None, remaining_s=None, source_level=None, target_level=None)
+    reading = replace(reading, jobs=(idle, *reading.jobs[1:]))
+    later.observe(reading)
+    later.observe(replace(reading, observed_at=2001.))
+    assert later.snapshot().slots[0].state == "idle"
+    again = LabRuntime(tmp_path, "ACCOUNT-A", lease_id="lease-a", generation="worker-3").snapshot()
+    assert (before.research_id, before.target_level, before.expected_finish) in again.job_history
+    assert all(row[0] != before.research_id
+               for row in runtime(tmp_path, "ACCOUNT-B").snapshot().job_history)
+
+
+
+@pytest.mark.parametrize("confirmed,status,kept", [
+    (True, "verified", True), (False, "verified", False), (True, "historical", False), (None, None, False)])
+def test_job_history_comes_only_from_confirmed_researching_records(
+        tmp_path: Path, confirmed: bool | None, status: str | None, kept: bool) -> None:
+    """A legacy or unconfirmed row never becomes a completed level."""
+    import hashlib
+    import json
+    from lab_runtime import LabRuntime, read_job_history
+    scope = {"account_id": "ACCOUNT-A", "lease_id": "l", "generation": "g", "epoch": 0}
+    row = {"scope": scope, "slot": 1, "state": "researching", "research_id": "labs.game-speed",
+           "target_level": 4, "expected_finish": 50.}
+    if confirmed is not None:
+        row.update(confirmed=confirmed, evidence_status=status)
+    path = tmp_path / f"lab-runtime-{hashlib.sha256(b'ACCOUNT-A').hexdigest()}.json"
+    path.write_text(json.dumps({"version": 1, "scope": scope, "slots": [row],
+                                "slots_owned": 1, "observed_at": 1.}))
+    expected = (("labs.game-speed", 4, 50.),) if kept else ()
+    assert read_job_history(tmp_path, "ACCOUNT-A") == expected
+    assert LabRuntime(tmp_path, "ACCOUNT-A", generation="g2").snapshot().job_history == expected

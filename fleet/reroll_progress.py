@@ -33,7 +33,7 @@ from fleet.build_route_eval import (RouteFacts, RouteEvaluation, evaluate_battle
                                     select_battle_phase)
 from fleet.build_route_store import RouteUnavailable
 from fleet import coin_share
-from fleet.lab_facts import best_waves, coins_per_hour, just_in_time_hold
+from fleet.lab_facts import best_waves, coins_per_hour, just_in_time_hold, save_pct_target
 from fleet.resource_blocks import (LabFacts, LabPlan, evaluate_lab_plan,
                                    gem_lane_blocks, next_unlock_slot)
 from lab_plan import LabCadence, LabDecision, LabVisitOptions
@@ -174,11 +174,32 @@ class RerollProgress:
                                direct_start=rules.labs.direct_start,
                                native_repeat=rules.labs.native_repeat)
 
-    def note_lab_coin_debit(self, now: float | None = None) -> None:
-        """A confirmed lab coin debit spent the savings: empty the jar."""
+    def note_lab_coin_debit(self, spent: int, now: float | None = None) -> None:
+        """A confirmed lab coin debit of `spent` coins: the jar loses at most that much."""
         if self.read_only:
             return
-        self.coin_jar.reset(time.time() if now is None else now)
+        self.coin_jar.spend(spent, time.time() if now is None else now)
+
+    def _settle_jar(self, effective: Any, lab_record: Mapping[str, Any] | None,
+                    wallet: int | None, visit_key: str, db_path: Path) -> int:
+        """The save_pct jar for this visit; grows at most once per visit key (every menu
+        scan lands here). It saves toward the lab plan's slot-1 target; the slot-1
+        cadence's waiting Game Speed price stands in only when no plan is available."""
+        now = time.time()
+        target, retired = None, None
+        if effective.rules.coins.lab_share.mode == "save_pct":
+            try:
+                planned = save_pct_target(effective, self.root, self.account_id, wallet=wallet,
+                                          db_path=db_path, now=now)
+            except Exception as exc:  # odd persisted lab data must not break Workshop
+                logger.warning("Lab plan for the save_pct jar failed (%s); using the slot-1 cadence", exc)
+                planned = None
+            if planned is not None:
+                # A plan exists: its (possibly empty) target rules, never the cadence.
+                target, retired = planned
+            else:
+                target = coin_share.cadence_target(effective, lab_record)
+        return self.coin_jar.settle(effective, target, wallet, visit_key, now, retired=retired)
 
     def lab_unlocked(self) -> bool:
         """Whether this account has positive, persisted Labs unlock evidence."""
@@ -579,9 +600,8 @@ class RerollProgress:
                         effective, self.root, self.account_id, wallet=facts.wallet_coins,
                         db_path=registration.db_path, now=time.time())
                 else:
-                    # Grows at most once per visit key: this runs on every menu scan.
-                    jar = self.coin_jar.settle(effective, lab_record, facts.wallet_coins,
-                                               facts.visit_id or "", time.time())
+                    jar = self._settle_jar(effective, lab_record, facts.wallet_coins,
+                                           facts.visit_id or "", registration.db_path)
                     paused = coin_share.workshop_paused(effective, lab_record, facts.wallet_coins)
                     saving_reason = None
                 facts = replace(facts, lab_coin_jar=jar)

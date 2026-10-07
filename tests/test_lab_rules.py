@@ -78,3 +78,9 @@ def test_just_in_time_with_lab_list_loads() -> None:
     labs = {"slot1_research": "game_speed", "steps": ["research_game_speed"], "mode": "blocks", "blocks": LIST}
     baseline = RouteBaseline.from_dict(_baseline({"coins": {"lab_share": {"mode": "just_in_time", "pct": 25}}}, labs))
     assert baseline.rules.coins.lab_share.mode == "just_in_time"
+
+
+def test_save_pct_with_lab_list_loads() -> None:
+    labs = {"slot1_research": "game_speed", "steps": ["research_game_speed"], "mode": "blocks", "blocks": LIST}
+    baseline = RouteBaseline.from_dict(_baseline({"coins": {"lab_share": {"mode": "save_pct", "pct": 25}}}, labs))
+    assert (baseline.rules.coins.lab_share.mode, baseline.rules.coins.lab_share.pct) == ("save_pct", 25)

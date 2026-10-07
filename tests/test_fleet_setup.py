@@ -161,6 +161,7 @@ def _jit_draft() -> RouteDocument:
     raw["baseline"]["workshop"].update({"mode": "priorities", "priority_ids": ["attack_speed", "damage"]})
     raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
     raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    raw["baseline"]["rules"]["coins"]["lab_share"] = {"mode": "just_in_time", "pct": 25}
     return RouteDocument.from_dict(raw)
 
 

@@ -430,9 +430,12 @@ def template_lab_list() -> tuple[dict[str, Any], ...]:
 
 
 def template_lab_list_rules() -> dict[str, Any]:
-    """Just-in-time saving toward the ranked list's targets, with a cheap idle filler."""
+    """Save 25% of each run toward the waiting Game Speed level, with a cheap idle filler.
+
+    Workshop keeps buying with the coins above the jar; labs may spend the whole wallet.
+    """
     return {
-        "coins": {"lab_share": {"mode": "just_in_time", "pct": 25}, "workshop_spend_limit_pct": 100},
+        "coins": {"lab_share": {"mode": "save_pct", "pct": 25}, "workshop_spend_limit_pct": 100},
         "labs": {"auto_start": True, "direct_start": True, "idle_fill": "leave_idle",
                  "pool": {"selection": "ordered", "max_price_pct_of_wallet": None, "max_seconds": None},
                  "saving": {"income_margin_pct": 75,

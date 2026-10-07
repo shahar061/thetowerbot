@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict, dataclass, replace
 import json
 import logging
@@ -232,19 +232,72 @@ def project_card_snapshot(conn: sqlite3.Connection, snapshot: CardSnapshot) -> N
                  (cursor.lastrowid, json.dumps(observed, allow_nan=False)))
 
 
+# A priced picker row's Lv.N is the level a start would buy, whether or not it
+# is affordable: `lab_screen.read_selected_picker` splits `available` from
+# `unavailable` on the price and border alone, and `lab_visit` matches either
+# row's level against the planned target level.
+_PICKER_TARGET_STATUSES = ('available', 'unavailable')
+LAB_LEVEL_STATUSES = ('verified', 'maxed') + _PICKER_TARGET_STATUSES
+
+
 def completed_lab_level(status: Any, value: Any) -> int | None:
     """The one reading of a Lab picker level (Task5 ruling).
 
-    An ``available`` picker Lv.N names the next target, so N-1 is completed;
-    every other status keeps its level as read (callers filter statuses).
+    An ``available`` or ``unavailable`` picker Lv.N names the next target, so
+    N-1 is completed; every other status keeps its level as read (callers
+    filter statuses).
     """
     if type(value) is not int:
         return None
     if value < 0:
         return None
-    if status == 'available':
+    if status in _PICKER_TARGET_STATUSES:
         return max(0, value - 1)  # A Lv.0 picker reading cannot mean -1.
     return value
+
+
+def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | None, *,
+                         unscoped_account: str | None = None,
+                         finished_jobs: Iterable[tuple[str, int, float]] = (),
+                         now: float | None = None) -> dict[str, int]:
+    """Completed level per lab from stored ``lab_levels``: the bot's and the dashboard's rule.
+
+    A lab level is a durable account fact, so one stored under an earlier
+    lease, generation, epoch or catalog revision of the same account still
+    counts after a restart, while the lab exists and the level is within its
+    max; only another account's level is dropped. A fact without a scope
+    belongs to ``unscoped_account``. When one lab has several facts, the
+    newest reading wins. A ``finished_jobs`` entry ``(lab, target, finish)``
+    with ``finish <= now`` raises its lab to ``target``: the job completed,
+    possibly while the bot was down and no picker could show it. It never
+    outranks a stored reading taken after it finished.
+    """
+    import lab_catalog
+    newest: dict[str, tuple[float, int]] = {}
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        concept_id, status, value = fact.get('concept_id'), fact.get('status'), fact.get('value')
+        scope, evidence = fact.get('scope'), fact.get('evidence')
+        owner = scope.get('account_id') if isinstance(scope, Mapping) else unscoped_account
+        entry = lab_catalog.lab(concept_id) if isinstance(concept_id, str) else None
+        if (account_id is None or owner != account_id or entry is None
+                or status not in LAB_LEVEL_STATUSES or type(value) is not int
+                or not (1 if status in _PICKER_TARGET_STATUSES else 0) <= value <= entry.max_level):
+            continue
+        observed = evidence.get('observed_at') if isinstance(evidence, Mapping) else None
+        stamp = float(observed) if type(observed) in (int, float) else -math.inf
+        level = completed_lab_level(status, value)
+        if level is not None and (concept_id not in newest or stamp >= newest[concept_id][0]):
+            newest[concept_id] = (stamp, level)
+    levels = {concept_id: level for concept_id, (_, level) in newest.items()}
+    for concept_id, target, finish in finished_jobs if now is not None else ():
+        entry = lab_catalog.lab(concept_id)
+        read_at = newest[concept_id][0] if concept_id in newest else -math.inf
+        if (entry is not None and type(target) is int and 1 <= target <= entry.max_level
+                and read_at < finish <= now and target > levels.get(concept_id, -1)):
+            levels[concept_id] = target
+    return levels
 
 
 class AccountState:
@@ -395,9 +448,14 @@ class AccountState:
                     and 0 <= now-self._identity.observed_at <= max_age)
 
     def lab_facts(self, runtime: Any, *, now: float) -> Any | None:
-        """Adapt only current confirmed facts to L3; timers never imply completion."""
+        """Adapt only current confirmed facts to L3.
+
+        A running slot's timer never implies completion. The one exception is
+        a confirmed job whose expected finish has passed since its lab was last
+        read: it counts as completed (`completed_lab_levels`).
+        """
         from fleet.resource_blocks import LabFacts
-        from lab_runtime import LabScope, _catalog_revision
+        from lab_runtime import LabScope
         scope = self.verified_scope
         if scope is None or self.currencies is None:
             return None
@@ -410,11 +468,10 @@ class AccountState:
         balance = self.currencies.balance('coins', scope=scope, now=now)
         available = self.currencies.available(balance) if balance is not None else None
         gems = self.currencies.balance('gems', scope=scope, now=now)
-        completed = {f.concept_id: completed_lab_level(f.status, f.value)
-                     for f in (self._revision.lab_levels or ())
-                     if f.scope == scope and f.status in ('verified', 'available', 'maxed')
-                     and type(f.value) is int and f.value >= (1 if f.status == 'available' else 0)
-                     and f.catalog_revision == _catalog_revision()} if self._revision else {}
+        # Levels outlive the generation that read them; slots above do not.
+        completed = completed_lab_levels(
+            (asdict(f) for f in (self._revision.lab_levels if self._revision else None) or ()),
+            scope.account_id, finished_jobs=getattr(runtime, 'job_history', ()), now=now)
         from transactions import TransactionJournal
         pending = TransactionJournal(self.currencies.path).open_transactions()
         reserved = frozenset(t.before['research_id'] for t in pending

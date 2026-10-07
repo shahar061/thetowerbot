@@ -94,6 +94,7 @@ def test_a_just_in_time_row_carries_its_saving_plan(tmp_path: Path) -> None:
     raw = RouteDocument.compatibility().to_dict()
     raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
     raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    raw["baseline"]["rules"]["coins"]["lab_share"] = {"mode": "just_in_time", "pct": 25}
     BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
     (root / "build-route-resource-facts.json").write_text(json.dumps({
         "account_id": "account-a", "worker": "Air_38", "observed_at": 900.,
@@ -128,6 +129,7 @@ def test_a_just_in_time_row_shows_its_hold_not_a_stale_save_pct_jar(tmp_path: Pa
     raw = RouteDocument.compatibility().to_dict()
     raw["baseline"]["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
     raw["baseline"]["rules"] = rb.template_lab_list_rules()
+    raw["baseline"]["rules"]["coins"]["lab_share"] = {"mode": "just_in_time", "pct": 25}
     BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), 0, "operator")
     (row,) = labs_snapshot(tmp_path, ["Air_38"], now=1000.)["workers"]
     assert row["saving"]["reserve"] == 1000 and row["plan"]["jar"] == 1000

@@ -264,6 +264,31 @@ def test_unaffordable_target_gets_shortest_cheap_filler() -> None:
     assert left == 20_000 - cw3.coins - plans[1].next.price
 
 
+SAVE_PCT_RULES = {"coins": {"lab_share": {"mode": "save_pct", "pct": 25}},
+                  "labs": {"filler": {"enabled": True, "max_price_pct_of_wallet": 10, "min_hours": 1}}}
+
+
+def test_save_pct_plans_game_speed_once_the_whole_wallet_covers_it() -> None:
+    # The jar (37,500) is part of the 50,000 wallet: labs may spend it, so Game Speed L4 starts now.
+    result = plan(Route(rules=SAVE_PCT_RULES), wallet_coins=50_000, available_coins=50_000, jar=37_500,
+                  coins_per_hour=None)
+    assert result.slots[0].role == "target" and result.slots[0].next.lab_id == "labs.game-speed"
+    assert result.slots[0].next.price == 50_000 and result.slots[0].covered is True
+
+
+def test_save_pct_fillers_cap_at_ten_percent_of_the_whole_wallet() -> None:
+    # 20,000 wallet of which 15,000 is jar: the cap is still 2,000, so Coins/Wave L3 fills slot 1.
+    result = plan(Route(rules=SAVE_PCT_RULES), wallet_coins=20_000, available_coins=20_000, jar=15_000)
+    assert result.slots[0].role == "filler" and result.slots[0].saving_for.lab_id == "labs.game-speed"
+    assert (result.slots[0].next.lab_id, result.slots[0].next.level) == ("labs.coins-wave", 3)
+    # Income unread and no step-4 fit: the last resort still keeps the slot busy.
+    entries = [GS, {"id": "ckb", "lab_id": "labs.coins-kill-bonus", "to_level": 30, "tier": "A"}]
+    busy = plan(Route(entries, SAVE_PCT_RULES), wallet_coins=49_000, available_coins=49_000, jar=40_000,
+                coins_per_hour=None, completed_levels={"labs.game-speed": 3, "labs.coins-kill-bonus": 6})
+    assert busy.slots[0].role == "filler" and busy.slots[0].covered is True
+    assert "last-resort filler: keeps the slot busy" in busy.slots[0].why
+
+
 def test_filler_over_price_cap_is_refused() -> None:
     # Cap = 500 coins: Coins/Wave L10 (6,180) and Coins/Kill L30 (147,960) are both over it.
     result = plan(Route(rules=FILLER_RULES), wallet_coins=5_000, available_coins=5_000,

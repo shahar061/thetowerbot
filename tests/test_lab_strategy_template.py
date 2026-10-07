@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import lab_catalog
 from fleet import resource_blocks as rb
-from fleet.build_route import RouteBaseline, RouteDocument
+from fleet.build_route import LabShareRule, RouteBaseline, RouteDocument
 
 EXCLUDED = {"labs.starting-cash", "labs.cash-wave", "labs.black-hole-damage"}
 
@@ -21,7 +21,7 @@ def test_template_validates_with_pins_and_rules() -> None:
     raw = RouteDocument.compatibility().to_dict()["baseline"]
     raw["labs"].update(mode="blocks", blocks=list(rb.template_lab_list()))
     raw["rules"] = rb.template_lab_list_rules()
-    assert RouteBaseline.from_dict(raw).rules.coins.lab_share.mode == "just_in_time"
+    assert RouteBaseline.from_dict(raw).rules.coins.lab_share == LabShareRule("save_pct", 25)
 
 
 def test_template_excludes_traps_and_irreversible_labs() -> None:

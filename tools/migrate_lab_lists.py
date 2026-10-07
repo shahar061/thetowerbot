@@ -149,7 +149,7 @@ def migrate_baseline(baseline: dict[str, Any]) -> tuple[dict[str, Any], list[str
         notes.insert(0, f"slot tracks: flattened to {len(entries)} ranked entries")
     labs["mode"] = "blocks"
     rules = new["rules"]
-    rules["coins"]["lab_share"] = {"mode": "just_in_time", "pct": 25}
+    rules["coins"]["lab_share"] = {"mode": "save_pct", "pct": 25}
     rules["labs"]["filler"]["enabled"] = True
     rules["labs"]["direct_start"] = True
     rules["labs"]["auto_start"] = True

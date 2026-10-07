@@ -570,3 +570,16 @@ def test_canceled_operation_cannot_prepare_paid_intent(tmp_path: Path, kind: str
         cards=CardBudgetPrecondition(store, op, program_cap=300)) is None
     assert journal.open_transactions() == ()
     assert store.budget('cycle').pending == 0
+
+
+def test_a_card_effect_with_an_unreadable_wallet_stays_unproven(tmp_path: Path) -> None:
+    """The Workshop's book-the-read-price rule never reaches Cards."""
+    from transactions import RecoveryEvidence, Verdict
+    store, journal, op = setup(tmp_path)
+    txn = prepare(store, journal, op)
+    outcome = journal.reconcile(txn.key, RecoveryEvidence(category='CARDS', currency='gems', wallet_after=None,
+        effect_changed=True, observed_at=12., frame_digest='frame', scope=SCOPE,
+        operation='card_buy', card_operation_id=op,
+        card_result=result(op).model_dump(mode='json')), now=12.)
+    assert (outcome.verdict, outcome.spent) == (Verdict.UNPROVEN, None)
+    assert not rows(store)

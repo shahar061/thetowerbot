@@ -57,6 +57,12 @@ class LabVisitResult:
     started_slots: tuple[int, ...] = ()
     # The research each proven start began, in the same order as started_slots.
     started_research: tuple[str, ...] = ()
+    # (research, coins) for each proven start, in the same order: the journal-proven
+    # spend, else the planned price. The lab coin jar is debited once per start.
+    started_spends: tuple[tuple[str, int], ...] = ()
+    # (level, completes_at) of a Game Speed start in this visit, even when it was
+    # not the last start: the slot-1 cadence must record it running.
+    game_speed_start: tuple[int | None, float | None] | None = None
     # The visit re-planned from a fresh strip after its last proven start.
     replanned: bool = False
     # A later attempt that ended after a proven start; the started result is kept.
@@ -235,6 +241,7 @@ class LabVisit:
         '_search': None, '_search_frames': [], '_picker_frames': [],
         '_picker_signature': None, '_picker_reads': 0, '_dialog_signature': None, '_dialog_reads': 0,
         '_unavailable_signature': None, '_unavailable_reads': 0, '_picker_name': None,
+        '_mismatch_signature': None,
         '_picker_seconds': None,
         '_start_tap': None, '_start_scans': 0, '_start_tapped_at': 0., '_start_frames': [],
         '_rehearsing': False,
@@ -668,6 +675,8 @@ class LabVisit:
             # A failure after proven starts still reports which slots started.
             outcome = replace(outcome, started_slots=prior.started_slots,
                               started_research=prior.started_research,
+                              started_spends=prior.started_spends,
+                              game_speed_start=prior.game_speed_start,
                               replanned=prior.replanned)
         self._state = "idle"
         self._outcome = outcome
@@ -748,7 +757,17 @@ class LabVisit:
             (slot,) if slot is not None else ())
         started = (prior.started_research if prior is not None else ()) + (
             (research,) if research is not None else ())
-        outcome = replace(outcome, started_slots=slots, started_research=started, replanned=False)
+        decision = outcome.decision
+        spent = (outcome.observed_coin_spend if outcome.observed_coin_spend > 0
+                 else decision.price if type(decision.price) is int and decision.price > 0 else 0)
+        spends = (prior.started_spends if prior is not None else ()) + (
+            ((research, spent),) if research is not None and spent > 0 else ())
+        game_speed = prior.game_speed_start if prior is not None else None
+        if research == 'labs.game-speed':
+            job = outcome.confirmed_job
+            game_speed = (decision.game_speed_level, job.completes_at if job is not None else None)
+        outcome = replace(outcome, started_slots=slots, started_research=started,
+                          started_spends=spends, game_speed_start=game_speed, replanned=False)
         # Loop only where the planner hook in advance() can choose the next start.
         if not (self._options.direct_start and self._options.start_research
                 and self._options.native_repeat == 'unchanged' and not self._unlock_done
@@ -1397,11 +1416,22 @@ class LabVisit:
             if selected is not None:
                 decision = replace(decision, slot=selected.slot, research_id=selected.research,
                                    strategy_revision=selected.strategy_revision)
-                if (picker.entry is not None
-                        and (picker.entry.concept_id != selected.research
-                             or picker.entry.level != selected.target_level)):
+                entry = picker.entry
+                if entry is not None and entry.level != selected.target_level:
+                    # Two identical reads before giving up, so the Labs capture
+                    # stores the level the picker shows and the next plan
+                    # targets it instead of mismatching on every visit.
+                    signature = (entry.concept_id, entry.level, entry.status)
+                    # A different level breaks any run of matching start reads.
+                    self._picker_signature, self._picker_reads = None, 0
+                    if entry.concept_id == selected.research and signature != self._mismatch_signature:
+                        self._mismatch_signature = signature
+                        return None
+                if entry is not None and (entry.concept_id != selected.research
+                                          or entry.level != selected.target_level):
                     self._end_attempt(LabVisitResult('failed', 'selected_research_mismatch', decision))
                     return None
+                self._mismatch_signature = None
             if decision.kind != "start":
                 self._picker_signature, self._picker_reads = None, 0
                 entry = picker.entry

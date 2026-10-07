@@ -40,9 +40,11 @@ UNKNOWN = 'unknown'
 # and its name or its numbers could not be trusted. None of the five is
 # `unknown`, and none of them may be derived from another.
 ENTRY_STATUSES = ('available', 'maxed', 'locked', 'unavailable', 'unreadable')
-# Only these two carry a level worth keeping. The other three describe a row
-# we could not price, and a level read off one of them would be a guess.
-CLAIMABLE_STATUSES = ('available', 'maxed')
+# Only these carry a level worth keeping. An unavailable picker row was
+# priced like an available one and names the same next level; it is only
+# unaffordable. Locked and unreadable rows were never priced, and a level read
+# off one of them would be a guess.
+CLAIMABLE_STATUSES = ('available', 'unavailable', 'maxed')
 
 JOB_STATUSES = ('researching', 'idle', 'unreadable')
 SLOT_STATUSES = ('observed', 'unreadable', UNKNOWN)

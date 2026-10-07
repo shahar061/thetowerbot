@@ -132,10 +132,22 @@ def _balance_at(screen: Image, region: config.Rect) -> int | None:
     understates the wallet, and a purchase proven against it still needs
     its row to change.
     """
-    values = [value for box in ocr.read_region(screen, region)
+    boxes = ocr.read_region(screen, region)
+    if any(_lost_suffix(box.text) for box in boxes):
+        return None
+    values = [value for box in boxes
               if box.confidence >= (.8 if box.text.strip() == "0" else .9)
               and (value := price_number(box.text)) is not None]
     return values[0] if len(values) == 1 else None
+
+
+def _lost_suffix(text: str) -> bool:
+    """A fraction with no K/M/B suffix: the game never draws one, so the suffix was clipped.
+
+    Read as written, "46.00" of a "46.00K" balance would be 46 coins.
+    """
+    stripped = text.strip()
+    return "." in stripped and stripped[-1:].isdigit()
 
 
 def _absolute(region: config.Region, top_left: tuple[int, int]) -> config.Rect:
@@ -228,15 +240,16 @@ UNCONFIRMED_KEEP = 20
 
 
 def save_unconfirmed_evidence(directory: Path, pending: PendingPurchase,
-                              observation: Observation, evidence: str) -> Path | None:
+                              observation: Observation, evidence: str,
+                              prefix: str = "unconfirmed") -> Path | None:
     """Keep the frames of a purchase whose acknowledgement was inconclusive.
 
     Diagnostic only: a failure here is logged and never touches the purchase.
-    Capped to the newest UNCONFIRMED_KEEP folders.
+    Capped to the newest UNCONFIRMED_KEEP folders per prefix.
     """
     try:
         import cv2
-        stem = f"unconfirmed-{time.strftime('%Y%m%d-%H%M%S')}-{pending.row.upgrade_id}"
+        stem = f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{pending.row.upgrade_id}"
         folder = Path(directory) / stem
         folder.mkdir(parents=True, exist_ok=True)
         if pending.before_frame is not None:
@@ -253,7 +266,7 @@ def save_unconfirmed_evidence(directory: Path, pending: PendingPurchase,
                                  "heading_y": observation.heading_y,
                                  "rows": [r.upgrade_id for r in observation.rows]},
         }, indent=2) + "\n", encoding="utf-8")
-        for stale in sorted(Path(directory).glob("unconfirmed-*"))[:-UNCONFIRMED_KEEP]:
+        for stale in sorted(Path(directory).glob(f"{prefix}-*"))[:-UNCONFIRMED_KEEP]:
             for child in stale.iterdir():
                 child.unlink()
             stale.rmdir()
@@ -1221,6 +1234,13 @@ class ShoppingSession:
         unlocked = (same_category and is_unlock and after is None and coins is not None
                     and coins <= pending.coins - before.price
                     and any(r.upgrade_id not in pending.visible_ids for r in observation.rows))
+        # Price OCR has no confidence of its own: a rise alone may be an
+        # under-read. Without a legible wallet only a moved value or a maxed
+        # row, read confidently, proves the level (as recovery requires).
+        row_proven = changed and math.isfinite(after.confidence) and .9 <= after.confidence <= 1 and (
+            after.status == "maxed"
+            or after.value is not None and before.value is not None and after.value != before.value
+            and _target_reached(before.upgrade_id, after.value, before.value))
         if changed or unlocked:
             confirmed = after if changed else replace(before, status="unlocked", price=None,
                                                      observed_at=observation.observed_at)
@@ -1230,7 +1250,20 @@ class ShoppingSession:
                 self._completed_unlocks.add(before.upgrade_id)
             outcome = self._close(pending.key, price=before.price, wallet_before=pending.coins,
                                   wallet_after=coins, effect_changed=True,
-                                  evidence_ref=observation.frame_digest, observed_at=observation.observed_at)
+                                  evidence_ref=observation.frame_digest, observed_at=observation.observed_at,
+                                  effect_without_wallet=row_proven)
+            if coins is None and outcome.verdict == transactions.Verdict.BOUGHT:
+                # The row proved the level; only the coin counter was illegible,
+                # so the journal booked the read price. Keep what OCR could not read.
+                evidence = (f"tab={observation.category} tile={'gone' if after is None else after.status}"
+                            f" coins=None before={pending.coins} price={before.price}"
+                            f" verdict={outcome.verdict.value} spent={outcome.spent}")
+                saved = (save_unconfirmed_evidence(self.evidence_dir, pending, observation, evidence,
+                                                   prefix="workshop-wallet-unread")
+                         if self.evidence_dir is not None else None)
+                logger.warning("%s: confirmed with an unreadable coin counter; booked %s (%s)%s",
+                               before.name, outcome.spent, outcome.reason,
+                               f"; frames: {saved}" if saved is not None else "")
             self._record_purchase(before, pending.coins, dry_run=False, verified=confirmed,
                                   outcome=outcome)
             self._pending = None
@@ -1626,6 +1659,7 @@ class ShoppingSession:
         self, key: str | None, *, price: int | None, wallet_before: int | None,
         wallet_after: int | None, effect_changed: bool | None,
         evidence_ref: str = '', observed_at: float | None = None,
+        effect_without_wallet: bool = True,
     ) -> transactions.Outcome:
         """Answer one attempt with the evidence that followed.
 
@@ -1639,7 +1673,7 @@ class ShoppingSession:
                 key, wallet_after=wallet_after, effect_changed=effect_changed,
                 ts=observed_at if observed_at is not None else time.time(),
                 scope=self.account_state.verified_scope if self.account_state is not None else None,
-                evidence_ref=evidence_ref,
+                evidence_ref=evidence_ref, effect_without_wallet=effect_without_wallet,
             )
             if outcome.verdict != transactions.Verdict.UNPROVEN:
                 # The live caller tallies/publishes this outcome. Keep its durable

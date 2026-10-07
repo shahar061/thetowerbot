@@ -10,15 +10,17 @@ import json
 import math
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import db
-from account_state import completed_lab_level
+from account_state import completed_lab_levels
 from fleet.build_route_preview_facts import read_lab_slots
-from fleet.coin_share import LabCoinJar, jit_hold
+from fleet.build_route import is_lab_list
+from fleet.coin_share import LabCoinJar, SaveTarget, jit_hold
 from fleet.reroll_lifetime import read_lifetime
-from fleet.resource_blocks import LabFacts, evaluate_lab_plan
+from fleet.resource_blocks import LabFacts, _slot_context, evaluate_lab_plan
 from lab_plan import LabCadence
+from lab_runtime import read_job_history
 
 
 def best_waves(db_path: Path) -> dict[int, int]:
@@ -37,7 +39,8 @@ def coins_per_hour(worker_root: Path, account_id: str) -> float | None:
     return float(rate)
 
 
-def _completed_levels(db_path: Path, account_id: str) -> dict[str, int] | None:
+def _completed_levels(db_path: Path, account_id: str, *, worker_root: Path | None = None,
+                      now: float | None = None) -> dict[str, int] | None:
     """Known lab levels from the persisted account revision.
 
     The same ``lab_levels`` section the Fleet State page (`state_view.build_labs`)
@@ -59,16 +62,12 @@ def _completed_levels(db_path: Path, account_id: str) -> dict[str, int] | None:
         return None
     if not isinstance(revision, dict) or revision.get("account_id") not in (None, account_id):
         return None
-    known: dict[str, int] = {}
-    for fact in revision.get("lab_levels") or ():
-        if not isinstance(fact, dict):
-            continue
-        concept_id = fact.get("concept_id")
-        if not isinstance(concept_id, str):
-            continue
-        level = completed_lab_level(fact.get("status"), fact.get("value"))
-        if level is not None:
-            known[concept_id] = level
+    # The bot's own reader (`AccountState.lab_facts`), so both plan from the same levels.
+    known = completed_lab_levels(
+        revision.get("lab_levels") or (), account_id,
+        unscoped_account=revision.get("account_id") or account_id,
+        finished_jobs=read_job_history(worker_root, account_id) if worker_root is not None else (),
+        now=now)
     return known or None
 
 
@@ -82,7 +81,8 @@ def persisted_lab_facts(worker_root: Path, account_id: str, *, now: float, coins
                     slots=read_lab_slots(worker_root, account_id), available_coins=coins,
                     account_id=account_id, best_waves=waves or None,
                     coins_per_hour=coins_per_hour(worker_root, account_id),
-                    completed_levels=_completed_levels(db_path, account_id),
+                    completed_levels=_completed_levels(db_path, account_id,
+                                                       worker_root=worker_root, now=now),
                     slot_ownership=cadence.slot_records())
 
 
@@ -92,3 +92,31 @@ def just_in_time_hold(route: Any, worker_root: Path, account_id: str, *, wallet:
     plan = evaluate_lab_plan(route, persisted_lab_facts(worker_root, account_id, now=now, coins=wallet,
                                                         gems=None, db_path=db_path))
     return jit_hold(plan.saving, wallet)
+
+
+def save_pct_target(route: Any, worker_root: Path, account_id: str, *, wallet: int | None,
+                    db_path: Path, now: float
+                    ) -> tuple[SaveTarget | None, Callable[[str, int | None], bool]] | None:
+    """The ranked list's slot-1 save target and a "researching or finished" check.
+
+    The target is slot 1's planned lab, or the lab its filler saves for. None when the
+    route is not a ranked lab list (no plan: the caller falls back to the cadence); a
+    `(None, ...)` pair when the plan names nothing for slot 1 right now.
+    """
+    if not is_lab_list(route.labs):
+        return None
+    facts = persisted_lab_facts(worker_root, account_id, now=now, coins=wallet, gems=None, db_path=db_path)
+    plan = evaluate_lab_plan(route, facts)
+    ctx = _slot_context(facts)
+
+    def retired(lab_id: str, level: int | None) -> bool:
+        if level is None:
+            return False
+        known = ctx.known.get(lab_id)
+        return (known is not None and known >= level) or ctx.running.get(lab_id) == level
+
+    slot1 = next((slot for slot in plan.slots if slot.slot == 1), None)
+    pick = None if slot1 is None else slot1.saving_for if slot1.role == "filler" else slot1.next
+    if pick is None or type(pick.price) is not int or pick.price <= 0:
+        return None, retired
+    return SaveTarget(pick.lab_id, pick.level, pick.price), retired

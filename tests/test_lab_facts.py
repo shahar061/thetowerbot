@@ -61,7 +61,7 @@ def test_persisted_lab_facts_fills_completed_levels_from_the_persisted_revision(
         "lab_levels": [
             {"concept_id": "labs.game-speed", "status": "verified", "value": 3},
             # An "available" picker reads one level ahead of what is owned.
-            {"concept_id": "labs.crit-chance", "status": "available", "value": 5},
+            {"concept_id": "labs.critical-factor", "status": "available", "value": 5},
         ],
     }
     with db.connect(path) as connection:
@@ -69,7 +69,7 @@ def test_persisted_lab_facts_fills_completed_levels_from_the_persisted_revision(
                            (json.dumps(revision),))
     facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
                                           db_path=path)
-    assert facts.completed_levels == {"labs.game-speed": 3, "labs.crit-chance": 4}
+    assert facts.completed_levels == {"labs.game-speed": 3, "labs.critical-factor": 4}
 
 
 def test_persisted_lab_facts_completed_levels_missing_revision_is_none(tmp_path: Path) -> None:
@@ -78,3 +78,45 @@ def test_persisted_lab_facts_completed_levels_missing_revision_is_none(tmp_path:
     facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
                                           db_path=path)
     assert facts.completed_levels is None
+
+
+def test_persisted_lab_facts_reads_an_unaffordable_row_like_an_available_one(tmp_path: Path) -> None:
+    """One rule with the bot: an unaffordable picker Lv.N also prices level N, so N-1 is
+    completed; another account's scoped level and an unclaimable status are ignored."""
+    path = _db(tmp_path)
+    db.bind_account(path, "acct")
+    revision = {
+        "account_id": "acct",
+        "lab_levels": [
+            {"concept_id": "labs.coins-kill-bonus", "status": "unavailable", "value": 3},
+            {"concept_id": "labs.damage", "status": "verified", "value": 9,
+             "scope": {"account_id": "other", "lease_id": "l", "generation": "g", "epoch": 0}},
+            {"concept_id": "labs.health", "status": "verified", "value": 4,
+             "scope": {"account_id": "acct", "lease_id": "l", "generation": "old", "epoch": 0}},
+            {"concept_id": "labs.attack-speed", "status": "unreadable", "value": 2},
+        ],
+    }
+    with db.connect(path) as connection:
+        connection.execute("INSERT INTO account_revisions(detail) VALUES (?)",
+                           (json.dumps(revision),))
+    facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
+                                          db_path=path)
+    assert facts.completed_levels == {"labs.coins-kill-bonus": 2, "labs.health": 4}
+
+
+def test_persisted_lab_facts_counts_a_job_whose_finish_has_passed(tmp_path: Path) -> None:
+    """The dashboard folds the runtime's job history the same way the bot does."""
+    import hashlib
+    path = _db(tmp_path)
+    db.bind_account(path, "acct")
+    with db.connect(path) as connection:
+        connection.execute("INSERT INTO account_revisions(detail) VALUES (?)", (json.dumps({
+            "account_id": "acct",
+            "lab_levels": [{"concept_id": "labs.game-speed", "status": "verified", "value": 3}]}),))
+    scope = {"account_id": "acct", "lease_id": "l", "generation": "g", "epoch": 0}
+    (tmp_path / f"lab-runtime-{hashlib.sha256(b'acct').hexdigest()}.json").write_text(json.dumps(
+        {"version": 1, "scope": scope, "slots": [],
+         "job_history": [["labs.game-speed", 4, 900.0], ["labs.health", 2, 2000.0]]}))
+    facts = lab_facts.persisted_lab_facts(tmp_path, "acct", now=1000., coins=None, gems=None,
+                                          db_path=path)
+    assert facts.completed_levels == {"labs.game-speed": 4}

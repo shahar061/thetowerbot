@@ -595,7 +595,9 @@ def test_scoped_intent_settles_unproven_when_the_row_is_read_but_the_wallet_is_n
     scope, balance = _scoped(journal)
     txn = journal.prepare(_intent(), scope=scope, balance=balance)
     journal.record_action(txn.key, at=2.)
-    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=None), now=3.)
+    # The row is read but did not change, so the illegible wallet proves nothing.
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=None,
+                                                   effect_changed=False), now=3.)
     assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
     outcome = journal.close_unproven(txn.key, reason='timeout', now=4.)
     assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
@@ -604,3 +606,107 @@ def test_scoped_intent_settles_unproven_when_the_row_is_read_but_the_wallet_is_n
     with journal._connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM currency_observations").fetchone()[0] == 0
+
+
+def _scoped_workshop_buy(tmp_path, *, price: int, wallet: int):
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal, wallet=wallet)
+    txn = journal.prepare(_intent(price=price, wallet_before=wallet), scope=scope, balance=balance)
+    journal.record_action(txn.key, at=2.)
+    return journal, scope, txn
+
+
+@pytest.mark.parametrize(("price", "before", "after"), [
+    (108, 14_560, 14_460),           # Critical Factor: "14.56K" -> "14.46K"
+    (15, 14_560, 14_550),            # a price no bigger than the abbreviation slack
+    (5_000, 1_230_000, 1_220_000),   # "1.23M" -> "1.22M" hides 10,000 a reading
+])
+def test_a_changed_workshop_row_with_a_wallet_drop_near_its_price_is_bought_at_it(
+    tmp_path, price: int, before: int, after: int,
+) -> None:
+    """The row visibly moved on and coins left about its price: one level
+    was bought at the price read off it, however coarse the header is."""
+    journal, scope, txn = _scoped_workshop_buy(tmp_path, price=price, wallet=before)
+
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=after), now=3.)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.BOUGHT, price)
+    assert not journal.open_transactions()
+    with db.reader(journal.path) as conn:
+        assert conn.execute("SELECT delta FROM ledger").fetchone()[0] == -price
+
+
+def test_a_changed_workshop_row_with_an_unreadable_wallet_is_bought_at_its_price(tmp_path) -> None:
+    """The coin counter could not be read, but the row's own change proves
+    the level landed. It cost the price read off that row."""
+    journal, scope, txn = _scoped_workshop_buy(tmp_path, price=108, wallet=14_560)
+
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=None), now=3.)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.BOUGHT, 108)
+    assert 'wallet was unreadable' in outcome.reason
+    assert not journal.open_transactions()
+    assert journal.currencies.committed('coins') == 0
+    with db.reader(journal.path) as conn:
+        assert conn.execute("SELECT delta FROM ledger").fetchone()[0] == -108
+
+
+@pytest.mark.parametrize("effect_changed", [None, False])
+def test_an_unproven_workshop_effect_with_an_ambiguous_wallet_stays_unproven(
+    tmp_path, effect_changed: bool | None,
+) -> None:
+    journal, scope, txn = _scoped_workshop_buy(tmp_path, price=108, wallet=14_560)
+
+    for after in (None, 14_460):
+        outcome = journal.reconcile(txn.key, _recovery(
+            scope=scope, wallet_after=after, effect_changed=effect_changed), now=3.)
+        assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
+    assert journal.open_transactions()[0].key == txn.key
+
+
+def test_a_workshop_drop_of_price_plus_slack_is_the_price(tmp_path) -> None:
+    """128 = 108 + the 10-coin slack each of the two "K" readings hides."""
+    journal, scope, txn = _scoped_workshop_buy(tmp_path, price=108, wallet=14_560)
+
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=14_560 - 128), now=3.)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.BOUGHT, 108)
+
+
+@pytest.mark.parametrize("after", [
+    14_560 - 129,      # one coin past price + slack: no rounding explains it
+    14_560 - 3 * 108,  # three times the price left the wallet
+    14_560,            # nothing left it
+    15_000,            # it grew
+])
+def test_a_wallet_that_contradicts_the_workshop_price_is_not_booked_at_it(
+    tmp_path, after: int,
+) -> None:
+    journal, scope, txn = _scoped_workshop_buy(tmp_path, price=108, wallet=14_560)
+
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, wallet_after=after), now=3.)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)
+    assert journal.open_transactions()[0].key == txn.key
+
+
+def test_the_workshop_price_rule_does_not_reach_other_operations() -> None:
+    """judge without the workshop rule keeps refusing a slack-sized price."""
+    outcome = transactions.judge("k", price=15, wallet_before=14_560,
+                                 wallet_after=14_550, effect_changed=True)
+    assert outcome.spent is None
+    outcome = transactions.judge("k", price=15, wallet_before=14_560,
+                                 wallet_after=None, effect_changed=True)
+    assert outcome.spent is None
+
+
+def test_a_labs_row_is_never_booked_by_the_workshop_rule(tmp_path) -> None:
+    journal = transactions.TransactionJournal(tmp_path / 'bot.db')
+    scope, balance = _scoped(journal, wallet=14_560)
+    txn = journal.prepare(_intent(item='Game Speed', category='LABS', price=108, wallet_before=14_560),
+                          scope=scope, balance=balance)
+    journal.record_action(txn.key, at=2.)
+
+    outcome = journal.reconcile(txn.key, _recovery(scope=scope, category='LABS', wallet_after=None), now=3.)
+
+    assert (outcome.verdict, outcome.spent) == (transactions.Verdict.UNPROVEN, None)

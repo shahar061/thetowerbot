@@ -341,3 +341,143 @@ def test_worker_lab_plan_uses_current_adapter_not_persisted_cadence(
     assert progress.lab_strategy_plan(runtime,available_coins=60,wallet_gems=40,now=100.).wallet_gems is None
     state.invalidate_scope('manual_play')
     assert progress.lab_strategy_plan(runtime,available_coins=60,now=11.) is None
+
+
+def _restarted_lab_state(tmp_path: Path, levels: tuple[tuple[Any, ...], ...]) -> Any:
+    """A worker restarted under a new generation, over levels its earlier runs stored.
+
+    Each level is ``(lab_id, value, status, account_id[, catalog_revision])``, stored
+    under generation ``old``; the live scope is generation ``new`` of account ``acct``.
+    """
+    from account_state import (AccountRepository, AccountRevision, AccountState,
+                               Evidence, Fact)
+    from evidence_scope import BalanceInterval, FactScope
+    from fleet.identity import IdentityEvidence
+    from lab_runtime import _catalog_revision
+    repository = AccountRepository(tmp_path / 'bot.db')
+    facts = tuple(Fact(lab_id, value, status,
+                       Evidence(5., .99, lab_id, str(value), (0, 0, 1, 1), 1080, 2400, 'frame'),
+                       FactScope(account, 'old-lease', 'old', 0),
+                       catalog[0] if catalog else _catalog_revision())
+                  for lab_id, value, status, account, *catalog in levels)
+    repository.save_account(AccountRevision(account_id='acct', lab_levels=facts or None), facts)
+    state = AccountState(repository)
+    scope = FactScope('acct', 'lease', 'new', 1)
+    state.bind_scope(scope, identity=IdentityEvidence('acct', 10., 'id'))
+    state.observe_balance(BalanceInterval('coins', 1_000_000, 1_000_000, scope, 10., 'wallet'))
+    return state
+
+
+def _idle_strip(now: float) -> Any:
+    from lab_runtime import LabJobRecord, LabRuntimeSnapshot, LabScope
+    lab_scope = LabScope('acct', 'lease', 'new', 1)
+    return LabRuntimeSnapshot(lab_scope, tuple(
+        LabJobRecord(lab_scope, slot, state='idle', observed_at=now - 1., confirmed=True,
+                     evidence_status='verified', frame_digest='idle')
+        for slot in (1, 2)), slots_owned=2, observed_at=now - 1., strip_complete=True)
+
+
+def test_lab_levels_from_an_earlier_generation_of_the_same_account_survive_a_restart(tmp_path):
+    state = _restarted_lab_state(tmp_path, (
+        ('labs.game-speed', 3, 'verified', 'acct'),
+        ('labs.cash-bonus', 2, 'available', 'acct'),
+        ('labs.damage', 9, 'verified', 'other-account'),
+    ))
+    facts = state.lab_facts(_idle_strip(11.), now=11.)
+    assert facts.completed_levels == {'labs.game-speed': 3, 'labs.cash-bonus': 1}
+
+
+def test_an_unaffordable_picker_row_counts_one_level_below_like_an_available_one(tmp_path):
+    """An unaffordable row prices the level it would buy, so Lv.N means N-1 completed."""
+    state = _restarted_lab_state(tmp_path, (('labs.coins-kill-bonus', 3, 'unavailable', 'acct'),))
+    assert state.lab_facts(_idle_strip(11.), now=11.).completed_levels == {'labs.coins-kill-bonus': 2}
+
+
+def test_a_restarted_worker_starts_the_next_listed_lab_from_stored_levels(tmp_path):
+    from dataclasses import replace as replaced
+    from fleet.resource_blocks import evaluate_lab_plan
+    from tests.test_lab_list_eval import Route
+    now = 11.
+    state = _restarted_lab_state(tmp_path, (
+        ('labs.game-speed', 3, 'verified', 'acct'), ('labs.labs-speed', 10, 'verified', 'acct'),
+        ('labs.coins-wave', 2, 'verified', 'acct'), ('labs.coins-kill-bonus', 5, 'verified', 'acct'),
+    ))
+    runtime = _idle_strip(now)
+    facts = state.lab_facts(runtime, now=now)
+    route = Route(rules={'labs': {'direct_start': True}})
+    plan = evaluate_lab_plan(route, replaced(facts, best_tier_1_wave=200, best_waves={1: 200}))
+    assert plan.slots[0].next is not None and plan.slots[0].next.level == 4
+    action = state.lab_action(plan, runtime, revision=route.revision, now=now)
+    assert action is not None and action.operation == 'start'
+    assert (action.slot, action.research, action.target_level) == (1, 'labs.game-speed', 4)
+
+
+def test_a_lab_level_from_an_older_catalog_revision_still_counts_while_the_lab_exists(tmp_path):
+    state = _restarted_lab_state(tmp_path, (
+        ('labs.game-speed', 3, 'verified', 'acct', 'older-catalog'),
+        ('labs.health', 4, 'available', 'acct', 'older-catalog'),
+        ('labs.game-speed-retired', 2, 'verified', 'acct', 'older-catalog'),
+        ('labs.labs-speed', 999, 'verified', 'acct', 'older-catalog'),
+    ))
+    assert state.lab_facts(_idle_strip(11.), now=11.).completed_levels == {
+        'labs.game-speed': 3, 'labs.health': 3}
+
+
+def _old_runtime_with_a_job(tmp_path: Path, research: str, target: int, finish: float) -> None:
+    """The runtime file an earlier generation left: slot 1 researching ``research``."""
+    import hashlib
+    import json
+    old = {'account_id': 'acct', 'lease_id': 'old-lease', 'generation': 'old', 'epoch': 0}
+    slots = [{'scope': old, 'slot': slot, 'state': 'unknown', 'confirmed': False,
+              'evidence_status': 'historical'} for slot in range(1, 6)]
+    slots[0].update(state='researching', research_id=research, source_level=target - 1,
+                    target_level=target, expected_finish=finish, observed_at=1.,
+                    generation='job', frame_digest='strip', confirmed=True, evidence_status='verified')
+    key = hashlib.sha256(b'acct').hexdigest()
+    (tmp_path / f'lab-runtime-{key}.json').write_text(json.dumps(
+        {'version': 1, 'scope': old, 'slots': slots, 'slots_owned': 2, 'observed_at': 1.,
+         'verified_speed': None, 'strip_complete': True}))
+
+
+def test_a_job_that_finished_while_the_bot_was_down_counts_and_plans_the_next_level(tmp_path):
+    from dataclasses import replace as replaced
+    from fleet.resource_blocks import evaluate_lab_plan
+    from lab_runtime import LabRuntime
+    from tests.test_lab_list_eval import Route
+    now = 11.
+    state = _restarted_lab_state(tmp_path, (
+        ('labs.game-speed', 3, 'verified', 'acct'), ('labs.labs-speed', 10, 'verified', 'acct'),
+        ('labs.coins-wave', 2, 'verified', 'acct'), ('labs.coins-kill-bonus', 5, 'verified', 'acct'),
+    ))
+    _old_runtime_with_a_job(tmp_path, 'labs.game-speed', 4, finish=8.)  # after the stored read at 5
+    restarted = LabRuntime(tmp_path, 'acct', lease_id='lease', generation='new', epoch=1).snapshot()
+    runtime = replaced(_idle_strip(now), job_history=restarted.job_history)
+    facts = state.lab_facts(runtime, now=now)
+    assert facts.completed_levels['labs.game-speed'] == 4
+    route = Route(rules={'labs': {'direct_start': True}})
+    plan = evaluate_lab_plan(route, replaced(facts, best_tier_1_wave=200, best_waves={1: 200}))
+    assert plan.slots[0].next.level == 5
+    action = state.lab_action(plan, runtime, revision=route.revision, now=now)
+    assert action is not None and (action.research, action.target_level) == ('labs.game-speed', 5)
+
+
+def test_a_job_still_running_by_its_timer_does_not_count_yet(tmp_path):
+    from dataclasses import replace as replaced
+    from lab_runtime import LabRuntime
+    state = _restarted_lab_state(tmp_path, (('labs.game-speed', 3, 'verified', 'acct'),))
+    _old_runtime_with_a_job(tmp_path, 'labs.game-speed', 4, finish=50.)
+    restarted = LabRuntime(tmp_path, 'acct', lease_id='lease', generation='new', epoch=1).snapshot()
+    runtime = replaced(_idle_strip(11.), job_history=restarted.job_history)
+    assert state.lab_facts(runtime, now=11.).completed_levels == {'labs.game-speed': 3}
+
+
+def test_a_picker_reading_newer_than_a_finished_job_outranks_its_history() -> None:
+    """A misread high target in the history never overrides a later picker reading."""
+    from account_state import completed_lab_levels
+    read_at_200 = {'concept_id': 'labs.game-speed', 'status': 'available', 'value': 4,
+                   'scope': {'account_id': 'acct'}, 'evidence': {'observed_at': 200.}}
+    assert completed_lab_levels([read_at_200], 'acct', finished_jobs=[('labs.game-speed', 7, 100.)],
+                                now=300.) == {'labs.game-speed': 3}
+    # A job that finished after that reading still counts.
+    assert completed_lab_levels([read_at_200], 'acct', finished_jobs=[('labs.game-speed', 5, 250.)],
+                                now=300.) == {'labs.game-speed': 5}

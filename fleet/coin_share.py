@@ -8,13 +8,24 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from fleet.build_route_store import _write_json_atomic
 
 logger = logging.getLogger(__name__)
 JAR_FILE = "lab-coin-jar.json"
+GAME_SPEED = "labs.game-speed"
+
+
+@dataclass(frozen=True)
+class SaveTarget:
+    """The lab a save_pct jar saves toward: the slot-1 plan's target (or the one its filler
+    saves for), else the slot-1 cadence's waiting Game Speed level."""
+    lab_id: str
+    level: int | None
+    price: int
 
 
 def workshop_limit_pct(route: Any) -> int:
@@ -46,6 +57,15 @@ def waiting_lab_price(route: Any, lab_record: Mapping[str, Any] | None) -> int |
         return None
     price = lab_record.get("price")
     return price if type(price) is int and price > 0 else None
+
+
+def cadence_target(route: Any, lab_record: Mapping[str, Any] | None) -> SaveTarget | None:
+    """The slot-1 cadence's waiting Game Speed level, when no lab plan names a target."""
+    price = waiting_lab_price(route, lab_record)
+    if price is None or lab_record is None:
+        return None
+    level = lab_record.get("game_speed_level")
+    return SaveTarget(GAME_SPEED, level if type(level) is int else None, price)
 
 
 def workshop_paused(route: Any, lab_record: Mapping[str, Any] | None,
@@ -115,32 +135,74 @@ class LabCoinJar:
         record = self._record(quiet=quiet)
         return record["amount"] if record is not None else 0
 
-    def _write(self, amount: int, visit_key: str | None, now: float) -> None:
+    def _write(self, amount: int, visit_key: str | None, now: float,
+               target: Mapping[str, Any] | None = None) -> None:
         if self.read_only:
             return
         _write_json_atomic(self.path, {"account_id": self.account_id, "amount": amount,
-                                       "visit_key": visit_key, "updated_at": now})
+                                       "visit_key": visit_key, "updated_at": now,
+                                       **({"target": dict(target)} if target is not None else {})})
 
-    def settle(self, route: Any, lab_record: Mapping[str, Any] | None,
-               wallet: int | None, visit_key: str, now: float) -> int:
-        """The jar for this Workshop visit; grows at most once per visit key."""
-        price = waiting_lab_price(route, lab_record)
-        if route.rules.coins.lab_share.mode != "save_pct" or price is None:
+    @staticmethod
+    def _stored_target(record: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        target = record.get("target") if record is not None else None
+        if (not isinstance(target, dict) or not isinstance(target.get("lab_id"), str)
+                or not (target.get("level") is None or type(target.get("level")) is int)):
+            return None
+        return {"lab_id": target["lab_id"], "level": target.get("level")}
+
+    def settle(self, route: Any, target: SaveTarget | None, wallet: int | None, visit_key: str,
+               now: float, *, retired: Callable[[str, int | None], bool] | None = None) -> int:
+        """The jar for this Workshop visit; grows at most once per visit key.
+
+        save_pct only (other modes, or labs not auto-started, empty it). It grows by pct% of
+        the wallet above it, up to `target`'s price. The returned (effective) jar never
+        exceeds a known wallet; the stored one is not clamped to it. A new
+        target starts from zero once `retired` says the old one is researching or finished.
+        With no target known (an unread plan, a transient unknown cadence) it neither grows
+        nor empties, unless `retired` says its stored target is researching or finished.
+        """
+        rules = route.rules
+        if rules.coins.lab_share.mode != "save_pct" or not rules.labs.auto_start:
             record = self._record(quiet=True)
             if record is not None and record["amount"] != 0:
-                self._write(0, record.get("visit_key"), now)
+                self._write(0, record.get("visit_key"), now, self._stored_target(record))
             return 0
-        record = self._record()
-        amount = min(price, record["amount"]) if record is not None else 0
-        if record is not None and record.get("visit_key") == visit_key:
-            return amount
-        if type(wallet) is not int or wallet < 0:
-            return amount
-        amount = grow_jar(amount, wallet, price, route.rules.coins.lab_share.pct)
-        self._write(amount, visit_key, now)
-        return amount
+        record = self._record(quiet=target is None)
+        if record is None and target is None:
+            return 0
+        amount = record["amount"] if record is not None else 0
+        key = record.get("visit_key") if record is not None else None
+        stored = self._stored_target(record)
+        new_target = stored
+        if target is None:
+            if stored is not None and retired is not None and retired(stored["lab_id"], stored["level"]):
+                amount = 0  # its target started or finished and nothing follows: release it
+        else:
+            new_target = {"lab_id": target.lab_id, "level": target.level}
+            if (stored is not None and stored != new_target and retired is not None
+                    and retired(stored["lab_id"], stored["level"])):
+                amount = 0
+            amount = min(amount, target.price)
+            if key != visit_key and type(wallet) is int and wallet >= 0:
+                amount = grow_jar(amount, wallet, target.price, rules.coins.lab_share.pct)
+                key = visit_key
+        if (record is None or amount != record["amount"] or key != record.get("visit_key")
+                or new_target != stored):
+            self._write(amount, key, now, new_target)
+        # Only the effective jar is clamped to the wallet: a misread low wallet must not
+        # destroy the stored savings; a real lab spend reduces them through `spend`.
+        return min(amount, wallet) if type(wallet) is int and wallet >= 0 else amount
 
-    def reset(self, now: float) -> None:
-        """After the lab's confirmed coin debit, the savings are spent."""
+    def spend(self, coins: int, now: float) -> int:
+        """A confirmed lab coin debit takes at most its own price from the jar.
+
+        Labs may spend the whole wallet, jar included, so a cheap filler only
+        dips into the savings; it never empties them. Returns the new amount.
+        """
         record = self._record(quiet=True)
-        self._write(0, record.get("visit_key") if record is not None else None, now)
+        if record is None:
+            return 0
+        amount = max(0, record["amount"] - max(0, coins))
+        self._write(amount, record.get("visit_key"), now, self._stored_target(record))
+        return amount
