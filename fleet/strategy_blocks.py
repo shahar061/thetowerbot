@@ -11,6 +11,7 @@ import builds
 import config
 import upgrades
 from workshop_unlocks import gate_for, path_to
+from fleet.block_steps import StepLog, candidate_table, unlock_rows
 
 MAX_BLOCKS = 80
 MAX_DEPTH = 6
@@ -21,6 +22,13 @@ SYMBOLS = {'gte': '≥', 'lte': '≤', 'gt': '>', 'lt': '<'}
 # time. A pool with any of them never gets a burst price ceiling.
 _PER_LEVEL_POOL_LIMITS = ('max_purchases', 'level_caps', 'hold_until_capped', 'targets', 'price_cap',
                           'wallet_share_pct', 'discount_pct', 'cheaper_than_upgrade_ids')
+
+
+def _format_number(value: float) -> str:
+    """Display-only: whole numbers with thousands separators, never scientific notation."""
+    if isinstance(value, (int, float)) and math.isfinite(value) and float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{value:g}"
 
 
 def relative_wave_limit(relative: Mapping[str, int], best: int | None) -> int:
@@ -632,6 +640,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     workshop_owned = _owned_groups(facts.purchases, facts.values)
     counts = facts.confirmed_purchases if lane == 'workshop' else facts.run_purchases
     rejected: list[str] = []
+    log = StepLog(rejected)
+    # Display only: the matched block's options and its weighted draw.
+    candidate_rows: dict[str, tuple[str, tuple[Any, ...]]] = {}
+    draws: dict[str, tuple[str, float]] = {}
     native_bans = route.workshop.banned_upgrade_ids
     if kill_bonus_wave is not None:
         native_bans = native_bans | {KILL_BONUS}
@@ -904,23 +916,34 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         """First goal item passing every filter except wallet affordability."""
         if goal['type'] == 'buy':
             uid = goal['upgrade_id']
-            return (uid, price_for(uid, reference=True)) if eligible(uid, ignore_funds=True) else None
+            if not eligible(uid, ignore_funds=True):
+                return None
+            # Display only: a one-row table so the saved-for target shows its price.
+            candidate_rows[goal['id']] = ('priority', candidate_table(
+                {uid: 1}, 'priority', uid, lambda item: price_for(item, reference=True)))
+            return uid, price_for(uid, reference=True)
         needs_counts = 'max_purchases' in goal or 'level_caps' in goal or goal.get('decay_pct', 0) > 0
         if needs_counts and counts is None:
             rejected.append(f"{goal['id']}: confirmed purchase counts unavailable")
             return None
         candidates = pool_candidates(goal, goal['id'], None, ignore_funds=True)
+        weights = dict(candidates)
         if goal.get('selection') == 'value':
             # Rank by reference price, so a dearer best value is saved for.
             candidates = dict.fromkeys(sorted(candidates, key=lambda uid: (
                 price_for(uid, reference=True) / candidates[uid], goal['upgrade_ids'].index(uid))))
         uid = next(iter(candidates), None)
+        # A saved-for goal takes its top item, never a draw: show odds only for value.
+        shown = 'value' if goal.get('selection') == 'value' else 'priority'
+        candidate_rows[goal['id']] = (shown, candidate_table(
+            weights, shown, uid, lambda item: price_for(item, reference=True)))
         return (uid, price_for(uid, reference=True)) if uid else None
 
-    def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
+    def evaluate_items(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
         nonlocal waiting_native, budget_room, saving
         for index, block in enumerate(items):
             kind, identity = block['type'], block['id']
+            log.enter(block)
             if kind == 'wait':
                 # Items passed over only for an unread price may have come
                 # first; holding on missing evidence never reads it.
@@ -943,6 +966,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                     f"→ {'then' if matched else 'else'} ({basis})")
                 else:
                     matched = COMPARISONS[block['op']](value, block['value'])
+                    # Show the comparison that held: a miss reads as the opposite symbol.
+                    held = block['op'] if matched else {'gte': 'lt', 'lte': 'gt', 'gt': 'lte', 'lt': 'gte'}[block['op']]
+                    log.note(f"{block['field']} {_format_number(value)} {SYMBOLS[held]} {_format_number(block['value'])} "
+                             f"→ {'then' if matched else 'else'}")
                 choice = evaluate(block['then'] if matched else block['else'], (items, *ancestors))
                 if choice is not None:
                     return choice
@@ -967,6 +994,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         return choice
                 before = len(unpriced)
                 pick = top_pick(goal)
+                if goal['id'] in candidate_rows:
+                    candidate_rows[identity] = candidate_rows[goal['id']]
                 # An unread price is neither a goal met nor one to pass over:
                 # read the goal items ranked above the pick before any later
                 # block spends the coins this goal is meant to keep.
@@ -994,12 +1023,14 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     return saving
             elif kind == 'unlock':
                 steps: dict[str, tuple[Any, int]] = {}
+                owned_skills = 0
                 for skill in block['upgrade_ids']:
                     if skill in excluded:
                         rejected.append(f'{skill}: blocked by Never Buy')
                         continue
                     path = path_to(skill, workshop_owned)
                     if not path:
+                        owned_skills += 1
                         continue
                     group = path[0]
                     tile = group.executable_upgrade_id
@@ -1025,6 +1056,8 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         continue
                     steps.setdefault(tile, (group, price))
                 if not steps:
+                    if owned_skills == len(block['upgrade_ids']):
+                        log.done('Already unlocked')
                     continue
                 tab_order = {'ATTACK': 0, 'DEFENSE': 1, 'UTILITY': 2}
                 ranked = sorted(steps, key=lambda tile: (steps[tile][1], tab_order[steps[tile][0].category]))
@@ -1037,7 +1070,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         if observation := observe_prices(identity, [tile]):
                             return observation
                         continue
+                    candidate_rows[identity] = ('unlock', unlock_rows(steps, ranked, tile))
                     return _Choice(identity, tile, f'Unlock {group.name} for skills in this strategy')
+                candidate_rows[identity] = ('unlock', unlock_rows(steps, ranked, ranked[0]))
                 group, price = steps[ranked[0]]
                 goal = _Choice(identity, ranked[0], f'Saving for {group.name} ({wallet}/{price} coins)',
                                wait=True, save_price=price)
@@ -1072,6 +1107,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     rejected.append(f'{identity}: utility spend unknown')
                     return _Choice(identity, reason='Waiting for verified utility spend', wait=True)
                 if spent >= block['target']:
+                    log.done(f"Utility spend {spent} reached its {block['target']} target")
                     continue
                 outer = budget_room
                 room = block['ceiling'] - spent
@@ -1110,6 +1146,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                 next_phase_id=next_phase['id'] if next_phase else None,
                                 transition_reason=progress_reason)
                         completed_native_phases.append(phase_title(phase))
+                        log.done(f'{phase_title(phase)} complete')
                         continue
                     current_state = "waiting" if progress == "waiting" else "active"
                     handoff = (f"{', '.join(completed_native_phases)} complete → "
@@ -1260,7 +1297,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         chosen, selected = pending.chosen_id, pending
                     else:
                         key = f'{facts.account_id}:{route.revision}:{visit}:{facts.decision_sequence}:{identity}'
-                        roll = (int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], 'big') / 2**64) * sum(candidates.values())
+                        fraction = int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], 'big') / 2**64
+                        draws[identity] = (key, fraction)
+                        roll = fraction * sum(candidates.values())
                         for uid, weight in candidates.items():
                             if roll < weight:
                                 chosen = uid
@@ -1269,12 +1308,22 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         selected = PendingDecision(facts.account_id, route.revision, visit,
                             facts.decision_sequence, hashlib.sha256(repr(candidates).encode()).hexdigest(),
                             chosen, None, candidates, identity)
+                selection = block.get('selection', 'priority')
+                candidate_rows[identity] = (selection, candidate_table(
+                    candidates, selection, chosen, lambda uid: price_for(uid, source=source)))
                 return _Choice(identity, chosen, 'Eligible pool after price, cap and affordability filters',
                                weights=candidates if selected else None, pending=selected,
                                target=block.get('targets', {}).get(chosen),
                                price_source='model' if source == 'model' and model_quote(chosen) else 'observed',
                                burst_price_ceiling=burst_ceiling)
         return None
+
+    def evaluate(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
+        log.push()
+        try:
+            return evaluate_items(items, ancestors)
+        finally:
+            log.pop()
 
     choice = evaluate(program) or saving or waiting_native
     if choice is None and unpriced:
@@ -1293,11 +1342,17 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                if completed_native_phases else None))
     weights = choice.weights or {}
     odds = {uid: weight / sum(weights.values()) for uid, weight in weights.items()}
+    # An observation replaces the pick, so the saved-for pick's candidate rows would mislead.
+    selection, rows = ((None, ()) if choice.observation_ids
+                       else candidate_rows.get(choice.block_id, (None, ())))
+    seed, roll = draws.get(choice.block_id, (None, None))
     trace = DecisionTrace(choice.block_id, choice.reason, age,
         'model' if choice.price_source == 'model' else ('worker price evidence' if lane == 'workshop' else 'cached same-run battle rows (up to 60s)'), facts.variant,
         tuple(rejected), ceiling, phase_id=choice.phase_id, phase_state=choice.phase_state,
         next_phase_id=choice.next_phase_id, transition_reason=choice.transition_reason,
-        eligible_odds=odds, observation_ids=choice.observation_ids)
+        eligible_odds=odds, observation_ids=choice.observation_ids,
+        steps=log.steps(program, choice.block_id), candidates=rows, selection=selection,
+        draw_seed=seed, draw_roll=roll)
     if choice.observation_ids:
         upgrade = upgrades.by_id(choice.upgrade_id)
         decision = RerollDecision(facts.account_id, "strategy_observe", "Verify cheap-pool prices",

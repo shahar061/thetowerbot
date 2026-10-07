@@ -8,6 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import db
 from account_state import AccountState
 from fleet.build_route import RouteDocument, RouteRules
@@ -816,3 +818,100 @@ def test_a_planner_error_falls_back_to_the_cadence(tmp_path: Path, monkeypatch: 
     progress.shopping_policy(Strategy.from_config().shopping)
     assert progress.coin_jar.amount() == 100
     assert progress._route_evaluation.trace.spend_ceiling == 900
+
+
+def _plan(progress: RerollProgress) -> dict[str, Any]:
+    return json.loads((progress.root / "build-route-workshop.json").read_text(encoding="utf-8"))
+
+
+def test_workshop_visit_saves_the_plan_with_its_budget(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    saved = _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "when_affordable"}}})
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    progress.shopping_policy(base)
+    assert _plan(progress)["override"] == "tutorial"
+    _bought_once(progress)
+    progress.route_facts = _facts("visit-2")  # type: ignore[method-assign]
+    progress.shopping_policy(base)
+    record = _plan(progress)
+    assert record["account_id"] == "account-a"
+    assert record["revision"] == saved.revision
+    assert record["override"] is None
+    assert record["strategy"]["mode"] == "priorities"
+    assert record["budget"]["wallet"] == 1000
+    assert record["budget"]["spend_limit_pct"] == 100
+    assert record["budget"]["jar_kind"] == "lab_jar"
+    assert record["budget"]["ceiling"] == record["evaluation"]["trace"]["spend_ceiling"]
+    assert record["evaluation"]["decision"]["upgrade_id"] == "attack_speed"
+    assert record["upgrade_names"]["attack_speed"] == "Attack Speed"
+
+
+def test_paused_workshop_saves_the_paused_decision(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "labs_first"}}})
+    _game_speed_waits(progress)
+    progress.note_lab_slots({2: "owned"}, 200)
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    base = replace(base, enabled=True, workshop=(), cards=replace(base.cards, enabled=True))
+    progress.shopping_policy(base)
+    _bought_once(progress)
+    progress.shopping_policy(base)
+    record = _plan(progress)
+    assert record["override"] == "workshop_paused"
+    assert record["evaluation"]["decision"]["state"] == "save_coins"
+    assert record["evaluation"]["decision"]["item"] is None
+
+
+def test_failed_plan_write_never_stops_shopping(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "when_affordable"}}})
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    progress.shopping_policy(base)
+    _bought_once(progress)
+
+    def _disk_full(record: dict[str, Any]) -> None:
+        raise OSError("disk full")
+
+    progress.route_runtime.publish_workshop_plan = _disk_full  # type: ignore[method-assign]
+    progress.route_facts = _facts("visit-2")  # type: ignore[method-assign]
+    policy = progress.shopping_policy(base)
+    assert policy.workshop != ()
+    assert progress.stop_reason is None
+
+
+def test_a_plan_build_error_never_stops_shopping(tmp_path: Path, monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+    from fleet import coin_share, reroll_progress
+
+    progress = _progress(tmp_path)
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "when_affordable"}}})
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    progress.shopping_policy(base)
+    _bought_once(progress)
+
+    def _broken(effective: Any) -> int:
+        raise AttributeError("plan field missing")
+
+    # Only the plan record reads this helper through the progress module.
+    proxy = SimpleNamespace(**{name: getattr(coin_share, name) for name in dir(coin_share)
+                               if not name.startswith("__")})
+    proxy.workshop_limit_pct = _broken
+    monkeypatch.setattr(reroll_progress, "coin_share", proxy)
+    progress.route_facts = _facts("visit-2")  # type: ignore[method-assign]
+    policy = progress.shopping_policy(base)
+    assert policy.workshop != ()
+    assert progress.stop_reason is None
+
+
+def test_workshop_plan_rejects_another_account(tmp_path: Path) -> None:
+    runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
+    with pytest.raises(ValueError):
+        runtime.publish_workshop_plan({"account_id": "account-b"})

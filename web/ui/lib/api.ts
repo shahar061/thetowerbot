@@ -28,7 +28,7 @@ import type { FleetJob, FleetPreview, FleetSnapshot, FleetSetup, RerollSnapshot,
 import type { MilestoneRoadmap } from "./milestoneRoadmap";
 import type { AccountMetrics } from "./accountMetrics";
 import type { TelegramMode, TelegramProfile, TelegramSettingsResponse } from "./telegram";
-import type { BuildRouteDocument, BuildRoutePreview, BuildRouteRevisions, BuildRouteRebindPreview } from "./buildRoute";
+import type { BuildRouteDocument, BuildRoutePreview, BuildRouteRevisions, BuildRouteRebindPreview, WorkshopPlanResponse } from "./buildRoute";
 import type { SaveStrategyInput, StrategyLedger, StrategyLibrary } from "./strategyStudio";
 import type { LabsSnapshot, RehearsedLabRow, StarterRolloutRow, UnlockRolloutRow } from "./labs";
 import type { FleetStatePayload } from "./fleetState";
@@ -239,6 +239,8 @@ export const fetchAccountWorkshopSummary = (accountKey: string, expectedAccountI
   workerRead<WorkshopPurchaseSummary>("/api/workshop-purchases/summary", accountKey, expectedAccountId);
 export const fetchAccountWorkshopLevels = (accountKey: string, expectedAccountId: string) =>
   workerRead<WorkshopLevels>("/api/workshop-levels", accountKey, expectedAccountId);
+export const fetchAccountWorkshopPlan = (accountKey: string, expectedAccountId: string) =>
+  workerRead<WorkshopPlanResponse>("/api/workshop-plan", accountKey, expectedAccountId);
 export const fetchErrors = (limit = 100) => getJson<StoredEvent[]>(`/api/errors?limit=${limit}`);
 
 export type LedgerQuery = {

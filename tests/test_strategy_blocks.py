@@ -1812,3 +1812,103 @@ def test_battle_policy_carries_the_open_tab_and_burst_ceiling(
     else:
         assert rich.rules[0].upgrade_id == 'attack_speed' and rich.burst_price_ceiling is None
         assert poor.burst_price_ceiling is None
+
+
+def test_weighted_trace_records_candidates_odds_and_the_roll() -> None:
+    program = [pool(selection='weighted', weights={'damage': 8, 'attack_speed': 4}), {'id': 'later', 'type': 'wait'}]
+    result = blocks.evaluate_program(route(program), facts(), None, 'workshop')
+    trace = result.trace
+    assert trace.selection == 'weighted'
+    assert [(row.upgrade_id, round(row.odds, 4)) for row in trace.candidates] == [('damage', 0.6667), ('attack_speed', 0.3333)]
+    assert [row.upgrade_id for row in trace.candidates if row.chosen] == [result.decision.upgrade_id]
+    assert trace.draw_seed is not None and trace.draw_seed.endswith(':cheap')
+    assert 0 <= trace.draw_roll < 1
+    # The roll reproduces the pick: damage owns the first 8 of 12 weight points.
+    assert (trace.draw_roll * 12 < 8) == (result.decision.upgrade_id == 'damage')
+    assert [(s.block_id, s.outcome) for s in trace.steps] == [('cheap', 'matched'), ('later', 'not_reached')]
+
+
+def test_weighted_trace_reused_pending_shows_no_new_roll() -> None:
+    program = [pool(selection='weighted', weights={'damage': 8, 'attack_speed': 4})]
+    first = blocks.evaluate_program(route(program), facts(), None, 'workshop')
+    repeated = blocks.evaluate_program(route(program), replace(facts(), wallet_coins=99), first.pending, 'workshop')
+    assert repeated.decision.upgrade_id == first.decision.upgrade_id
+    assert len(repeated.trace.candidates) == 2
+    assert repeated.trace.draw_roll is None
+
+
+def test_value_save_records_the_ranking_and_block_outcomes() -> None:
+    owned = {**WORKER_83_PURCHASES, **{uid: 1 for uid in (
+        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_bounce_shot')}}
+    prices = {**WORKER_83_PRICES, **{uid: 10**6 for uid in blocks._BLENDER_VALUE_WEIGHTS},
+              'attack_speed': 600, 'free_attack_upgrade': 200, 'damage': 1, 'critical_chance': 1}
+    evidence = {uid: {'source': 'observed', 'observed_at': 99} for uid in prices}
+    sample = worker_83(wallet_coins=300, prices=prices, purchases=owned, confirmed_purchases=owned,
+                       price_evidence=evidence)
+    program = blender_v2()
+    result = blocks.evaluate_program(route(program), sample, None, 'workshop')
+    trace = result.trace
+    assert (result.decision.state, result.decision.upgrade_id) == ('save_coins', 'attack_speed')
+    assert trace.selection == 'value'
+    scores = [row.score for row in trace.candidates]
+    assert scores == sorted(scores)
+    assert trace.candidates[0].upgrade_id == 'attack_speed' and trace.candidates[0].chosen
+    assert trace.candidates[0].score == pytest.approx(50.0)
+    assert all(row.odds is None for row in trace.candidates)
+    top = {s.block_id: s.outcome for s in trace.steps if s.depth == 0}
+    core, later, thorns, save, stop = program
+    assert top[save['id']] == 'matched'
+    assert top[stop['id']] == 'not_reached'
+    assert {top[core['id']], top[later['id']], top[thorns['id']]} <= {'done', 'skipped'}
+
+
+def test_value_buy_records_the_winner_as_chosen() -> None:
+    owned = {**WORKER_83_PURCHASES, **{uid: 1 for uid in (
+        'unlock_free_upgrades', 'unlock_knockback', 'unlock_orbs', 'unlock_bounce_shot')}}
+    prices = {**WORKER_83_PRICES, 'knockback_chance': 500, 'knockback_force': 500, 'orb_speed': 500,
+              'orbs': 20000, 'free_attack_upgrade': 75, 'free_defense_upgrade': 90,
+              'free_utility_upgrade': 100, 'bounce_shot_chance': 3300, 'bounce_shot_range': 3300,
+              'bounce_shot_targets': 12000}
+    evidence = {uid: {'source': 'observed', 'observed_at': 99} for uid in prices}
+    result = blocks.evaluate_program(route(blender_v2()),
+        worker_83(wallet_coins=10000, prices=prices, purchases=owned, confirmed_purchases=owned,
+                  price_evidence=evidence), None, 'workshop')
+    chosen = [row for row in result.trace.candidates if row.chosen]
+    assert [(row.upgrade_id, row.score) for row in chosen] == [('free_attack_upgrade', 37.5)]
+
+
+def test_condition_and_unlock_outcomes_are_recorded() -> None:
+    program = [{'id': 'unlocks', 'type': 'unlock', 'upgrade_ids': ['thorns']},
+               {'id': 'when', 'type': 'condition', 'field': 'best_tier_1_wave', 'op': 'gte', 'value': 50,
+                'then': [{'id': 'late', 'type': 'buy', 'upgrade_id': 'thorns'}],
+                'else': [{'id': 'early', 'type': 'buy', 'upgrade_id': 'damage'}]},
+               {'id': 'end', 'type': 'wait'}]
+    result = blocks.evaluate_program(route(program), facts(), None, 'workshop')
+    steps = [(s.block_id, s.outcome, s.depth) for s in result.trace.steps]
+    assert steps == [('unlocks', 'done', 0), ('when', 'matched', 0), ('early', 'matched', 1), ('end', 'not_reached', 0)]
+    assert result.trace.steps[0].note == 'Already unlocked'
+    assert result.trace.steps[1].note == 'best_tier_1_wave 25 < 50 → else'
+
+
+def test_large_wallet_condition_note_keeps_every_digit() -> None:
+    program = [when('wallet', 'gte', 200_000_000)]
+    rich = replace(facts(), wallet_coins=1_000_004)
+    result = blocks.evaluate_program(route(program), rich, None, 'workshop')
+    note = next(s.note for s in result.trace.steps if s.block_id == 'when')
+    assert '200,000,000' in note and '1,000,004' in note and 'e+' not in note
+
+
+def test_observation_decision_records_no_candidate_rows() -> None:
+    program = [save_goal(['thorns']), pool(discount_pct=20, reference_upgrade_id='thorns')]
+    unknown = replace(facts(), prices={'damage': 1})
+    result = blocks.evaluate_program(route(program), unknown, None, 'workshop')
+    assert result.decision.state == 'observe_price'
+    assert result.trace.candidates == () and result.trace.selection is None
+
+
+def test_single_buy_goal_save_for_records_a_one_row_table() -> None:
+    goal = {'id': 'goal', 'type': 'save_for', 'goal': [{'id': 'goal.buy', 'type': 'buy', 'upgrade_id': 'thorns'}]}
+    poor = replace(facts(), wallet_coins=50)
+    result = blocks.evaluate_program(route([goal]), poor, None, 'workshop')
+    assert result.decision.state == 'save_coins'
+    assert [(row.upgrade_id, row.chosen, row.price) for row in result.trace.candidates] == [('thorns', True, 100)]

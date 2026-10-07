@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from fleet.build_route import BattleBranch, BattlePhase, EffectiveRoute, is_lab_list
+from fleet.block_steps import BlockStep, CandidateRow
 from fleet.coin_share import spendable_wallet, workshop_ceiling, workshop_limit_pct
 from fleet.reroll_planner import (DRAW_SHARPNESS, RerollDecision, RerollFacts,
                                   _ban_closure, _owned_groups, choose_next)
@@ -95,6 +96,11 @@ class DecisionTrace:
     eligible_odds: Mapping[str, float] = field(default_factory=dict)
     draw_gate: int | None = None
     observation_ids: tuple[str, ...] = ()
+    steps: tuple[BlockStep, ...] = ()
+    candidates: tuple[CandidateRow, ...] = ()
+    selection: str | None = None
+    draw_seed: str | None = None
+    draw_roll: float | None = None
 
 
 @dataclass(frozen=True)
