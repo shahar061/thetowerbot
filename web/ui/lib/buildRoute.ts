@@ -2,6 +2,26 @@ import type { CardProgram, CardAssignmentState } from "./cards";
 import type { StrategyAssignment, StrategyBlock } from "./strategyStudio";
 import type { GemBlock, LabBlock, RouteRules } from "./labs";
 
+export type BlockStep = {
+  block_id: string;
+  label: string | null;
+  kind: string;
+  outcome: "done" | "skipped" | "matched" | "not_reached";
+  note: string;
+  depth: number;
+};
+
+export type CandidateRow = {
+  upgrade_id: string;
+  name: string;
+  category: string;
+  price: number | null;
+  weight: number | null;
+  odds: number | null;
+  score: number | null;
+  chosen: boolean;
+};
+
 export type RouteTrace = {
   matched_rule_id: string;
   reason: string;
@@ -17,6 +37,11 @@ export type RouteTrace = {
   transition_reason: string | null;
   eligible_odds: Record<string, number>;
   draw_gate: number | null;
+  steps?: BlockStep[];
+  candidates?: CandidateRow[];
+  selection?: "weighted" | "value" | "priority" | "cheapest" | "unlock" | null;
+  draw_seed?: string | null;
+  draw_roll?: number | null;
 };
 
 export type RouteDecision = {
@@ -43,6 +68,33 @@ export type RouteEvaluation = {
   decision: RouteDecision | null;
   trace: RouteTrace;
   evidence_at: number | null;
+};
+
+export type WorkshopPlanBudget = {
+  wallet: number | null;
+  jar: number;
+  jar_kind: "lab_jar" | "jit_hold";
+  lab_share_mode: string;
+  spend_limit_pct: number;
+  ceiling: number | null;
+};
+
+export type WorkshopPlanRecord = {
+  account_id: string;
+  revision: number;
+  written_at: number;
+  strategy: { id: string | null; name: string; mode: string };
+  budget: WorkshopPlanBudget;
+  evaluation: RouteEvaluation;
+  override: "workshop_paused" | "tutorial" | null;
+  upgrade_names: Record<string, string>;
+};
+
+export type WorkshopPlanResponse = {
+  plan: WorkshopPlanRecord | null;
+  age_seconds?: number | null;
+  current_revision?: number | null;
+  stale?: boolean;
 };
 
 export type BuildRouteDocument = {
