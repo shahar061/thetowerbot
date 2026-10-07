@@ -35,7 +35,7 @@ export type RouteRules = {
 };
 /** Mirrors RouteRules() in fleet/build_route.py: today's behavior. */
 export const DEFAULT_RULES: RouteRules = {
-  coins: { lab_share: { mode: "when_affordable", pct: 25 }, workshop_spend_limit_pct: 100, kill_bonus_min_best_wave: 60 },
+  coins: { lab_share: { mode: "when_affordable", pct: 10 }, workshop_spend_limit_pct: 100, kill_bonus_min_best_wave: 60 },
   labs: { auto_start: true, native_repeat: "unchanged", idle_fill: "leave_idle", pool: { selection: "ordered", max_price_pct_of_wallet: null, max_seconds: null },
     saving: { income_margin_pct: 75, window_hours: { "S+": 72, S: 24, A: 12, B: 4, C: 0 } },
     filler: { enabled: true, max_price_pct_of_wallet: 10, min_hours: 1 } },

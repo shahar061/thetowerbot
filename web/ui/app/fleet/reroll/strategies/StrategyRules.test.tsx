@@ -23,7 +23,7 @@ test("changing the sharing mode reports new rules and keeps the rest", () => {
   const onChange = vi.fn();
   render(<StrategyRules rules={DEFAULT_RULES} locked={false} rows={[]} labList={false} onChange={onChange} />);
   fireEvent.change(screen.getByLabelText("Lab share mode"), { target: { value: "save_pct" } });
-  expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "save_pct", pct: 25 } } });
+  expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_RULES, coins: { ...DEFAULT_RULES.coins, lab_share: { mode: "save_pct", pct: 10 } } });
   fireEvent.click(screen.getByLabelText("Start labs automatically"));
   expect(onChange.mock.calls.at(-1)![0].labs.auto_start).toBe(false);
 });
