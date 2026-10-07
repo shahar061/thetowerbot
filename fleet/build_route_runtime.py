@@ -7,6 +7,7 @@ import os
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from fleet.build_route import RouteDocument
@@ -14,9 +15,25 @@ from fleet.build_route_eval import PendingDecision
 from fleet.build_route_eval import RouteFacts
 from fleet.build_route_eval import RouteEvaluation
 from fleet.build_route_eval import ResourceEvaluation
-from fleet.build_route_store import BuildRouteStore, RouteUnavailable
+from fleet.build_route_store import BuildRouteStore, RouteUnavailable, _write_json_atomic
 import db
 import upgrades
+
+
+WORKSHOP_PLAN_FILE = "build-route-workshop.json"
+
+
+def read_applied_revision(path: Path, account_id: str) -> int | None:
+    """The route revision this worker last acknowledged, if it is this account's."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    revision = raw.get("revision") if isinstance(raw, dict) else None
+    if (not isinstance(raw, dict) or raw.get("account_id") != account_id
+            or type(revision) is not int or revision < 0):
+        return None
+    return revision
 
 
 class BuildRouteRuntime:
@@ -208,6 +225,12 @@ class BuildRouteRuntime:
             finally:
                 temporary.unlink(missing_ok=True)
 
+    def publish_workshop_plan(self, record: dict[str, Any]) -> None:
+        """Save the trace behind this worker's latest Workshop decision (Plan graph tab)."""
+        if record.get("account_id") != self.account_id:
+            raise ValueError("workshop plan belongs to another account")
+        _write_json_atomic(self.root / "workers" / self.worker / WORKSHOP_PLAN_FILE, record)
+
     def publish_resources(self, evaluation: ResourceEvaluation,
                           facts: RouteFacts | None = None) -> None:
         path = self.root / "workers" / self.worker / "build-route-resources.json"
@@ -325,12 +348,4 @@ class BuildRouteRuntime:
             temporary.unlink(missing_ok=True)
 
     def applied_revision(self) -> int | None:
-        try:
-            raw = json.loads(self.ack_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return None
-        revision = raw.get("revision") if isinstance(raw, dict) else None
-        if (not isinstance(raw, dict) or raw.get("account_id") != self.account_id
-                or type(revision) is not int or revision < 0):
-            return None
-        return revision
+        return read_applied_revision(self.ack_path, self.account_id)

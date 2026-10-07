@@ -96,6 +96,8 @@ class RerollProgress:
         # visit's ShoppingEnded. None when it returned something to buy.
         self.stop_reason: str | None = None
         self._route_evaluation: RouteEvaluation | None = None
+        # Budget and strategy behind _route_evaluation, saved for the Plan graph tab.
+        self._plan_context: dict[str, Any] | None = None
         self.route_policy_revision: int | None = None
         self._menu_wallet: tuple[int, float] | None = None
         # The lab jar the last menu route evaluation settled.
@@ -541,6 +543,24 @@ class RerollProgress:
             maxed_ids=self.price_memory.maxed_ids(purchases),
         )
 
+    def _record_workshop_plan(self, decision: Any, override: str | None = None) -> None:
+        """Save the published Workshop decision with its trace and budget.
+
+        Display only: a failed write is logged and never changes shopping.
+        """
+        evaluation, context = self._route_evaluation, self._plan_context
+        if evaluation is None or context is None or self.route_runtime is None:
+            return
+        record = {"account_id": self.account_id, "revision": evaluation.revision,
+                  "written_at": time.time(), **context,
+                  "evaluation": asdict(replace(evaluation, decision=decision)),
+                  "override": override,
+                  "upgrade_names": {upgrade.id: upgrade.name for upgrade in upgrades.CATALOG}}
+        try:
+            self.route_runtime.publish_workshop_plan(record)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Workshop plan not saved for %s: %s", self.account_id, exc)
+
     def shopping_policy(self, base: Shopping) -> Shopping:
         jar = 0
 
@@ -616,7 +636,19 @@ class RerollProgress:
                     self.route_runtime.publish_facts(facts)
                     evaluation = evaluate_workshop(effective, facts, None)
                 self._route_evaluation = evaluation
+                assignment = route.assignments.get(self.root.name)
+                lab_share = effective.rules.coins.lab_share.mode
+                self._plan_context = {
+                    "strategy": {"id": assignment.strategy_id if assignment else None,
+                                 "name": assignment.strategy_name if assignment else "Baseline",
+                                 "mode": effective.workshop.mode},
+                    "budget": {"wallet": facts.wallet_coins, "jar": jar,
+                               "jar_kind": "jit_hold" if lab_share == "just_in_time" else "lab_jar",
+                               "lab_share_mode": lab_share,
+                               "spend_limit_pct": coin_share.workshop_limit_pct(effective),
+                               "ceiling": evaluation.trace.spend_ceiling}}
                 if evaluation.status == "unknown" or evaluation.decision is None:
+                    self._record_workshop_plan(None)
                     self.route_error = evaluation.trace.reason
                     return stop(replace(base, enabled=False, workshop=()),
                                 f"{evaluation.trace.reason} ({evaluation.trace.matched_rule_id})")
@@ -639,6 +671,7 @@ class RerollProgress:
         if (self.initial_workshop_due() and plan.stage != "strategy_observe"
                 and plan.item is not None and plan.category is not None):
             self._publish(plan)
+            self._record_workshop_plan(plan, "tutorial")
             return replace(base, enabled=base.enabled,
                            workshop=(ShoppingRule(plan.item, plan.category),),
                            allow_unlocks=True, coin_budget=50, coin_budget_pct=None,
@@ -655,11 +688,14 @@ class RerollProgress:
             reason = (f"Workshop paused: saving coins for labs · {saving_reason}" if saving_reason
                       else f"Workshop paused: saving coins for the next automated lab "
                            f"({coin_share.waiting_lab_price(effective, lab_record)} coins).")
-            self._publish(replace(plan, state="save_coins", upgrade_id=None, item=None, category=None,
-                                  price=None, reason=reason))
+            paused_plan = replace(plan, state="save_coins", upgrade_id=None, item=None, category=None,
+                                  price=None, reason=reason)
+            self._publish(paused_plan)
+            self._record_workshop_plan(paused_plan, "workshop_paused")
             self.stop_reason = reason
             return replace(base, workshop=())
         self._publish(plan)
+        self._record_workshop_plan(plan)
         if plan.stage == "strategy_observe":
             ids = self._route_evaluation.trace.observation_ids
             rows = tuple(ShoppingRule(upgrades.by_id(uid).name, upgrades.by_id(uid).category)
