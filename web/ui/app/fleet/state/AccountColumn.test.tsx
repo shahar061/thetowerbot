@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { render, screen, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import type { FleetStateAccount, FleetStateWorkshop, WorkshopSkill } from "@/lib/fleetState";
@@ -176,4 +178,79 @@ test("a live wave past the best wave is flagged as a new best", () => {
   }));
   expect(screen.getByText("New best")).toBeInTheDocument();
   expect(screen.getByText("400")).toBeInTheDocument();
+});
+
+test("the buy queue splits the wallet between the lab jar and the Workshop budget", () => {
+  show(makeAccount({ coin_split: {
+    wallet: 206000, jar: 79300, jar_target: { lab_id: "labs.game-speed", name: "Game Speed", level: 5, price: 150000 },
+    share_mode: "save_pct", share_pct: 25, workshop_limit_pct: 100, workshop_budget: 126700,
+  } }));
+  const split = screen.getByTestId("coin-split");
+  expect(split).toHaveTextContent("Lab jar 79.30K → Game Speed L5 (79.30K / 150.00K) · Workshop 126.70K");
+  expect(within(split).getByRole("meter", { name: "Lab jar share of wallet" })).toHaveAttribute("aria-valuenow", "38");
+});
+
+test("the Workshop saving meter counts only the Workshop budget, not the lab jar", () => {
+  show(makeAccount({
+    next_buy: { state: "save_coins", upgrade_id: "health", name: "Health", category: "defense",
+      price: 7180, price_source: "observed", wallet: 77420, reason: "", goal: null, observed_at: null },
+    coin_split: { wallet: 77420, jar: 75535, jar_target: null, share_mode: "save_pct", share_pct: 25,
+      workshop_limit_pct: 100, workshop_budget: 1885 },
+  }));
+  const next = screen.getByText("Workshop", { selector: ".qk" }).closest(".fs-q")! as HTMLElement;
+  expect(within(next).getByRole("meter")).toHaveAttribute("aria-valuenow", "26");
+  expect(next).toHaveTextContent("1.89K / 7.18K · 26%");
+});
+
+test("the coin split says when no lab jar applies and hides with nothing to split", () => {
+  const view = show(makeAccount({ coin_split: {
+    wallet: 1000, jar: 0, jar_target: null, share_mode: "when_affordable", share_pct: 25,
+    workshop_limit_pct: 100, workshop_budget: 1000,
+  } }));
+  expect(screen.getByTestId("coin-split")).toHaveTextContent("No lab jar · Workshop 1.00K");
+  view.unmount();
+  show(makeAccount({ coin_split: {
+    wallet: null, jar: 0, jar_target: null, share_mode: "save_pct", share_pct: 25,
+    workshop_limit_pct: 100, workshop_budget: null,
+  } }));
+  expect(screen.queryByTestId("coin-split")).toBeNull();
+});
+
+test("a projected Workshop row names the next purchase, its verdict and price, and says it is projected", () => {
+  show(makeAccount({ next_buy: {
+    state: "save_coins", upgrade_id: "orbs", name: "Orbs", category: "utility", price: 150000,
+    price_source: "observed", wallet: 90000, reason: "Saving for Orbs", goal: null, observed_at: null,
+    projected: true,
+  } }));
+  const row = screen.getByText("Workshop", { selector: ".qk" }).closest(".fs-q")!;
+  expect(row).toHaveTextContent("Orbs");
+  expect(row).toHaveTextContent("Saving coins");
+  expect(row).toHaveTextContent("150.00K");
+  expect(row.getAttribute("title")).toBe("Saving for Orbs (projected)");
+});
+
+test("a Workshop plan with unread coins says so instead of naming nothing", () => {
+  show(makeAccount({ next_buy: {
+    state: "coins_unread", upgrade_id: null, name: null, category: null, price: null, price_source: null,
+    wallet: null, reason: "Coins unread at the menu; the next menu read will plan the Workshop",
+    goal: null, observed_at: null, projected: true,
+  } }));
+  const row = screen.getByText("Workshop", { selector: ".qk" }).closest(".fs-q")!;
+  expect(row).toHaveTextContent("Next purchase");
+  expect(row).toHaveTextContent("Coins unread");
+  expect(row).not.toHaveTextContent("Nothing to buy");
+});
+
+test("long queue names wrap in full instead of being cut off", () => {
+  const name = "Unlock Defense Absolute And Then Some Very Long Upgrade Name";
+  show(makeAccount({ next_buy: {
+    state: "replanning", upgrade_id: null, name, category: null, price: null, price_source: null,
+    wallet: null, reason: "", goal: null, observed_at: null,
+  } }));
+  expect(screen.getByText(name).closest(".qn")).toHaveTextContent(`${name} · Replanning`);
+  // jsdom applies no stylesheet, so read the rule itself: queue names wrap, never ellipsize.
+  const css = readFileSync(join(__dirname, "fleet-state.css"), "utf8");
+  const rule = css.match(/\.fs-q \.qn \{([^}]*)\}/)![1];
+  expect(rule).not.toMatch(/ellipsis|nowrap/);
+  expect(rule).toMatch(/white-space: normal/);
 });

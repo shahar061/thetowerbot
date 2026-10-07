@@ -14,6 +14,7 @@ import logging
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -27,7 +28,9 @@ import workshop_unlocks
 from account_state import completed_lab_level
 from concepts import REGISTRY
 from currencies import currency_overview
-from fleet.build_route import RouteDocument
+from fleet.build_route import EffectiveRoute, RouteDocument, resolve_route
+from fleet.build_route_eval import RouteFacts, evaluate_workshop
+from fleet.coin_share import LabCoinJar, workshop_ceiling, workshop_limit_pct
 from fleet.reroll_lifetime import read_lifetime
 from fleet.state_records import ForeignDatabase, read_records
 from fleet.workshop_replay import WorkshopEvidence
@@ -265,12 +268,63 @@ def build_strategy(assignment: object, account_id: str) -> dict[str, Any] | None
             "version": assignment.strategy_version}
 
 
+COINS_UNREAD = "Coins unread at the menu; the next menu read will plan the Workshop"
+
+
+def build_projected_buy(route: EffectiveRoute | None, facts: Mapping[str, Any] | None,
+                        account_id: str, worker: str, jar: int) -> dict[str, Any] | None:
+    """The current route's next Workshop purchase over the worker's last published facts.
+
+    Read-only, for a plan an older route made: the facts are evaluated as of
+    their own reading, with `jar` held back, exactly as the worker would on its
+    next visit with the same prices and wallet. None when the facts belong to
+    someone else or the evaluation cannot name a verdict; the caller then keeps
+    its placeholder.
+    """
+    if (route is None or not isinstance(facts, Mapping) or facts.get("account_id") != account_id
+            or facts.get("worker") != worker):
+        return None
+    observed_at = _number(facts.get("observed_at"))
+    row = {"state": "coins_unread", "upgrade_id": None, "name": None, "category": None,
+           "price": None, "price_source": None, "wallet": None, "reason": COINS_UNREAD,
+           "goal": None, "observed_at": iso(observed_at), "projected": True}
+    wallet = facts.get("wallet_coins")
+    if type(wallet) is not int or wallet < 0:
+        # Both Workshop evaluators stop before naming anything without a wallet.
+        return row
+    try:
+        parsed = RouteFacts(**{k: v for k, v in facts.items() if k in RouteFacts.__dataclass_fields__})
+        parsed = replace(parsed, now=parsed.observed_at, lab_coin_jar=min(max(0, jar), wallet))
+        evaluation = evaluate_workshop(route, parsed, None)
+        decision = evaluation.decision
+        if decision is None:
+            if evaluation.status == "unknown":
+                return None
+            return {**row, "state": "waiting", "wallet": wallet, "reason": evaluation.trace.reason}
+        upgrade_id = decision.upgrade_id if isinstance(decision.upgrade_id, str) else None
+        upgrade = upgrades.by_id(upgrade_id) if upgrade_id else None
+        evidence = parsed.price_evidence.get(upgrade_id) if upgrade_id else None
+        return {**row, "state": decision.state, "upgrade_id": upgrade_id,
+                "name": _text(decision.item) or (upgrade.name if upgrade else None),
+                "category": _category(decision.category)
+                or (_category(upgrade.category) if upgrade else None),
+                "price": _number(decision.price),
+                "price_source": _text(evidence.get("source")) if isinstance(evidence, Mapping) else None,
+                "wallet": wallet, "reason": decision.reason, "goal": _text(decision.goal)}
+    except Exception as exc:  # noqa: BLE001 - a projection only ever improves on the placeholder
+        logger.warning("Workshop projection failed for %s: %s", worker, exc)
+        return None
+
+
 def build_next_buy(plan: Mapping[str, Any] | None, account_id: str,
-                   route: RouteDocument | None = None) -> dict[str, Any] | None:
+                   route: RouteDocument | None = None,
+                   project: Callable[[], dict[str, Any] | None] | None = None) -> dict[str, Any] | None:
     """The Workshop planner's next purchase from the worker's reroll-plan.json.
 
     `price` is None until someone has read it; `state` is the planner's verdict
-    (buy, save_coins, observe_price, observe_balance, needs_operator).
+    (buy, save_coins, observe_price, observe_balance, needs_operator). A plan an
+    older route made is replaced by `project()` - the current route over the
+    worker's last Workshop facts - or, failing that, a replanning placeholder.
     """
     if (not isinstance(plan, Mapping) or plan.get("account_id") != account_id
             or not isinstance(plan.get("state"), str)):
@@ -283,6 +337,9 @@ def build_next_buy(plan: Mapping[str, Any] | None, account_id: str,
             and ((type(plan_revision) is int and plan_revision != revision)
                  or (type(plan_revision) is not int and type(authored_at) in (int, float)
                      and (observed_at is None or observed_at < authored_at)))):
+        projected = project() if project is not None else None
+        if projected is not None:
+            return projected
         return {"state": "replanning", "upgrade_id": None, "name": "Awaiting Workshop plan",
                 "category": None, "price": None, "price_source": None, "wallet": None,
                 "reason": "Strategy changed; the next Workshop visit will refresh this plan",
@@ -297,6 +354,43 @@ def build_next_buy(plan: Mapping[str, Any] | None, account_id: str,
             "price": _number(plan.get("price")), "price_source": _text(plan.get("price_source")),
             "wallet": _number(plan.get("wallet_coins")), "reason": _text(plan.get("reason")) or "",
             "goal": _text(plan.get("goal")), "observed_at": iso(_number(plan.get("observed_at")))}
+
+
+def jar_holds(route: EffectiveRoute | None) -> bool:
+    """Whether the lab coin jar holds coins back from Workshop under this route."""
+    rules = route.rules if route is not None else None
+    return rules is not None and rules.coins.lab_share.mode == "save_pct" and rules.labs.auto_start
+
+
+def build_coin_split(route: EffectiveRoute | None, wallet: object, jar: int,
+                     target: Mapping[str, Any] | None) -> dict[str, Any]:
+    """How the coin wallet splits between the lab jar and the Workshop's budget.
+
+    The jar holds coins only under save_pct with labs auto-started - any other
+    mode empties it on the next Workshop visit - and never more than a known
+    wallet. The budget is `coin_share.workshop_ceiling`, None while the wallet
+    or the route is unknown.
+    """
+    number = _number(wallet)
+    coins = int(number) if number is not None and number >= 0 else None
+    rules = route.rules if route is not None else None
+    saving = jar_holds(route)
+    held = max(0, jar) if saving else 0
+    if coins is not None:
+        held = min(held, coins)
+    jar_target = None
+    if saving and isinstance(target, Mapping) and isinstance(target.get("lab_id"), str):
+        lab_id, level = target["lab_id"], target.get("level")
+        step = lab_catalog.level(lab_id, level) if type(level) is int else None
+        jar_target = {"lab_id": lab_id, "name": _lab_name(lab_id),
+                      "level": level if type(level) is int else None,
+                      "price": step.coins if step is not None else None}
+    return {"wallet": coins, "jar": held, "jar_target": jar_target,
+            "share_mode": rules.coins.lab_share.mode if rules is not None else None,
+            "share_pct": rules.coins.lab_share.pct if rules is not None else None,
+            "workshop_limit_pct": workshop_limit_pct(route) if route is not None else None,
+            "workshop_budget": workshop_ceiling(route, coins, held)
+            if route is not None and coins is not None else None}
 
 
 def build_balances(overview: Mapping[str, Any] | None,
@@ -508,11 +602,29 @@ def _plan(worker_root: Path) -> Mapping[str, Any] | None:
     return plan if isinstance(plan, Mapping) else None
 
 
+def _workshop_facts(worker_root: Path) -> Mapping[str, Any] | None:
+    """The RouteFacts the worker last evaluated its Workshop over (build-route-facts.json)."""
+    try:
+        facts = json.loads((worker_root / "build-route-facts.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return facts if isinstance(facts, Mapping) else None
+
+
+def _effective(route: RouteDocument | None, worker: str, account_id: str) -> EffectiveRoute | None:
+    if route is None:
+        return None
+    try:
+        return resolve_route(route, worker, account_id)
+    except ValueError:
+        return None
+
+
 def _blank(member: Mapping[str, Any]) -> dict[str, Any]:
     name = str(member["name"])
     return {"id": name, "name": name, "serial": member.get("endpoint") or None,
             "online": False, "stale_seconds": None, "scan": None, "error": None,
-            "strategy": None, "next_buy": None, "best_wave": None,
+            "strategy": None, "next_buy": None, "coin_split": None, "best_wave": None,
             "bot": build_bot(None), "battle": None, "balances": None, "totals": None,
             "decision": None,
             "workshop": None, "cards": None, "labs": None, "run_upgrades": None, "runs": None}
@@ -538,11 +650,16 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
     # Neither lives in the worker DB, so a DB error below still shows them.
     route = _route(Path(root))
     assignment = route.assignments.get(account["id"]) if route is not None else None
+    effective = _effective(route, account["id"], registration.account_id)
+    jar, jar_target = LabCoinJar(worker_root, registration.account_id, read_only=True).saved()
+    held = jar if jar_holds(effective) else 0
     account.update(
         strategy=_section("strategy", build_strategy, assignment,
                           registration.account_id),
         next_buy=_section("next_buy", build_next_buy, _plan(worker_root),
-                          registration.account_id, route))
+                          registration.account_id, route,
+                          lambda: build_projected_buy(effective, _workshop_facts(worker_root),
+                                                      registration.account_id, account["id"], held)))
     try:
         records = read_records(registration.db_path, registration.account_id, _live_run_id(status), now=now)
     except ForeignDatabase:
@@ -574,6 +691,8 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
         run_upgrades=_section("run_upgrades", build_run_upgrades, records.run_upgrades,
                               records.run_upgrades_scope),
         runs=_section("runs", build_runs, records.runs))
+    account["coin_split"] = _section("coin_split", build_coin_split, effective,
+                                     (account["balances"] or {}).get("coins"), jar, jar_target)
     return account
 
 

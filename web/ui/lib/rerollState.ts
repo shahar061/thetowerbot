@@ -232,6 +232,10 @@ export const DECISIONS: Record<string, { label: string; tone: MachineState; hint
     hint: "The price is known and the wallet is not. The worker goes and looks." },
   needs_operator: { label: "Needs you", tone: "warn",
     hint: "Nothing on the plan is both ready and unheld, so there is no next purchase to name." },
+  coins_unread: { label: "Coins unread", tone: "warn",
+    hint: "The last menu read has no coin balance. The next menu read will plan the Workshop." },
+  waiting: { label: "Waiting", tone: "idle",
+    hint: "The strategy has nothing eligible to buy yet; it waits for prices, coins or conditions." },
 };
 
 export function decisionFor(state: string) {

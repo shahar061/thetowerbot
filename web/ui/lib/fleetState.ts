@@ -28,11 +28,22 @@ export interface FleetStateBestWave { wave: number; tier: number }
 /** The Strategy Studio strategy assigned to this worker. */
 export interface FleetStateStrategy { id: string; name: string; version: number }
 /** The Workshop planner's next purchase (reroll-plan.json). `state` is one of
- *  `DECISIONS` in rerollState.ts; `price` is null until someone reads it. */
+ *  `DECISIONS` in rerollState.ts; `price` is null until someone reads it.
+ *  `projected`: the plan predates the strategy, so this is the current strategy
+ *  evaluated over the worker's last Workshop facts, not the worker's own plan. */
 export interface FleetStateNextBuy {
   state: string; upgrade_id: string | null; name: string | null; category: StateCategory | null;
   price: number | null; price_source: string | null; wallet: number | null;
-  reason: string; goal: string | null; observed_at: string | null;
+  reason: string; goal: string | null; observed_at: string | null; projected?: boolean;
+}
+/** The lab the save_pct jar saves toward; `price` is that level's catalog price. */
+export interface FleetStateJarTarget { lab_id: string; name: string; level: number | null; price: number | null }
+/** How the coin wallet splits: `jar` is held for labs (0 outside save_pct, never
+ *  above a known wallet); `workshop_budget` is (wallet − jar) × the spend limit. */
+export interface FleetStateCoinSplit {
+  wallet: number | null; jar: number; jar_target: FleetStateJarTarget | null;
+  share_mode: string | null; share_pct: number | null;
+  workshop_limit_pct: number | null; workshop_budget: number | null;
 }
 export interface WorkshopSkill {
   id: string; name: string; level: number | null; invested: number | null; bot_spent: number;
@@ -79,6 +90,7 @@ export interface FleetStateAccount {
   id: string; name: string; serial: string | null; online: boolean;
   stale_seconds: number | null; scan: number | null; error: string | null;
   strategy: FleetStateStrategy | null; next_buy: FleetStateNextBuy | null;
+  coin_split: FleetStateCoinSplit | null;
   best_wave: FleetStateBestWave | null;
   bot: FleetStateBot; battle: FleetStateBattle | null; balances: FleetStateBalances | null;
   totals: FleetStateTotals | null;
