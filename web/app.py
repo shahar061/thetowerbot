@@ -55,6 +55,7 @@ from web.advisor import advisor_router
 from web.account_catalog import AccountChoice, account_choices
 from fleet.reroll_runs import run_numbers_from
 from fleet.build_route import RouteDocument
+from fleet.workshop_plan import load_workshop_plan
 from fleet.build_route_store import RouteConflict, RouteUnavailable
 from autopilot import AutopilotState
 from policy import PRESETS, preset_rules
@@ -1513,6 +1514,15 @@ def create_app(
         stats = (revision.get("workshop_stats")
                  if revision.get("account_id") in (None, account_id) else None)
         return {"account_id": account_id, "upgrades": workshop_levels.workshop_state(stats)}
+
+    @app.get("/api/workshop-plan")
+    def workshop_plan_state(request: Request) -> dict:
+        # The Plan graph tab: the trace behind this worker's latest Workshop decision.
+        choice = _selected(request)
+        path = _history_path(request)
+        if choice is None or choice.kind != "worker" or choice.account_id is None or path is None:
+            return {"plan": None}
+        return load_workshop_plan(path.parent, choice.account_id, time.time())
 
     @app.get("/api/errors")
     def errors(request: Request, limit: int = 100) -> list[dict]:
