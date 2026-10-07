@@ -61,4 +61,23 @@ describe("PlanGraph", () => {
     expect(screen.getByText("This strategy doesn't use blocks (legacy planner).")).toBeInTheDocument();
     expect(screen.getByText("No candidates recorded for this decision.")).toBeInTheDocument();
   });
+
+  it("says no blocks were evaluated when a blocks strategy has no steps", () => {
+    const plan = weightedPlan();
+    plan.evaluation = { ...plan.evaluation, trace: { ...plan.evaluation.trace, steps: [] } };
+    render(<PlanGraph plan={plan} stale={false} />);
+    expect(screen.getByText("No blocks were evaluated for this decision.")).toBeInTheDocument();
+    expect(screen.queryByText(/doesn't use blocks/)).not.toBeInTheDocument();
+  });
+
+  it("measures the decision against the spend ceiling, not the full wallet", () => {
+    const plan = valuePlan();
+    // Wallet 2940 holds the price, but the ceiling (wallet - jar) 2530 does not.
+    plan.evaluation = { ...plan.evaluation, decision: { ...plan.evaluation.decision!, price: 2700, wallet_coins: 2940 } };
+    render(<PlanGraph plan={plan} stale={false} />);
+    const decision = within(screen.getByRole("region", { name: "Decision" }));
+    expect(decision.getByText("spendable 2.53K")).toBeInTheDocument();
+    expect(decision.getByText("170 short")).toBeInTheDocument();
+    expect(decision.queryByText("affordable")).not.toBeInTheDocument();
+  });
 });

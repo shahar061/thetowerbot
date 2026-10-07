@@ -61,4 +61,11 @@ describe("WorkshopViews", () => {
     expect(screen.getByRole("alert").textContent).toContain("Worker unreachable");
     expect(screen.getByRole("region", { name: "Candidates" })).toBeInTheDocument();
   });
+
+  it("shows a missing account id as a muted status, not an alert", async () => {
+    render(<WorkshopViews members={[{ ...member("Tiramisu64_82"), account_id: null }]} initialTab="plan" />);
+    const status = await screen.findByText("Waiting for a verified account");
+    expect(status).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

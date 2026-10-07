@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { PlanGraph } from "./PlanGraph";
 import { ago } from "./workshopFormat";
 
-type Loaded = { worker: string; response: WorkshopPlanResponse | null; error: string | null };
+type Loaded = { worker: string; response: WorkshopPlanResponse | null; error: string | null; waiting?: boolean };
 
 export function WorkshopPlan({ members, focusWorker = null }: { members: RerollMember[]; focusWorker?: string | null }): React.JSX.Element {
   const [picked, setPicked] = useState<string | null>(focusWorker);
@@ -22,7 +22,7 @@ export function WorkshopPlan({ members, focusWorker = null }: { members: RerollM
     let active = true;
     const load = async (): Promise<void> => {
       if (!scoped.account_key || !scoped.account_id) {
-        if (active) setLoaded({ worker: scoped.name, response: null, error: "Waiting for a verified account" });
+        if (active) setLoaded({ worker: scoped.name, response: null, error: null, waiting: true });
         return;
       }
       try {
@@ -55,10 +55,11 @@ export function WorkshopPlan({ members, focusWorker = null }: { members: RerollM
       </p>}
     </div>
     {current?.error && <p role="alert" className="text-sm text-danger">{current.error}</p>}
+    {current?.waiting && <p role="status" className="text-sm text-muted-foreground">Waiting for a verified account</p>}
     {!member ? null
       : !current ? <p role="status">Loading Workshop plan…</p>
       : plan ? <PlanGraph plan={plan} stale={current.response?.stale ?? false} />
-      : !current.error && <p className="rounded-xl border border-dashed p-10 text-center text-muted-foreground">
+      : !current.error && !current.waiting && <p className="rounded-xl border border-dashed p-10 text-center text-muted-foreground">
           No Workshop decision recorded for {member.name} yet. It appears after its next Workshop visit.</p>}
   </div>;
 }

@@ -38,6 +38,8 @@ export function PlanGraph({ plan, stale }: { plan: WorkshopPlanRecord; stale: bo
   const matched = matchedStep(steps);
   const rejected = rejectedLines(trace.rejected, plan.upgrade_names);
   const chosen = candidates.find(row => row.chosen) ?? null;
+  // The engine compares a price to the spend ceiling, not to the full wallet.
+  const spendable = budget.ceiling ?? decision?.wallet_coins ?? null;
   const totalWeight = candidates.reduce((sum, row) => sum + (row.weight ?? 0), 0);
   const maxOdds = Math.max(0, ...candidates.map(row => row.odds ?? 0));
   const bestScore = Math.min(Infinity, ...candidates.map(row => row.score ?? Infinity));
@@ -128,7 +130,9 @@ export function PlanGraph({ plan, stale }: { plan: WorkshopPlanRecord; stale: bo
         <Heading step={2}>Strategy blocks</Heading>
         {steps.length === 0
           ? <div data-node="matched" className="rounded-lg border border-dashed border-border-strong bg-card p-3 text-xs text-muted-foreground">
-              This strategy doesn&apos;t use blocks ({plan.strategy.mode.replaceAll("_", " ")}).</div>
+              {plan.strategy.mode === "blocks"
+                ? "No blocks were evaluated for this decision."
+                : <>This strategy doesn&apos;t use blocks ({plan.strategy.mode.replaceAll("_", " ")}).</>}</div>
           : <ol className="flex flex-col gap-2">
               {steps.map((step, index) => <li key={`${step.block_id}-${index}`} data-node={step === matched ? "matched" : undefined}
                 aria-label={`${blockName(step)}: ${OUTCOME_LABEL[step.outcome]}`} style={{ marginLeft: step.depth * 12 }}
@@ -200,13 +204,13 @@ export function PlanGraph({ plan, stale }: { plan: WorkshopPlanRecord; stale: bo
           <span className={cn("rounded-full px-2.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-[.12em]", pillClass)}>{pill}</span>
           <p className="mt-2.5 text-lg font-semibold tracking-tight">{decision?.item ?? (matched ? blockName(matched) : "Nothing to buy")}</p>
           {decision?.price != null && <p className="font-mono text-[13px] tabular-nums text-[var(--currency-coins)]">{coins(decision.price)} coins</p>}
-          {decision?.price != null && decision.wallet_coins != null && <div className="mt-3">
+          {decision?.price != null && spendable != null && <div className="mt-3">
             <div className="h-2 overflow-hidden rounded-full bg-muted">
-              <div className="h-full rounded-full bg-[var(--currency-coins)]" style={{ width: `${Math.min(100, (decision.wallet_coins / Math.max(1, decision.price)) * 100)}%` }} />
+              <div className="h-full rounded-full bg-[var(--currency-coins)]" style={{ width: `${Math.min(100, (spendable / Math.max(1, decision.price)) * 100)}%` }} />
             </div>
             <div className="mt-1 flex justify-between font-mono text-[11px] tabular-nums text-faint-foreground">
-              <span>{buying ? "spendable" : "saved"} {coins(decision.wallet_coins)}</span>
-              <span>{decision.wallet_coins >= decision.price ? "affordable" : `${coins(decision.price - decision.wallet_coins)} short`}</span>
+              <span>spendable {coins(spendable)}</span>
+              <span>{spendable >= decision.price ? "affordable" : `${coins(decision.price - spendable)} short`}</span>
             </div>
           </div>}
           {override && chosen && <p className="mt-2 text-xs text-muted-foreground">Underlying pick: {chosen.name}</p>}

@@ -879,6 +879,32 @@ def test_failed_plan_write_never_stops_shopping(tmp_path: Path) -> None:
     assert progress.stop_reason is None
 
 
+def test_a_plan_build_error_never_stops_shopping(tmp_path: Path, monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+    from fleet import coin_share, reroll_progress
+
+    progress = _progress(tmp_path)
+    progress._publish = lambda decision: None  # type: ignore[method-assign]
+    _rules_route(tmp_path, {"coins": {"lab_share": {"mode": "when_affordable"}}})
+    progress.route_facts = _facts("visit-1")  # type: ignore[method-assign]
+    base = Strategy.from_config().shopping
+    progress.shopping_policy(base)
+    _bought_once(progress)
+
+    def _broken(effective: Any) -> int:
+        raise AttributeError("plan field missing")
+
+    # Only the plan record reads this helper through the progress module.
+    proxy = SimpleNamespace(**{name: getattr(coin_share, name) for name in dir(coin_share)
+                               if not name.startswith("__")})
+    proxy.workshop_limit_pct = _broken
+    monkeypatch.setattr(reroll_progress, "coin_share", proxy)
+    progress.route_facts = _facts("visit-2")  # type: ignore[method-assign]
+    policy = progress.shopping_policy(base)
+    assert policy.workshop != ()
+    assert progress.stop_reason is None
+
+
 def test_workshop_plan_rejects_another_account(tmp_path: Path) -> None:
     runtime = BuildRouteRuntime(tmp_path, "Air_38", "account-a")
     with pytest.raises(ValueError):

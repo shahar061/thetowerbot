@@ -24,6 +24,13 @@ _PER_LEVEL_POOL_LIMITS = ('max_purchases', 'level_caps', 'hold_until_capped', 't
                           'wallet_share_pct', 'discount_pct', 'cheaper_than_upgrade_ids')
 
 
+def _format_number(value: float) -> str:
+    """Display-only: whole numbers with thousands separators, never scientific notation."""
+    if isinstance(value, (int, float)) and math.isfinite(value) and float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{value:g}"
+
+
 def relative_wave_limit(relative: Mapping[str, int], best: int | None) -> int:
     """The wave a relative condition compares against: a share of the best
     finished Tier 1 wave, clamped to [floor, cap]; unknown best → floor."""
@@ -909,7 +916,12 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         """First goal item passing every filter except wallet affordability."""
         if goal['type'] == 'buy':
             uid = goal['upgrade_id']
-            return (uid, price_for(uid, reference=True)) if eligible(uid, ignore_funds=True) else None
+            if not eligible(uid, ignore_funds=True):
+                return None
+            # Display only: a one-row table so the saved-for target shows its price.
+            candidate_rows[goal['id']] = ('priority', candidate_table(
+                {uid: 1}, 'priority', uid, lambda item: price_for(item, reference=True)))
+            return uid, price_for(uid, reference=True)
         needs_counts = 'max_purchases' in goal or 'level_caps' in goal or goal.get('decay_pct', 0) > 0
         if needs_counts and counts is None:
             rejected.append(f"{goal['id']}: confirmed purchase counts unavailable")
@@ -956,7 +968,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     matched = COMPARISONS[block['op']](value, block['value'])
                     # Show the comparison that held: a miss reads as the opposite symbol.
                     held = block['op'] if matched else {'gte': 'lt', 'lte': 'gt', 'gt': 'lte', 'lt': 'gte'}[block['op']]
-                    log.note(f"{block['field']} {value:g} {SYMBOLS[held]} {block['value']:g} "
+                    log.note(f"{block['field']} {_format_number(value)} {SYMBOLS[held]} {_format_number(block['value'])} "
                              f"→ {'then' if matched else 'else'}")
                 choice = evaluate(block['then'] if matched else block['else'], (items, *ancestors))
                 if choice is not None:
@@ -1330,7 +1342,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                if completed_native_phases else None))
     weights = choice.weights or {}
     odds = {uid: weight / sum(weights.values()) for uid, weight in weights.items()}
-    selection, rows = candidate_rows.get(choice.block_id, (None, ()))
+    # An observation replaces the pick, so the saved-for pick's candidate rows would mislead.
+    selection, rows = ((None, ()) if choice.observation_ids
+                       else candidate_rows.get(choice.block_id, (None, ())))
     seed, roll = draws.get(choice.block_id, (None, None))
     trace = DecisionTrace(choice.block_id, choice.reason, age,
         'model' if choice.price_source == 'model' else ('worker price evidence' if lane == 'workshop' else 'cached same-run battle rows (up to 60s)'), facts.variant,

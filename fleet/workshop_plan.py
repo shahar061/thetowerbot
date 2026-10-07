@@ -16,7 +16,8 @@ def load_workshop_plan(worker_dir: Path, account_id: str, now: float) -> dict[st
         return {"plan": None}
     # Another account's record (a replaced account) is never shown.
     if (not isinstance(plan, dict) or plan.get("account_id") != account_id
-            or not isinstance(plan.get("evaluation"), dict)):
+            or not all(isinstance(plan.get(key), dict)
+                       for key in ("evaluation", "budget", "strategy", "upgrade_names"))):
         return {"plan": None}
     current = read_applied_revision(worker_dir / "build-route-applied.json", account_id)
     written = plan.get("written_at")

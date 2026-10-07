@@ -30,6 +30,8 @@ def _worker(root: Path, name: str, account_id: str) -> Path:
 def _write(worker: Path, account_id: str, revision: int, applied: int | None, written_at: float = 100.0) -> None:
     (worker / "build-route-workshop.json").write_text(json.dumps({
         "account_id": account_id, "revision": revision, "written_at": written_at,
+        "budget": {"wallet": 0, "jar": 0}, "strategy": {"id": None, "name": "Baseline", "mode": "blocks"},
+        "upgrade_names": {},
         "evaluation": {"decision": None, "trace": {"matched_rule_id": "blocks", "reason": "Wait"}}}))
     if applied is not None:
         (worker / "build-route-applied.json").write_text(json.dumps({"account_id": account_id, "revision": applied}))
@@ -62,6 +64,16 @@ def test_corrupt_or_foreign_plan_reads_as_none(tmp_path: Path) -> None:
     assert load_workshop_plan(worker, "ACCOUNT_A", 160.0) == {"plan": None}
     (worker / "build-route-workshop.json").write_text(json.dumps(["not", "a", "record"]))
     assert load_workshop_plan(worker, "ACCOUNT_A", 160.0) == {"plan": None}
+
+
+def test_a_record_missing_a_required_section_reads_as_none(tmp_path: Path) -> None:
+    worker = _worker(tmp_path, "Tiramisu64_18", "ACCOUNT_A")
+    _write(worker, "ACCOUNT_A", 16, 16)
+    path = worker / "build-route-workshop.json"
+    record = json.loads(path.read_text())
+    for key in ("budget", "strategy", "upgrade_names"):
+        path.write_text(json.dumps({k: v for k, v in record.items() if k != key}))
+        assert load_workshop_plan(worker, "ACCOUNT_A", 160.0) == {"plan": None}
 
 
 def test_endpoint_is_scoped_to_the_selected_worker(tmp_path: Path) -> None:

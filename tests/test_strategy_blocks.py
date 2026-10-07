@@ -1888,3 +1888,27 @@ def test_condition_and_unlock_outcomes_are_recorded() -> None:
     assert steps == [('unlocks', 'done', 0), ('when', 'matched', 0), ('early', 'matched', 1), ('end', 'not_reached', 0)]
     assert result.trace.steps[0].note == 'Already unlocked'
     assert result.trace.steps[1].note == 'best_tier_1_wave 25 < 50 → else'
+
+
+def test_large_wallet_condition_note_keeps_every_digit() -> None:
+    program = [when('wallet', 'gte', 200_000_000)]
+    rich = replace(facts(), wallet_coins=1_000_004)
+    result = blocks.evaluate_program(route(program), rich, None, 'workshop')
+    note = next(s.note for s in result.trace.steps if s.block_id == 'when')
+    assert '200,000,000' in note and '1,000,004' in note and 'e+' not in note
+
+
+def test_observation_decision_records_no_candidate_rows() -> None:
+    program = [save_goal(['thorns']), pool(discount_pct=20, reference_upgrade_id='thorns')]
+    unknown = replace(facts(), prices={'damage': 1})
+    result = blocks.evaluate_program(route(program), unknown, None, 'workshop')
+    assert result.decision.state == 'observe_price'
+    assert result.trace.candidates == () and result.trace.selection is None
+
+
+def test_single_buy_goal_save_for_records_a_one_row_table() -> None:
+    goal = {'id': 'goal', 'type': 'save_for', 'goal': [{'id': 'goal.buy', 'type': 'buy', 'upgrade_id': 'thorns'}]}
+    poor = replace(facts(), wallet_coins=50)
+    result = blocks.evaluate_program(route([goal]), poor, None, 'workshop')
+    assert result.decision.state == 'save_coins'
+    assert [(row.upgrade_id, row.chosen, row.price) for row in result.trace.candidates] == [('thorns', True, 100)]

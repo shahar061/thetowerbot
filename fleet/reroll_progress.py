@@ -97,7 +97,7 @@ class RerollProgress:
         self.stop_reason: str | None = None
         self._route_evaluation: RouteEvaluation | None = None
         # Budget and strategy behind _route_evaluation, saved for the Plan graph tab.
-        self._plan_context: dict[str, Any] | None = None
+        self._plan_inputs: dict[str, Any] | None = None
         self.route_policy_revision: int | None = None
         self._menu_wallet: tuple[int, float] | None = None
         # The lab jar the last menu route evaluation settled.
@@ -548,18 +548,31 @@ class RerollProgress:
 
         Display only: a failed write is logged and never changes shopping.
         """
-        evaluation, context = self._route_evaluation, self._plan_context
-        if evaluation is None or context is None or self.route_runtime is None:
+        evaluation, inputs = self._route_evaluation, self._plan_inputs
+        if evaluation is None or inputs is None or self.route_runtime is None:
             return
-        record = {"account_id": self.account_id, "revision": evaluation.revision,
-                  "written_at": time.time(), **context,
-                  "evaluation": asdict(replace(evaluation, decision=decision)),
-                  "override": override,
-                  "upgrade_names": {upgrade.id: upgrade.name for upgrade in upgrades.CATALOG}}
         try:
+            effective, assignment, jar = inputs["effective"], inputs["assignment"], inputs["jar"]
+            # Only the assignment of this very account names the strategy.
+            named = assignment if assignment and assignment.account_id == self.account_id else None
+            lab_share = effective.rules.coins.lab_share.mode
+            record = {
+                "account_id": self.account_id, "revision": inputs["revision"],
+                "written_at": time.time(),
+                "strategy": {"id": named.strategy_id if named else None,
+                             "name": named.strategy_name if named else "Baseline",
+                             "mode": effective.workshop.mode},
+                "budget": {"wallet": inputs["wallet"], "jar": jar,
+                           "jar_kind": "jit_hold" if lab_share == "just_in_time" else "lab_jar",
+                           "lab_share_mode": lab_share,
+                           "spend_limit_pct": coin_share.workshop_limit_pct(effective),
+                           "ceiling": evaluation.trace.spend_ceiling},
+                "evaluation": asdict(replace(evaluation, decision=decision)),
+                "override": override,
+                "upgrade_names": {upgrade.id: upgrade.name for upgrade in upgrades.CATALOG}}
             self.route_runtime.publish_workshop_plan(record)
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning("Workshop plan not saved for %s: %s", self.account_id, exc)
+        except Exception as exc:
+            logger.warning("Workshop plan not saved for %s: %s", self.account_id, exc, exc_info=True)
 
     def shopping_policy(self, base: Shopping) -> Shopping:
         jar = 0
@@ -636,17 +649,11 @@ class RerollProgress:
                     self.route_runtime.publish_facts(facts)
                     evaluation = evaluate_workshop(effective, facts, None)
                 self._route_evaluation = evaluation
-                assignment = route.assignments.get(self.root.name)
-                lab_share = effective.rules.coins.lab_share.mode
-                self._plan_context = {
-                    "strategy": {"id": assignment.strategy_id if assignment else None,
-                                 "name": assignment.strategy_name if assignment else "Baseline",
-                                 "mode": effective.workshop.mode},
-                    "budget": {"wallet": facts.wallet_coins, "jar": jar,
-                               "jar_kind": "jit_hold" if lab_share == "just_in_time" else "lab_jar",
-                               "lab_share_mode": lab_share,
-                               "spend_limit_pct": coin_share.workshop_limit_pct(effective),
-                               "ceiling": evaluation.trace.spend_ceiling}}
+                # Raw inputs only: the plan record is built (and may fail) in
+                # _record_workshop_plan, never inside this shopping decision.
+                self._plan_inputs = {
+                    "revision": route.revision, "assignment": route.assignments.get(self.root.name),
+                    "effective": effective, "wallet": facts.wallet_coins, "jar": jar}
                 if evaluation.status == "unknown" or evaluation.decision is None:
                     self._record_workshop_plan(None)
                     self.route_error = evaluation.trace.reason
