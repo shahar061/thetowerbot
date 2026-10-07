@@ -51,6 +51,8 @@
 
 .fs-top3 { display: flex; flex-wrap: wrap; border-top: 1px solid var(--border); }
 .fs-top3 > * { flex: 1 1 260px; min-width: 0; padding: 12px 14px; border-bottom: 1px solid var(--fs-line-soft); }
+/* The buy queue carries the longest text; give it the larger share of the row. */
+.fs-top3 > .fs-queue { flex: 2 1 340px; }
 .fs-flow { column-gap: 0; }
 .fs-flow.wide { columns: 340px; column-rule: 1px solid var(--fs-line-soft); }
 .fs-sec { min-width: 0; break-inside: avoid; padding: 0 14px; border-bottom: 1px solid var(--fs-line-soft); }
@@ -89,10 +91,16 @@ section.fs-sec > .fs-sh { cursor: default; }
 .fs-bal { display: flex; gap: 6px 18px; flex-wrap: wrap; align-items: baseline; }
 .fs-bal .fs-kv b { font-size: 18px; }
 .fs-queue { display: grid; gap: 8px; }
+.fs-cs { display: grid; gap: 3px; font-size: 11px; }
+.fs-cs b { font-family: var(--font-mono); font-weight: 600; }
+.fs-cs-bar { display: flex; height: 5px; background: var(--fs-line-soft); overflow: hidden; }
+.fs-cs-bar i { display: block; height: 100%; }
+.fs-cs-bar .jar { background: var(--cat-labs); }
+.fs-cs-bar .ws { flex: 1; background: color-mix(in oklch, var(--fs-coin) 55%, transparent); }
 .fs-qh { font-family: var(--fs-display); font-weight: 600; text-transform: uppercase; letter-spacing: .14em; font-size: 12px; color: var(--muted-foreground); }
 .fs-q { --c: var(--primary); display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; font-size: 12px; }
 .fs-q .qk { font-family: var(--fs-display); text-transform: uppercase; letter-spacing: .1em; font-size: 10px; color: var(--c); }
-.fs-q .qn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-q .qn { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .fs-q .qp { grid-column: 2 / -1; display: grid; gap: 3px; }
 .fs-q .qp small { font-size: 10px; }
 .fs-nb { padding: 6px 8px; margin: 0 -8px; background: color-mix(in oklch, var(--c) 10%, transparent); border-left: 2px solid var(--c); }

@@ -4,7 +4,7 @@ import { memo, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   STATE_CATEGORIES, type FleetStateAccount, type FleetStateBestWave, type FleetStateCards,
-  type FleetStateDecision, type FleetStateLabs, type FleetStateNextBuy, type FleetStateTotals,
+  type FleetStateCoinSplit, type FleetStateDecision, type FleetStateLabs, type FleetStateNextBuy, type FleetStateTotals,
   type FleetStateWorkshop, type StateCategory,
 } from "@/lib/fleetState";
 import { decisionFor } from "@/lib/rerollState";
@@ -91,34 +91,63 @@ function QueueRow({ kind, color, name, detail, cost }: {
     </div>);
 }
 
-function NextBuy({ buy }: { buy: FleetStateNextBuy | null }): React.JSX.Element {
+function NextBuy({ buy, budget }: { buy: FleetStateNextBuy | null; budget: number | null }): React.JSX.Element {
   if (buy === null) return <QueueRow kind="Workshop" color="var(--cat-utility)" name="No plan yet" />;
   const verdict = decisionFor(buy.state);
   const color = buy.category ? CAT_COLOR[buy.category] : "var(--cat-utility)";
-  const pct = buy.price !== null && buy.price > 0 && buy.wallet !== null
-    ? Math.min(100, (buy.wallet / buy.price) * 100) : null;
+  // Coins in the lab jar are not the Workshop's: count only its budget when known.
+  const saved = budget ?? buy.wallet;
+  const pct = buy.price !== null && buy.price > 0 && saved !== null
+    ? Math.min(100, (saved / buy.price) * 100) : null;
+  const projected = buy.projected === true;
   return (
-    <div className="fs-q fs-nb" style={{ "--c": color } as React.CSSProperties} title={buy.reason || verdict.hint}>
+    <div className="fs-q fs-nb" style={{ "--c": color } as React.CSSProperties}
+      title={`${buy.reason || verdict.hint}${projected ? " (projected)" : ""}`}>
       <span className="qk">Workshop</span>
-      <span className="qn">{buy.name ?? "Nothing to buy"}<small> · <span className="fs-verdict" data-tone={verdict.tone}>{verdict.label}</span></small></span>
+      <span className="qn">{buy.name ?? (projected ? "Next purchase" : "Nothing to buy")}<small> · <span className="fs-verdict" data-tone={verdict.tone}>{verdict.label}</span></small></span>
       <span className={cn("n", buy.price === null ? "fs-dim" : "fs-coin")}>{buy.name === null ? "" : priceText(buy.price)}</span>
       {pct !== null && (
         <div className="qp">
           <div className="fs-pb" role="meter" aria-label={`${buy.name ?? "Next buy"} coins saved`}
             aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}><i style={{ width: `${pct}%` }} /></div>
-          <small className="fs-mono">{amount(buy.wallet)} / {amount(buy.price)} · {pct.toFixed(0)}%</small>
+          <small className="fs-mono">{amount(saved)} / {amount(buy.price)} · {pct.toFixed(0)}%</small>
         </div>)}
     </div>);
 }
 
-function BuyQueue({ decision, nextBuy, labs, cards }: {
+/** The wallet split between the save_pct lab jar and what Workshop may spend. */
+function CoinSplit({ split }: { split: FleetStateCoinSplit | null }): React.JSX.Element | null {
+  if (split === null || (split.wallet === null && split.jar <= 0)) return null;
+  const { wallet, jar, jar_target: target } = split;
+  const jarPct = wallet !== null && wallet > 0 ? Math.min(100, (jar / wallet) * 100) : null;
+  const saving = split.share_mode === "save_pct";
+  const limit = split.workshop_limit_pct === null ? "" : ` × ${split.workshop_limit_pct}%`;
+  return (
+    <div className="fs-cs" data-testid="coin-split"
+      title={`Workshop may spend (wallet − lab jar)${limit}${split.share_pct !== null && saving ? `; the jar keeps ${split.share_pct}% of new income` : ""}`}>
+      {jarPct !== null && (
+        <div className="fs-cs-bar" role="meter" aria-label="Lab jar share of wallet"
+          aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(jarPct)}>
+          <i className="jar" style={{ width: `${jarPct}%` }} /><i className="ws" />
+        </div>)}
+      <small>
+        {saving ? <>Lab jar <b className="fs-coin">{amount(jar)}</b>{target && <> → {target.name}
+          {target.level !== null && ` L${target.level}`} ({amount(jar)} / {priceText(target.price)})</>}</> : "No lab jar"}
+        {" · "}Workshop <b className="fs-coin">{amount(split.workshop_budget)}</b>
+      </small>
+    </div>);
+}
+
+function BuyQueue({ decision, nextBuy, coinSplit, labs, cards }: {
   decision: FleetStateDecision | null; nextBuy: FleetStateNextBuy | null;
+  coinSplit: FleetStateCoinSplit | null;
   labs: FleetStateLabs | null; cards: FleetStateCards | null;
 }): React.JSX.Element {
   return (
     <div className="fs-queue">
       <div className="fs-qh">Bot buy queue</div>
-      <NextBuy buy={nextBuy} />
+      <CoinSplit split={coinSplit} />
+      <NextBuy buy={nextBuy} budget={coinSplit?.workshop_budget ?? null} />
       <QueueRow kind="Autopilot" color={decision?.category ? CAT_COLOR[decision.category] : "var(--primary)"}
         name={decision ? (decision.name ?? decision.phase) : "No decision yet"}
         detail={decision?.reason || undefined} cost={decision ? decision.cost : undefined} />
@@ -250,7 +279,8 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
           <div className="fs-kv"><small>Gems</small><b className="fs-gem">{amount(account.balances?.gems)}</b></div>
           <div className="fs-kv"><small>Stones</small><b>{DASH}</b><small className="fs-hint">not tracked yet</small></div>
         </div>
-        <BuyQueue decision={account.decision} nextBuy={account.next_buy ?? null} labs={labs} cards={cards} />
+        <BuyQueue decision={account.decision} nextBuy={account.next_buy ?? null}
+          coinSplit={account.coin_split ?? null} labs={labs} cards={cards} />
       </div>
       <div className={cn("fs-flow", shownCount <= 2 && "wide")}>
         <section className="fs-sec" style={{ "--sc": "var(--fs-coin)" } as React.CSSProperties}>
