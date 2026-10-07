@@ -20,15 +20,29 @@ from fleet.strategy_blocks import template_program
 STRATEGY = "blender"
 PREFIX = "bv2"
 WORKERS = ("Tiramisu64_82", "Tiramisu64_83")
+# Workshop Orbs level (3,000 then 20,000 coins) bought before any other skill.
+ORB_LEVELS = 2
+
+
+def orbs_first() -> list[dict[str, Any]]:
+    """Unlock Orbs on its own, then hold coins until the displayed Orbs reaches ORB_LEVELS."""
+    return [
+        {"id": f"{PREFIX}.orbs_unlock", "type": "unlock", "label": "Unlock Orbs first",
+         "upgrade_ids": ["orbs"], "max_price": 20000, "hold": True},
+        {"id": f"{PREFIX}.orbs", "type": "save_for", "label": f"Save for Orbs level {ORB_LEVELS}", "hold": True,
+         "goal": [{"id": f"{PREFIX}.orbs.goal", "type": "pool", "label": "Orbs",
+                   "upgrade_ids": ["orbs"], "selection": "priority", "targets": {"orbs": ORB_LEVELS}}]},
+    ]
 
 
 def blender_v2_workshop(baseline: Mapping[str, Any]) -> dict[str, Any]:
-    """The baseline with its Workshop program replaced by Blender v2."""
+    """The baseline with its Workshop program replaced by Blender v2, Orbs first."""
     updated = deepcopy(dict(baseline))
     workshop = updated["workshop"]
     program = deepcopy(list(template_program("turtle", "workshop")[0]["then"]))
     for block in program:
         block["id"] = block["id"].replace("turtle.blender.", f"{PREFIX}.", 1)
+    program[:0] = orbs_first()
     wanted = {uid for block in program for uid in block.get("upgrade_ids", ())}
     if _ban_closure(frozenset(workshop["banned_upgrade_ids"])) & wanted:
         raise ValueError("a Blender v2 skill is banned by Never Buy")

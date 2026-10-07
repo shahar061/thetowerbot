@@ -18,7 +18,7 @@ export type StrategyBlock =
       op: "gte" | "lte" | "gt" | "lt"; value?: number; relative?: WaveRelative; upgrade_id?: string; then: StrategyBlock[]; else: StrategyBlock[] })
   | (BlockBase & { type: "fallback"; blocks: StrategyBlock[] })
   | (BlockBase & { type: "budget"; metric: "utility_spent"; target: number; ceiling: number; blocks: StrategyBlock[] })
-  | (BlockBase & { type: "save_for"; goal: StrategyBlock[] })
+  | (BlockBase & { type: "save_for"; goal: StrategyBlock[]; hold?: boolean })
   | (BlockBase & { type: "while_saving"; upgrade_id?: string; blocks: StrategyBlock[] })
   | (BlockBase & { type: "wait" });
 

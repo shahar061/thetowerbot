@@ -23,16 +23,22 @@ COMBAT_IDS = (
 # the Workshop base, so a 51% target buys next to nothing on a built account.
 DEF_ABS_LEVELS = 25
 THORNS_LEVELS = 20
+# Every in-run Orbs level (300 to 9,000 cash).
+ORB_LEVELS = 4
 
 
 def configure_battle(baseline: Mapping[str, Any]) -> dict[str, Any]:
-    """Buy economy before wave 20, then Defense Absolute, some Thorns and the cheapest combat upgrade.
+    """Buy every Orbs level first, then economy before wave 20, then Defense Absolute,
+    some Thorns and the cheapest combat upgrade.
 
-    Defense Absolute has no modeled cash curve, so it buys from read prices,
-    and the run holds its cash for it until all its levels are bought.
+    Orbs and Defense Absolute buy from read prices, and the run holds its cash
+    for each until all its levels are bought. A locked or maxed row never holds.
     """
     updated = deepcopy(dict(baseline))
     updated["battle"].update(mode="blocks", branches=[], blocks=[
+        {"id": "blender.battle.orbs", "type": "pool", "label": "Orbs before everything",
+         "upgrade_ids": ["orbs"], "hold_until_capped": True,
+         "level_caps": {"orbs": {"base": ORB_LEVELS}}},
         {"id": "blender.battle.wave20", "type": "condition", "field": "wave", "op": "lt", "value": 20,
          "then": [
              {"id": "blender.battle.economy", "type": "pool", "label": "Economy before wave 20",
