@@ -295,9 +295,13 @@
   }
   body {
     @apply bg-background text-foreground;
+    overflow: hidden;
   }
   html {
     @apply font-sans;
+    /* The viewport shell owns scrolling. Fragment links and wide tables must
+       not create a second page scrollbar around that shell on phones. */
+    overflow: hidden;
   }
   /* Every number this app shows is machine output, and machine output is
      mono (see the type rule in the facelift plan). Lining figures there mean

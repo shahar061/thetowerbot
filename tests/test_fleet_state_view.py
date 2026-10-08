@@ -366,6 +366,20 @@ def test_cards_read_slots_per_card_facts_and_the_next_slot_price() -> None:
     assert empty["items"] == []
 
 
+def test_cards_include_owned_cards_before_levels_or_copies_are_read() -> None:
+    revision = {"cards": [{"concept_id": "cards.damage", "value": "owned"},
+                          {"concept_id": "cards.health", "value": "owned"},
+                          {"concept_id": "cards.health.level", "value": 2},
+                          {"concept_id": "cards.coins", "value": "unknown"},
+                          {"concept_id": "cards.cash", "value": "unowned"},
+                          {"concept_id": "cards.attack-speed", "value": False},
+                          {"concept_id": "cards.slots.capacity", "value": 3}]}
+    view = state_view.build_cards(revision, 0, [])
+    assert view["items"] == [{"name": "Damage", "level": None, "copies": None},
+                             {"name": "Health", "level": 2, "copies": None}]
+    assert view["slots"]["capacity"] == 3
+
+
 def test_labs_list_levels_running_jobs_and_the_cheapest_known_next() -> None:
     revision = {"lab_slots_owned": 2,
                 "lab_levels": [{"concept_id": "labs.game-speed", "value": 3, "status": "owned"},

@@ -464,6 +464,9 @@ def create_app(
                           running_account=_running_account, runner=runner,
                           accounts=accounts, db_path=db_path,
                           patch_automation=_patch_cards_automation if controls is not None else None)
+    from web.account_overview import register_account_overview_routes
+    register_account_overview_routes(app, selected=_selected, fleet_root=_fleet_root,
+        db_path=db_path, local_status=lambda request, choice: status(request) if _running_account(choice) else None)
 
     def _live_choice(request: HTTPConnection) -> AccountChoice | None:
         key = request.query_params.get("scope")
@@ -860,6 +863,8 @@ def create_app(
         runtime_capabilities.append("advisor")
         if fleet is not None:
             runtime_capabilities.append("fleet")
+        if _fleet_root() is not None:
+            runtime_capabilities.append("account_savings")
         if telegram_store is not None:
             runtime_capabilities.append("telegram")
 

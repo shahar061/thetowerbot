@@ -22,7 +22,7 @@ const GROUPS: { label: string; items: Item[] }[] = [
   {
     label: "Watch",
     items: [
-      { href: "/", label: "Live", icon: Activity },
+      { href: "/", label: "Overview", icon: Activity },
       { href: "/runs/", label: "Runs", icon: List },
       { href: "/stats/", label: "Stats", icon: ChartLine },
       { href: "/errors/", label: "Errors", icon: TriangleAlert },
@@ -138,7 +138,7 @@ export function Sidebar(): React.JSX.Element {
       <div className="flex items-center gap-2 px-2 py-1.5 md:hidden">
         <button type="button" onClick={() => setOpen((value) => !value)}
           aria-expanded={open} aria-controls="nav-panel" aria-label={open ? "Close menu" : "Open menu"}
-          className="flex size-10 items-center justify-center rounded-md hover:bg-accent/50">
+          className="flex size-11 shrink-0 items-center justify-center rounded-md hover:bg-accent/50">
           {open ? <X className="size-5" aria-hidden="true" /> : <Menu className="size-5" aria-hidden="true" />}
         </button>
         <span className="truncate text-sm font-medium">{current?.label ?? (reroll ? "Reroll fleet" : "The Tower")}</span>

@@ -42,7 +42,7 @@ test("single mode keeps its tools and clears account strategy on entering fleet"
 });
 
 test.each([
-  ["/settings/", "/settings/", "Live"],
+  ["/settings/", "/settings/", "Overview"],
   ["/fleet/reroll/settings/", "/fleet/reroll/settings/", "Fleet Live"],
 ])("settings at %s stays in its workspace", async (pathname, href, homeLabel) => {
   state.pathname = pathname;

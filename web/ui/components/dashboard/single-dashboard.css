@@ -1,0 +1,36 @@
+.sd-hero { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 8px 0 0; }
+.sd-hero h1 { font-family: var(--font-chakra-petch), var(--font-inter), sans-serif; font-size: clamp(26px, 3vw, 36px); line-height: 1.15; font-weight: 600; letter-spacing: -.025em; }
+.sd-eyebrow { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .17em; color: var(--primary); }
+.sd-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 9px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); font-size: 12px; transition: background .15s; }
+.sd-button:hover { background: var(--muted); }
+.sd-button:disabled { opacity: .5; cursor: wait; }
+.sd-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 5px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.sd-nav a { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 40px; padding: 9px 13px; border-radius: 6px; color: var(--muted-foreground); font-size: 12px; }
+.sd-nav a:hover { background: var(--muted); color: var(--foreground); }
+.sd-text-link { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; color: var(--primary); font-size: 12px; }
+.sd-text-link:hover { text-decoration: underline; }
+.single-dashboard :is(a, button, select, input):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.sd-state .fs-acct { border-radius: 12px; clip-path: none; overflow: hidden; }
+.sd-state .fs-acct::before { width: 100%; }
+.sd-state .fs-flow.wide { columns: 360px; column-gap: 0; }
+.sd-state .fs-sh { min-height: 48px; }
+.sd-state .fs-tabs button, .sd-state .fs-seg button { min-height: 40px; }
+.sd-state .fs-ah { padding: 18px; }
+.sd-state .fs-ah-row { overflow-wrap: anywhere; }
+.sd-state .fs-ah h2 { overflow-wrap: anywhere; }
+.sd-state .fs-top3 > * { padding: 16px 18px; }
+.sd-state .fs-sec { padding: 0 18px; }
+.sd-state .fs-sh-v { white-space: nowrap; }
+.single-dashboard [data-slot="card-header"] { min-width: 0; }
+@media (max-width: 800px) { .sd-state .fs-flow.wide { columns: 1; } }
+@media (max-width: 480px) {
+  .sd-hero { gap: 14px; }
+  .sd-nav { gap: 0; }
+  .sd-nav a { flex: 1 1 auto; padding: 9px 10px; }
+  .sd-state .fs-ah, .sd-state .fs-top3 > * { padding: 14px; }
+  .sd-state .fs-sec { padding: 0 12px; }
+  .sd-state .fs-tabs { gap: 3px; }
+  .sd-state .fs-tab { padding: 7px 5px; }
+  .sd-state .fs-emu { font-size: 15px; }
+}
+@media (prefers-reduced-motion: reduce) { .single-dashboard * { animation: none !important; transition: none !important; } }

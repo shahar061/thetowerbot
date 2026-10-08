@@ -4,6 +4,20 @@ import { LedgerEntries } from "./LedgerEntries";
 import { groupLines } from "@/lib/ledger";
 import type { LedgerLine } from "@/lib/types";
 
+it("shows the calendar date and time for single-account ledger entries", () => {
+  const timestamp = new Date("2026-10-08T12:34:56Z");
+  const line: LedgerLine = {
+    id: 1, seq: 1, ts: timestamp.getTime() / 1000, kind: "WORKSHOP_BUY", item: "Damage", category: "ATTACK",
+    currency: "coins", delta: -20, price: 20, balance_after: 480, observed: 500,
+    dry_run: 0, run_id: null, visit: null, reason: null, detail: {},
+  };
+  render(<LedgerEntries entries={groupLines([line])} kind={null} onKindChange={vi.fn()} withSources={false} />);
+
+  expect(screen.getByRole("columnheader", { name: "Date & time" })).toBeInTheDocument();
+  const date = screen.getByText(timestamp.toLocaleDateString());
+  expect(date.closest("td")).toHaveTextContent(timestamp.toTimeString().slice(0, 8));
+});
+
 it("renders immutable Cards context and partial cancellation in the shared ledger", () => {
   const base: LedgerLine = {
     id: 1, seq: 1, ts: 100, kind: "CARD_BUY", item: "Cards", category: "CARDS",

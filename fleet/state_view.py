@@ -470,6 +470,13 @@ def build_cards(revision: Mapping[str, Any] | None, gems_invested: int | None,
              for fact in (revision or {}).get("cards") or ()}
     capacity = _whole(facts.get(cards.SLOT_CAPACITY_KEY))
     items: dict[str, dict[str, Any]] = {}
+    # Inventory scans can establish ownership before card levels are readable.
+    # Keep those cards visible with unknown numbers instead of hiding the scan.
+    for key, value in facts.items():
+        if key in cards.CARD_IDS and value == "owned":
+            concept = REGISTRY.by_id(key)
+            items[key] = {"name": concept.name if concept else key,
+                          "level": None, "copies": None}
     for key, value in facts.items():
         if not isinstance(key, str) or not key.startswith("cards.") or key.count(".") != 2:
             continue
@@ -631,7 +638,7 @@ def _blank(member: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., Any],
-                  now: float) -> dict[str, Any]:
+                  now: float, *, status_snapshot: Callable[[], Mapping[str, Any] | None] | None = None) -> dict[str, Any]:
     """One account column: status first, then the worker's own database."""
     from web.account_catalog import registered_worker
 
@@ -640,7 +647,7 @@ def build_account(root: Path, member: Mapping[str, Any], fetch: Callable[..., An
     registration = registered_worker(worker_root)
     if registration is None or registration.account_id is None:
         return {**account, "error": "Worker is not registered to an account"}
-    status = read_status(registration.web_port, fetch)
+    status = status_snapshot() if status_snapshot is not None else read_status(registration.web_port, fetch)
     if status is not None:
         scans = status.get("scans")
         account.update(online=True, stale_seconds=0,

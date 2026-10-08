@@ -269,7 +269,7 @@ function AccountColumnView({ account, accent, changedAt, shownCount, open, onTog
           <div><dt>Strategy</dt><dd>{!strategy ? <span className="fs-dim">Not assigned</span> : <>
             <span className="fs-strat">{strategy.name}</span> <small className="fs-mono">v{strategy.version}</small></>}
             {account.next_buy?.goal && <small> · {account.next_buy.goal}</small>}</dd></div>
-          <div><dt>Scan</dt><dd className="fs-mono fs-dim">{account.scan === null ? DASH : `#${whole(account.scan)}`} · <Ago since={changedAt} /></dd></div>
+          <div><dt>Scan</dt><dd className="fs-mono fs-dim">{account.scan === null ? DASH : `#${whole(account.scan)}`} · view refreshed <Ago since={changedAt} /></dd></div>
         </dl>
       </header>
       <div className="fs-top3">
