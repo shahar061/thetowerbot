@@ -124,7 +124,8 @@ export type BuildRouteDocument = {
     rules?: RouteRules;
     cards?: CardProgram | null;
   };
-  overrides: Record<string, { account_id: string; patches: Record<string, Record<string, unknown>> }>;
+  overrides: Record<string, { account_id: string; patches: Record<string, Record<string, unknown>>;
+    lab_share?: { mode: "when_affordable" | "save_pct" | "labs_first" | "just_in_time"; pct: number } }>;
   dependencies: Record<string, string[]>;
   assignments?: Record<string, StrategyAssignment>;
   card_assignments?: Record<string, Omit<CardAssignmentState, "status" | "applied_revision">>;

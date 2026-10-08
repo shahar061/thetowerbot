@@ -67,7 +67,7 @@ export function patchWorkshop(state: DraftState, worker: string | null, accountI
   const patches = existing?.account_id === accountId ? existing.patches : {};
   return { ...state, route: { ...state.route, overrides: {
     ...state.route.overrides,
-    [worker]: { account_id: accountId, patches: {
+    [worker]: { ...(existing?.account_id === accountId ? existing : {}), account_id: accountId, patches: {
       ...patches, [baseline.id]: { ...(patches[baseline.id] ?? {}), ...change },
     } },
   } } };

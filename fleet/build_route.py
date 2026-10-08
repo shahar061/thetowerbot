@@ -582,17 +582,19 @@ class StrategyAssignment:
 class AccountOverride:
     account_id: str
     patches: dict[str, dict[str, object]]
+    lab_share: LabShareRule | None = None
 
     @classmethod
     def from_dict(cls, value: object) -> AccountOverride:
         raw = _mapping(value, "override")
-        _keys(raw, {"account_id", "patches"})
+        _keys(raw, {"account_id", "patches", "lab_share"})
         account_id = raw.get("account_id")
         if not isinstance(account_id, str) or not account_id:
             raise ValueError("override requires account_id")
         patches = _mapping(raw.get("patches", {}), "override patches")
         return cls(account_id, {key: dict(_mapping(patch, "override patch"))
-                                for key, patch in patches.items()})
+                                for key, patch in patches.items()},
+                   LabShareRule.from_dict(raw["lab_share"]) if raw.get("lab_share") is not None else None)
 
 
 def _check_dependencies(edges: Mapping[str, tuple[str, ...]], rule_ids: set[str]) -> None:
@@ -702,7 +704,12 @@ class RouteDocument:
                             _keys(patch, {"priority_ids", "cash_spend_limit_pct",
                                           "draw_chance_pct", "weights", "emergency_survival"})
                             BattlePhase.from_dict({**asdict(phase), **patch})
-        return cls(1, revision, authored_at, baseline, overrides, dependencies, assignments, card_assignments)
+        document = cls(1, revision, authored_at, baseline, overrides, dependencies, assignments, card_assignments)
+        for worker, override in overrides.items():
+            assignment = assignments.get(worker)
+            if override.lab_share is not None and (assignment is None or assignment.account_id == override.account_id):
+                resolve_route(document, worker, override.account_id)
+        return document
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -710,7 +717,8 @@ class RouteDocument:
             "authored_at": self.authored_at,
             "baseline": self.baseline.to_dict(),
             "overrides": {worker: {"account_id": value.account_id,
-                                  "patches": value.patches}
+                                  "patches": value.patches,
+                                  **({"lab_share": asdict(value.lab_share)} if value.lab_share is not None else {})}
                           for worker, value in self.overrides.items()},
             "dependencies": {key: list(value) for key, value in self.dependencies.items()},
             "assignments": {worker: value.to_dict() for worker, value in self.assignments.items()},
@@ -741,6 +749,12 @@ class EffectiveRoute:
 
 def resolve_route(route: RouteDocument, worker: str, account_id: str) -> EffectiveRoute:
     effective = _resolve_base_route(route, worker, account_id)
+    override = route.overrides.get(worker)
+    if override is not None and override.account_id == account_id and override.lab_share is not None:
+        if override.lab_share.mode == "just_in_time" and not is_lab_list(effective.labs):
+            raise ValueError("just_in_time saving needs a ranked lab list in the labs lane")
+        effective = replace(effective, rules=replace(effective.rules,
+            coins=replace(effective.rules.coins, lab_share=override.lab_share)))
     overlay = route.card_assignments.get(account_id)
     if overlay is None:
         return effective

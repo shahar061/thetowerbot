@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { AccountShell } from "./AccountShell";
 
@@ -35,11 +35,21 @@ test("single settings remains available without a selected account", () => {
 });
 
 test("archived account shows history but blocks live content", () => {
+  state.pathname = "/control/";
   state.selected = { key: "worker:Air18", account_id: "ABC12345", instance: "Air18",
     kind: "worker", running: false, dashboard_url: null };
   render(<AccountShell><p>private data</p></AccountShell>);
   expect(screen.getByText("No live bot for this account")).toBeInTheDocument();
   expect(screen.queryByText("private data")).not.toBeInTheDocument();
+});
+
+test("the overview shows saved evidence for a stopped account", () => {
+  state.selected = { key: "worker:Air18", account_id: "ABC12345", instance: "Air18",
+    kind: "worker", running: false, dashboard_url: null };
+  render(<AccountShell><p>saved account overview</p></AccountShell>);
+  expect(screen.getByText("saved account overview")).toBeInTheDocument();
+  expect(screen.queryByText("No live bot for this account")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("runtime")).not.toBeInTheDocument();
 });
 
 test("archived history renders under account selector", () => {
@@ -53,38 +63,30 @@ test("archived history renders under account selector", () => {
 });
 
 test("a running account on another worker opens its own dashboard", () => {
+  state.pathname = "/control/";
   state.selected = { key: "worker:Air18", account_id: "ABC12345", instance: "Air18",
     kind: "worker", running: true, dashboard_url: "http://127.0.0.1:10018/" };
   render(<AccountShell><p>main process live data</p></AccountShell>);
   expect(screen.queryByText("main process live data")).not.toBeInTheDocument();
-  expect(screen.getByAltText("Live screen of Air18")).toHaveAttribute("src",
-    "http://127.0.0.1:10018/api/frame?scope=worker%3AAir18");
   expect(screen.getByRole("link", { name: "Open worker dashboard" })).toHaveAttribute(
     "href", "http://127.0.0.1:10018/");
   expect(screen.getByRole("link", { name: "Open worker Strategy" })).toHaveAttribute(
     "href", "http://127.0.0.1:10018/strategy/");
 });
 
-test("switching the selected worker switches the live screenshot stream", () => {
+test("the remote worker overview renders without the host runtime gate", () => {
   state.selected = { key: "worker:Air18", account_id: "ABC12345", instance: "Air18",
     kind: "worker", running: true, dashboard_url: "http://127.0.0.1:10018/" };
-  const view = render(<AccountShell><p>main process live data</p></AccountShell>);
-  state.selected = { key: "worker:Air19", account_id: "DEF67890", instance: "Air19",
-    kind: "worker", running: true, dashboard_url: "http://127.0.0.1:10019/" };
-  view.rerender(<AccountShell><p>main process live data</p></AccountShell>);
-  expect(screen.queryByAltText("Live screen of Air18")).not.toBeInTheDocument();
-  expect(screen.getByAltText("Live screen of Air19")).toHaveAttribute("src",
-    "http://127.0.0.1:10019/api/frame?scope=worker%3AAir19");
+  render(<AccountShell><p>scoped worker overview</p></AccountShell>);
+  expect(screen.getByText("scoped worker overview")).toBeInTheDocument();
+  expect(screen.queryByTestId("runtime")).not.toBeInTheDocument();
 });
 
-test("failed worker screenshot offers a retry", () => {
+test("the local running worker overview retains its runtime gate", () => {
   state.selected = { key: "worker:Air18", account_id: "ABC12345", instance: "Air18",
-    kind: "worker", running: true, dashboard_url: "http://127.0.0.1:10018/" };
-  render(<AccountShell><p>main process live data</p></AccountShell>);
-  fireEvent.error(screen.getByAltText("Live screen of Air18"));
-  expect(screen.getByText(/Live screen unavailable/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Retry screen" }));
-  expect(screen.getByAltText("Live screen of Air18")).toBeInTheDocument();
+    kind: "worker", running: true, dashboard_url: `${window.location.origin}/` };
+  render(<AccountShell><p>local account overview</p></AccountShell>);
+  expect(screen.getByTestId("runtime")).toHaveTextContent("local account overview");
 });
 
 for (const pathname of ["/fleet/reroll", "/fleet/reroll/", "/fleet/reroll/strategies/", "/fleet/reroll/progression/", "/fleet/reroll/history/", "/fleet/reroll/settings/"]) {

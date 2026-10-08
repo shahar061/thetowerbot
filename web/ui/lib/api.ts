@@ -33,6 +33,7 @@ import type { SaveStrategyInput, StrategyLedger, StrategyLibrary } from "./strat
 import type { LabsSnapshot, RehearsedLabRow, StarterRolloutRow, UnlockRolloutRow } from "./labs";
 import type { FleetStatePayload } from "./fleetState";
 import type { RecoverySettings, RecoverySettingsResponse } from "./recovery";
+import type { SingleAccountState, LabSavingsSettings, LabSavingsInput } from "./singleAccount";
 
 /** An HTTP failure that kept its status code.
  *
@@ -112,6 +113,19 @@ export const resetLabStarterRollout = (key: string) =>
 export const labStarterAction = (labId: string, action: "reset" | "accept") =>
   send<StarterSnapshot>(`/api/fleet/labs/rehearsed/${encodeURIComponent(labId)}/${action}`, "POST", undefined, "fleet");
 export const fetchFleetState = () => getJson<FleetStatePayload>("/api/fleet/state", { cache: "no-store" }, false);
+export const fetchSingleAccountState = () => getJson<SingleAccountState>("/api/account/state", { cache: "no-store" });
+export const fetchLabSavings = () => getJson<LabSavingsSettings>("/api/account/lab-savings", { cache: "no-store" });
+export async function saveLabSavings(input: LabSavingsInput): Promise<LabSavingsSettings> {
+  // Keep the write attached to the account edited, even if the selector changes
+  // while the host compatibility request is in flight.
+  const scope = accountScope();
+  if (!scope) throw new ApiError(409, "Select an account before changing lab savings.");
+  const headers = await preflight("account_savings");
+  return getJson<LabSavingsSettings>("/api/account/lab-savings", {
+    method: "PUT", body: JSON.stringify(input),
+    headers: { ...headers, "content-type": "application/json", "x-account-scope": scope },
+  });
+}
 export const fetchRecoverySettings = () => getJson<RecoverySettingsResponse>(
   "/api/fleet/recovery/settings", { cache: "no-store" }, false);
 export const saveRecoverySettings = (settings: RecoverySettings, shadowWorker: string | null,
@@ -308,7 +322,7 @@ export async function patchControl(
   return body as ControlPayload;
 }
 
-type Capability = "control" | "lifecycle" | "strategies" | "autopilot" | "advisor" | "fleet" | "telegram";
+type Capability = "control" | "lifecycle" | "strategies" | "autopilot" | "advisor" | "fleet" | "telegram" | "account_savings";
 
 export function mutationHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
@@ -322,7 +336,7 @@ export function mutationHeaders(): Record<string, string> {
 async function preflight(capability: Capability): Promise<Record<string, string>> {
   let status: StatusPayload;
   try {
-    status = await (capability === "fleet" || capability === "telegram" ? fetchHostStatus() : fetchStatus());
+    status = await (capability === "fleet" || capability === "telegram" || capability === "account_savings" ? fetchHostStatus() : fetchStatus());
   } catch {
     throw new ApiError(412, "Unable to verify runtime compatibility; the command was not sent.");
   }

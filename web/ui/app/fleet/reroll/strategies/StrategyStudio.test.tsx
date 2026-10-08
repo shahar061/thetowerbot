@@ -539,11 +539,13 @@ test("Battle batch controls clear incompatible settings when changing price sour
   expect(screen.getByLabelText("Purchases per batch")).toHaveValue(5);
   expect(screen.getByLabelText("Visible price premium (%)")).toHaveValue(25);
   fireEvent.change(screen.getByLabelText("Prices"), { target: { value: "observed" } });
-  expect(onChange.mock.lastCall[0].batch_size).toBeUndefined();
-  expect(onChange.mock.lastCall[0].max_price_premium_pct).toBeUndefined();
+  expect(onChange).toHaveBeenCalledTimes(1);
+  expect(onChange.mock.lastCall![0].batch_size).toBeUndefined();
+  expect(onChange.mock.lastCall![0].max_price_premium_pct).toBeUndefined();
   fireEvent.change(screen.getByLabelText("Selection"), { target: { value: "priority" } });
-  expect(onChange.mock.lastCall[0].batch_size).toBeUndefined();
-  expect(onChange.mock.lastCall[0].max_price_premium_pct).toBeUndefined();
+  expect(onChange).toHaveBeenCalledTimes(2);
+  expect(onChange.mock.lastCall![0].batch_size).toBeUndefined();
+  expect(onChange.mock.lastCall![0].max_price_premium_pct).toBeUndefined();
 });
 
 test("switching a weighted pool to value drops decay settings", () => {

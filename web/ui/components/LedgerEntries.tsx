@@ -80,7 +80,7 @@ export function LedgerEntries({ entries, balanced = ["coins", "gems"], kind, onK
               <thead>
                 <tr className="text-left text-[10px] uppercase tracking-[0.12em] text-faint-foreground">
                   {withSources && <th className="py-1 pr-3 font-medium">Emulator</th>}
-                  <th className="py-1 pr-3 font-medium">Time</th>
+                  <th className="py-1 pr-3 font-medium">Date &amp; time</th>
                   <th className="py-1 pr-3 font-medium">Kind</th>
                   <th className="py-1 pr-3 font-medium">Item</th>
                   <th className="py-1 pr-3 text-right font-medium">Amount</th>
@@ -92,8 +92,8 @@ export function LedgerEntries({ entries, balanced = ["coins", "gems"], kind, onK
                 {entries.map(({ key, head, financial, rehearsal, source, balanced: ownBalanced }) => (
                   <tr key={key} className="border-t">
                     {withSources && <td className="py-2 pr-4"><span className="font-medium" style={{ color: source?.color }}>{source?.name}</span><span className="block font-mono text-[10px] text-muted-foreground">{source?.accountId}</span></td>}
-                    <td className="py-1.5 pr-3 font-mono text-[11px] text-faint-foreground">
-                      {withSources && <span className="block">{new Date(head.ts * 1000).toLocaleDateString()}</span>}{clock(head.ts)}
+                    <td className="whitespace-nowrap py-1.5 pr-3 font-mono text-[11px] text-faint-foreground">
+                      <span className="block">{new Date(head.ts * 1000).toLocaleDateString()}</span>{clock(head.ts)}
                     </td>
                     <td className="py-1.5 pr-3">
                       <button
