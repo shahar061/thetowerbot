@@ -369,11 +369,18 @@ def test_live_observer_still_refuses_another_app_that_stays_in_front(tmp_path: P
     assert len(naps) == 10
 
 
-def test_live_observer_identifies_battle_without_exposing_controls(
+@pytest.mark.parametrize(("capture", "screen", "controls"), [
+    ("in_run_utility.png", "battle", {"hamburger"}),
+    ("battle_menu/open_badged.png", "battle_menu", {"settings", "close"}),
+    ("battle_menu/open_end_round.png", "battle_menu", {"settings", "close"}),
+])
+def test_live_observer_identifies_battle_with_observed_menu_control(
+        capture: str, screen: str, controls: set[str],
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import ocr
-    monkeypatch.setattr(ocr, "read", lambda *_, **__: ())
-    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "in_run_utility.png"))
+    if capture != "battle_menu/open_end_round.png":
+        monkeypatch.setattr(ocr, "read", lambda *_, **__: ())
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / capture))
     device = SimpleNamespace(
         serial="127.0.0.1:5575",
         app_current=lambda: SimpleNamespace(package="com.TechTreeGames.TheTower"),
@@ -382,8 +389,8 @@ def test_live_observer_identifies_battle_without_exposing_controls(
     )
     reading = StagingAccountObserver(tmp_path, endpoint=device.serial,
                                      allowed_versions=frozenset({"29.0.2"}))(device)
-    assert reading.screen == "battle"
-    assert reading.controls == {}
+    assert reading.screen == screen
+    assert set(reading.controls) == controls
 
 
 @pytest.mark.parametrize(("capture", "screen", "control"), [

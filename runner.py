@@ -273,7 +273,7 @@ class BotRunner:
                 raise
 
     def _verify_account_walk(self, expected_account: str) -> None:
-        """Home -> Settings -> Account -> Home, every tap under the input fence."""
+        """Verify through Settings and return home or to battle under the input fence."""
         from fleet.account_observer import StagingAccountObserver
         from fleet.restart_account import verify_restart_account
         from supervisor import IdentityWalkDevice

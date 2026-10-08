@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 import account_collection
+import battle_menu
 import cv2
 import events_screen
 import free_ticket
@@ -531,10 +532,22 @@ class StagingAccountObserver:
                                     observed_at, evidence_ref,
                                     {"battle_tab": (position[0] + battle.shape[1] // 2,
                                                     position[1] + battle.shape[0] // 2)})
+        menu_close = battle_menu.close_point(frame, self.cache)
+        if menu_close is not None:
+            settings = account_collection.locate_control(
+                frame, self.cache.get(config.BATTLE_MENU_TEMPLATES["settings"]), "settings",
+            )
+            if settings.point is not None:
+                return AccountFrame("battle_menu", None, version,
+                                    hashlib.sha256(frame.tobytes()).hexdigest(),
+                                    observed_at, evidence_ref,
+                                    {"settings": settings.point, "close": menu_close})
         if screens.classify(frame, self.cache).state is screens.ScreenState.IN_RUN:
+            hamburger = battle_menu.collapsed(frame, self.cache)
             return AccountFrame("battle", None, version,
                                 hashlib.sha256(frame.tobytes()).hexdigest(),
-                                observed_at, evidence_ref, {})
+                                observed_at, evidence_ref,
+                                {"hamburger": hamburger.point} if hamburger else {})
         return AccountFrame("unknown", None, version,
                             hashlib.sha256(frame.tobytes()).hexdigest(),
                             observed_at, evidence_ref, {})

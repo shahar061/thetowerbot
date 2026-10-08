@@ -1,6 +1,6 @@
-"""Claim the six-gem video tile on the battle HUD.
+"""Claim the six-gem video or ad-free reward tile on the battle HUD.
 
-The video owns all frames from the first tap through balance confirmation.
+The claim owns all frames from the first tap through balance confirmation.
 Only a witnessed close control and the exact six-gem CLAIM screen authorize
 ad taps. A failed attempt stays latched until the tile disappears, so a
 returned battle frame cannot start the same uncertain video repeatedly.
@@ -50,6 +50,27 @@ def find_tile(screen: Image, anchor: tuple[int, int] | None,
             max(0, y0) + dy + template.shape[0] // 2)
 
 
+def find_instant_claim(screen: Image, anchor: tuple[int, int] | None,
+                       templates: TemplateCache) -> tuple[int, int] | None:
+    """Recognize the ad-free pack's six-gem CLAIM control on the battle HUD."""
+    if anchor is None or screen.shape[:2] != (2400, 1080):
+        return None
+    template = templates.get("in_game_ad/claim.png")
+    if template is None:
+        return None
+    x0, y0 = max(0, anchor[0]), max(0, anchor[1] + 1260)
+    region = screen[y0:min(screen.shape[0], y0 + 170),
+                    x0:min(screen.shape[1], x0 + 260)]
+    if region.shape[0] < template.shape[0] or region.shape[1] < template.shape[1]:
+        return None
+    _, score, _, (dx, dy) = cv2.minMaxLoc(
+        cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED))
+    if score < _PLAY_THRESHOLD:
+        return None
+    return (x0 + dx + template.shape[1] // 2,
+            y0 + dy + template.shape[0] // 2)
+
+
 class InGameAdClaim:
     """A single bounded rewarded-video attempt, never concurrent with buying."""
 
@@ -89,7 +110,8 @@ class InGameAdClaim:
                 device: Any, policy: Any, now: float, run_id: int | None,
                 in_run: bool) -> bool:
         """Return True while this ad owns the frame, including waiting scans."""
-        tile = find_tile(screen, anchor, self._templates) if in_run else None
+        instant = find_instant_claim(screen, anchor, self._templates) if in_run else None
+        tile = instant or (find_tile(screen, anchor, self._templates) if in_run else None)
         if not self.active:
             if self.may_claim_late_reward(now, run_id):
                 claim = battle_menu.ad_reward_claim(screen, ocr.read(screen), amount=6)
@@ -110,7 +132,9 @@ class InGameAdClaim:
             self._closes = 0
             self._last_close = float("-inf")
             self._tile_latched = True
-            self._phase = "watching"
+            self._phase = "confirming" if instant is not None else "watching"
+            if instant is not None:
+                self._claimed_at = now
             self._tap(device, policy, tile)
             return True
 

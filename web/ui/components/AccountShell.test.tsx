@@ -117,3 +117,11 @@ test('Cards is readable for an archived account',()=>{
  expect(screen.getByText('Archived Cards evidence')).toBeInTheDocument();
  expect(screen.queryByText('No live bot for this account')).not.toBeInTheDocument();
 });
+
+test.each([true, false])("Workshop is readable for remote or stopped accounts: %s", running => {
+ state.pathname = "/workshop/";
+ state.selected = { key: "worker:A", account_id: "A", instance: "A", kind: "worker", running, dashboard_url: "http://127.0.0.1:10082/" };
+ render(<AccountShell><p>Selected Workshop</p></AccountShell>);
+ expect(screen.getByText("Selected Workshop")).toBeInTheDocument();
+ expect(screen.queryByTestId("runtime")).not.toBeInTheDocument();
+});

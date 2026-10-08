@@ -366,3 +366,34 @@ def test_recovery_closes_an_ad_that_ignores_back() -> None:
     assert not claim.active
     assert bus.events == [events.InGameAdGemClaimed(
         gems_before=164, gems_after=170, delta=6, run_id=7)]
+
+
+def test_ad_free_pack_claims_immediately_and_verifies_six_gems() -> None:
+    bus, device = Bus(), Device()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([843, 849]), sleep=lambda _: None)
+    available = frame("battle_ad_free_available")
+    assert claim.observe(available, (30, 35), device, POLICY, 0, 7, True)
+    assert len(device.taps) == 1
+    x, y = device.taps[0]
+    assert 20 < x < 270 and 1290 < y < 1450
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 1, 7, True)
+    assert not claim.active
+    assert bus.events == [events.InGameAdGemClaimed(gems_before=843, gems_after=849, delta=6, run_id=7)]
+
+
+def test_ad_free_claim_requires_battle_hud_and_available_button() -> None:
+    assert in_game_ad.find_instant_claim(frame("battle_ad_free_available"), (30, 35), TEMPLATES) is not None
+    assert in_game_ad.find_instant_claim(frame("battle_ad_free_available"), None, TEMPLATES) is None
+    assert in_game_ad.find_instant_claim(frame("battle_claimed"), (30, 35), TEMPLATES) is None
+    assert in_game_ad.find_instant_claim(frame("battle_available"), (30, 35), TEMPLATES) is None
+
+
+def test_ad_free_claim_does_not_repeat_unverified_reward() -> None:
+    bus, device = Bus(), Device()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([843, 843]), sleep=lambda _: None)
+    available = frame("battle_ad_free_available")
+    assert claim.observe(available, (30, 35), device, POLICY, 0, 7, True)
+    assert claim.observe(available, (30, 35), device, POLICY, 20, 7, True)
+    assert not claim.observe(available, (30, 35), device, POLICY, 21, 7, True)
+    assert len(device.taps) == 1
+    assert any(isinstance(event, events.ClaimUncertain) for event in bus.events)
