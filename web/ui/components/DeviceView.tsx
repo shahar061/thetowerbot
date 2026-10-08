@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { MatchBox } from "@/lib/types";
 import { accountScope } from "@/lib/accountScope";
+import { FullscreenFrame } from "@/components/FullscreenFrame";
 import { FeedBadge } from "@/components/FeedBadge";
 import { LiveVideo } from "@/components/LiveVideo";
 import { useLiveFallback } from "@/lib/useLiveFallback";
@@ -65,7 +66,7 @@ export function DeviceView({
       {/* The boxes are absolutely positioned in percentages of the frame's own
           pixel dimensions, so the image can be any size on screen and the
           overlay follows it - no coordinate maths in two languages. */}
-      <div className="relative w-full overflow-hidden rounded-t-xl bg-well">
+      <FullscreenFrame className="relative w-full overflow-hidden rounded-t-xl bg-well">
         {shown === "live" ? (
           // Same origin: this page is served by the worker it shows.
           <LiveVideo scope={scope} label="device screen, live" onUnavailable={markUnavailable} className="block w-full" />
@@ -145,7 +146,7 @@ export function DeviceView({
           </p>
         )}
         {supported && <SourceToggle shown={shown} onChoose={choose} />}
-      </div>
+      </FullscreenFrame>
 
       {/* The strongest match, spelled out. The overlay says where; this says
           what and how confidently, without hovering anything. */}

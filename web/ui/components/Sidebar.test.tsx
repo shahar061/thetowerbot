@@ -73,3 +73,9 @@ test('single account navigation exposes Cards',()=>{
  state.pathname='/cards/';render(<Sidebar/>);
  expect(screen.getByRole('link',{name:'Cards'})).toHaveAttribute('href','/cards/');
 });
+
+test("single emulator exposes Workshop", () => {
+  state.pathname = "/workshop/";
+  render(<Sidebar />);
+  expect(screen.getByRole("link", { name: "Workshop" })).toHaveAttribute("href", "/workshop/");
+});

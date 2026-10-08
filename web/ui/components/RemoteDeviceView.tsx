@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { FullscreenFrame } from "@/components/FullscreenFrame";
 import { FeedBadge } from "@/components/FeedBadge";
 import { LiveVideo } from "@/components/LiveVideo";
 import { useLiveFallback } from "@/lib/useLiveFallback";
@@ -16,7 +17,7 @@ export function RemoteDeviceView({ dashboardUrl, scope, instance }: {
   url.searchParams.set("scope", scope);
   const label = `Live screen of ${instance ?? "selected emulator"}`;
 
-  return <div className="relative w-full max-w-[400px] overflow-hidden rounded-xl border bg-well">
+  return <FullscreenFrame className="relative w-full max-w-[400px] overflow-hidden rounded-xl border bg-well">
     {failed ? <div role="status" className="flex aspect-[9/16] flex-col items-start gap-3 p-4 text-sm text-muted-foreground">
       <p>Live screen unavailable. The worker may be starting or reconnecting.</p>
       <button className="rounded border px-3 py-2 text-foreground" onClick={() => setFailed(false)}>Retry screen</button>
@@ -28,5 +29,5 @@ export function RemoteDeviceView({ dashboardUrl, scope, instance }: {
       <img key={url.href} src={url.href} alt={label}
         onError={() => setFailed(true)} className="block aspect-[9/16] w-full object-contain" />}
     <div className="flex h-7 items-center border-t px-3">{!failed && foreground && <FeedBadge live={live} />}</div>
-  </div>;
+  </FullscreenFrame>;
 }

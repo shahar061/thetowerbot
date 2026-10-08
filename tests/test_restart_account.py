@@ -308,3 +308,36 @@ def test_settings_tap_that_never_takes_effect_stops_after_bounded_retaps() -> No
             expected_account="ACCOUNT-A", clock=clock, sleep=clock.sleep,
             observe=observer([home] * 20))
     assert device.taps == [(1, 2)] * 3
+
+
+def test_restart_verifies_account_and_returns_to_same_battle() -> None:
+    device = Device()
+    supervisor = Supervisor("ACCOUNT-A")
+    evidence = verify_restart_account(device=device, supervisor=supervisor,
+        expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
+        observe=observer([
+            frame("battle", controls={"hamburger": (1000, 70)}),
+            frame("battle_menu", controls={"settings": (1000, 270), "close": (1000, 70)}),
+            frame("settings", controls={"account": (350, 840), "close": (910, 490)}),
+            frame("account", account_id="ACCOUNT-A", controls={"close": (940, 585)}),
+            frame("settings", controls={"account": (350, 840), "close": (910, 490)}),
+            frame("battle_menu", controls={"settings": (1000, 270), "close": (1000, 70)}),
+            frame("battle", controls={"hamburger": (1000, 70)}),
+        ]))
+    assert evidence.account_id == "ACCOUNT-A"
+    assert supervisor.verified == "ACCOUNT-A"
+    assert device.taps == [(1000, 70), (1000, 270), (350, 840), (940, 585), (910, 490), (1000, 70)]
+
+
+def test_restart_battle_still_rejects_wrong_account() -> None:
+    device = Device()
+    with pytest.raises(RecoveryBlocked, match="wrong account"):
+        verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
+            expected_account="ACCOUNT-A", clock=lambda: 101., sleep=lambda _: None,
+            observe=observer([
+                frame("battle", controls={"hamburger": (1000, 70)}),
+                frame("battle_menu", controls={"settings": (1000, 270), "close": (1000, 70)}),
+                frame("settings", controls={"account": (350, 840)}),
+                frame("account", account_id="ACCOUNT-B", controls={"close": (940, 585)}),
+            ]))
+    assert device.taps == [(1000, 70), (1000, 270), (350, 840)]

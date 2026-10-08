@@ -12,6 +12,8 @@ from supervisor import DeviceSupervisor, RecoveryBlocked, RecoveryState
 
 
 _CONTROLS = {
+    "battle": "hamburger",
+    "battle_menu": "settings",
     "inbox": "return_to_game",
     "missions": "return_to_game",
     "milestones": "return_to_game",
@@ -28,6 +30,8 @@ _CONTROLS = {
     "free_ticket_reward": "claim",
 }
 _NEXT_SCREEN = {
+    "battle": "battle_menu",
+    "battle_menu": "settings",
     "inbox": "home",
     "missions": "home",
     "milestones": "home",
@@ -49,9 +53,8 @@ _INTERRUPTIONS = {"link_account_prompt", "free_ticket_offer"}
 # leaves the screen unchanged; re-tap from a fresh frame after this long.
 _RETAP_AFTER_SECONDS = 2.
 _MAX_RETAPS = 2
-# A worker restarted mid-run cannot tap until its account is proven, so the
-# run plays on unattended; at wave 30 that outlasted several minutes. Stay
-# inside the monitor's 15 min limit on an unverified connected account.
+# If the battle menu cannot be measured, wait for the run to finish rather
+# than guessing coordinates. Stay inside the monitor's 15 min startup limit.
 _BATTLE_WAIT_SECONDS = 12 * 60
 _STARTUP_DEADLINE_SECONDS = 60
 
@@ -77,11 +80,12 @@ def verify_restart_account(
     battle_deadline = clock() + _BATTLE_WAIT_SECONDS
     progress = getattr(supervisor, "progress", None)
     navigation_steps = 0
+    return_to_battle = False
     while navigation_steps < 20:
         frame = observe(device)
         if frame.conflict_dialog:
             raise RecoveryBlocked("session conflict during account verification")
-        if frame.screen == "battle" and awaiting is None:
+        if frame.screen == "battle" and awaiting is None and not frame.controls:
             if clock() >= battle_deadline:
                 raise RecoveryBlocked("battle did not finish during account verification")
             # Each fresh battle frame proves a deliberate wait, not a hang.
@@ -111,6 +115,8 @@ def verify_restart_account(
         if frame.screen == "account":
             account = frame
             break
+        if frame.screen in {"battle", "battle_menu"}:
+            return_to_battle = True
         control = _CONTROLS.get(frame.screen)
         if control is not None:
             if (set(frame.controls) not in ({control}, {control, "close"}) or not frame.digest
@@ -158,8 +164,24 @@ def verify_restart_account(
         frame = observe(device)
         if frame.conflict_dialog:
             raise RecoveryBlocked("session conflict after account verification")
-        if frame.screen == "home":
+        if frame.screen == "home" and not return_to_battle:
             return IdentityEvidence(account.account_id, account.observed_at, account.evidence_ref)
+        if frame.screen == "battle_menu" and return_to_battle:
+            if (set(frame.controls) != {"settings", "close"} or not frame.digest
+                    or not frame.evidence_ref or not math.isfinite(frame.observed_at)
+                    or frame.observed_at > clock() or clock() - frame.observed_at > 5):
+                raise RecoveryBlocked("battle menu close control unavailable")
+            device.click(*frame.controls["close"])
+            for _ in range(6):
+                resumed = observe(device)
+                if resumed.conflict_dialog:
+                    raise RecoveryBlocked("session conflict after account verification")
+                if resumed.screen == "battle":
+                    return IdentityEvidence(account.account_id, account.observed_at, account.evidence_ref)
+                if resumed.screen not in {"battle_menu", "unknown"}:
+                    raise RecoveryBlocked("return to battle was not verified")
+                sleep(.5)
+            raise RecoveryBlocked("return to battle timed out")
         if frame.screen not in {"settings", "unknown"}:
             raise RecoveryBlocked("settings dialog close was not verified")
         sleep(.5)

@@ -742,6 +742,7 @@ class Rect(NamedTuple):
 # -- in-battle menu (battle_menu.py) ------------------------------------------
 BATTLE_MENU_TEMPLATES: dict[str, str] = {
     "hamburger": "battle_menu/hamburger.png",
+    "settings": "battle_menu/settings.png",
     "close": "battle_menu/close.png",
     "exit_battle": "battle_menu/exit_battle.png",
     "cart": "battle_menu/cart.png",

@@ -7,7 +7,7 @@ import { RuntimeGate } from "./RuntimeGate";
 import { EmulatorRecovery } from "./EmulatorRecovery";
 import { useAccountSelection } from "@/lib/AccountSelection";
 
-const HISTORY = new Set(["/", "/runs/", "/stats/", "/errors/", "/ledger/", "/account/", "/cards/"]);
+const HISTORY = new Set(["/", "/runs/", "/stats/", "/errors/", "/ledger/", "/account/", "/cards/", "/workshop/"]);
 
 export function AccountShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -46,7 +46,7 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
           <Link href="/fleet/reroll/" className="w-fit rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">Start a reroll</Link>
           <EmulatorRecovery />
         </main>
-      : remote && pathname === "/" ? <main key={selected.key} className="min-w-0 flex-1 p-4">{children}</main>
+      : (remote && pathname === "/") || pathname === "/workshop/" ? <main key={selected.key} className="min-w-0 flex-1 p-4">{children}</main>
       : remote ? <main key={selected.key} className="m-4 flex max-w-2xl flex-col gap-3 rounded-lg border p-6">
           <h1 className="text-lg font-semibold">{selected.account_id} is running on {selected.instance}</h1>
           <p className="text-sm text-muted-foreground">Open this worker&apos;s dashboard for its live data and Strategy controls.</p>
