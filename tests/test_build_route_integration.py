@@ -845,6 +845,9 @@ def test_workshop_visit_saves_the_plan_with_its_budget(tmp_path: Path) -> None:
     assert record["budget"]["jar_kind"] == "lab_jar"
     assert record["budget"]["ceiling"] == record["evaluation"]["trace"]["spend_ceiling"]
     assert record["evaluation"]["decision"]["upgrade_id"] == "attack_speed"
+    assert progress.purchase_plan_id("attack_speed") == record["id"]
+    assert progress.purchase_plan_id("health") is None
+    assert record["visit_id"] == "visit-2"
     assert record["upgrade_names"]["attack_speed"] == "Attack Speed"
 
 

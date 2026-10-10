@@ -11,6 +11,15 @@ import events
 import ledger
 
 
+def test_workshop_purchase_keeps_its_exact_decision_reference() -> None:
+    (line,) = ledger.classify(events.Purchased(
+        item="Health", category="DEFENSE", price=280, verdict="bought", spent=280, dry_run=False,
+        workshop_plan_id="original-choice", seq=1, ts=100))
+    assert line.detail["workshop_plan_id"] == "original-choice"
+    assert line.detail["verdict"] == "bought"
+    assert line.delta == -280
+
+
 def test_confirmed_game_speed_research_debits_coins_once() -> None:
     (line,) = ledger.classify(events.LabResearchStarted(
         concept_id="labs.game-speed", price=300, coins_before=400,

@@ -548,6 +548,7 @@ class RerollProgress:
 
         Display only: a failed write is logged and never changes shopping.
         """
+        self._workshop_plan_id = None
         evaluation, inputs = self._route_evaluation, self._plan_inputs
         if evaluation is None or inputs is None or self.route_runtime is None:
             return
@@ -559,6 +560,9 @@ class RerollProgress:
             record = {
                 "account_id": self.account_id, "revision": inputs["revision"],
                 "written_at": time.time(),
+                "visit_id": inputs.get("visit_id"),
+                "decision_sequence": inputs.get("decision_sequence"),
+                "purchase_count": inputs.get("purchase_count"),
                 "strategy": {"id": named.strategy_id if named else None,
                              "name": named.strategy_name if named else "Baseline",
                              "mode": effective.workshop.mode},
@@ -570,7 +574,7 @@ class RerollProgress:
                 "evaluation": asdict(replace(evaluation, decision=decision)),
                 "override": override,
                 "upgrade_names": {upgrade.id: upgrade.name for upgrade in upgrades.CATALOG}}
-            self.route_runtime.publish_workshop_plan(record)
+            self._workshop_plan_id = self.route_runtime.publish_workshop_plan(record)
         except Exception as exc:
             logger.warning("Workshop plan not saved for %s: %s", self.account_id, exc, exc_info=True)
 
@@ -653,6 +657,8 @@ class RerollProgress:
                 # _record_workshop_plan, never inside this shopping decision.
                 self._plan_inputs = {
                     "revision": route.revision, "assignment": route.assignments.get(self.root.name),
+                    "visit_id": facts.visit_id, "decision_sequence": facts.decision_sequence,
+                    "purchase_count": sum((facts.confirmed_purchases or {}).values()),
                     "effective": effective, "wallet": facts.wallet_coins, "jar": jar}
                 if evaluation.status == "unknown" or evaluation.decision is None:
                     self._record_workshop_plan(None)
@@ -1027,6 +1033,14 @@ class RerollProgress:
         if odds is None:
             return evaluation.trace.reason
         return f"Random draw ({odds:.0%}) · {evaluation.trace.reason}"
+
+    def purchase_plan_id(self, upgrade_id: str) -> str | None:
+        """Link the buyer's confirmed event to the exact saved selection."""
+        evaluation = self._route_evaluation
+        if (evaluation is None or evaluation.decision is None
+                or evaluation.decision.upgrade_id != upgrade_id):
+            return None
+        return getattr(self, "_workshop_plan_id", None)
 
     def workshop_worthwhile(self, *, publish_estimate: bool = False, detour: bool = False) -> bool:
         """Whether a Workshop visit could buy the planned upgrade now.
