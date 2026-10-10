@@ -15,6 +15,14 @@ const overview = {
 };
 
 describe("fleet overview response", () => {
+  it("shows push status only for matching well-formed account evidence", () => {
+    const push = { account: "42", mode: "push", phase: "pushing", every: 10,
+      farms_remaining: 0, farm_tier: 1, target_tier: 2, blocker: null };
+    const member = (push_runs: object) => ({ account_id: "42", lease_id: "lease-1", overview: { ...overview, push_runs } });
+    expect(validatedOverview(member(push))?.push_runs).toEqual(push);
+    expect(validatedOverview(member({ ...push, account: "other" }))?.push_runs).toBeNull();
+    expect(validatedOverview(member({ ...push, farms_remaining: -1 }))?.push_runs).toBeNull();
+  });
   it("accepts an old member without optional overview", () => {
     expect(validatedOverview({ name: "Air_2", account_id: "42" })).toBeNull();
   });

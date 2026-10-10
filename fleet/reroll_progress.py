@@ -786,7 +786,8 @@ class RerollProgress:
                       visible_upgrade_ids: tuple[str, ...] = (), battle_batch_purchases: int = 0,
                       batch_route_token: str | None = None, batch_rule_id: str | None = None,
                       after_receipt_sequence: int | None = None,
-                      battle_tab: str | None = None) -> AutopilotPolicy:
+                      battle_tab: str | None = None,
+                      push_tier: int | None = None) -> AutopilotPolicy:
         route = None
         if self.route_runtime is not None:
             try:
@@ -796,6 +797,24 @@ class RerollProgress:
                 return replace(base, enabled=False, rules=())
             self.route_error = None
         effective = resolve_route(route, self.root.name, self.account_id) if route is not None else None
+        if push_tier is not None:
+            # A scheduled push changes purchases, never the worker/account
+            # authorization. Check this even for a compatibility route.
+            from web.account_catalog import registered_worker
+            from push_runs import push_policy
+            registration = registered_worker(self.root)
+            if (registration is None or registration.account_id != self.account_id
+                    or db.bound_account(registration.db_path) != self.account_id):
+                self.route_error = "worker account binding changed"
+                return replace(base, enabled=False, rules=())
+            if run_id is None or wave is None or cash is None:
+                return replace(base, enabled=False, rules=())
+            _, purchases = self._history()
+            locked = workshop_locked(purchases, observations or {})
+            rows = {**(observations or {}), **{
+                uid: {"status": "locked"} for uid in locked}}
+            return push_policy(replace(base, enabled=True), tier=push_tier,
+                               rows=rows, combat=combat)
         if effective is not None and effective.battle.mode in {"phases", "blocks"}:
             from web.account_catalog import registered_worker
             registration = registered_worker(self.root)

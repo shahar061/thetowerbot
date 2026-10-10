@@ -96,13 +96,15 @@ def test_current_overview_requires_matching_fresh_process_and_account(tmp_path: 
     heartbeat = progress.snapshot()
 
     selected = {"key": "worker:Air_2", "run_id": 9}
+    push = {"account": "42", "mode": "push", "phase": "pushing", "every": 10,
+            "farms_remaining": 0, "farm_tier": 1, "target_tier": 2, "blocker": None}
 
     def fetch(url: str, *, timeout: float) -> Response:
         if url.endswith("/api/accounts?local_only=true"):
             return Response(json.dumps({"active": selected["key"], "accounts": [
                 {"key": "worker:Air_2", "account_id": "42", "running": True}]}).encode())
         return Response(json.dumps({"screen": "IN_RUN", "run": {"id": selected["run_id"]},
-                                    "wallet": 230}).encode())
+                                    "wallet": 230, "bot": {"push_runs": push}}).encode())
 
     def read(**kwargs: object) -> dict[str, Any]:
         return observed_metrics(worker_root, account_key="worker:Air_2", account_id="42",
@@ -112,6 +114,10 @@ def test_current_overview_requires_matching_fresh_process_and_account(tmp_path: 
                                                 "attempt_id": "attempt-1"}, **kwargs)
 
     current = read()["overview"]
+    assert current["push_runs"] == push
+    push["account"] = "old-account"
+    assert read()["overview"]["push_runs"] is None
+    push["account"] = "42"
     assert current["current_run"] == {"id": 9, "tier": None, "wave": 31,
                                       "speed": 2.5, "coins": None,
                                       "observed_at": heartbeat["run_observation"]["observed_at_utc"]}
@@ -135,6 +141,7 @@ def test_current_overview_requires_matching_fresh_process_and_account(tmp_path: 
     assert view["observed_at"] == now - 2 and "synthetic-secret" not in json.dumps(view)
     selected["key"] = "worker:other"
     changed_account = read()["overview"]
+    assert changed_account["push_runs"] is None
     assert changed_account["recovery"] is None
     assert changed_account["current_run"] is None
     assert changed_account["missions"]["state"] == "unknown"

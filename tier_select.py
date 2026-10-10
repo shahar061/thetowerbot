@@ -19,11 +19,14 @@ reader has actually seen.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+from typing import Sequence
 
 import cv2
 
 from device import Image
 from geometry import supported_frame
+from ocr import TextBox
 from vision import TemplateCache
 
 NEXT_TEMPLATE = 'nav/tier_next.png'
@@ -75,3 +78,46 @@ def read_next(screen: Image, templates: TemplateCache) -> NextTier | None:
     else:
         return None
     return NextTier(available, (x0 + lx + tw // 2, ly + th // 2), float(best))
+
+
+@dataclass(frozen=True)
+class TierPanel:
+    tier: int
+    next: NextTier
+    previous: NextTier | None
+
+
+def read_panel(screen: Image, templates: TemplateCache,
+               boxes: Sequence[TextBox]) -> TierPanel | None:
+    """Read an exact Tier N label aligned with the matched difficulty arrow."""
+    right = read_next(screen, templates)
+    if right is None:
+        return None
+    candidates = []
+    width = screen.shape[1]
+    for box in boxes:
+        match = re.fullmatch(r"Tier\s+(\d{1,2})", box.text.strip(), re.IGNORECASE)
+        rect = box.rect
+        if (match and box.confidence >= .9
+                and width * .35 <= rect.x + rect.w / 2 < right.point[0]
+                and abs(rect.y + rect.h / 2 - right.point[1]) <= screen.shape[0] * .02
+                and 1 <= int(match[1]) <= 99):
+            candidates.append((int(match[1]), rect.x))
+    if len(candidates) != 1:
+        return None
+    template = cv2.flip(templates.get(NEXT_TEMPLATE), 1)
+    th, tw = template.shape[:2]
+    y0 = max(0, right.point[1] - th * 2)
+    band = screen[y0:right.point[1] + th * 2, :width // 2]
+    result = cv2.matchTemplate(band, template, cv2.TM_CCOEFF_NORMED)
+    _, score, _, (x, y) = cv2.minMaxLoc(result)
+    masked = result.copy()
+    masked[max(y - th, 0):y + th, max(x - tw, 0):x + tw] = -1.
+    ambiguous = cv2.minMaxLoc(masked)[1] >= MATCH_THRESHOLD
+    previous = None
+    if score >= MATCH_THRESHOLD and not ambiguous and x + tw <= candidates[0][1]:
+        patch = cv2.cvtColor(band[y:y + th, x:x + tw], cv2.COLOR_BGR2GRAY)
+        peak = int(patch.max())
+        if peak >= LIT_MIN_GREY or peak <= DIM_MAX_GREY:
+            previous = NextTier(peak >= LIT_MIN_GREY, (x + tw // 2, y0 + y + th // 2), float(score))
+    return TierPanel(candidates[0][0], right, previous)
