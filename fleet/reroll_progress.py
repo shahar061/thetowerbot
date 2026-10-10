@@ -68,8 +68,13 @@ class RerollProgress:
     """Read only this registered account and publish a bounded next action."""
 
     def __init__(self, worker_root: Path, account_id: str, account_state: AccountState,
-                 *, read_only: bool = False) -> None:
+                 *, read_only: bool = False, target_context: Any = None,
+                 reroll_mode: bool = True) -> None:
         self.root = Path(worker_root)
+        self.target_context = target_context
+        self.reroll_mode = reroll_mode
+        self.worker = target_context.target_id if target_context else self.root.name
+        self.db_path = target_context.db_path if target_context else self.root / "tower_bot.db"
         self.account_id = account_id
         self.account_state = account_state
         self.read_only = read_only
@@ -77,7 +82,7 @@ class RerollProgress:
         self.battle_prices = BattlePrices(self.root, account_id, read_only=read_only)
         self.price_memory = WorkshopPrices(self.root, account_id)
         self._quotes: dict[str, PriceQuote] = {}
-        if not read_only:
+        if not read_only and reroll_mode:
             self._import_legacy_target()
         self._last_state: tuple[str, str | None, str] | None = None
         self._last_decision: RerollDecision | None = None
@@ -108,6 +113,17 @@ class RerollProgress:
         # nothing; battle_policy reads max(database, tally) per upgrade.
         self._battle_tally: tuple[int | None, dict[str, int]] = (None, {})
 
+    def _registration(self) -> Any:
+        if self.target_context is not None:
+            from types import SimpleNamespace
+            try:
+                self.target_context.verify_current()
+                return SimpleNamespace(account_id=self.account_id, db_path=self.db_path)
+            except ValueError:
+                return None
+        from web.account_catalog import registered_worker
+        return registered_worker(self.root)
+
     def note_menu_wallet(self, wallet_coins: int | None) -> None:
         """Keep a fresh, observed menu balance for the next route decision."""
         if type(wallet_coins) is int and wallet_coins >= 0:
@@ -116,7 +132,7 @@ class RerollProgress:
             # Also the run-payout replay's anchor: a run closed without a
             # payout otherwise leaves that replay unknown until the next
             # Workshop read, however many menu balances are read meanwhile.
-            with db.reader(self.root / "tower_bot.db") as conn:
+            with db.reader(self.db_path) as conn:
                 last_run = conn.execute("SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL").fetchone()[0]
             anchor = self.price_memory.wallet
             if anchor is None or (anchor["coins"], anchor["run_id"]) != (wallet_coins, last_run):
@@ -139,9 +155,11 @@ class RerollProgress:
         try:
             route = self.route_runtime.current()
         except RouteUnavailable:
+            if not self.reroll_mode:
+                raise
             return RouteRules()
         try:
-            return resolve_route(route, self.root.name, self.account_id).rules
+            return resolve_route(route, self.worker, self.account_id).rules
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("resource_rules: resolve_route failed for %s (%s); using defaults",
                            self.account_id, exc)
@@ -238,9 +256,11 @@ class RerollProgress:
         try:
             route = self.route_runtime.current()
         except RouteUnavailable:
+            if not self.reroll_mode:
+                raise
             return GemRoute()
         try:
-            return resolve_route(route, self.root.name, self.account_id).gems
+            return resolve_route(route, self.worker, self.account_id).gems
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("_effective_gems: resolve_route failed for %s (%s); using defaults",
                            self.account_id, exc)
@@ -253,7 +273,7 @@ class RerollProgress:
 
     @property
     def worker_id(self) -> str | None:
-        return self.root.name if self.fleet_root is not None else None
+        return self.worker if self.target_context is not None or self.fleet_root is not None else None
 
     def unlock_rollout(self) -> LabUnlockRollout | None:
         """The fleet's shared lab-slot rollout record. A solo bot has none, so it never unlocks."""
@@ -310,21 +330,21 @@ class RerollProgress:
                         wallet_gems=gems,
                         jar=self.coin_jar.amount(quiet=True),
                         coins_per_hour=coins_per_hour(self.root, self.account_id),
-                        best_waves=best_waves(self.root / "tower_bot.db") or None,
+                        best_waves=best_waves(self.db_path) or None,
                         reserved_research=facts.reserved_research | excluded_research,
                         slot_ownership=self.lab_cadence.slot_records(),
                         owned_floor=(getattr(runtime, "slots_owned", None)
                                      if type(getattr(runtime, "slots_owned", None)) is int else None),
                         rollout=rollout_slots, worker=self.worker_id, starter=starter_state)
         route = self.route_runtime.current()
-        return evaluate_lab_plan(resolve_route(route, self.root.name, self.account_id), facts)
+        return evaluate_lab_plan(resolve_route(route, self.worker, self.account_id), facts)
 
     def resource_evaluation(self, wallet_coins: int | None,
                             wallet_gems: int | None) -> None:
         if self.route_runtime is None:
             return
         from web.account_catalog import registered_worker
-        registration = registered_worker(self.root)
+        registration = self._registration()
         if (registration is None or registration.account_id != self.account_id
                 or db.bound_account(registration.db_path) != self.account_id):
             self.route_error = "worker account binding changed"
@@ -333,7 +353,7 @@ class RerollProgress:
             route = self.route_runtime.current()
             lab, slot2 = self.lab_cadence.route_observation()
             facts = RouteFacts(
-                self.account_id, self.root.name, "main_menu", time.time(), time.time(),
+                self.account_id, self.worker, "main_menu", time.time(), time.time(),
                 wallet_coins=wallet_coins, wallet_gems=wallet_gems,
                 lab_slot2_owned=(slot2.get("status") == "owned" if slot2 else None),
                 lab_slot_status=self.lab_cadence.slot_status_map(),
@@ -343,7 +363,7 @@ class RerollProgress:
             )
             rollout = self.unlock_rollout()
             self.route_runtime.publish_resources(
-                evaluate_resources(resolve_route(route, self.root.name, self.account_id), facts,
+                evaluate_resources(resolve_route(route, self.worker, self.account_id), facts,
                                    rollout.slots() if rollout is not None else None), facts)
         except (OSError, ValueError, RouteUnavailable) as exc:
             self.route_error = str(exc)
@@ -363,7 +383,7 @@ class RerollProgress:
         self._last_stats_attempt = time.time() if now is None else now
 
     def _history(self) -> tuple[int | None, dict[str, int]]:
-        path = self.root / "tower_bot.db"
+        path = self.db_path
         if not path.is_file() or db.bound_account(path) != self.account_id:
             raise ValueError("reroll account database binding changed")
         purchases: dict[str, int] = {}
@@ -394,7 +414,7 @@ class RerollProgress:
 
     def _utility_spent(self) -> int | None:
         """Sum proven utility debits, retaining uncertainty as unknown."""
-        path = self.root / "tower_bot.db"
+        path = self.db_path
         if not path.is_file() or db.bound_account(path) != self.account_id:
             raise ValueError("reroll account database binding changed")
         with db.reader(path) as connection:
@@ -455,7 +475,7 @@ class RerollProgress:
                     if (persist_lifetime and isinstance(observed_at, (int, float))
                             and (stored is None or observed_at > stored["observed_at"])):
                         self.root.mkdir(parents=True, exist_ok=True)
-                        with db.reader(self.root / "tower_bot.db") as connection:
+                        with db.reader(self.db_path) as connection:
                             baseline_run_id = connection.execute(
                                 "SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL"
                             ).fetchone()[0]
@@ -512,7 +532,7 @@ class RerollProgress:
         self._quotes = quotes
         anchor = self.price_memory.wallet
         observed_at = anchor["observed_at"] if anchor else None
-        with db.reader(self.root / "tower_bot.db") as connection:
+        with db.reader(self.db_path) as connection:
             last_run = connection.execute(
                 "SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL").fetchone()[0]
             if anchor:
@@ -529,7 +549,7 @@ class RerollProgress:
                 observed_at is None or self._menu_wallet[1] >= observed_at):
             wallet, observed_at = self._menu_wallet
         return RouteFacts(
-            self.account_id, self.root.name, "main_menu", observed_at, time.time(),
+            self.account_id, self.worker, "main_menu", observed_at, time.time(),
             best_tier_1_wave=best, purchases=purchases, values=values,
             wallet_coins=wallet, lifetime_coins=lifetime,
             prices={uid: quote.price for uid, quote in quotes.items()},
@@ -598,9 +618,9 @@ class RerollProgress:
             self.route_error = None
         # Reserve the first 100 gems for the second lab even when a custom
         # reroll policy enables card spending.
-        if not self.lab_cadence.slot_owned(2):
+        if self.reroll_mode and not self.lab_cadence.slot_owned(2):
             base = replace(base, cards=replace(base.cards, enabled=False))
-        rules = (resolve_route(route, self.root.name, self.account_id).rules
+        rules = (resolve_route(route, self.worker, self.account_id).rules
                  if route is not None else RouteRules())
         # gems.keep is a reserve: cards never spend below it.
         if rules.gems.keep > base.cards.gem_floor:
@@ -613,7 +633,7 @@ class RerollProgress:
         route_wallet: int | None = None
         if route is not None and route.revision > 0:
             from web.account_catalog import registered_worker
-            registration = registered_worker(self.root)
+            registration = self._registration()
             if (registration is None or registration.account_id != self.account_id
                     or db.bound_account(registration.db_path) != self.account_id):
                 self.route_error = "worker account binding changed"
@@ -626,7 +646,7 @@ class RerollProgress:
                     self.route_runtime.abandon_decision("route revision changed")
                     pending = None
                 facts = self.route_facts()
-                effective = resolve_route(route, self.root.name, self.account_id)
+                effective = resolve_route(route, self.worker, self.account_id)
                 lab_record, _ = self.lab_cadence.route_observation()
                 if effective.rules.coins.lab_share.mode == "just_in_time":
                     # The saving plan's hold replaces the jar, which is neither grown
@@ -656,7 +676,7 @@ class RerollProgress:
                 # Raw inputs only: the plan record is built (and may fail) in
                 # _record_workshop_plan, never inside this shopping decision.
                 self._plan_inputs = {
-                    "revision": route.revision, "assignment": route.assignments.get(self.root.name),
+                    "revision": route.revision, "assignment": route.assignments.get(self.worker),
                     "visit_id": facts.visit_id, "decision_sequence": facts.decision_sequence,
                     "purchase_count": sum((facts.confirmed_purchases or {}).values()),
                     "effective": effective, "wallet": facts.wallet_coins, "jar": jar}
@@ -675,13 +695,15 @@ class RerollProgress:
                 self._route_evaluation = None
                 return stop(replace(base, enabled=False, workshop=()), f"Strategy unavailable: {exc}")
         else:
+            if not self.reroll_mode:
+                return stop(replace(base, enabled=False, workshop=()), "No supported Workshop plan")
             self._route_evaluation = None
             self.route_policy_revision = route.revision if route is not None else None
             plan = self.decision()
         # A fresh reroll account must enter Workshop once to claim its 50-coin
         # tutorial grant. Keep this first visit bounded to the starter budget;
         # the buyer still checks the live wallet and price before every tap.
-        if (self.initial_workshop_due() and plan.stage != "strategy_observe"
+        if (self.reroll_mode and self.initial_workshop_due() and plan.stage != "strategy_observe"
                 and plan.item is not None and plan.category is not None):
             self._publish(plan)
             self._record_workshop_plan(plan, "tutorial")
@@ -723,7 +745,7 @@ class RerollProgress:
                         f"Next buy {plan.item} not affordable yet ({plan.wallet_coins}/{plan.price} coins)")
         budget = base.coin_budget
         if route is not None and route.revision > 0 and route_wallet is not None:
-            effective = resolve_route(route, self.root.name, self.account_id)
+            effective = resolve_route(route, self.worker, self.account_id)
             ceiling = coin_share.workshop_ceiling(effective, route_wallet, jar)
             budget = ceiling if budget is None else min(budget, ceiling)
         if plan.stage == "strategy" and plan.price is not None:
@@ -796,13 +818,13 @@ class RerollProgress:
                 self.route_error = exc.reason
                 return replace(base, enabled=False, rules=())
             self.route_error = None
-        effective = resolve_route(route, self.root.name, self.account_id) if route is not None else None
+        effective = resolve_route(route, self.worker, self.account_id) if route is not None else None
         if push_tier is not None:
             # A scheduled push changes purchases, never the worker/account
             # authorization. Check this even for a compatibility route.
             from web.account_catalog import registered_worker
             from push_runs import push_policy
-            registration = registered_worker(self.root)
+            registration = self._registration()
             if (registration is None or registration.account_id != self.account_id
                     or db.bound_account(registration.db_path) != self.account_id):
                 self.route_error = "worker account binding changed"
@@ -817,7 +839,7 @@ class RerollProgress:
                                rows=rows, combat=combat)
         if effective is not None and effective.battle.mode in {"phases", "blocks"}:
             from web.account_catalog import registered_worker
-            registration = registered_worker(self.root)
+            registration = self._registration()
             if (registration is None or registration.account_id != self.account_id
                     or db.bound_account(registration.db_path) != self.account_id):
                 self.route_error = "worker account binding changed"
@@ -851,7 +873,7 @@ class RerollProgress:
             if batch_route_token != f'{self.account_id}:{route.revision}:{run_id}':
                 battle_batch_purchases = 0
             facts = RouteFacts(
-                self.account_id, self.root.name, "battle", moment, moment,
+                self.account_id, self.worker, "battle", moment, moment,
                 best_tier_1_wave=best, run_id=run_id, wave=wave, battle_cash=cash,
                 battle_health=(combat or {}).get("health"),
                 battle_max_health=(combat or {}).get("max_health"),
@@ -866,7 +888,7 @@ class RerollProgress:
                           f"battle:{run_id}:{wave}") if run_id is not None and wave is not None else None,
                 run_purchases=counts, decision_sequence=sum((counts or {}).values()),
             )
-            effective = resolve_route(route, self.root.name, self.account_id)
+            effective = resolve_route(route, self.worker, self.account_id)
             pending = (self.route_runtime.battle_pending(facts, route.revision)
                        if effective.battle.mode == "blocks" else None)
             evaluation = evaluate_battle(effective, facts, pending)
@@ -907,6 +929,8 @@ class RerollProgress:
                            rules=tuple(UpgradeRule(uid) for uid in ids),
                            cash_spend_limit_pct=phase.cash_spend_limit_pct,
                            observe_only=observe_only)
+        if not self.reroll_mode:
+            return replace(base, enabled=False, rules=())
         if self._battle_stage is None:
             best, _ = self._history()
             self._battle_stage = "stones" if best is not None and best >= 60 else (
@@ -965,7 +989,7 @@ class RerollProgress:
         earliest = min([entry["observed_at"] for entry in self.price_memory.entries.values()] +
                        ([anchor["observed_at"]] if anchor else [time.time()]))
         changes: list[tuple[float, int, int | None, int | None]] = []
-        with db.reader(self.root / "tower_bot.db") as conn:
+        with db.reader(self.db_path) as conn:
             actions = read_actions(conn, self.price_memory, now=time.time())
             rows = conn.execute("SELECT id,ts,kind,item,category,delta,balance_after,observed,detail,reason "
                                 # ROUTE_DECISION audits a weighted draw; it moves no coins.
@@ -1027,7 +1051,7 @@ class RerollProgress:
         for uid in maxed:
             self.price_memory.observe_maxed(uid, purchases.get(uid, 0), now=now)
         if type(wallet) is int and wallet >= 0:
-            with db.reader(self.root / "tower_bot.db") as conn:
+            with db.reader(self.db_path) as conn:
                 last_run = conn.execute("SELECT COALESCE(MAX(id),0) FROM runs WHERE ended_at IS NOT NULL").fetchone()[0]
             self.price_memory.wallet = {"coins": wallet, "run_id": last_run, "observed_at": now}
         self.price_memory.save()
@@ -1093,7 +1117,7 @@ class RerollProgress:
                          f"{UNKNOWN_PLAN_DETOUR_RUNS} runs")
             if note is not None and note != self._last_skip_note:
                 RerollJournal(self.root.parent.parent).append(
-                    instance=self.root.name, level="info", kind="workshop_skip", message=note)
+                    instance=self.worker, level="info", kind="workshop_skip", message=note)
             self._last_skip_note = note
             return worthwhile
         if evaluation is not None:
@@ -1124,7 +1148,7 @@ class RerollProgress:
                 f"workshop skipped: {spendable} coins above lab savings; {plan.item} needs {plan.price}")
         if note is not None and note != self._last_skip_note:
             RerollJournal(self.root.parent.parent).append(
-                instance=self.root.name, level="info", kind="workshop_skip", message=note)
+                instance=self.worker, level="info", kind="workshop_skip", message=note)
             if spendable is not None and plan.price is not None:
                 # Same rate limit as the journal line: once per changed note.
                 logger.info("Skipping the Workshop: %s coins above lab savings, cheapest planned %s",
@@ -1146,14 +1170,14 @@ class RerollProgress:
             pending = self.route_runtime.pending()
         except (OSError, ValueError, RouteUnavailable):
             return None
-        return evaluate_workshop(resolve_route(route, self.root.name, self.account_id),
+        return evaluate_workshop(resolve_route(route, self.worker, self.account_id),
                                  facts, pending)
 
     def _unknown_detour_due(self, upgrade_id: str | None) -> bool:
         # Keyed on the newest run's id, not a finished-run count: the death
         # screen is decided over many frames while RunEnded is still landing,
         # and a count that ticks mid-screen would flip HOME to RETRY.
-        path = self.root / "tower_bot.db"
+        path = self.db_path
         if not path.is_file():
             return True
         with db.reader(path) as connection:
@@ -1167,6 +1191,8 @@ class RerollProgress:
         return True
 
     def _publish(self, decision: RerollDecision) -> None:
+        if not self.reroll_mode:
+            return
         now = time.time()
         if decision == self._last_decision and now - self._last_published_at < 60:
             return
@@ -1187,7 +1213,7 @@ class RerollProgress:
                 route = None
             if route is not None and route.revision > 0:
                 route_revision = route.revision
-                workshop = resolve_route(route, self.root.name, self.account_id).workshop
+                workshop = resolve_route(route, self.worker, self.account_id).workshop
                 banned = workshop.banned_upgrade_ids
                 block_program = workshop.mode == "blocks"
                 if workshop.mode == "priorities":
@@ -1219,5 +1245,5 @@ class RerollProgress:
         if state != self._last_state:
             self._last_state = state
             RerollJournal(self.root.parent.parent).append(
-                instance=self.root.name, level="info", kind="reroll_plan",
+                instance=self.worker, level="info", kind="reroll_plan",
                 message=f"{decision.goal}: {decision.item or 'operator review'} · {decision.reason}")

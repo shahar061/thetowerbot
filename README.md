@@ -1008,6 +1008,22 @@ bot itself never reads the stream. Set `STREAM_ENABLED = False` in `config.py`
 to turn it off. `uv run tools/stream_probe.py <worker port>` reports a
 worker's stream fps and bitrate.
 
+### Unified Strategy Studio
+
+The single-emulator **Strategy Studio** and Reroll Fleet share the same versioned
+plan editor. Save a version to the library, then explicitly apply it to the
+selected emulator or fleet members. Saving never changes an assignment. The
+**Active strategy** tab distinguishes Pending from Applied; the bot acknowledges
+an assignment only after loading it at a safe purchase boundary for its verified
+account and session.
+
+**Bot settings** keeps timing, navigation, speed and free claims local to each
+emulator. Purchase and tier-progression rules belong to the assigned plan. Import
+the current local profile to preserve its purchase rules as an immutable version;
+existing profiles remain active until a plan is applied. Account-specific Cards
+assignments retain precedence over the plan's Cards lane. Unverified accounts and
+unavailable assignments block purchases rather than reverting to a different plan.
+
 ### OCR autopilot
 
 **Strategy → Effective Paths advisor** accepts a local JSON or normalized CSV

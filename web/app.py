@@ -379,6 +379,7 @@ def create_app(
     telegram_interval_override: float | None = None,
     telegram_suppressed: bool = False,
     stream_hub: StreamHub | None = None,
+    strategy_service: Any = None,
 ) -> FastAPI:
     # See event_stream()'s docstring for why this exists: without it, an
     # open dashboard tab and a shutting-down uvicorn wait on each other
@@ -414,6 +415,27 @@ def create_app(
         if root is None and db_path is not None and (db_path.parent / "fleet-registration.json").exists():
             root = db_path.parent.parent.parent
         return Path(root) if root is not None else None
+
+    from strategy_service import StrategyService
+    from web.strategy_api import register_strategy_routes
+    studio_root = _fleet_root() or (store.directory / "studio" if store is not None else None)
+    if studio_root is not None and db_path is not None and runner is not None and hasattr(runner, 'configure_strategy_studio'):
+        runner.configure_strategy_studio(root=studio_root, state_dir=db_path.parent, db_path=db_path)
+    if strategy_service is None and studio_root is not None:
+        strategy_service = StrategyService(library_root=studio_root, assignment_root=studio_root,
+            resolve_target=lambda _: runner.strategy_context() if runner else None)
+
+    def _assert_plan_settings(before: Strategy, after: Strategy) -> None:
+        if strategy_service is None:
+            return
+        route = strategy_service.assignment_store.read()
+        target_id = db_path.parent.name if db_path and (db_path.parent / 'fleet-registration.json').exists() else 'standalone'
+        if target_id in route.assignments:
+            from strategy_compat import assert_settings_only
+            try:
+                assert_settings_only(before, after)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
 
     def _choices() -> list[AccountChoice]:
         return account_choices(_fleet_root(), db_path)
@@ -863,6 +885,8 @@ def create_app(
         if runner is not None:
             runtime_capabilities.append("autopilot")
         runtime_capabilities.append("advisor")
+        if strategy_service is not None:
+            runtime_capabilities.append("strategy_studio")
         if fleet is not None:
             runtime_capabilities.append("fleet")
         if _fleet_root() is not None:
@@ -1266,7 +1290,8 @@ def create_app(
                 # that matters. And it runs BEFORE apply(), not after: apply()
                 # commits to live state, so validating first is what keeps a
                 # rejected patch from ever being observable as a live change.
-                before.merged(requested).validated()
+                candidate = before.merged(requested).validated()
+                _assert_plan_settings(before, candidate)
                 changed = controls.apply(requested)
             except ControlError as exc:
                 raise HTTPException(status_code=422, detail=f"{exc.field}: {exc}") from exc
@@ -1383,6 +1408,8 @@ def create_app(
         def write_strategy(name: str, body: dict[str, Any], request: Request, response: Response) -> dict:
             try:
                 incoming = Strategy.from_dict({**body, "name": name})
+                if name == store.active_name():
+                    _assert_plan_settings(store.load(name), incoming)
 
                 def persist() -> dict[str, Any]:
                     # Caller already holds route/account guards when requested.
@@ -1432,6 +1459,7 @@ def create_app(
                 with controls.transaction() if controls is not None else nullcontext():
                     with store.locked():
                         loaded = store.load(name).validated()
+                        _assert_plan_settings(store.load(store.active_name()), loaded)
                         store.set_active(name)
                         if controls is not None:
                             changed = controls.replace(loaded)
@@ -2196,6 +2224,34 @@ def create_app(
             raise HTTPException(status_code=503, detail="recovery_settings_unavailable") from exc
         return _recovery_settings_payload(state)
 
+    if strategy_service is not None:
+        def studio_remote(request: Request, path: str, body: dict[str, Any] | None) -> dict[str, Any] | None:
+            choice = _selected(request)
+            if choice is not None and (db_path is None or choice.db_path.resolve() != db_path.resolve()):
+                from web.strategy_proxy import worker_strategy_request
+                return worker_strategy_request(choice, path, body)
+            return None
+
+        def studio_settings() -> dict[str, Any]:
+            if controls is None:
+                raise HTTPException(503, 'bot_settings_unavailable')
+            return controls.snapshot().strategy.to_dict()
+
+        def studio_save_settings(body: dict[str, Any]) -> dict[str, Any]:
+            if controls is None:
+                raise HTTPException(503, "bot_settings_unavailable")
+            from strategy_compat import BOT_FIELDS
+            if set(body) - (BOT_FIELDS - {'name'}):
+                raise HTTPException(422, 'plan_fields_belong_in_strategy_studio')
+            _apply_control_patch(body)
+            return studio_settings()
+
+        register_strategy_routes(app, service=strategy_service,
+            local_target=lambda: runner.strategy_context() if runner and hasattr(runner, 'strategy_context') else None,
+            store=store, runner=runner, remote=studio_remote,
+            settings_read=studio_settings, settings_save=studio_save_settings)
+
+
     @app.api_route("/api/{_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
     def unmatched_api_route(_path: str) -> None:
         raise HTTPException(status_code=404, detail="no such route")
@@ -2215,5 +2271,6 @@ def create_app(
                 "<h1>Dashboard not built</h1>"
                 "<p>Run <code>./run.sh</code> from the repository root to build and start it.</p>"
             )
+
 
     return app

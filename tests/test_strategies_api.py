@@ -46,6 +46,23 @@ def test_listing_names_the_active_one(wired) -> None:
     assert body == {"active": "default", "names": ["default"]}
 
 
+def test_studio_assignment_protects_active_purchases_but_allows_timing(wired: tuple) -> None:
+    from dataclasses import replace
+    from fleet.build_route import RouteDocument, StrategyAssignment
+    from fleet.build_route_store import BuildRouteStore
+    client, store, controls, _ = wired
+    route = RouteDocument.compatibility()
+    assigned = StrategyAssignment('ACCOUNT-A', 'opening', 1, 'Opening', route.baseline)
+    BuildRouteStore(store.directory / "studio").publish(replace(route, assignments={'standalone': assigned}), 0, 'operator')
+    original = client.get('/api/strategies/default').json()
+    edited = {**original, 'shopping': {**original['shopping'], 'enabled': not original['shopping']['enabled']}}
+    assert client.put('/api/strategies/default', json=edited).status_code == 409
+    assert client.get('/api/strategies/default').json() == original
+    timing = {**original, 'interval': original['interval'] + 1}
+    assert client.put('/api/strategies/default', json=timing).status_code == 200
+    assert controls.snapshot().strategy.interval == timing['interval']
+
+
 def test_reading_one_returns_the_whole_strategy(wired) -> None:
     client, _, _, _ = wired
     body = client.get("/api/strategies/default").json()
@@ -312,3 +329,13 @@ def test_the_strategy_routes_are_absent_without_a_store() -> None:
         unknown_dir=config.UNKNOWN_DIR,
     )
     assert not any(getattr(route, "path", "").startswith("/api/strategies") for route in app.routes)
+
+
+def test_studio_routes_precede_static_mount_and_mutation_catchall(wired) -> None:
+    client, store, controls, seen = wired
+    assert client.get('/api/strategy-studio/library').status_code == 200
+    response = client.post('/api/strategy-studio/library', json={
+        'expected_revision': 0, 'name': 'Created from emulator',
+        'source_template': 'scratch', 'baseline': {}})
+    assert response.status_code == 200
+    assert client.get('/api/strategy-studio/labs').status_code == 200

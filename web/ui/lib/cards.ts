@@ -151,7 +151,7 @@ export interface CardsProjection {
   policy: CardPolicy | null;
   active_budget: CardBudget | null;
   preconditions: CardPreconditions | null;
-  config_owner: "local" | "fleet" | "unavailable";
+  config_owner: "local" | "fleet" | "studio" | "unavailable";
   preview: CardPreview | null;
   decision: { kind: string; reason: string | null };
   capabilities: {

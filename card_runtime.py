@@ -67,13 +67,16 @@ class CardRuntime:
         return self.visit.active
 
     def effective_route(self) -> Any | None:
-        progress = self.bot.reroll_progress
+        progress = getattr(self.bot, "plan_coordinator", self.bot.reroll_progress)
         runtime = getattr(progress, 'route_runtime', None)
+        execution = getattr(self.bot, 'strategy_execution', None)
+        if runtime is None and execution is not None and execution.source == 'studio_legacy':
+            runtime = execution.runtime
         scope = self.account.verified_scope
         if runtime is None or scope is None:
             return None
         from fleet.build_route import resolve_route
-        return resolve_route(runtime.current(), progress.root.name, scope.account_id)
+        return resolve_route(runtime.current(), runtime.worker, scope.account_id)
 
     def context(self, *, route_gates: bool = True) -> CardPlanContext | None:
         """Authoritative current scope/policy/program, shared wallet and original cycle."""
@@ -81,6 +84,9 @@ class CardRuntime:
         if scope is None or db.bound_account(self.store.path) != scope.account_id:
             return None
         live = self.bot.controls.snapshot()
+        execution = getattr(self.bot, "strategy_execution", None)
+        if execution is not None and execution.owns_plan and execution._resolved is not None:
+            live = replace(live, strategy=execution._resolved)
         now = time.time()
         route_error = False
         try:
@@ -96,7 +102,7 @@ class CardRuntime:
             policy = replace(policy, enabled=policy.enabled and original.enabled,
                 gem_floor=max(policy.gem_floor, original.gem_floor),
                 max_per_visit=min(policy.max_per_visit, original.max_per_visit), batch=original.batch)
-        if route is not None:
+        if route is not None and (execution is None or execution.source != "studio_legacy"):
             policy = replace(policy, gem_floor=max(policy.gem_floor, route.rules.gems.keep))
         budget = self.store.active_budget() or CardBudget(cycle_id='inactive', cap=0, spent=0, pending=0)
         unresolved = next((op for op in self.store.unresolved()
@@ -110,9 +116,16 @@ class CardRuntime:
         # This advertises navigation/reading only; mutation gates remain reader-owned.
         if self._view is None and snapshot is None:
             observed_capabilities = observed_capabilities.model_copy(update={'inventory': True})
+        owner = "local"
+        if execution is not None and execution.owns_plan:
+            owner = "studio" if execution.runtime is not None and execution.runtime.worker == "standalone" else "fleet"
+        elif route is not None and route.cards is not None:
+            owner = "fleet"
+        if route_error or execution is not None and execution.source == "blocked":
+            owner = "unavailable"
         context = CardPlanContext(scope=scope, visit_id=visit_id, now=now,
             program_revision=revision, program=program, policy=policy, snapshot=snapshot,
-            config_owner="unavailable" if route_error else "fleet" if route is not None and route.cards is not None else "local",
+            config_owner=owner,
             budget=budget, balance=self.account.currencies.balance('gems', scope=scope, now=now),
             committed_gems=self.account.currencies.committed('gems'), eligible_goal_ids=() if route_error else None,
             capabilities=observed_capabilities,
@@ -120,9 +133,9 @@ class CardRuntime:
             paused=live.paused, in_run=getattr(self.bot, '_card_in_run', self.bot.screen_state.value == 'IN_RUN'),
             unresolved_operation=unresolved, cards_bought_this_visit=visit_purchases(self.store, visit_id),
             evidence_after=latest_card_mutation(self.store))
-        if route is not None and route_gates:
+        if route is not None and route_gates and (execution is None or execution.source != "studio_legacy"):
             from fleet.resource_blocks import LabFacts, _gem_plan, gem_lane_blocks
-            cadence = getattr(self.bot.reroll_progress, 'lab_cadence', None)
+            cadence = getattr(getattr(self.bot, 'plan_coordinator', self.bot.reroll_progress), 'lab_cadence', None)
             facts = LabFacts(now=now, wallet_gems=context.balance.lower if context.balance else None,
                 slot_ownership=cadence.slot_records() if cadence else {}, card_context=context)
             lane = _gem_plan(gem_lane_blocks(route.gems), facts, route.rules)

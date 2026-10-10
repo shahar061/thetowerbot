@@ -603,3 +603,13 @@ test("unlock block edits its skills, price limit and hold", () => {
   expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ hold: false }));
   expect(screen.getByLabelText("Highest unlock price (coins)")).toHaveValue(20000);
 });
+
+
+test('single emulator apply has exactly one fixed target', async () => {
+  render(<StrategyStudio library={library} saved={route} catalog={catalog} members={[members[0]]}
+    mode="single" onPublished={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Apply to this emulator' }));
+  expect(screen.queryByRole('button', { name: 'Entire current fleet' })).not.toBeInTheDocument();
+  expect(screen.getByText(/Only this emulator/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Apply saved version' })).toBeEnabled();
+});

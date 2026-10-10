@@ -322,3 +322,19 @@ def test_an_explicit_interval_override_is_not_jittered(
     bot.run_forever(interval=0.0)
 
     assert waits == [0.0] * 5
+
+
+def test_stale_studio_assignment_blocks_legacy_template_purchase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot, dev = settled_bot(monkeypatch, tap_delay=0.0)
+    execution = MagicMock()
+    execution.owns_plan = True
+    execution.runtime = None
+    execution.authority_current.return_value = False
+    bot.strategy_execution = execution
+    results = [bot.find_and_click_image(rule.as_action())
+        for rule in bot.controls.snapshot().strategy.actions]
+    assert not any(results)
+    assert execution.authority_current.called
+    assert not taps(dev)

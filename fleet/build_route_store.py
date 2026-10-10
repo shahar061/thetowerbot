@@ -100,23 +100,30 @@ class BuildRouteStore:
         # Reparse to validate even a caller that constructed dataclasses directly.
         validated = RouteDocument.from_dict(draft.to_dict())
         with self._locked():
-            current = self.read()
-            if current.revision != expected_revision:
-                raise RouteConflict(current)
-            saved = replace(validated, revision=current.revision + 1,
-                            authored_at=time.time())
-            changed = _changed_rules(current, saved)
-            record = {"route": saved.to_dict(), "audit": {
-                "actor": actor.strip(), "source_revision": current.revision,
-                "target_revision": saved.revision, "at": saved.authored_at,
-                "changed_rule_ids": changed,
-            }}
-            # A failed current-file replacement can leave an unpublished history
-            # entry. It is not part of revisions(); the next writer may replace it.
-            _write_json_atomic(self.history / f"{saved.revision}.json", record)
-            _write_json_atomic(self.path, saved.to_dict())
-            return saved
+            return self.publish_locked(validated, expected_revision, actor)
 
+    def locked(self) -> Any:
+        return self._locked()
+
+    def publish_locked(self, draft: RouteDocument, expected_revision: int, actor: str) -> RouteDocument:
+        """Publish while the caller holds locked(), including target guards."""
+        validated = RouteDocument.from_dict(draft.to_dict())
+        current = self.read()
+        if current.revision != expected_revision:
+            raise RouteConflict(current)
+        saved = replace(validated, revision=current.revision + 1,
+                        authored_at=time.time())
+        changed = _changed_rules(current, saved)
+        record = {"route": saved.to_dict(), "audit": {
+            "actor": actor.strip(), "source_revision": current.revision,
+            "target_revision": saved.revision, "at": saved.authored_at,
+            "changed_rule_ids": changed,
+        }}
+        # A failed current-file replacement can leave an unpublished history
+        # entry. It is not part of revisions(); the next writer may replace it.
+        _write_json_atomic(self.history / f"{saved.revision}.json", record)
+        _write_json_atomic(self.path, saved.to_dict())
+        return saved
     def rollback(self, revision: int, expected_revision: int, actor: str) -> RouteDocument:
         if type(revision) is not int or revision < 1:
             raise ValueError("rollback revision must be positive")

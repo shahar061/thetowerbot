@@ -96,6 +96,7 @@ export function StrategyEditor({
   speedValues,
   disabled = false,
   hidePurchases = false,
+  botSettingsOnly = false,
   legacyPurchases = false,
   claimsDisabledReason = null,
 }: {
@@ -109,6 +110,7 @@ export function StrategyEditor({
   speedValues?: number[];
   disabled?: boolean;
   hidePurchases?: boolean;
+  botSettingsOnly?: boolean;
   legacyPurchases?: boolean;
   /** Non-null when the OCR reader will not load on this machine. The claim
    * walks read the missions and milestones ladders through it, and
@@ -155,7 +157,7 @@ export function StrategyEditor({
 
   return (
     <div className="flex flex-col gap-4">
-      <TournamentEditor value={value.tournament} onChange={v => set("tournament", v)} disabled={disabled} />
+      {!botSettingsOnly && <TournamentEditor value={value.tournament} onChange={v => set("tournament", v)} disabled={disabled} />}
       {!hidePurchases ? <SectionCard
         id={legacyPurchases ? "legacy-purchases" : "purchases"}
         title={legacyPurchases ? "Legacy battle purchases" : "Purchases"}
@@ -434,7 +436,7 @@ export function StrategyEditor({
         </div>
       </SectionCard>
 
-      <SectionCard id="tier-promotion" title="Tier promotion" contentClassName="flex flex-col gap-3">
+      {!botSettingsOnly && <SectionCard id="tier-promotion" title="Tier promotion" contentClassName="flex flex-col gap-3">
         <p className="text-xs text-muted-foreground">
           {promotionTiers.length === 0
             ? "No thresholds set, so the bot stays on the tier it is playing."
@@ -468,7 +470,7 @@ export function StrategyEditor({
         >
           Add tier
         </Button>
-      </SectionCard>
+      </SectionCard>}
     </div>
   );
 }

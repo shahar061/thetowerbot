@@ -99,6 +99,14 @@ def _row(root: Path, worker: str, route: RouteDocument, route_error: str | None,
                                         db_path=registration.db_path), rollout=rollout, worker=worker,
                     starter=starter)
     effective = resolve_route(route, worker, account_id)
+    return project_row(worker, account_id, strategy, effective, facts, coins, gems,
+                       read_at, recent, route_error)
+
+
+def project_row(worker: str, account_id: str, strategy: str, effective: Any,
+                facts: Any, coins: int | None, gems: int | None, read_at: float | None,
+                recent: list[dict[str, Any]], route_error: str | None = None) -> dict[str, Any]:
+    """Present target-bound evidence without requiring fleet registration."""
     plan = evaluate_lab_plan(effective, facts)
     plan_row = asdict(plan)
     if effective.rules.coins.lab_share.mode == "just_in_time":

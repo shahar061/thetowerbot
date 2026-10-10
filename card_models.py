@@ -335,7 +335,7 @@ class CardPlanContext(_StrictModel):
     in_run: bool
     unresolved_operation: CardOperation | None
     cards_bought_this_visit: int = Field(ge=0)
-    config_owner: Literal["local", "fleet", "unavailable"] = "unavailable"
+    config_owner: Literal["local", "fleet", "studio", "unavailable"] = "unavailable"
     evidence_after: float | None = Field(default=None, ge=0)
     quotes: tuple[CardQuote, ...] = ()
     command: CardCommand | None = None

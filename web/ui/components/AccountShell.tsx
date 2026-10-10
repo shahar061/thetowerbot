@@ -13,7 +13,7 @@ export function AccountShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { accounts, selected, loading, error, choose } = useAccountSelection();
   const reroll = isFleetWorkspacePath(pathname);
-  const independent = pathname.startsWith("/fleet/") || pathname === "/guide/" || pathname === "/archives/" || pathname === "/milestones/" || pathname === "/settings/";
+  const independent = pathname.startsWith("/fleet/") || pathname === "/strategy/" || pathname === "/guide/" || pathname === "/archives/" || pathname === "/milestones/" || pathname === "/settings/";
   const history = HISTORY.has(pathname);
   const remote = selected?.running && selected.dashboard_url && typeof window !== "undefined"
     && new URL(selected.dashboard_url).origin !== window.location.origin;

@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 from dataclasses import replace
+from contextlib import nullcontext
 
 from account_collection import StatsCollection, at_home
 from cards_intro import CardsIntro, popup_visible as cards_popup_visible
@@ -197,6 +198,7 @@ class TowerBot:
         unknown_dir: Path | None = None,
         supervisor: DeviceSupervisor | None = None,
         reroll_progress: Any | None = None,
+        strategy_execution: Any | None = None,
         progress: Any | None = None,
         recovery: Any | None = None,
         identity_reverifier: Callable[[], None] | None = None,
@@ -259,6 +261,7 @@ class TowerBot:
         if account_state is not None and isinstance(safety_journal, transactions.TransactionJournal):
             account_state.attach_safety_storage(safety_journal.path)
         self.reroll_progress = reroll_progress
+        self.strategy_execution = strategy_execution
         self.lab_runtime = None
         self.maintenance = MaintenanceSchedule()
         self.maintenance_status: str | None = None
@@ -485,6 +488,12 @@ class TowerBot:
             if self.reroll_progress is not None:
                 self.reroll_progress.card_context = self.card_runtime.context
 
+    @property
+    def plan_coordinator(self) -> Any:
+        if self.strategy_execution is not None and self.strategy_execution.owns_plan:
+            return self.strategy_execution.progress
+        return self.reroll_progress
+
     def _advance_cards(self, boxes: tuple[ocr.TextBox, ...], *, opportunity: bool = False) -> bool:
         """Exclusive scheduler entry; recovery precedes generic shopping recovery."""
         runtime = self.card_runtime
@@ -590,13 +599,19 @@ class TowerBot:
         return True
 
     def _tournament_config(self, settings: Live) -> Any:
-        if self.reroll_progress is not None and self.reroll_progress.route_runtime is not None:
+        execution = self.strategy_execution
+        if execution is not None and not execution.authority_current():
+            from tournament_policy import TournamentConfig
+            return TournamentConfig(enabled=False)
+        if execution is not None and execution.source == 'studio_legacy' and execution._resolved is not None:
+            return execution._resolved.tournament
+        coordinator = self.plan_coordinator
+        if coordinator is not None and coordinator.route_runtime is not None:
             from fleet.build_route import resolve_route
             from tournament_policy import TournamentConfig
             try:
-                route = self.reroll_progress.route_runtime.current()
-                return resolve_route(route, self.reroll_progress.root.name,
-                                     self.reroll_progress.account_id).tournament
+                route = coordinator.route_runtime.current()
+                return resolve_route(route, coordinator.worker, coordinator.account_id).tournament
             except Exception:
                 return TournamentConfig(enabled=False)
         return settings.strategy.tournament
@@ -655,9 +670,12 @@ class TowerBot:
             self.runs.restore(pending.run_id, time.monotonic())
         # Finish an ordinary run before visiting the tournament from menu.
         can_open = self.runs.current_id is None and not self.shopping.active and not self.shopping.reconciliation_pending
-        with self.account_state.guard_scope(self._tournament_scope), self.controls.transaction():
+        execution = self.strategy_execution
+        runtime = execution.runtime if execution is not None and execution.owns_plan else None
+        route_guard = runtime.store._locked() if runtime is not None else nullcontext()
+        with route_guard, self.account_state.guard_scope(self._tournament_scope), self.controls.transaction():
             live = self.controls.snapshot()
-            if live.paused or live.strategy != settings.strategy or self._tournament_config(live) != visit.config:
+            if live.paused or live.strategy != getattr(self, "_strategy_control_snapshot", settings.strategy) or self._tournament_config(live) != visit.config:
                 return relevant or visit.owns_navigation, reading
             if relevant or visit.owns_navigation or can_open and parsed.menu is not None and not self._any_walk_active():
                 clicked = visit.advance(self.screen, boxes, self.device, now=time.time(),
@@ -856,7 +874,13 @@ class TowerBot:
         jitter.pause(
             policy.tap_delay, policy.timing_jitter, sleep=self._stopping.wait
         )
-        tap(self.device, tap_x, tap_y)
+        execution = self.strategy_execution
+        runtime = execution.runtime if execution is not None and execution.owns_plan else None
+        route_guard = runtime.store._locked() if runtime is not None else nullcontext()
+        with route_guard:
+            if execution is not None and not execution.authority_current():
+                return False
+            tap(self.device, tap_x, tap_y)
         self._last_click[cooldown_key] = now
         self.bus.publish(
             events.Tapped(
@@ -1079,11 +1103,25 @@ class TowerBot:
         best = self._best_wave if tier is None else self._tier_best_wave.get(tier)
         return best, self._claimed_wave.get(tier)
 
+    def _bind_plan_shopping(self) -> None:
+        coordinator = self.plan_coordinator
+        for attribute, method in (
+            ('reroll_observe_price', 'observe_price'), ('reroll_observe_prices', 'observe_prices'),
+            ('reroll_purchase_reason', 'purchase_reason'), ('reroll_purchase_plan_id', 'purchase_plan_id'),
+            ('price_quotes', 'price_quotes'), ('inspection_resolved', 'inspection_resolved')):
+            setattr(self.shopping, attribute, getattr(coordinator, method, None))
+        if self.lab_visit is not None and coordinator is not None:
+            self.lab_visit.worker = coordinator.worker_id
+            self.lab_visit.rollout = coordinator.unlock_rollout()
+            self.lab_visit.starter = coordinator.starter_rollout()
+        self.shopping.reroll_replan = self._replan_reroll_shopping if coordinator else None
+        self.shopping.reroll_stop_reason = lambda: getattr(self.plan_coordinator, 'stop_reason', None)
+
     def _replan_reroll_shopping(self) -> Shopping | None:
         """The strategy's next Workshop choice, mid-visit, after a purchase."""
-        if self.reroll_progress is None or self._reroll_shopping_base is None:
+        if self.plan_coordinator is None or self._reroll_shopping_base is None:
             return None
-        policy = self.reroll_progress.shopping_policy(self._reroll_shopping_base)
+        policy = self.plan_coordinator.shopping_policy(self._reroll_shopping_base)
         self._reroll_shopping_policy = policy
         return policy
 
@@ -1649,13 +1687,13 @@ class TowerBot:
 
     def _authorize_lab(self, operation: str, decision: LabDecision | None, now: float) -> bool:
         """Recheck the assigned route, its calibration gate and shared funds at the spend boundary."""
-        if self.reroll_progress is None or self.account_state is None or self.lab_runtime is None:
+        if self.plan_coordinator is None or self.account_state is None or self.lab_runtime is None:
             return False
-        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        route_runtime = getattr(self.plan_coordinator, 'route_runtime', None)
         revision = route_runtime.current().revision if route_runtime is not None else None
         if revision != self._lab_visit_revision:
             return False
-        options = self.reroll_progress.lab_visit_options()
+        options = self.plan_coordinator.lab_visit_options()
         if operation == 'lab_repeat':
             return (self.lab_visit is not None and decision is not None
                     and options.native_repeat in {'enabled', 'disabled'}
@@ -1705,7 +1743,7 @@ class TowerBot:
         rollout's gate), never automated_list(). Only called from the safe
         MAIN_MENU branch.
         """
-        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        route_runtime = getattr(self.plan_coordinator, 'route_runtime', None)
         if (route_runtime is None or self.account_state is None or self.lab_runtime is None):
             return None
         if self.lab_visit is not None:
@@ -1736,7 +1774,7 @@ class TowerBot:
         never steps aside, so the spend boundary still refuses a plan whose
         action for that slot changed.
         """
-        plan = self.reroll_progress.lab_strategy_plan(
+        plan = self.plan_coordinator.lab_strategy_plan(
             snapshot, available_coins=facts.available_coins, now=now,
             excluded_research=self._excluded_lab_research(now))
         if plan is None:
@@ -1803,12 +1841,12 @@ class TowerBot:
 
     def _plan_lab_action_during_visit(self, now: float) -> Any | None:
         """Use the confirmed strip before its spend evidence expires."""
-        if self.reroll_progress is None or self.lab_visit is None or self.lab_runtime is None:
+        if self.plan_coordinator is None or self.lab_visit is None or self.lab_runtime is None:
             return None
         action = self._plan_lab_action(now)
         if action is None:
             return None
-        options = self.reroll_progress.lab_visit_options()
+        options = self.plan_coordinator.lab_visit_options()
         if self.lab_visit.gate(action.slot, action.research, options=options).mode != action.operation:
             return None
         # The plan already stepped around every held action.
@@ -1823,8 +1861,10 @@ class TowerBot:
         The legacy cadence-paced check (`due`) is unchanged; while nothing is
         armed, BATTLE navigation proceeds normally.
         """
-        options = self.reroll_progress.lab_visit_options()
-        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        if self.plan_coordinator is None or self.lab_visit is None:
+            return False
+        options = self.plan_coordinator.lab_visit_options()
+        route_runtime = getattr(self.plan_coordinator, 'route_runtime', None)
         revision = route_runtime.current().revision if route_runtime is not None else None
         repeat_key = (revision, options.native_repeat)
         previous_repeat = getattr(self, '_lab_repeat_check', None)
@@ -1886,8 +1926,8 @@ class TowerBot:
             self._lab_holds().pop(last[0], None)
             # A visit that re-planned after its last start already read the
             # strip it left; only one that returned straight away owes a look.
-            if (self.reroll_progress is not None and not getattr(result, 'replanned', False)
-                    and self.reroll_progress.lab_visit_options().direct_start):
+            if (self.plan_coordinator is not None and not getattr(result, 'replanned', False)
+                    and self.plan_coordinator.lab_visit_options().direct_start):
                 self._lab_followup_due = True
 
     def _count_lab_picker_failure(self, result: Any, attempt: Any, selected: LabAction | None) -> None:
@@ -1918,7 +1958,7 @@ class TowerBot:
 
     def _excluded_lab_research(self, now: float) -> frozenset[str]:
         blocked = getattr(self, '_lab_unavailable', {})
-        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        route_runtime = getattr(self.plan_coordinator, 'route_runtime', None)
         revision = route_runtime.current().revision if route_runtime is not None else None
         account_id = self._lab_account_id()
         return frozenset(research for (account, route, research), expiry in blocked.items()
@@ -1926,7 +1966,7 @@ class TowerBot:
 
     def _arm_lab_visit_bookkeeping(self, lab_notice_due: bool) -> None:
         """Record the route revision and badge generation for a just-armed Labs visit."""
-        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        route_runtime = getattr(self.plan_coordinator, 'route_runtime', None)
         self._lab_visit_revision = route_runtime.current().revision if route_runtime is not None else None
         if lab_notice_due:
             self._notifications.begin("labs", time.time())
@@ -1934,17 +1974,17 @@ class TowerBot:
 
     def _lab_start_due(self, now: float) -> bool:
         """Whether a lab start is due, from slot state alone (never the wallet)."""
-        if self.reroll_progress is None:
+        if self.plan_coordinator is None:
             return False
-        options = self.reroll_progress.lab_visit_options()
+        options = self.plan_coordinator.lab_visit_options()
         if not options.start_research:
             return False
         if self.lab_runtime is None:
             # No slot state to read: keep the legacy cadence for this route.
-            return bool(self.reroll_progress.lab_due(now))
-        if not self.reroll_progress.lab_unlocked():
+            return bool(self.plan_coordinator.lab_due(now))
+        if not self.plan_coordinator.lab_unlocked():
             return False
-        route_runtime = getattr(self.reroll_progress, 'route_runtime', None)
+        route_runtime = getattr(self.plan_coordinator, 'route_runtime', None)
         revision = route_runtime.current().revision if route_runtime is not None else None
         key = (self._lab_account_id(), revision)
         last_check = getattr(self, '_lab_direct_check', None)
@@ -1983,11 +2023,11 @@ class TowerBot:
             # One visit may not clear every lab badge. Require a clear edge
             # before a future generation; a persistent dot backs off.
             self._notifications.finish("labs", time.time(), claimed=False)
-        if self.reroll_progress is None:
+        if self.plan_coordinator is None:
             return
         if result.slot_status:
             # LabSlotUnlocked is the journal's recovery_event, with the real slot and price.
-            self.reroll_progress.note_lab_slots(dict(result.slot_status), result.gem_balance)
+            self.plan_coordinator.note_lab_slots(dict(result.slot_status), result.gem_balance)
         decision = result.decision
         # The slot-1 cadence, its coin hold and the research wait belong to Game
         # Speed in Lab 1 (a legacy visit's decision defaults to it). Another
@@ -1998,7 +2038,7 @@ class TowerBot:
             self._research_until = result.confirmed_job.completes_at
         if result.status == "started" and result.confirmed_job is not None:
             if game_speed:
-                self.reroll_progress.note_lab_observation(LabDecision(
+                self.plan_coordinator.note_lab_observation(LabDecision(
                     "wait_running", job_completes_at=result.confirmed_job.completes_at,
                     game_speed_level=decision.game_speed_level))
             if (decision.wallet_coins is not None and decision.price is not None
@@ -2022,12 +2062,12 @@ class TowerBot:
             # that failed without reading keeps it too (and the coin hold it
             # drives); only the next check backs off.
             if result.status in ("failed", "cancelled") and decision.kind == "unknown":
-                self.reroll_progress.note_lab_failure()
+                self.plan_coordinator.note_lab_failure()
             elif game_speed and result.reason not in ("auto_start_off", "research_rehearsed"):
                 # A rehearsal decision carries kind 'start' for the rehearsed
                 # slot, but research never began: it must not be observed as
                 # a start or as any other cadence/state-changing observation.
-                self.reroll_progress.note_lab_observation(decision)
+                self.plan_coordinator.note_lab_observation(decision)
         self._debit_lab_starts(result)
         started_speed = getattr(result, 'game_speed_start', None)
         if started_speed is not None and not (game_speed and result.status == "started"
@@ -2037,12 +2077,12 @@ class TowerBot:
             level, completes = started_speed
             if completes is not None:
                 self._research_until = completes
-            self.reroll_progress.note_lab_observation(LabDecision(
+            self.plan_coordinator.note_lab_observation(LabDecision(
                 "wait_running", job_completes_at=completes, game_speed_level=level))
         if (decision.slot == 1 and decision.research_id != 'labs.game-speed'
                 and result.status in ('started', 'observed')
                 and decision.kind != 'unknown' and result.reason != 'research_rehearsed'):
-            self.reroll_progress.note_other_lab_research()
+            self.plan_coordinator.note_other_lab_research()
         logger.info("Lab %s visit ended: %s (%s), started slots %s%s", decision.slot, result.status,
                     result.reason, getattr(result, 'started_slots', ()),
                     f"; Lab {result.unlocked_slot} unlocked" if result.unlocked_slot is not None else "")
@@ -2067,7 +2107,7 @@ class TowerBot:
             return
         self._last_lab_debit = result
         for _, spent in spends:
-            self.reroll_progress.note_lab_coin_debit(spent)
+            self.plan_coordinator.note_lab_coin_debit(spent)
 
     def run_once(self, max_runs: int | None = None) -> bool:
         """Record a scan only when its pass returned normally."""
@@ -2146,7 +2186,24 @@ class TowerBot:
         # Exactly one snapshot for the whole pass. Re-reading mid-scan would
         # let a setting change underneath a half-finished scan - the wallet
         # read with one strategy and the price gate applied with another.
-        settings = self.controls.snapshot()
+        raw_settings = self.controls.snapshot()
+        self._strategy_control_snapshot = raw_settings.strategy
+        settings = raw_settings
+        if self.strategy_execution is not None:
+            pending = self.autopilot.pending is not None or self.shopping.active or self.shopping.reconciliation_pending or (
+                self.lab_visit is not None and (self.lab_visit.active or
+                    self.lab_visit.pending_transaction is not None or self.lab_visit.has_recovery_receipts)) or (
+                self.card_runtime is not None and (self.card_runtime.active or any(
+                    self.card_runtime._progressed(op) for op in self.card_runtime.store.unresolved()))) or (
+                self.tournament_visit is not None and (self.tournament_visit.owns_navigation or self.tournament_visit.in_run
+                    or self.tournament_visit.store.pending() is not None)) or (
+                self._tournament_store is not None and self._tournament_store.pending() is not None)
+            resolved = self.strategy_execution.resolve(raw_settings.strategy,
+                pending_verification=pending, run_id=self.runs.current_id)
+            settings = replace(raw_settings, strategy=resolved.strategy)
+            self._bind_plan_shopping()
+            if self.plan_coordinator is not None and self.card_runtime is not None:
+                self.plan_coordinator.card_context = self.card_runtime.context
         chosen = self.checks.get(settings.strategy.affordability)
         if chosen is not None:
             self.affordability = chosen
@@ -2426,9 +2483,9 @@ class TowerBot:
                     action="stall:escape", x=point[0], y=point[1], score=1.0))
                 return True
             if unlocked is not None and not self.in_game_ad.active:
-                if (self.reroll_progress is not None
+                if (self.plan_coordinator is not None
                         and unlocked_screen.is_labs_unlock(unlocked.caption)):
-                    self.reroll_progress.note_lab_unlocked(
+                    self.plan_coordinator.note_lab_unlocked(
                         "unlock_card", caption=unlocked.caption)
                 if settings.paused:
                     return False
@@ -2612,12 +2669,12 @@ class TowerBot:
             menu_anchor = pages.classify_page(self.screen, self.templates).top_left
             menu_header = (menu_anchor, *header_numbers(self.screen, "MAIN_MENU", menu_anchor))
             self._observe_menu_wallet(menu_header[1], menu_header[2], evidence_ref=reads.digest)
-            if self.reroll_progress is not None:
-                self.reroll_progress.note_menu_wallet(menu_header[1])
-        if self.reroll_progress is not None:
+            if self.plan_coordinator is not None:
+                self.plan_coordinator.note_menu_wallet(menu_header[1])
+        if self.plan_coordinator is not None:
             if self.shopping.active and self._reroll_shopping_policy is not None:
                 shopping_policy = self._reroll_shopping_policy
-                if self.reroll_progress.route_changed_since_policy():
+                if self.plan_coordinator.route_changed_since_policy():
                     # End the current visit before taking a spend action with
                     # a rule that no longer belongs to the published route.
                     shopping_policy = dataclasses.replace(
@@ -2625,14 +2682,14 @@ class TowerBot:
                     self._reroll_shopping_policy = None
             elif state is screens.ScreenState.MAIN_MENU and not self.shopping.reconciliation_pending:
                 self._reroll_shopping_base = shopping_policy
-                shopping_policy = self.reroll_progress.shopping_policy(shopping_policy)
+                shopping_policy = self.plan_coordinator.shopping_policy(shopping_policy)
                 self._reroll_shopping_policy = shopping_policy
-                evaluation = getattr(self.reroll_progress, '_route_evaluation', None)
+                evaluation = getattr(self.plan_coordinator, '_route_evaluation', None)
                 if (self.progress is not None and evaluation is not None
                         and evaluation.status == 'unknown'):
                     self.progress.observe_capability(
                         'workshop', 'actionable_unknown',
-                        self.reroll_progress.route_error or 'prerequisite_unknown', 120)
+                        self.plan_coordinator.route_error or 'prerequisite_unknown', 120)
 
         # A crashed spend owns the device, even if startup finds a different
         # screen. No speed, claim, navigation or battle action may precede proof.
@@ -3257,20 +3314,24 @@ class TowerBot:
                         # A confirmation can reuse this frame, but an operator
                         # pause or strategy change must stop the next action.
                         live = self.controls.snapshot()
-                        if live.paused or live.strategy != settings.strategy or (self._tournament_fenced and (self._run_tournament is not None or self.tournament_visit is not None)):
+                        if (live.paused or live.strategy != raw_settings.strategy
+                                or (self._tournament_fenced and (self._run_tournament is not None or self.tournament_visit is not None))
+                                or (self.strategy_execution is not None and self.strategy_execution.source == "blocked")):
+                            return replace(settings.strategy.autopilot, enabled=False, rules=())
+                        if self.strategy_execution is not None and not self.strategy_execution.authority_current():
                             return replace(settings.strategy.autopilot, enabled=False, rules=())
                         if self.tournament_visit is not None and self.tournament_visit.in_run:
                             return self.tournament_visit.policy(
                                 {**self.autopilot.state.rows("battle", time.time(), self.run_identity(settings)),
                                  **{row.upgrade_id: row.payload() for row in observation.rows}}, combat)
-                        if self.reroll_progress is None:
+                        if self.plan_coordinator is None:
                             if self.push_runs.active:
                                 return push_policy(replace(settings.strategy.autopilot, enabled=True),
                                     tier=self.push_runs.state.target_tier,
                                     rows={row.upgrade_id: row.payload() for row in observation.rows}, combat=combat)
                             return settings.strategy.autopilot
                         identity = self.run_identity(settings)
-                        effective = self.reroll_progress.battle_policy(
+                        effective = self.plan_coordinator.battle_policy(
                             settings.strategy.autopilot,
                             {**self.autopilot.state.rows("battle", time.time(), identity),
                              **{row.upgrade_id: row.payload() for row in observation.rows}},
@@ -3289,18 +3350,18 @@ class TowerBot:
                         return effective
 
                     def record_battle_receipt(sequence: int | None, upgrade_id: str, levels: int) -> None:
-                        if (self.reroll_progress is None or self.push_runs.active
+                        if (self.plan_coordinator is None or self.push_runs.active
                                 or self.tournament_visit is not None and self.tournament_visit.in_run):
                             return
                         if config.BATTLE_BURST_ENABLED:
-                            self.reroll_progress.note_battle_levels(
+                            self.plan_coordinator.note_battle_levels(
                                 self.runs.current_id, upgrade_id, levels)
                         else:
-                            self.reroll_progress.await_battle_receipt(self.runs.current_id, sequence)
+                            self.plan_coordinator.await_battle_receipt(self.runs.current_id, sequence)
 
                     def invalidate_battle_quote(upgrade_id: str) -> None:
-                        if self.reroll_progress is not None:
-                            self.reroll_progress.battle_prices.invalidate(upgrade_id)
+                        if self.plan_coordinator is not None:
+                            self.plan_coordinator.battle_prices.invalidate(upgrade_id)
 
                     battle_policy = refresh_battle_policy()
                     clicked = self.autopilot.step(self.screen, self.device, battle_policy,
@@ -3376,9 +3437,9 @@ class TowerBot:
                 menu_header = (menu_anchor, *header_numbers(self.screen, "MAIN_MENU", menu_anchor))
                 self._observe_menu_wallet(menu_header[1], menu_header[2], evidence_ref=reads.digest)
             menu_anchor, menu_coins, menu_gems = menu_header
-            if self.reroll_progress is not None:
-                self.reroll_progress.note_menu_wallet(menu_coins)
-                self.reroll_progress.resource_evaluation(menu_coins, menu_gems)
+            if self.plan_coordinator is not None:
+                self.plan_coordinator.note_menu_wallet(menu_coins)
+                self.plan_coordinator.resource_evaluation(menu_coins, menu_gems)
             # The Workshop tutorial grants 50 coins. Visit it first on a fresh
             # account so the first affordable upgrade can use that grant.
             initial_workshop = (self.reroll_progress is not None
@@ -3404,23 +3465,23 @@ class TowerBot:
             # reroll claims rewards and checks Labs only when the tab is unlocked.
             elif self._offer_cards_intro():
                 logger.info("Armed the first Cards visit from the main menu.")
-            elif self.lab_visit is not None and self.reroll_progress is not None:
+            elif self.lab_visit is not None and self.plan_coordinator is not None:
                 now = time.time()
                 # Persist only an explicit lock or unlocked-tab match.
                 # An ambiguous frame remains unknown and never authorizes
                 # a tap into Labs.
                 labs_tab_status = self.lab_visit.tab_status(self.screen)
                 if labs_tab_status == "unlocked":
-                    self.reroll_progress.note_lab_unlocked("labs_tab")
+                    self.plan_coordinator.note_lab_unlocked("labs_tab")
                 elif labs_tab_status == "locked":
-                    self.reroll_progress.note_lab_locked("labs_tab")
+                    self.plan_coordinator.note_lab_locked("labs_tab")
                 lab_notice_due = self._notifications.eligible("labs", now)
                 # A due lab start outranks claims and the Workshop. The start
                 # probe has pacing side effects, so it runs once per frame.
                 # A GAME_OVER detour latched the paced check: it is still due.
                 lab_due_now = (labs_tab_status == "unlocked" and (
                     lab_notice_due or self._lab_home_pending or self._lab_start_due(now)
-                    or self.reroll_progress.lab_unlock_due(wallet_gems=menu_gems)))
+                    or self.plan_coordinator.lab_unlock_due(wallet_gems=menu_gems)))
                 if lab_due_now and self._request_planned_lab_visit(now, True):
                     self._arm_lab_visit_bookkeeping(lab_notice_due)
                 else:
@@ -3500,9 +3561,9 @@ class TowerBot:
                     go_home=(self.push_runs.needs_home
                              or (self.tournament_visit is not None and self.tournament_visit.due(time.time()))
                              or (self.shopping.due(shopping_policy, self.runs.completed)
-                              and (self.reroll_progress is None
-                                   or self.reroll_progress.initial_workshop_due()
-                                   or self.reroll_progress.workshop_worthwhile(
+                              and (self.plan_coordinator is None
+                                   or self.plan_coordinator.initial_workshop_due()
+                                   or self.plan_coordinator.workshop_worthwhile(
                                        publish_estimate=state is screens.ScreenState.GAME_OVER,
                                        detour=state is screens.ScreenState.GAME_OVER)))
                              or self._claim_owed(settings)
@@ -3518,8 +3579,8 @@ class TowerBot:
                                  and self.reroll_progress.stats_due())
                              or lab_start_due
                              or (state is screens.ScreenState.GAME_OVER
-                                 and self.reroll_progress is not None
-                                 and self.reroll_progress.lab_unlock_due())),
+                                 and self.plan_coordinator is not None
+                                 and self.plan_coordinator.lab_unlock_due())),
                     # The way off a menu page. NAV_BUTTONS is keyed by
                     # ScreenState, which has no member for one, so the bot could
                     # neither act on the workshop (the loop above gates on

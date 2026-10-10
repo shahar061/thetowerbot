@@ -122,6 +122,7 @@ export type BuildRouteDocument = {
   authored_at: number | null;
   baseline: {
     tournament?: import("./types").TournamentConfig;
+    tier_promotion?: Record<string, number>;
     workshop: {
       id: string;
       mode: "legacy_planner" | "priorities" | "blocks";
