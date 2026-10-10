@@ -369,7 +369,7 @@ class RerollProgress:
         purchases: dict[str, int] = {}
         with db.reader(path) as connection:
             best = connection.execute(
-                "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL"
+                "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL" + (" AND tournament=0" if db._schema_probe(connection)["tournament"] else "")
             ).fetchone()[0]
             rows = connection.execute(
                 "SELECT kind, item, category, reason, detail FROM ledger "

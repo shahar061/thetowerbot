@@ -1,5 +1,6 @@
 "use client";
 
+import { TournamentEditor } from "@/components/TournamentEditor";
 import { ChevronDown, ChevronUp, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -154,6 +155,7 @@ export function StrategyEditor({
 
   return (
     <div className="flex flex-col gap-4">
+      <TournamentEditor value={value.tournament} onChange={v => set("tournament", v)} disabled={disabled} />
       {!hidePurchases ? <SectionCard
         id={legacyPurchases ? "legacy-purchases" : "purchases"}
         title={legacyPurchases ? "Legacy battle purchases" : "Purchases"}

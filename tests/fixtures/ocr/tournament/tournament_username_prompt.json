@@ -1,0 +1,182 @@
+[
+  {
+    "text": "398",
+    "confidence": 0.9990593194961548,
+    "rect": [
+      87,
+      27,
+      108,
+      48
+    ]
+  },
+  {
+    "text": "161",
+    "confidence": 0.9992296099662781,
+    "rect": [
+      380,
+      26,
+      144,
+      51
+    ]
+  },
+  {
+    "text": "TOURNAMENT",
+    "confidence": 0.9955361425876618,
+    "rect": [
+      31,
+      111,
+      359,
+      43
+    ]
+  },
+  {
+    "text": "THE TOURNAMENT",
+    "confidence": 0.9682994995798383,
+    "rect": [
+      213,
+      252,
+      656,
+      56
+    ]
+  },
+  {
+    "text": "Copper League",
+    "confidence": 0.9886111387839684,
+    "rect": [
+      388,
+      648,
+      306,
+      51
+    ]
+  },
+  {
+    "text": "USERNAME",
+    "confidence": 0.9922967031598091,
+    "rect": [
+      355,
+      811,
+      373,
+      52
+    ]
+  },
+  {
+    "text": "Chooseanameforotherplayersto",
+    "confidence": 0.9973105894667762,
+    "rect": [
+      280,
+      947,
+      564,
+      34
+    ]
+  },
+  {
+    "text": "seeintournaments",
+    "confidence": 0.9924403801560402,
+    "rect": [
+      280,
+      987,
+      315,
+      27
+    ]
+  },
+  {
+    "text": "Choose a name forother players to",
+    "confidence": 0.9341307101827679,
+    "rect": [
+      280,
+      1083,
+      564,
+      35
+    ]
+  },
+  {
+    "text": "seeintournaments",
+    "confidence": 0.9886040166020393,
+    "rect": [
+      279,
+      1125,
+      315,
+      27
+    ]
+  },
+  {
+    "text": "You cannot change your name during",
+    "confidence": 0.9872737877509173,
+    "rect": [
+      278,
+      1219,
+      595,
+      39
+    ]
+  },
+  {
+    "text": "an active tournament",
+    "confidence": 0.9658213436603547,
+    "rect": [
+      279,
+      1260,
+      347,
+      30
+    ]
+  },
+  {
+    "text": "Enter name...",
+    "confidence": 0.9397974289380587,
+    "rect": [
+      298,
+      1346,
+      223,
+      36
+    ]
+  },
+  {
+    "text": "Save",
+    "confidence": 0.995326578617096,
+    "rect": [
+      480,
+      1506,
+      119,
+      50
+    ]
+  },
+  {
+    "text": "User Name:",
+    "confidence": 0.9569466352462769,
+    "rect": [
+      356,
+      1856,
+      210,
+      39
+    ]
+  },
+  {
+    "text": "BATTLE",
+    "confidence": 0.9939490854740143,
+    "rect": [
+      476,
+      2012,
+      184,
+      46
+    ]
+  },
+  {
+    "text": "Time left to join: 6h 2m",
+    "confidence": 0.9766231055061022,
+    "rect": [
+      359,
+      2133,
+      359,
+      32
+    ]
+  },
+  {
+    "text": "Tap To Return To Game",
+    "confidence": 0.9721636176109314,
+    "rect": [
+      235,
+      2274,
+      615,
+      55
+    ]
+  }
+]

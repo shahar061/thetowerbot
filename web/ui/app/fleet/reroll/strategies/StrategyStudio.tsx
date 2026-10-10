@@ -15,6 +15,7 @@ import { StrategyBlockInspector } from "./StrategyBlockInspector";
 import { ResourceBlocks } from "./ResourceBlocks";
 import { LabListView } from "./LabListView";
 import { LabSlotPlanner } from "./LabSlotPlanner";
+import { TournamentEditor } from "@/components/TournamentEditor";
 import { StrategyRules } from "./StrategyRules";
 import { RouteInspector } from "./RouteInspector";
 import { StrategyHistory } from "./StrategyHistory";
@@ -296,6 +297,7 @@ export function StrategyStudio({ library: initialLibrary, saved, catalog, member
         </> : <p className={styles.hint}>Add and arrange {lane} blocks on the canvas. Only blocks marked Automated run today; the rest are planned.</p>}
       </aside>}
       <main className={styles.canvasPane}>
+        <TournamentEditor value={strategy.baseline.tournament} onChange={v => edit({ ...strategy.baseline, tournament: v })} disabled={locked} />
         <div role="tablist" aria-label="Spending lanes" className={styles.lanes}>{LANES.map(item => <button role="tab" aria-selected={lane === item.id} type="button" key={item.id} onClick={() => { setLane(item.id); setSelection(null); setTarget(ROOT_END); setPreview(null); }}><item.icon size={16} />{item.label}</button>)}</div>
         <div className={styles.canvasMeta}><span>{lane === "workshop" ? "Coins · after a run · research first" : lane === "battle" ? "Cash · during a run · verified rows" : lane === "cards" ? "Cards · independent account budgets · between runs" : lane === "gems" ? "Gems · reserve before spending" : "Coins · Game Speed before Workshop"}</span><span>{locked ? "Template" : "Editable copy"}</span></div>
         <div className={styles.canvas}>

@@ -53,6 +53,7 @@ export function AutopilotStatusPanel({
         {snapshot?.reason ||
           "The bot will explain its next decision after observing the game."}
       </p>
+      {snapshot?.tournament && snapshot.tournament.stage !== "idle" && <p className="rounded border p-2 text-sm">Tournament · {readable(snapshot.tournament.stage)}{snapshot.tournament.league ? ` · ${snapshot.tournament.league}` : ""}{snapshot.tournament.reason ? ` · ${readable(snapshot.tournament.reason)}` : ""}</p>}
       <dl className="grid grid-cols-2 gap-3 text-sm">
         <div>
           <dt className="text-xs text-muted-foreground">

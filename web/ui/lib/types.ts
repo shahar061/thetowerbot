@@ -161,6 +161,9 @@ export interface RuntimeMetadata {
 
 /** A row from the `runs` table. */
 export interface RunRow {
+  tournament?: number | boolean;
+  league?: string | null;
+  rank?: number | null;
   purpose?: RunPurpose;
   id: number;
   started_at: number;
@@ -323,6 +326,7 @@ export interface UpgradeObservation {
   value: number | null; price: number | null; status: string; observed_at: number;
 }
 export interface AutopilotSnapshot {
+  tournament?: { stage: string; reason?: string | null; league?: string | null };
   can_control?: boolean;
   phase: string; reason: string; next_upgrade_id: string | null; category: string | null;
   observations: UpgradeObservation[];
@@ -343,7 +347,17 @@ export interface Claims {
 }
 
 /** Mirrors strategy.py's Strategy.to_dict(). */
+export interface TournamentConfig {
+  enabled: boolean;
+  public_name: string | null;
+  opening_cash: { cash_bonus_target: number | null; cash_per_wave_target: number | null; cash_budget: number | null; until_wave: number | null };
+  rules: { upgrade_id: string; enabled?: boolean; target?: number | null }[];
+  cash_reserve: number;
+  cash_spend_limit_pct: number;
+}
+
 export interface Strategy {
+  tournament?: TournamentConfig;
   cards?: import("./cards").CardProgram | null;
   name: string;
   autopilot?: AutopilotPolicy;

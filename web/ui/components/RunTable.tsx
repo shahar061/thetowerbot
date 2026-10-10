@@ -23,7 +23,7 @@ export function RunTable({ runs, onSelect }: { runs: RunRow[]; onSelect: (id: nu
               <td className="border-b py-1 tabular-nums">{run.id}</td>
               <td className="border-b py-1 tabular-nums">{run.wave ?? "-"}</td>
               <td className="border-b py-1 tabular-nums">{run.coins ?? "-"}</td>
-              <td className="border-b py-1 tabular-nums">{run.tier ?? "-"}</td>
+              <td className="border-b py-1 tabular-nums">{run.tournament ? `Tournament · ${run.league ?? "unknown league"} · rank ${run.rank ?? "—"}` : run.tier ?? "-"}</td>
               <td className="border-b py-1 tabular-nums">{run.tap_count}</td>
               <td className="border-b py-1 tabular-nums">
                 {run.ended_at ? Math.round(run.ended_at - run.started_at) + "s" : "live"}

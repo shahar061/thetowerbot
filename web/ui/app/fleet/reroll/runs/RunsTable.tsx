@@ -23,7 +23,7 @@ export function RunsTable({ runs, selected, onSelect, now }: {
 }): React.JSX.Element {
   return <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card">
     <div className={`${COLUMNS} border-b px-4 py-2.5 text-[11px] font-semibold tracking-wide text-muted-foreground`}>
-      <span>RUN</span><span>EMULATOR</span><span>ENDED</span><span>TIER</span><span>WAVE</span><span>COINS</span>
+      <span>RUN</span><span>EMULATOR</span><span>ENDED</span><span>MODE</span><span>WAVE</span><span>COINS</span>
       <span>DURATION</span><span>KILLED BY</span><span className="text-right">BUYS</span>
     </div>
     <div className="no-scrollbar flex-1 overflow-auto">
@@ -37,7 +37,7 @@ export function RunsTable({ runs, selected, onSelect, now }: {
           <span className="font-mono text-muted-foreground">#{run.id}</span>
           <span className="inline-flex items-center gap-1.5 truncate"><i className="size-[7px] shrink-0 rounded-full" style={{ backgroundColor: deviceColor(run.emulator) }} />{run.emulator}</span>
           <span className="text-muted-foreground">{run.ended_at === null ? "live" : `${duration(Math.max(0, now - run.ended_at))} ago`}</span>
-          <span className="font-mono">{run.tier === null ? "—" : `T${run.tier}`}</span>
+          <span className="font-mono">{run.tournament ? <span title={`${run.league ?? "Unknown league"} · rank ${run.rank ?? "—"}`}><Trophy aria-label="Tournament" className="size-4" /></span> : run.tier === null ? "—" : `T${run.tier}`}</span>
           <span className="inline-flex items-center gap-1.5 font-mono">{run.wave ?? "—"}<Badge state={run.wave_record} tip={recordTip("wave", run)} /></span>
           <span className="inline-flex items-center gap-1.5 font-mono">{coins === null ? "—" : coins.toLocaleString()}<Badge state={run.coin_record} tip={recordTip("coin", run)} /></span>
           <span className="font-mono">{run.ended_at === null ? "—" : duration(run.ended_at - run.started_at)}</span>

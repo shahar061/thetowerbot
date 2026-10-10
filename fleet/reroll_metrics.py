@@ -340,7 +340,7 @@ def read_play(db_path: Path) -> tuple[float | None, float] | None:
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=.1) as db:
             rows = db.execute(
                 "SELECT started_at, ended_at, tier, wave FROM runs "
-                "WHERE ended_at IS NOT NULL ORDER BY id").fetchall()
+                "WHERE ended_at IS NOT NULL " + ("AND tournament=0 " if any(row[1] == "tournament" for row in db.execute("PRAGMA table_info(runs)")) else "") + "ORDER BY id").fetchall()
     except sqlite3.Error:
         return None
     return play_to_t1w20(rows)
@@ -391,9 +391,9 @@ def observed_metrics(worker_root: Path, *, account_key: str, account_id: str,
                 db.row_factory = sqlite3.Row
                 rows = db.execute(
                     "SELECT ended_at, tier, wave, coins FROM runs WHERE ended_at IS NOT NULL "
-                    "ORDER BY id DESC LIMIT 3").fetchall()
+                    + ("AND tournament=0 " if bot_db._schema_probe(db)["tournament"] else "") + "ORDER BY id DESC LIMIT 3").fetchall()
                 best = db.execute(
-                    "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL").fetchone()[0]
+                    "SELECT MAX(wave) FROM runs WHERE tier=1 AND ended_at IS NOT NULL" + (" AND tournament=0" if bot_db._schema_probe(db)["tournament"] else "")).fetchone()[0]
                 result["recent_workshop_purchases"] = recent_workshop_purchases(db)
                 bought = db.execute(
                     "SELECT COUNT(*) FROM ledger WHERE kind='WORKSHOP_BUY' AND dry_run=0 "
