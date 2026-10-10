@@ -263,6 +263,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE runs ADD COLUMN killed_by TEXT")
     if "ad_coins" not in columns:
         conn.execute("ALTER TABLE runs ADD COLUMN ad_coins INTEGER")
+    for name, declaration in (("tournament", "INTEGER NOT NULL DEFAULT 0"), ("league", "TEXT"), ("rank", "INTEGER")):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {declaration}")
+    from tournament_store import SCHEMA as tournament_schema
+    conn.executescript(tournament_schema)
     _backfill_run_upgrades(conn)
     conn.commit()
     return conn
@@ -343,16 +348,18 @@ def best_wave(conn: sqlite3.Connection) -> int | None:
     NULL, never 0, for an empty table or a table with only NULL waves -
     an unread best wave is not the same as a confirmed wave of zero.
     """
-    row = conn.execute("SELECT MAX(wave) FROM runs WHERE wave IS NOT NULL").fetchone()
+    guard = " AND tournament = 0" if _schema_probe(conn)["tournament"] else ""
+    row = conn.execute("SELECT MAX(wave) FROM runs WHERE wave IS NOT NULL" + guard).fetchone()
     value = row[0]
     return int(value) if value is not None else None
 
 
 def tier_best_waves(conn: sqlite3.Connection) -> dict[int, int]:
     """The best finished wave on each tier; a tier with no read wave is absent."""
+    guard = " AND tournament = 0" if _schema_probe(conn)["tournament"] else ""
     rows = conn.execute(
         "SELECT tier, MAX(wave) FROM runs WHERE ended_at IS NOT NULL AND tier IS NOT NULL "
-        "AND wave IS NOT NULL GROUP BY tier").fetchall()
+        "AND wave IS NOT NULL " + guard + " GROUP BY tier").fetchall()
     return {int(tier): int(wave) for tier, wave in rows}
 
 
@@ -369,13 +376,15 @@ def insert_event(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
 
 
 def start_run(
-    conn: sqlite3.Connection, run_id: int, started_at: float, *, purpose: str = "farm"
+    conn: sqlite3.Connection, run_id: int, started_at: float, *, purpose: str = "farm",
+    tournament: bool = False, league: str | None = None
 ) -> None:
     conn.execute(
-        """INSERT INTO runs (id, started_at, purpose) VALUES (?, ?, ?)
+        """INSERT INTO runs (id, started_at, purpose, tournament, league) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET started_at = excluded.started_at,
-                                        purpose = excluded.purpose""",
-        (run_id, started_at, purpose),
+                                        purpose = excluded.purpose,
+                                        tournament = excluded.tournament, league = excluded.league""",
+        (run_id, started_at, purpose, int(tournament), league),
     )
     conn.commit()
 
@@ -394,6 +403,8 @@ def finish_run(
     tap_count: int,
     killed_by: str | None = None,
     ad_coins: int | None = None,
+    tournament: bool = False, league: str | None = None, rank: int | None = None,
+    commit: bool = True,
 ) -> None:
     """Close a run out.
 
@@ -407,25 +418,28 @@ def finish_run(
     """
     conn.execute(
         """INSERT INTO runs (id, started_at, ended_at, wave, coins, tier,
-                             abandoned, scan_count, tap_count, killed_by, ad_coins)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             abandoned, scan_count, tap_count, killed_by, ad_coins, tournament, league, rank)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                ended_at   = excluded.ended_at,
                wave       = excluded.wave,
                coins      = excluded.coins,
-               tier       = excluded.tier,
+               tier       = CASE WHEN MAX(runs.tournament, excluded.tournament)=1 THEN NULL ELSE excluded.tier END,
                abandoned  = excluded.abandoned,
                scan_count = excluded.scan_count,
                tap_count  = excluded.tap_count,
                killed_by  = excluded.killed_by,
-               ad_coins   = excluded.ad_coins""",
+               ad_coins   = excluded.ad_coins,
+               tournament = MAX(runs.tournament, excluded.tournament),
+               league = COALESCE(excluded.league, runs.league), rank = excluded.rank""",
         (
-            run_id, started_at, ended_at, wave, coins, tier,
-            int(abandoned), scan_count, tap_count, killed_by, ad_coins,
+            run_id, started_at, ended_at, wave, coins, None if tournament else tier,
+            int(abandoned), scan_count, tap_count, killed_by, ad_coins, int(tournament), league, rank,
         ),
     )
     _summarize_purchases(conn, run_id)
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 _NO_RECORD: dict[str, Any] = {
@@ -450,6 +464,7 @@ def _schema_probe(conn: sqlite3.Connection) -> dict[str, bool]:
         "run_upgrades": has_run_upgrades,
         "killed_by": "killed_by" in columns,
         "ad_coins": "ad_coins" in columns,
+        "tournament": "tournament" in columns,
     }
 
 
@@ -467,6 +482,9 @@ def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]
     listed = []
     for row in rows:
         run = dict(row)
+        run.setdefault("tournament", False)
+        run.setdefault("league", None)
+        run.setdefault("rank", None)
         if not schema["killed_by"]:
             run["killed_by"] = None
         if not schema["ad_coins"]:
@@ -490,7 +508,8 @@ def _records(conn: sqlite3.Connection, schema: dict[str, bool] | None = None) ->
     total_select = "coins + COALESCE(ad_coins, 0) AS total" if schema["ad_coins"] else "coins AS total"
     rows = conn.execute(
         f"SELECT id, tier, wave, {total_select} FROM runs "
-        "WHERE ended_at IS NOT NULL AND abandoned = 0 ORDER BY id"
+        "WHERE ended_at IS NOT NULL AND abandoned = 0 "
+        + ("AND tournament = 0 " if schema["tournament"] else "") + "ORDER BY id"
     ).fetchall()
     found: dict[int, dict[str, Any]] = {}
     for kind, column, per_tier in (("wave", "wave", True), ("coin", "total", False)):
@@ -622,10 +641,11 @@ def close_abandoned_runs(conn: sqlite3.Connection) -> int:
     than "now": no real duration was ever observed, and backdating to the
     run's own start is honest about that instead of inventing one.
     """
-    pending = [row["id"] for row in conn.execute("SELECT id FROM runs WHERE ended_at IS NULL")]
+    preserve = " AND id NOT IN (SELECT run_id FROM tournament_attempts WHERE stage != 'completed' AND run_id IS NOT NULL)"
+    pending = [row["id"] for row in conn.execute("SELECT id FROM runs WHERE ended_at IS NULL" + preserve)]
     cursor = conn.execute(
         "UPDATE runs SET ended_at = started_at, abandoned = 1 "
-        "WHERE ended_at IS NULL"
+        "WHERE ended_at IS NULL" + preserve
     )
     # finish_run is never called for a kill, so nothing else freezes these
     # runs' purchases into run_upgrades; without this they would wait for
@@ -657,6 +677,7 @@ def run_stats(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]
                   scan_count, ended_at - started_at AS duration
              FROM runs
             WHERE ended_at IS NOT NULL
+            """ + ("AND tournament = 0 " if _schema_probe(conn)["tournament"] else "") + """
             ORDER BY id DESC
             LIMIT ?""",
         (limit,),
@@ -697,7 +718,7 @@ def stats_progress(conn: sqlite3.Connection,
     best: int | None = None
     for row in conn.execute(
             "SELECT id, started_at, ended_at, tier, wave FROM runs "
-            "WHERE ended_at IS NOT NULL ORDER BY started_at, id"):
+            "WHERE ended_at IS NOT NULL " + ("AND tournament=0 " if _schema_probe(conn)["tournament"] else "") + "ORDER BY started_at, id"):
         total += 1
         if first_started is None:
             first_started = row["started_at"]

@@ -45,6 +45,8 @@ export const LEDGER_EVENTS = new Set([
  *  that did not happen, then bookkeeping - not by the Python declaration. */
 export const FILTER_KINDS = [
   "RUN_PAYOUT",
+  "TOURNAMENT_PAYOUT",
+  "TOURNAMENT_ENTRY",
   "MISSION_CLAIM",
   "WEEKLY_CHEST_CLAIM",
   "MAIL_CLAIM",

@@ -62,6 +62,14 @@ class RunTracker:
             return None
         return max(0., now - self._started_at)
 
+    def restore(self, run_id: int, now: float) -> None:
+        """Resume a journal-owned run; measure only this observed session."""
+        if self.current_id is not None:
+            raise ValueError("cannot replace an open run")
+        self.current_id = run_id
+        self._next_id = max(self._next_id, run_id+1)
+        self._started_at = now
+
     def transition(self, curr: ScreenState, now: float) -> events.Event | None:
         """Return an unstamped RunStarted / RunEnded, or None.
 

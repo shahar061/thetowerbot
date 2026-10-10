@@ -618,6 +618,9 @@ def _parse_shopping_rows(raw: Any) -> tuple[ShoppingRule, ...]:
 # Added here rather than alongside _STRATEGY_TYPES's other entries: Shopping
 # is defined after that dict, so a literal entry there would reference a name
 # that does not exist yet.
+from tournament_policy import TournamentConfig
+
+_STRATEGY_TYPES["tournament"] = (TournamentConfig,)
 _STRATEGY_TYPES["shopping"] = (Shopping,)
 _STRATEGY_TYPES["autopilot"] = (AutopilotPolicy,)
 _STRATEGY_TYPES["claims"] = (Claims,)
@@ -680,6 +683,7 @@ class Strategy:
     tier_promotion: TierPromotion = TierPromotion()
     # Optional, versioned plan; shopping.cards remains the purchase control.
     cards: CardProgram | None = None
+    tournament: TournamentConfig = TournamentConfig()
 
     # Which committed recipe in knowledge/builds.v1.json ranks the next
     # purchase, or None to name no build at all. None rather than a default
@@ -809,6 +813,7 @@ class Strategy:
             "build": self.build,
             "shopping": self.shopping.to_dict(),
             "autopilot": self.autopilot.to_dict(),
+            "tournament": self.tournament.to_dict(),
             "claims": self.claims.to_dict(),
             "tier_promotion": self.tier_promotion.to_dict(),
         }
@@ -844,6 +849,10 @@ class Strategy:
             )
         except PolicyError as exc:
             raise ControlError(exc.field, str(exc)) from None
+        try:
+            tournament = TournamentConfig.from_dict(raw.get("tournament", {}))
+        except PolicyError as exc:
+            raise ControlError("tournament." + exc.field, str(exc)) from None
         claims = Claims.from_dict(raw["claims"]) if "claims" in raw else Claims()
         tier_promotion = (
             TierPromotion.from_dict(raw["tier_promotion"])
@@ -854,7 +863,7 @@ class Strategy:
         values = {
             k: raw[k]
             for k in raw
-            if k not in ("actions", "shopping", "autopilot", "claims", "tier_promotion", "cards")
+            if k not in ("actions", "shopping", "autopilot", "claims", "tier_promotion", "cards", "tournament")
         }
         cards = None
         if raw.get("cards") is not None:
@@ -870,6 +879,7 @@ class Strategy:
                 claims=claims,
                 tier_promotion=tier_promotion,
                 cards=cards,
+                tournament=tournament,
                 **values,
             )
         except ControlError:
@@ -911,6 +921,11 @@ class Strategy:
                 updates["autopilot"] = AutopilotPolicy.from_dict(patch["autopilot"])
             except PolicyError as exc:
                 raise ControlError(exc.field, str(exc)) from None
+        if "tournament" in patch:
+            try:
+                updates["tournament"] = TournamentConfig.from_dict({**self.tournament.to_dict(), **patch["tournament"]})
+            except PolicyError as exc:
+                raise ControlError("tournament." + exc.field, str(exc)) from None
         if "cards" in patch:
             if patch["cards"] is None:
                 updates["cards"] = None

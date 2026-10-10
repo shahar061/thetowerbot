@@ -48,6 +48,8 @@ BALANCED_CURRENCIES: tuple[str, ...] = (COINS, GEMS)
 # adding one later is a branch in classify(), not a schema change.
 KINDS: tuple[str, ...] = (
     "RUN_PAYOUT",
+    "TOURNAMENT_PAYOUT",
+    "TOURNAMENT_ENTRY",
     "WORKSHOP_BUY",
     "LAB",
     "CARD_BUY",
@@ -190,7 +192,7 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
             # the game-over modal's Coins caption - coins EARNED that run, not
             # a running total - so it is a credit, not a balance reading.
             return (LedgerLine(
-                kind="RUN_PAYOUT",
+                kind="TOURNAMENT_PAYOUT" if event.tournament else "RUN_PAYOUT",
                 currency=COINS,
                 delta=event.coins,
                 run_id=event.run_id,
@@ -437,7 +439,7 @@ def _rounded_since_reading(conn: sqlite3.Connection) -> dict[str, int]:
     as the one that wrote them.
     """
     return {currency: conn.execute(
-        "SELECT COUNT(*) FROM ledger WHERE currency = ? AND dry_run = 0 AND kind = 'RUN_PAYOUT' "
+        "SELECT COUNT(*) FROM ledger WHERE currency = ? AND dry_run = 0 AND kind IN ('RUN_PAYOUT', 'TOURNAMENT_PAYOUT') "
         "AND id > COALESCE((SELECT MAX(id) FROM ledger WHERE currency = ? AND dry_run = 0 "
         "AND observed IS NOT NULL), 0)", (currency, currency)).fetchone()[0]
         for currency in BALANCED_CURRENCIES}
@@ -492,6 +494,9 @@ class LedgerWriter:
         against its own running balance - so an unreadable coin price cannot
         stall the gem chain, and vice versa.
         """
+        if isinstance(event, events.RunEnded) and event.tournament and self._conn.execute(
+                "SELECT 1 FROM ledger WHERE kind='TOURNAMENT_PAYOUT' AND run_id=?", (event.run_id,)).fetchone():
+            return []
         version = self._conn.execute("PRAGMA data_version").fetchone()[0]
         if version != self._data_version:
             # Recovery writes synchronously, even if its queued event is lost.
@@ -577,7 +582,7 @@ class LedgerWriter:
             balance = known + line.delta
 
         out.append(dataclasses.replace(line, balance_after=balance))
-        if line.kind == "RUN_PAYOUT" and line.delta is not None:
+        if line.kind in {"RUN_PAYOUT", "TOURNAMENT_PAYOUT"} and line.delta is not None:
             self._rounded[currency] = self._rounded.get(currency, 0) + 1
 
         # Commit the reading unconditionally. An UNEXPLAINED line above has

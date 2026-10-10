@@ -14,7 +14,7 @@ def _usable(run: dict[str, Any]) -> bool:
     not abandoned, with a non-None tier/started_at/ended_at/coins, an
     elapsed time that is actually positive, and non-negative coins.
     """
-    if run.get("purpose", "farm") != "farm":
+    if run.get("tournament", False) or run.get("purpose", "farm") != "farm":
         return False
     tier, end, coins = run.get("tier"), run.get("ended_at"), run.get("coins")
     start = run.get("started_at")

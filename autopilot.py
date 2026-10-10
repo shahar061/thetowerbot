@@ -273,6 +273,12 @@ class BattleAutopilot:
         with self._command_lock:
             return bool(self._queued or self._manual or self.pending)
 
+    def cancel_manual(self) -> None:
+        """A tournament policy cannot be bypassed by queued manual purchases."""
+        with self._command_lock:
+            self._queued = None
+            self._manual = None
+
     def submit(self, command: dict, *, now: float | None = None) -> None:
         with self._command_lock:
             if self._queued is not None:
@@ -527,7 +533,8 @@ class BattleAutopilot:
              reads: ocr.FrameReads | None = None,
              refresh_policy: Callable[[int | None], AutopilotPolicy] | None = None,
              record_receipt: Callable[[int | None, str, int], None] | None = None,
-             invalidate_quote: Callable[[str], None] | None = None) -> bool:
+             invalidate_quote: Callable[[str], None] | None = None,
+             allow_manual: bool = True) -> bool:
         # The scan's shared OCR and digest, when they belong to this screen.
         if reads is not None and reads.screen is not screen:
             reads = None
@@ -571,6 +578,8 @@ class BattleAutopilot:
             self._decide("blocked", "Run or build changed; waiting for another frame")
             return False
         with self._command_lock:
+            if not allow_manual:
+                self._manual = self._queued = None
             if self._manual is None and not self.pending and self._queued:
                 self._manual, self._queued = self._queued, None
                 self.search = None

@@ -116,7 +116,7 @@ class StoreSink(QueueSink):
                 self._run_id = event.run_id
                 self._scans = 0
                 self._taps = 0
-                db.start_run(conn, event.run_id, event.ts, purpose=event.purpose)
+                db.start_run(conn, event.run_id, event.ts, purpose=event.purpose, tournament=event.tournament, league=event.league)
             case events.Tapped():
                 self._taps += 1
             case events.RunEnded():
@@ -133,6 +133,7 @@ class StoreSink(QueueSink):
                     ad_coins=event.ad_coins,
                     scan_count=self._scans,
                     tap_count=self._taps,
+                    tournament=event.tournament, league=event.league, rank=event.rank,
                 )
 
         db.insert_event(conn, to_row(event, self._run_id))

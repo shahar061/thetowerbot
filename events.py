@@ -191,6 +191,8 @@ class InGameAdGemClaimed(Event):
 class RunStarted(Event):
     run_id: int
     purpose: str = "farm"
+    tournament: bool = False
+    league: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -203,6 +205,9 @@ class RunEnded(Event):
     abandoned: bool = False
     killed_by: str | None = None
     ad_coins: int | None = None
+    tournament: bool = False
+    league: str | None = None
+    rank: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

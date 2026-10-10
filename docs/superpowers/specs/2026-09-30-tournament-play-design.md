@@ -1,9 +1,13 @@
 # Tournament play
 
+Updated 2026-10-10. Revised design awaiting review; implementation and live
+acceptance are not complete.
+
 ## Goal
 
 When a tournament is open and the account holds a free ticket, the bot enters it
-on its own, plays the run buying only attack and defense upgrades from an
+on its own, plays the run buying capped opening cash upgrades followed by combat
+and survival upgrades from an
 editable priority list, records the result, and goes back to farming. Tournament
 runs are flagged so the UI can filter them and draw them with a yellowish theme,
 and they produce account-ledger entries. Applies to the main bot and to every
@@ -14,19 +18,37 @@ fleet worker.
 - **Trigger:** automatic. Checked between runs on the main menu; no operator step.
 - **Entry cost:** free tickets only. Never spend gems or paid entries. If the
   ticket count is 0 or unreadable, do not enter.
-- **Purchases:** a dedicated tournament policy with an ordered, editable list of
-  upgrade ids restricted to the ATTACK and DEFENSE categories.
+- **Purchases:** a dedicated tournament policy with editable combat priorities,
+  finite opening Cash Bonus/Cash per Wave targets and budget, and explicitly
+  allowed survival utility upgrades. Coins/Kill Bonus and Coins/Wave are forbidden
+  at validation and runtime, including through fleet progression overrides.
+- **Initial entry limit:** one supplied free ticket per account per tournament.
+  No gem purchases or ad-supported retries.
+- **League:** the user is in Copper/Silver/Gold; observe the exact league in game.
+- **Active farming run:** finish it before checking entry. Give tournaments
+  priority over starting another farm run; record a missed join window.
 - **Scope:** main bot (`Strategy` profile) and fleet workers (fleet strategy,
   assignable per account).
-- **Public name:** when the game asks for a tournament user name, the bot types
-  `<name_prefix>` + the first 6 characters of the account id (e.g.
-  `Tower8B9CEF`).
+- **Public name:** when setup requires a name, use an explicitly configured name.
+  If missing, exit with setup required. Never derive a public name from an
+  account identifier.
 - **Ledger:** ticket spent on entry, the run payout tagged as tournament, and
   prizes claimed. In-run cash purchases stay in the run's purchase list only.
 - **Approach:** a between-runs visit, modelled on the small `ControlTaps` walks
   (`mail_claim.py`, `milestones_claim.py`), not on the Workshop shopping session.
 
 ## Observed game flow
+
+Tournaments start Wednesday/Saturday at 00:00 UTC (Jerusalem: 03:00 during
+daylight saving, 02:00 during standard time). Use the UTC schedule as a hint;
+fresh OPEN, join timer and event identity evidence authorize entry. Do not infer
+availability or expiry solely from the local weekday.
+
+Sources: [Tournament rules](https://the-tower-idle-tower-defense.fandom.com/wiki/Tournaments),
+[developer changes](https://www.techtreegames.com/post/v29-patch-notes-august-25-2026).
+Older guides may omit recent changes. Record observed league and conditions,
+preserving unknown values. Initial lower-league priorities require tuning from
+account results; no fixed purchase cutoff is claimed optimal.
 
 Captured on a fleet account (best tier-1 wave 100) on 2026-09-30; frames are in
 `tests/fixtures/tournament/`.
@@ -89,9 +111,14 @@ It has the same public surface as the other walks: `request()`, `advance(...)`,
      `tickets_unknown`.
 4. **ENTER** — tap `BATTLE` once. This requires `tickets >= 1` and no
    `Buy Ticket` modal, both read on the same frame the tap targets.
+   - Require an open join window, a ticket-based action and no gem price or
+     overlay. Unknown/payment controls never authorize entry.
+   - Before tapping, durably journal account/lease identity, event key, attempt
+     ID, league, ticket observation, prior farming context and pending entry.
    - Proof is `IN_RUN` plus the HUD tournament marker within the frame budget.
    - On proof: emit `TournamentEntered` and arm tournament mode on the bot.
-   - With no proof: never tap again, and finish with `entry_unconfirmed`.
+   - With no proof: never tap again. Persist `entry_unconfirmed` and reconcile
+     before releasing control; generic BATTLE/RETRY must remain suppressed.
 5. **RETURN** — tap `Tap To Return To Game`, falling back to Android back, and
    confirm the main menu.
 
@@ -104,6 +131,15 @@ Scheduling:
   - After a `tickets_unknown` result, or when no join time was read, no visit
     is due for 30 minutes.
 - A visit is not due while tournament mode is armed.
+
+The journal survives restarts. A new event needs a visible ID or validated UTC
+window plus fresh page evidence. Suppress additional entries for an already
+attempted event. Unknown observations use a persisted bounded backoff, shortened
+when a known join deadline is closer; elapsed time never clears pending entry.
+Existing startup closes unfinished run records, so journal recovery must run
+before that cleanup and before generic run-start handling. Use idempotent
+attempt/run/result/ledger keys. Recover run HUD, stats and leaderboard states
+without consuming another ticket. Pause, account or lease changes stop actions.
 
 ### `tower_bot.py` wiring
 
@@ -123,28 +159,49 @@ Scheduling:
   3. Disarm tournament mode.
 - **Autopilot**: while armed, the autopilot uses the tournament policy (below).
   The legacy `strategy.actions` template clicks are skipped.
+  Generic RETRY is also suppressed. Tournament policy is an effective runtime
+  override; do not replace the user's active profile pointer. On return to the
+  menu, use the current farming settings, preserving edits made during the run.
 
 ## Purchase policy and configuration
 
 - The tournament policy is
   `AutopilotPolicy(enabled=True, preset="manual", rules=<tournament rules>, cash_reserve, cash_spend_limit_pct, purpose=<current>)`.
-  - `policy.choose` already buys the highest-priority affordable rule.
-  - The executor (`autopilot.py`) is unchanged, and it never opens the utility
-    tab because no rule lives there.
-- Validation, at save time: every rule's `upgrades.by_id(id).category` is
-  `ATTACK` or `DEFENSE`, and none is an unlock tile.
+  - `policy.choose` already buys the highest-priority affordable rule. A
+    tournament rule resolver must apply opening limits and rotate growth rules
+    before selection; the static ordered policy alone is insufficient.
+  - Reuse the executor's verified wallet, price and target checks. Utility is
+    permitted for the explicitly allowed cash/survival rules.
+- Validate at save time and runtime: no coin upgrade IDs or unlock tiles.
+- Opening cash rules require finite targets, a finite cumulative cash budget,
+  and a configured wave cap. If not configured, skip cash investment rather
+  than guessing targets. End the opening at the earliest limit, or sooner when
+  a supported fresh survival-pressure signal applies.
+- Rotate uncapped Health, Attack Speed and Damage rules after successful
+  purchases so the first affordable uncapped rule cannot monopolize cash.
+  Persist the cycle per run; skip locked/maxed/unaffordable rows.
 
 Main bot: a new `tournament` section in `Strategy` (`strategy.py`):
 
 ```json
 "tournament": {
   "enabled": true,
-  "name_prefix": "Tower",
+  "public_name": null,
+  "opening_cash": {
+    "cash_bonus_target": null,
+    "cash_per_wave_target": null,
+    "cash_budget": null,
+    "until_wave": null
+  },
   "rules": [{"upgrade_id": "damage"}, {"upgrade_id": "attack_speed"}],
   "cash_reserve": 0,
   "cash_spend_limit_pct": 100
 }
 ```
+
+Null opening fields disable cash investment until configured; they never mean
+unlimited spending. The example combat rules are illustrative, not optimal
+account defaults. Finite survival targets use the existing rule target field.
 
 Fleet: the same `tournament` section is an optional top-level part of a fleet
 strategy (`fleet/build_route.py`), next to `battle` and `workshop`.
@@ -153,24 +210,22 @@ strategy (`fleet/build_route.py`), next to `battle` and `workshop`.
   bypasses phases and blocks.
 - A strategy without the section uses the defaults.
 
-Default rules, in order:
-1. `damage`
-2. `attack_speed`
-3. `health`
-4. `defense_absolute`
-5. `critical_chance`
-6. `critical_factor`
-7. `defense_percent`
-8. `health_regen`
-9. `thorns`
-10. `lifesteal`
-11. `range`
-12. `multishot_chance`
+Initial lower-league priorities, editable and tuned from observed levels:
+1. Cheap finite `defense_percent` and `thorns` targets.
+2. Rotating `health`, `attack_speed` and `damage` growth purchases.
+3. Finite `lifesteal`, knockback and orb targets, if unlocked.
+4. Explicitly configured Recovery Package/Enemy Level Skip utility, if unlocked.
+
+Defense Absolute and Health Regen are optional account-specific choices rather
+than universal defaults. Before combat, buy only configured capped `cash_bonus`
+and `cash_per_wave` rules; unknown prices/targets never authorize spending.
 
 Locked rows never appear in battle and are skipped.
 
 UI: a "Tournament" panel with an enable toggle and an ordered upgrade list, whose
-picker is limited to attack and defense.
+picker excludes coins/unlock tiles and includes explicitly allowed utility.
+Expose opening cash targets/budget/cap and setup-required/pending/skipped state.
+Free-only entry is fixed and has no paid-entry toggle.
 - Fleet: in Strategy Studio (`web/ui/app/fleet/reroll/strategies/`).
 - Main bot: on the strategy page (`web/ui/app/strategy/page.tsx`).
 
@@ -183,10 +238,17 @@ Columns are added with the existing ad-hoc `ALTER TABLE` migration in
 databases that have not migrated.
 
 - `runs.tournament INTEGER NOT NULL DEFAULT 0`. It sits alongside `purpose`.
+  This is the canonical mode flag; existing farm/milestone purpose constraints
+  stay intact. Event context is captured per run, never inferred afterward from
+  a mutable selected profile.
 - `tournament_entries`, one row per entry:
   - `id`, `run_id`, `entered_at`, `league`, `tournament_id`
   - `wave`, `rank`, `coins`, `ad_coins`
   - `prize_gems`, `prize_stones`, `claimed_at`
+- A separate durable attempt journal preserves pending entry before a run exists,
+  including the event key, attempt ID, controller stage and reconciliation status.
+  Uniqueness/idempotency keys apply per account and event. Existing-database
+  migration tests must establish journal recovery as well as default mode flags.
 - A tournament run's `runs.tier` stays NULL. Its league is stored in
   `tournament_entries`.
 
@@ -220,6 +282,10 @@ Tournament runs are excluded from:
   tier is NULL; every other query adds `tournament = 0`.
 - The fleet variant comparison and the recent-run pace statistics.
 
+Also gate in-memory best-wave, ladder-tier and tier-best-wave updates in
+RunEnded. Query filters alone do not protect tier progression. Rank recorded at
+death is provisional; leaderboard expected prizes are not confirmed claims.
+
 ### API and UI
 
 - `db.list_runs` and `/api/runs` return `tournament`, `league` and `rank`.
@@ -245,8 +311,9 @@ Tournament runs are excluded from:
   - An unreadable ticket count never leads to entry.
   - The `Buy Ticket` ad button is never tapped. If `Cancel` does not close the
     modal, the visit finishes `uncertain` and leaves through Android back.
-- **Unconfirmed entry**: no retry tap, nothing armed and no ledger line. Normal
-  navigation takes over.
+- **Unconfirmed entry**: no retry tap or unverified ledger line. Durable recovery
+  owns navigation until fresh evidence reconciles run/page state; never release
+  a pending entry straight to generic farming BATTLE.
 - **Name step**:
   1. If the field text does not match after typing, clear it and type once more.
   2. If it still fails, close with `X`, record `name_failed`, and disable
@@ -284,26 +351,42 @@ Only the new and changed test files are run.
   - Cancel mid-visit.
   - `BATTLE` tapped at most once.
 - Policy tests:
-  - Utility and unlock ids are rejected in tournament rules.
+  - Coin and unlock IDs are rejected; permitted cash/survival utility validates.
+  - Cash targets/budget/cap, rotating growth rules and runtime coin rejection
+    work despite fleet progression/profile overrides.
   - The default list validates.
   - The fleet `battle_policy` returns the tournament policy while armed.
 - Recording tests:
   - The `db` migration on an old database.
   - `list_runs` fields.
   - Records and best wave ignore tournament runs.
+  - In-memory tier progression ignores tournaments.
+  - Crash before/after entry, stats/leaderboard recovery, and startup cleanup do
+    not duplicate entry, runs or ledger events.
   - `ledger.classify` for the three kinds.
 - vitest for `RunsTable` (tint, chip) and `LedgerEntries` (tint, chip).
 - Live acceptance on one paused fleet worker at the next tournament with a
   ticket:
   1. It enters automatically.
-  2. It buys only attack and defense.
+  2. It buys only permitted cash/combat/survival upgrades, no coins or gems.
   3. The stats row and ledger lines are written.
   4. It returns to farming.
   5. The UI shows the yellow row and the filter works.
 
 ## Out of scope
 
-- League and battle-condition strategy, and schedule reading beyond the join
-  timer.
+- Automatic battle-condition optimization and automatic loadout switching.
 - Spending gems or paid tickets, and retrying a tournament after the free entry.
 - Prize-claim automation, until the claim screen is captured.
+
+## Implementation readiness
+
+This revision is a focused free-entry implementation design, not certification
+of the broader autonomy roadmap. Its tournament task currently has incomplete
+prerequisites and an explicit dependency gate. Resolve that gate in planning
+before claiming the full roadmap task can execute or be completed. Do not mark
+dependencies complete from this design or from existing fixtures.
+
+Verify only new/changed files and directly affected neighboring tests, using
+`-p no:allure_pytest` and an explicit long timeout; never run a directory suite.
+The real Buy Ticket and final claim captures remain evidence requirements.

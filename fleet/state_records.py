@@ -130,10 +130,10 @@ def read_records(db_path: Path, account_id: str, live_run_id: int | None,
             "WHERE kind='CARD_BUY' AND dry_run=0 AND delta IS NOT NULL").fetchone()[0]
         runs = [dict(row) for row in conn.execute(
             "SELECT id, tier, wave, coins, started_at, ended_at, abandoned FROM runs "
-            "WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT ?", (RUNS_LIMIT,))]
+            "WHERE ended_at IS NOT NULL " + ("AND tournament=0 " if db._schema_probe(conn)["tournament"] else "") + "ORDER BY id DESC LIMIT ?", (RUNS_LIMIT,))]
         best = {tier: wave for tier, wave in conn.execute(
             "SELECT tier, MAX(wave) FROM runs WHERE abandoned=0 AND ended_at IS NOT NULL "
-            "AND tier IS NOT NULL AND wave IS NOT NULL GROUP BY tier")}
+            "AND tier IS NOT NULL AND wave IS NOT NULL " + ("AND tournament=0 " if db._schema_probe(conn)["tournament"] else "") + "GROUP BY tier")}
         scope: str | None = None
         bought: list[dict[str, Any]] = []
         if live_run_id is not None:

@@ -37,7 +37,7 @@ export function RunDetailPanel({ run, onClose }: { run: FleetRun; onClose: () =>
       <button type="button" aria-label="Close run details" onClick={onClose} className="inline-flex size-8 items-center justify-center rounded-lg border"><X className="size-3.5" /></button>
     </header>
     <dl className="grid grid-cols-3 gap-2 p-4 text-xs">
-      <div className="rounded-lg bg-muted p-2.5"><dt className="text-muted-foreground">Wave · Tier {run.tier ?? "—"}</dt><dd className="font-mono text-lg font-bold">{run.wave ?? "—"}</dd></div>
+      <div className="rounded-lg bg-muted p-2.5"><dt className="text-muted-foreground">Wave · {run.tournament ? `Tournament · ${run.league ?? "unknown league"} · rank ${run.rank ?? "—"}` : `Tier ${run.tier ?? "—"}`}</dt><dd className="font-mono text-lg font-bold">{run.wave ?? "—"}</dd></div>
       <div className="rounded-lg bg-muted p-2.5"><dt className="text-muted-foreground">Coins</dt><dd className="font-mono text-lg font-bold">{coins === null ? "—" : coins.toLocaleString()}</dd>
         <dd className="text-muted-foreground">{run.coins ?? "—"} earned + {run.ad_coins ?? "—"} ad</dd></div>
       <div className="rounded-lg bg-muted p-2.5"><dt className="text-muted-foreground">Duration</dt><dd className="font-mono text-lg font-bold">{seconds === null ? "—" : duration(seconds)}</dd>

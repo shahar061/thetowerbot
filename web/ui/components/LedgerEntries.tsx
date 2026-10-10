@@ -15,6 +15,8 @@ const KIND_TONE: Record<string, string> = {
   WORKSHOP_BUY: "bg-chart-2/15 text-chart-2",
   LAB: "bg-chart-2/15 text-chart-2",
   CARD_BUY: "bg-chart-2/15 text-chart-2",
+  TOURNAMENT_ENTRY: "bg-live-surface text-live",
+  TOURNAMENT_PAYOUT: "bg-live-surface text-live",
   RUN_PAYOUT: "bg-live-surface text-live",
   MISSION_CLAIM: "bg-live-surface text-live",
   WEEKLY_CHEST_CLAIM: "bg-live-surface text-live",
