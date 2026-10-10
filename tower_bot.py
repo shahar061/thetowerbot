@@ -402,7 +402,7 @@ class TowerBot:
                      if isinstance(safety_journal, transactions.TransactionJournal) else None)
         push_account = (getattr(reroll_progress, "account_id", None)
                         or f"device:{getattr(device, 'serial', 'standalone')}")
-        self.push_runs = PushRuns(push_path, push_account, every=config.PUSH_EVERY_FARM_RUNS)
+        self.push_runs = PushRuns(push_path, push_account, every=self.controls.snapshot().strategy.push_every_farm_runs)
         self._push_expected_tier: int | None = None
         self._push_taps = 0
         # When each claim last landed, and the wave each tier's ladder was
@@ -534,7 +534,7 @@ class TowerBot:
         scope = getattr(self.account_state, "verified_scope", None)
         if scope is not None and scope.account_id != self.push_runs.state.account:
             self.push_runs = PushRuns(self.push_runs.path, scope.account_id,
-                                      every=config.PUSH_EVERY_FARM_RUNS)
+                                      every=self.controls.snapshot().strategy.push_every_farm_runs)
             self._push_expected_tier = None
             self._push_taps = 0
         if self.frames is not None:
@@ -2208,6 +2208,9 @@ class TowerBot:
         if chosen is not None:
             self.affordability = chosen
         self.refresh_screen()
+        # Refresh may rebind account state. Keep its scheduler and progress,
+        # but apply this scan's local cadence before processing run endings.
+        self.push_runs.every = raw_settings.strategy.push_every_farm_runs
 
         reading = screens.classify(self.screen, self.templates)
         self._update_maintenance(settings, reading.state)

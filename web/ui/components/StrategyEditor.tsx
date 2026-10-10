@@ -310,6 +310,24 @@ export function StrategyEditor({
       </SectionCard>
 
       <SectionCard id="run-policy" title="Run policy" contentClassName="flex flex-col gap-3">
+        <div className="rounded-xl border border-border p-3 space-y-3">
+          <div className="flex items-center justify-between text-sm">
+            Scheduled push runs
+            <Switch label="Scheduled push runs" checked={(value.push_every_farm_runs ?? 10) > 0}
+              disabled={disabled} onCheckedChange={(checked) => set("push_every_farm_runs", checked ? 10 : 0)} />
+          </div>
+          <NumberField label="Attempt a push after every" ariaLabel="Completed farming runs between pushes"
+            value={value.push_every_farm_runs || 10} min={1} step={1}
+            disabled={disabled || value.push_every_farm_runs === 0}
+            note="completed farming runs"
+            onCommit={(n) => set("push_every_farm_runs", n)} />
+          <p className="text-xs text-muted-foreground">
+            Attempts the highest unlocked tier, prioritizes combat and survival, then returns to farming.
+            Changes keep farming progress and apply after the next completed farming run.
+            Turning this off lets an already scheduled push finish and return.
+          </p>
+          {!value.auto_navigate && <p className="text-xs text-muted-foreground">Enable Auto-navigate to start scheduled pushes automatically.</p>}
+        </div>
         <div className="flex items-center justify-between text-sm">
           Auto-navigate
           <Switch

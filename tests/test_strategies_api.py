@@ -339,3 +339,25 @@ def test_studio_routes_precede_static_mount_and_mutation_catchall(wired) -> None
         'source_template': 'scratch', 'baseline': {}})
     assert response.status_code == 200
     assert client.get('/api/strategy-studio/labs').status_code == 200
+
+
+def test_push_cadence_patch_persists_and_rejects_invalid_input(wired) -> None:
+    client, store, controls, _ = wired
+    assert client.patch("/api/control", json={"push_every_farm_runs": 4}).status_code == 200
+    assert controls.snapshot().strategy.push_every_farm_runs == 4
+    assert store.load("default").push_every_farm_runs == 4
+    for value in (-1, True, 1.5, "4", None):
+        assert client.patch("/api/control", json={"push_every_farm_runs": value}).status_code == 422
+    assert store.load("default").push_every_farm_runs == 4
+
+
+def test_studio_push_cadence_settings_save_and_reload(wired) -> None:
+    client, store, controls, _ = wired
+    response = client.post("/api/strategy-studio/settings", json={"push_every_farm_runs": 15})
+    assert response.status_code == 200
+    assert response.json()["push_every_farm_runs"] == 15
+    assert client.get("/api/strategy-studio/settings").json()["push_every_farm_runs"] == 15
+    assert store.load("default").push_every_farm_runs == 15
+    assert controls.snapshot().strategy.push_every_farm_runs == 15
+    assert client.post("/api/strategy-studio/settings", json={"push_every_farm_runs": -1}).status_code == 422
+    assert store.load("default").push_every_farm_runs == 15

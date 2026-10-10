@@ -11,7 +11,7 @@ import builds
 PLAN_FIELDS = frozenset({'actions', 'affordability', 'autopilot', 'shopping',
                         'cards', 'tier_promotion', 'build', '_build_recipe', 'tournament'})
 BOT_FIELDS = frozenset({'name', 'interval', 'menu_interval', 'click_cooldown',
-    'auto_navigate', 'max_runs', 'navigation_cooldown', 'screen_confirmations',
+    'auto_navigate', 'max_runs', 'push_every_farm_runs', 'navigation_cooldown', 'screen_confirmations',
     'tap_jitter_px', 'timing_jitter', 'tap_delay', 'target_speed', 'auto_fastest', 'claims'})
 
 

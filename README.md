@@ -29,7 +29,14 @@ price, prioritizing affordable health when the tower is hurt. Defense Absolute
 is included only on Tier 1. Locked upgrades and configured combat exclusions
 remain excluded. Workshop and lab plans continue to use the normal strategy.
 
-`config.PUSH_EVERY_FARM_RUNS` sets the cadence; `0` disables new pushes.
+In single-emulator mode, use **Strategy Studio → Bot settings → Run policy**
+to enable scheduled pushes and set the completed farming runs between attempts.
+The setting is saved with this emulator's profile; applying a plan preserves it.
+Changes keep farming progress and apply at the next completed farming run.
+Turning scheduling off lets an already scheduled push finish and return.
+Automatic battle entry requires Auto-navigate. The profile field
+`push_every_farm_runs` uses `0` to disable new pushes and defaults to
+`config.PUSH_EVERY_FARM_RUNS` (10) for older profiles.
 Abandoned runs and push attempts do not count toward it. Standalone profiles
 explicitly set to milestone purpose also do not count; fleet build-route runs
 use their scheduled farming intent independently of the legacy guide label.

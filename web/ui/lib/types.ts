@@ -368,6 +368,7 @@ export interface Strategy {
   click_cooldown: number;
   auto_navigate: boolean;
   max_runs: number | null;
+  push_every_farm_runs?: number;
   navigation_cooldown: number;
   screen_confirmations: number;
   tap_jitter_px: number;
