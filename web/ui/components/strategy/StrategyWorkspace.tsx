@@ -26,6 +26,9 @@ export function StrategyWorkspace(): React.JSX.Element {
   const [settingsDirty, setSettingsDirty] = useState(false);
   const dirty = planDirty || settingsDirty;
   const [tab, setTab] = useState<'plan' | 'settings' | 'active'>('plan');
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('tab') === 'settings') setTab('settings');
+  }, []);
   const [library, setLibrary] = useState<StrategyLibrary | null>(null);
   const [route, setRoute] = useState<BuildRouteDocument | null>(null);
   const [labs, setLabs] = useState<LabsSnapshot | null>(null);
@@ -114,7 +117,7 @@ export function StrategyWorkspace(): React.JSX.Element {
         initialStrategyId={preferredPlan ?? exact?.id} assignedSnapshot={preferredPlan ? undefined : snapshot} onDraftChange={setPlanDirty}
         linkIdentity={editingKey} /> : !error && <p role="status">Loading strategy library…</p>}
     </div>
-    <div hidden={tab !== 'settings'} role="tabpanel" aria-label="Bot settings"><BotSettings key={editingKey} client={client} onDirty={setSettingsDirty} /></div>
+    <div hidden={tab !== 'settings'} role="tabpanel" aria-label="Bot settings"><BotSettings key={editingKey} client={client} onDirty={setSettingsDirty} push={status?.push_runs} /></div>
     <div hidden={tab !== 'active'} role="tabpanel" aria-label="Active strategy">{status && <ActiveStrategy status={status} onRestore={async version => {
       if (!status.strategy_id || !members.length) throw new Error('Verify this emulator before restoring.');
       await refreshed(await client.assign(status.strategy_id, version, [{ worker: members[0].name, account_id: members[0].account_id }], route?.revision ?? 0));

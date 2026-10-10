@@ -52,7 +52,7 @@ export function StatBar({
         <StatusBadge state={status?.bot.running ? "live" : "idle"}>
           {status?.bot.running ? "bot running" : "bot stopped"}
         </StatusBadge>
-        {status?.bot.push_runs && status.bot.push_runs.every > 0 && (
+        {status?.bot.push_runs && (status.bot.push_runs.every > 0 || status.bot.push_runs.phase !== "farming" || status.bot.push_runs.blocker) && (
           <StatusBadge state={status.bot.push_runs.blocker ? "warn" : "idle"}>
             {status.bot.push_runs.blocker
               ? status.bot.push_runs.blocker
@@ -63,6 +63,7 @@ export function StatBar({
                   : `push · ${status.bot.push_runs.target_tier ? `tier ${status.bot.push_runs.target_tier}` : "selecting tier"}`}
           </StatusBadge>
         )}
+        {status?.bot.push_runs && <a href="/strategy/?tab=settings" className="text-xs text-muted-foreground underline">Edit push cadence</a>}
         {status?.last_error ? (
           <span className="font-mono text-xs text-danger">{status.last_error}</span>
         ) : null}

@@ -3,7 +3,7 @@ import { ApiError, fetchHostStatus, mutationHeaders } from './api';
 import { checkRuntimeCompatibility } from './runtimeCompatibility';
 import type { BuildRouteDocument, BuildRoutePreview } from './buildRoute';
 import type { SaveStrategyInput, StrategyLibrary, StrategyLedger } from './strategyStudio';
-import type { Strategy } from './types';
+import type { Strategy, PushRunStatus } from './types';
 
 export type StrategyClientContext = Readonly<{
   scope: string | null; accountId: string | null; targetId: string | null;
@@ -17,7 +17,7 @@ export type StrategyStatus = {
   reason?: string | null; kind?: 'native' | 'legacy';
   acknowledged?: { revision?: number; strategy_version?: number; observed_at?: number };
   lane_sources?: Record<string, { source: string; overlay_id?: string; revision?: number }>;
-  push_runs?: { active?: boolean; target_tier?: number };
+  push_runs?: Partial<PushRunStatus> & { active?: boolean };
 };
 export interface StrategyStudioClient {
   saveVersion(input: SaveStrategyInput, revision: number): Promise<StrategyLibrary>;

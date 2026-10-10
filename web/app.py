@@ -35,7 +35,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request, Resp
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from starlette.requests import HTTPConnection
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, StrictInt, field_validator
 
 import config
 import db
@@ -235,6 +235,7 @@ class ControlPatch(BaseModel):
     click_cooldown: float | None = None
     auto_navigate: bool | None = None
     max_runs: int | None = None
+    push_every_farm_runs: StrictInt | None = None
     navigation_cooldown: float | None = None
     screen_confirmations: int | None = None
     tap_jitter_px: float | None = None
@@ -244,6 +245,13 @@ class ControlPatch(BaseModel):
     actions: list[dict[str, Any]] | None = None
     autopilot: dict[str, Any] | None = None
     tournament: dict[str, Any] | None = None
+
+    @field_validator("push_every_farm_runs")
+    @classmethod
+    def validate_push_cadence(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError("push cadence cannot be null; use zero to disable")
+        return value
 
 
 class AutopilotCommand(BaseModel):

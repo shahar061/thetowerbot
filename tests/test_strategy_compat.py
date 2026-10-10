@@ -64,3 +64,11 @@ def test_imported_tournament_settings_are_preserved_and_plan_owned() -> None:
     assert restored.tournament.enabled
     with pytest.raises(ValueError, match='strategy_plan_owns_purchase_settings'):
         assert_settings_only(local, restored)
+
+
+def test_applying_plan_preserves_local_push_cadence() -> None:
+    from strategy_compat import capture_legacy, restore_legacy, assert_settings_only
+    local = replace(Strategy.from_config('local'), push_every_farm_runs=4)
+    source = replace(Strategy.from_config('source'), push_every_farm_runs=30)
+    assert restore_legacy(local, capture_legacy(source, 'revision')).push_every_farm_runs == 4
+    assert_settings_only(local, replace(local, push_every_farm_runs=0))

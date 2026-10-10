@@ -389,3 +389,19 @@ describe("StrategyEditor", () => {
     expect(onChange.mock.calls[0][0].tier_promotion).toEqual({ "2": 180 });
   });
 });
+
+
+it("edits push cadence and disables scheduling explicitly", () => {
+  const onChange = vi.fn();
+  const { rerender } = render(<StrategyEditor value={{ ...strategy, push_every_farm_runs: 10 }} onChange={onChange} hidePurchases botSettingsOnly />);
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Completed farming runs between pushes" }), { target: { value: "4" } });
+  fireEvent.blur(screen.getByRole("spinbutton", { name: "Completed farming runs between pushes" }));
+  expect(onChange.mock.lastCall?.[0].push_every_farm_runs).toBe(4);
+  rerender(<StrategyEditor value={{ ...strategy, push_every_farm_runs: 4 }} onChange={onChange} hidePurchases botSettingsOnly />);
+  fireEvent.click(screen.getByRole("switch", { name: "Scheduled push runs" }));
+  expect(onChange.mock.lastCall?.[0].push_every_farm_runs).toBe(0);
+  rerender(<StrategyEditor value={{ ...strategy, push_every_farm_runs: 0 }} onChange={onChange} hidePurchases botSettingsOnly />);
+  expect(screen.getByRole("spinbutton", { name: "Completed farming runs between pushes" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("switch", { name: "Scheduled push runs" }));
+  expect(onChange.mock.lastCall?.[0].push_every_farm_runs).toBe(10);
+});

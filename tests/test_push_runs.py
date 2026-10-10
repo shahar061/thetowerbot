@@ -168,6 +168,7 @@ def test_push_overrides_route_economy_but_requires_account_binding(monkeypatch, 
     progress.root = tmp_path
     progress.account_id = "account-a"
     progress.route_runtime = None
+    progress.target_context = None
     progress._history = lambda: (1, {})
     registration = SimpleNamespace(account_id="account-a", db_path=tmp_path / "bot.db")
     monkeypatch.setattr("web.account_catalog.registered_worker", lambda root: registration)
@@ -288,3 +289,24 @@ def test_fleet_push_status_requires_matching_account() -> None:
     assert module.validated_snapshot(payload, "account-a") == payload
     assert module.validated_snapshot(payload, "account-b") is None
     assert module.validated_snapshot({**payload, "farms_remaining": -1}, "account-a") is None
+
+
+def test_live_cadence_edit_preserves_progress_and_scheduled_push() -> None:
+    import screens
+    from strategy import Shopping
+    from tests.conftest import _shopping_bot
+    bot = _shopping_bot("menu_main_events_badge_tier_next", state=screens.ScreenState.MAIN_MENU,
+                        policy=Shopping(), auto_navigate=False)
+    complete_farms(bot.push_runs, 2)
+    bot.controls.apply({"push_every_farm_runs": 3})
+    bot.run_once()
+    assert bot.push_runs.every == 3
+    assert bot.push_runs.state.farms == 2
+    bot.push_runs.started(3, "farm")
+    bot.push_runs.ended(abandoned=False)
+    assert bot.push_runs.needs_home
+    bot.controls.apply({"push_every_farm_runs": 0})
+    bot.run_once()
+    assert bot.push_runs.every == 0
+    assert bot.push_runs.needs_home
+    assert bot.push_runs.state.farms == 3

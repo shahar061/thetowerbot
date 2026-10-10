@@ -39,3 +39,13 @@ test('remote unattributed history never becomes an unscoped local request', asyn
   expect(mocks.contexts.length).toBeGreaterThan(0);
   expect(mocks.contexts.every(context => context.scope === 'unattributed:remote')).toBe(true);
 });
+
+
+test('overview cadence link opens the bot settings tab', async () => {
+  window.history.replaceState(null, '', '/strategy/?tab=settings');
+  try {
+    const { StrategyWorkspace } = await import('./StrategyWorkspace');
+    render(<StrategyWorkspace />);
+    await waitFor(() => expect(screen.getByText('Local timing controls')).toBeVisible());
+  } finally { window.history.replaceState(null, '', '/'); }
+});
