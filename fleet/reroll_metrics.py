@@ -259,7 +259,13 @@ def _overview(worker_root: Path, *, account_id: str, lease_id: str,
         recovery = recovery_overview(worker_root, account_id=account_id, lease_id=lease_id,
                                      attempt_id=attempt_id, generation=start["generation"],
                                      now=now)
+    from push_runs import validated_snapshot
+    push_runs = (validated_snapshot(live_status.get("bot", {}).get("push_runs"), account_id)
+                 if live_scope_verified and isinstance(live_status, Mapping)
+                 and isinstance(live_status.get("bot"), dict) else None)
     blockers = [reason] if reason else []
+    if push_runs is not None and push_runs["blocker"]:
+        blockers.append(push_runs["blocker"])
     unknown_count = sum((health_state == "unknown", currency["coins_lower"] is None,
                          currency["gems"] is None, missions["state"] == "unknown",
                          process_status.get("state") == "running" and current is None))
@@ -270,7 +276,7 @@ def _overview(worker_root: Path, *, account_id: str, lease_id: str,
                        "incidents_open": None},
             "current_run": current, "last_completed_run": completed,
             "currency": currency, "missions": missions, "strategy": strategy,
-            "source": source, "recovery": recovery,
+            "source": source, "recovery": recovery, "push_runs": push_runs,
             "unknown_count": unknown_count,
             "blockers": blockers}
 

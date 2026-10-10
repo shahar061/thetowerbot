@@ -15,6 +15,33 @@ SQLite writer and a browser dashboard can all watch a running bot without
 slowing the loop down. When a sink cannot keep up its events are dropped and
 counted, never awaited.
 
+## Periodic push runs
+
+With automatic navigation enabled, the bot attempts one push after every 10
+completed farming runs. It visits the main menu, remembers the farming tier,
+and advances through verified tier arrows to the highest unlocked tier. The
+push runs until death, pursuing that tier's milestones and next tier unlock,
+then returns to the remembered farming tier and resumes its normal strategy.
+
+Push spending excludes cash and coin upgrades. It balances available health,
+defense, attack speed, thorns, lifesteal, knockback, orbs and damage by observed
+price, prioritizing affordable health when the tower is hurt. Defense Absolute
+is included only on Tier 1. Locked upgrades and configured combat exclusions
+remain excluded. Workshop and lab plans continue to use the normal strategy.
+
+`config.PUSH_EVERY_FARM_RUNS` sets the cadence; `0` disables new pushes.
+Abandoned runs and push attempts do not count toward it. Standalone profiles
+explicitly set to milestone purpose also do not count; fleet build-route runs
+use their scheduled farming intent independently of the legacy guide label.
+The dashboard shows the run mode, target tier and farming runs remaining.
+
+When the normal transaction journal is present, push state is saved beside
+the bot database in `<database-stem>-push-runs.json` and bound to the account.
+Restarts preserve a pending push, a resumed push and the return tier. An
+unreadable state file or unconfirmed tier tap holds automatic battle start.
+A farming run whose completion was never observed before restarting directly
+on the menu receives no completion credit; the next push is delayed safely.
+
 ## Install
 
 Dependencies are managed with [uv](https://docs.astral.sh/uv/). If you don't

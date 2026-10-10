@@ -71,6 +71,7 @@ export function FleetLiveCard({ member, account, labsSnapshot = null, onInspect,
   const target = LADDER[progress.rung];
   const query = new URLSearchParams({ worker: member.name, account: member.account_key ?? "", identity: member.account_id ?? "" });
   const health = overview?.health.state ?? "unknown";
+  const push = health !== "stopped" ? overview?.push_runs : null;
   const statusTone = health === "progressing" ? "live" : health === "attention" || health === "recovering" ? "warn" : "idle";
   const blockers = overview?.blockers ?? [];
   // Only a fresh, scope-matched overview carries recovery status; otherwise unknown.
@@ -93,6 +94,7 @@ export function FleetLiveCard({ member, account, labsSnapshot = null, onInspect,
   const matchedResource = overview && freshFleetEvidence(resource?.observed_at) ? resource : null;
   const nextAction = health === "stopped" ? "Worker stopped; no active action"
     : staleOverview ? "Next action not verified; latest worker observation stale"
+    : push?.phase === "pushing" ? `Push tier ${push.target_tier} with combat and survival upgrades`
     : matchedBattle?.decision?.reason ?? matchedWorkshop?.decision?.reason
       ?? matchedResource?.lab_step.reason ?? matchedResource?.gem_step.reason ?? "Next action not verified";
   const evaluatedWorkshop = matchedWorkshop?.decision ?? null;
@@ -134,6 +136,14 @@ export function FleetLiveCard({ member, account, labsSnapshot = null, onInspect,
       <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
         <section aria-label={`${member.name} current run`} className="min-w-0 rounded-lg border p-3">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Current run</h4>
+          {push && <p className="mt-1 text-sm">
+            {push.phase === "farming"
+              ? push.every === 0 ? "Farming · pushes disabled" : `Farming · push in ${push.farms_remaining} runs`
+              : push.phase === "returning"
+                ? `Returning to farming tier ${push.farm_tier}`
+                : `Push run · ${push.target_tier ? `tier ${push.target_tier}` : "selecting tier"}`}
+            {push.blocker && ` · ${push.blocker}`}
+          </p>}
           {current ? <><p className="mt-1 text-sm font-semibold">{current.tier == null ? "Tier unknown" : `T${current.tier}`} {current.wave == null ? "Wave unknown" : `W${current.wave}`}</p>
             <p className="text-xs text-muted-foreground">Speed {value(current.speed)} · Coins {value(current.coins)} · Coins/hour unknown</p>
             <p className="text-xs text-muted-foreground">{age(current.observed_at)}</p></>

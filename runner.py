@@ -233,6 +233,9 @@ class BotRunner:
             runtime = getattr(self._bot, 'card_runtime', None)
             if runtime is not None:
                 status['cards'] = runtime.status()
+            push_runs = getattr(self._bot, 'push_runs', None)
+            if push_runs is not None:
+                status['push_runs'] = push_runs.snapshot()
             return status
 
     def identity(self) -> dict[str, str | None]:

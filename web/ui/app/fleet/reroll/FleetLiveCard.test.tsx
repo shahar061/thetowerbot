@@ -229,3 +229,18 @@ test("per-worker recovery status shows mode, phase, blocker with its fix and cos
   view.rerender(<FleetLiveCard member={{ ...member, overview: { ...recovering, recovery: null } }} account={account} onInspect={() => {}} />);
   expect(screen.getByRole("region", { name: "Air_1 recovery" })).toHaveTextContent("Recovery status unknown");
 });
+
+
+test("push mode is visible only while account evidence is fresh and running", () => {
+  const live: FleetOverview = { ...overview, observed_at: Date.now() / 1000,
+    health: { ...overview.health, state: "progressing" },
+    push_runs: { account: "100", mode: "push", phase: "pushing", every: 10,
+      farms_remaining: 0, farm_tier: 1, target_tier: 2, blocker: null } };
+  const view = render(<FleetLiveCard member={{ ...member, overview: live }} account={account} onInspect={() => {}} />);
+  expect(screen.getByRole("region", { name: "Air_1 current run" })).toHaveTextContent("Push run · tier 2");
+  expect(screen.getByRole("region", { name: "Air_1 objective and next action" })).toHaveTextContent("Push tier 2 with combat and survival upgrades");
+  view.rerender(<FleetLiveCard member={{ ...member, overview: { ...live, observed_at: 1 } }} account={account} onInspect={() => {}} />);
+  expect(screen.queryByText("Push run · tier 2")).not.toBeInTheDocument();
+  view.rerender(<FleetLiveCard member={{ ...member, state: "stopped", overview: { ...live, health: { ...live.health, state: "stopped" } } }} account={account} onInspect={() => {}} />);
+  expect(screen.queryByText("Push run · tier 2")).not.toBeInTheDocument();
+});

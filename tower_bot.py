@@ -67,7 +67,7 @@ import traceback
 from pathlib import Path
 from types import FrameType
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from adbutils import AdbDevice
 
@@ -116,6 +116,7 @@ from runtime_records import PROCESS_BOOT_ID, RuntimeRecords
 from supervisor import DeviceSupervisor, RecoveryState
 from policy import AutopilotPolicy
 from runs import RunTracker
+from push_runs import PushRuns, push_policy
 from shopping import ShoppingSession, header_numbers
 from snapshots import SnapshotWriter
 from sinks.log import LogSink
@@ -384,6 +385,13 @@ class TowerBot:
         # When that streak began (time.monotonic), for RECOVERY_BLOCKED_WALK_MIN_SECONDS.
         self._recovery_blocked_since = 0.0
         self.runs = RunTracker(first_run_id)
+        push_path = (safety_journal.path.with_name(safety_journal.path.stem + "-push-runs.json")
+                     if isinstance(safety_journal, transactions.TransactionJournal) else None)
+        push_account = (getattr(reroll_progress, "account_id", None)
+                        or f"device:{getattr(device, 'serial', 'standalone')}")
+        self.push_runs = PushRuns(push_path, push_account, every=config.PUSH_EVERY_FARM_RUNS)
+        self._push_expected_tier: int | None = None
+        self._push_taps = 0
         # When each claim last landed, and the wave each tier's ladder was
         # claimed at. In-memory for this slice: a restart re-offers a claim,
         # and the walk itself refuses if there is nothing to take. Persisting
@@ -504,6 +512,12 @@ class TowerBot:
         self._capture_sequence += 1
         self._bind_lab_runtime()
         self._bind_notification_scope()
+        scope = getattr(self.account_state, "verified_scope", None)
+        if scope is not None and scope.account_id != self.push_runs.state.account:
+            self.push_runs = PushRuns(self.push_runs.path, scope.account_id,
+                                      every=config.PUSH_EVERY_FARM_RUNS)
+            self._push_expected_tier = None
+            self._push_taps = 0
         if self.frames is not None:
             self.frames.publish(self._screen)
         return self._screen
@@ -567,8 +581,27 @@ class TowerBot:
         return RunIdentity(
             run_id=self.runs.current_id,
             build_revision=build_revision(self.account_state),
-            purpose=settings.strategy.autopilot.purpose,
+            purpose=("milestone" if self.push_runs.active else
+                     self.push_runs.state.purpose or settings.strategy.autopilot.purpose),
         )
+
+    def _start_run(self, event: events.RunStarted, settings: Live) -> events.RunStarted:
+        # Legacy fleet profiles label the buying guide milestone even during
+        # routine farming. Scheduled run intent is tracked independently.
+        intent = "farm" if self.reroll_progress is not None else settings.strategy.autopilot.purpose
+        purpose = self.push_runs.started(event.run_id, intent)
+        logger.info("Run started: run_id=%s mode=%s target_tier=%s farms_remaining=%s",
+                    event.run_id, self.push_runs.snapshot()["mode"],
+                    self.push_runs.state.target_tier, self.push_runs.snapshot()["farms_remaining"])
+        return dataclasses.replace(event, purpose=purpose)
+
+    def _finish_run(self, event: events.RunEnded) -> None:
+        if self.push_runs.active and event.abandoned and self.tracker.state is screens.ScreenState.MAIN_MENU:
+            battle = config.NAV_BUTTONS["MAIN_MENU"][0][1]
+            if vision.locate_template(self.screen, self.templates.get(battle), .8) is None:
+                # RESUME BATTLE and uncertain redraws do not prove termination.
+                return
+        self.push_runs.ended(abandoned=event.abandoned)
 
     # -- the core helper ---------------------------------------------------
     def find_and_click_image(
@@ -1058,6 +1091,50 @@ class TowerBot:
         if nav_arrow.arrow_over(self.screen, self.templates, 'CARDS') is not True:
             return False
         return self.cards_intro.request()
+
+    def _advance_push(self, settings: Any, boxes: Sequence[ocr.TextBox]) -> bool:
+        """Hold BATTLE until a push's observed tier round trip is complete."""
+        if not self.push_runs.needs_home:
+            return False
+        battle = config.NAV_BUTTONS["MAIN_MENU"][0][1]
+        if vision.locate_template(self.screen, self.templates.get(battle), .8) is None:
+            return False  # RESUME BATTLE must preserve the suspended run.
+        now = time.monotonic()
+        if now - self._tier_tap_at < config.NAVIGATION_COOLDOWN_SECONDS:
+            return True
+        self.push_runs.ended(abandoned=True)  # Startup on a fresh BATTLE menu.
+        panel = tier_select.read_panel(self.screen, self.templates, boxes)
+        if panel is None:
+            return True
+        self._ladder_tier = panel.tier
+        if self._push_expected_tier is not None:
+            if panel.tier != self._push_expected_tier:
+                if now - self._tier_tap_at > 10:
+                    self.push_runs.blocker = "Tier tap was not confirmed; automatic battle start is held."
+                return True
+            self._push_expected_tier = None
+        intent = self.push_runs.menu(panel.tier, panel.next.available)
+        if intent == "start":
+            self._push_taps = 0
+            return False
+        if intent == "hold":
+            return True
+        arrow = panel.next if intent == "next" else panel.previous
+        if arrow is None or not arrow.available:
+            return True
+        if self._push_taps >= 64:
+            self.push_runs.blocker = "Push tier navigation exceeded its step limit."
+            return True
+        x, y = jitter.point(*arrow.point, settings.strategy.tap_jitter_px)
+        jitter.pause(settings.strategy.tap_delay, settings.strategy.timing_jitter)
+        tap(self.device, x, y)
+        self._tier_tap_at = now
+        self._push_expected_tier = panel.tier + (1 if intent == "next" else -1)
+        self._push_taps += 1
+        self.bus.publish(events.Tapped(action=f"push:tier_{intent}", x=x, y=y, score=arrow.score))
+        logger.info("Push tier navigation: tier=%s direction=%s return_tier=%s",
+                    panel.tier, intent, self.push_runs.state.farm_tier)
+        return True
 
     def _advance_tier(self, settings: Any) -> bool:
         """Tap the lit right tier arrow once the strategy's promotion rule is met.
@@ -2349,7 +2426,7 @@ class TowerBot:
             run_event = self.runs.transition(self.tracker.state, time.monotonic())
             if run_event is not None:
                 if isinstance(run_event, events.RunStarted):
-                    run_event = dataclasses.replace(run_event, purpose=settings.strategy.autopilot.purpose)
+                    run_event = self._start_run(run_event, settings)
                 if isinstance(run_event, events.RunEnded):
                     if (
                         self.tracker.state is screens.ScreenState.GAME_OVER
@@ -2371,10 +2448,14 @@ class TowerBot:
                             self._tier_best_wave.get(run_event.tier, 0)
                         ):
                             self._tier_best_wave[run_event.tier] = run_event.wave
+                    self._finish_run(run_event)
                 self.bus.publish(run_event)
                 self.autopilot.suspend("Run boundary", clear_battle=True)
 
         state = self.tracker.state
+        if state is screens.ScreenState.GAME_OVER:
+            # RunTracker has no open run when startup finds a death modal.
+            self.push_runs.ended(abandoned=False)
         if state not in (screens.ScreenState.GAME_OVER, screens.ScreenState.MAIN_MENU):
             self._lab_home_pending = False  # a run started: the detour is moot
         shopping_policy = settings.strategy.shopping
@@ -2990,7 +3071,7 @@ class TowerBot:
             # priority. Before, this walked config.ACTIONS and used the
             # settings only as an on/off filter, so neither reordering nor
             # a per-row threshold could reach the matcher.
-            if settings.strategy.autopilot.enabled or self.autopilot.has_work:
+            if settings.strategy.autopilot.enabled or self.push_runs.active or self.autopilot.has_work:
                 # Deliberately NOT gated on `in_run_anchor`. That anchor is
                 # the ATTACK tab's header crop, and it used to be what made
                 # the screen IN_RUN at all, so requiring it here was free.
@@ -3038,9 +3119,13 @@ class TowerBot:
                         if live.paused or live.strategy != settings.strategy:
                             return replace(settings.strategy.autopilot, enabled=False, rules=())
                         if self.reroll_progress is None:
+                            if self.push_runs.active:
+                                return push_policy(replace(settings.strategy.autopilot, enabled=True),
+                                    tier=self.push_runs.state.target_tier,
+                                    rows={row.upgrade_id: row.payload() for row in observation.rows}, combat=combat)
                             return settings.strategy.autopilot
                         identity = self.run_identity(settings)
-                        return self.reroll_progress.battle_policy(
+                        effective = self.reroll_progress.battle_policy(
                             settings.strategy.autopilot,
                             {**self.autopilot.state.rows("battle", time.time(), identity),
                              **{row.upgrade_id: row.payload() for row in observation.rows}},
@@ -3053,10 +3138,13 @@ class TowerBot:
                             batch_route_token=self.autopilot.batch_route_token,
                             batch_rule_id=self.autopilot.batch_rule_id,
                             after_receipt_sequence=after_sequence,
-                            battle_tab=observation.category)
+                            battle_tab=observation.category,
+                            **({"push_tier": self.push_runs.state.target_tier}
+                               if self.push_runs.active else {}))
+                        return effective
 
                     def record_battle_receipt(sequence: int | None, upgrade_id: str, levels: int) -> None:
-                        if self.reroll_progress is None:
+                        if self.reroll_progress is None or self.push_runs.active:
                             return
                         if config.BATTLE_BURST_ENABLED:
                             self.reroll_progress.note_battle_levels(
@@ -3245,8 +3333,10 @@ class TowerBot:
             # here, one screen early, or the bot never reaches the menu to
             # be asked at all. Same gate begin() uses, so a detour is only
             # taken when the visit it exists for will actually start.
+            push_owned_menu = self.push_runs.needs_home
             tier_selecting = (state is screens.ScreenState.MAIN_MENU
-                              and self._advance_tier(settings))
+                              and (self._advance_push(settings, reads.full()) if push_owned_menu
+                                   else self._advance_tier(settings)))
             if not tier_selecting:
                 # _lab_start_due spends its pacing on the first True; latch it so
                 # a declined navigation pass cannot lose the detour to RETRY.
@@ -3260,7 +3350,8 @@ class TowerBot:
                     self.device,
                     now=time.monotonic(),
                     tuning=settings.strategy,
-                    go_home=((self.shopping.due(shopping_policy, self.runs.completed)
+                    go_home=(self.push_runs.needs_home
+                             or (self.shopping.due(shopping_policy, self.runs.completed)
                               and (self.reroll_progress is None
                                    or self.reroll_progress.initial_workshop_due()
                                    or self.reroll_progress.workshop_worthwhile(

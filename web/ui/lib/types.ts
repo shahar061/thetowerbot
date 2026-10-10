@@ -87,6 +87,17 @@ export interface MatchBox {
   tapped: boolean;
 }
 
+export interface PushRunStatus {
+  account: string;
+  mode: "farm" | "push";
+  phase: "farming" | "selecting" | "ready" | "pushing" | "returning";
+  every: number;
+  farms_remaining: number;
+  farm_tier: number | null;
+  target_tier: number | null;
+  blocker: string | null;
+}
+
 export interface BotStatus {
   running: boolean;
   /** Unix seconds when the current bot started, or null when stopped. */
@@ -94,6 +105,7 @@ export interface BotStatus {
   /** The last start failure - a dead emulator, usually. Cleared by a
    * successful start. */
   error: string | null;
+  push_runs?: PushRunStatus;
 }
 
 export interface StrategyList {

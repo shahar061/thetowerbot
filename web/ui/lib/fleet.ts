@@ -1,3 +1,5 @@
+import type { PushRunStatus } from "./types";
+
 export type FleetClone = {
   instance?: string;
   state: "queued" | "staging" | "verifying" | "blocked" | "quarantined" | "dismissed" | "ready";
@@ -73,6 +75,7 @@ export type FleetOverview = {
     /** Older servers omit these; the validator normalizes them to null. */
     blocker?: string | null; observed_at?: number | null } | null;
   unknown_count: number; blockers: string[];
+  push_runs?: PushRunStatus | null;
 };
 export type RerollMember = { name: string; endpoint: string; lease_id: string; state: string;
   account_id?: string | null; account_key?: string | null; milestone?: string | null;
@@ -139,7 +142,17 @@ export function validatedOverview(member: unknown): FleetOverview | null {
       !nullableString(row.recovery.blocker ?? null) || !nullableNumber(row.recovery.observed_at ?? null))) return null;
   if (!number(row.unknown_count) || !Array.isArray(row.blockers) ||
       !row.blockers.every(reason => typeof reason === "string")) return null;
-  return row as FleetOverview;
+  if (!("push_runs" in row)) return row as FleetOverview;
+  const push = row.push_runs;
+  const validPush = object(push) && push.account === row.account_id &&
+    ["farm", "push"].includes(push.mode as string) &&
+    ["farming", "selecting", "ready", "pushing", "returning"].includes(push.phase as string) &&
+    number(push.every) && Number.isInteger(push.every) && push.every >= 0 &&
+    number(push.farms_remaining) && Number.isInteger(push.farms_remaining) &&
+    push.farms_remaining >= 0 && push.farms_remaining <= push.every &&
+    [push.farm_tier, push.target_tier].every(tier => tier === null || number(tier) && Number.isInteger(tier) && tier > 0) &&
+    nullableString(push.blocker);
+  return { ...row, push_runs: validPush ? push : null } as FleetOverview;
 }
 export type RerollRun = { number: number; name: string; status: "active" | "closed";
   started_at: string; closed_at?: string | null };

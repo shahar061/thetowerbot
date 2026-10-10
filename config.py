@@ -19,6 +19,8 @@ DEVICE_PORT: int = 5555
 
 # --- Loop timing ----------------------------------------------------------
 SCAN_INTERVAL_SECONDS: float = 2.0
+# One survival-focused push after this many completed farming runs. 0 disables.
+PUSH_EVERY_FARM_RUNS: int = 10
 # Minimum delay between two clicks on the *same* template, so a slow UI
 # animation does not cause a burst of taps on a button that is already pressed.
 CLICK_COOLDOWN_SECONDS: float = 1.0
