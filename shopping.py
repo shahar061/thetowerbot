@@ -339,6 +339,7 @@ class ShoppingSession:
         self._stop_reason: str | None = None
         # Asked, by upgrade id, why a verified purchase was chosen.
         self.reroll_purchase_reason: Any | None = None
+        self.reroll_purchase_plan_id: Any | None = None
         # Where an inconclusive purchase acknowledgement keeps its frames.
         self.evidence_dir: Path | None = None
         self._replan_due = False
@@ -1198,6 +1199,8 @@ class ShoppingSession:
             transaction_key=None if outcome is None else outcome.key or None,
             reason=(self.reroll_purchase_reason(row.upgrade_id)
                     if not dry_run and self.reroll_purchase_reason is not None else None),
+            workshop_plan_id=(self.reroll_purchase_plan_id(row.upgrade_id)
+                             if not dry_run and self.reroll_purchase_plan_id is not None else None),
         ))
         if not dry_run and self.observations is not None:
             self.observations.verified(verified or row)

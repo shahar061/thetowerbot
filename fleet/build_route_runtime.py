@@ -16,6 +16,7 @@ from fleet.build_route_eval import RouteFacts
 from fleet.build_route_eval import RouteEvaluation
 from fleet.build_route_eval import ResourceEvaluation
 from fleet.build_route_store import BuildRouteStore, RouteUnavailable, _write_json_atomic
+from fleet.workshop_plan_history import save_snapshot
 import db
 import upgrades
 
@@ -225,11 +226,14 @@ class BuildRouteRuntime:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def publish_workshop_plan(self, record: dict[str, Any]) -> None:
+    def publish_workshop_plan(self, record: dict[str, Any]) -> str:
         """Save the trace behind this worker's latest Workshop decision (Plan graph tab)."""
         if record.get("account_id") != self.account_id:
             raise ValueError("workshop plan belongs to another account")
-        _write_json_atomic(self.root / "workers" / self.worker / WORKSHOP_PLAN_FILE, record)
+        worker_dir = self.root / "workers" / self.worker
+        saved = save_snapshot(worker_dir, record)
+        _write_json_atomic(worker_dir / WORKSHOP_PLAN_FILE, saved)
+        return saved["id"]
 
     def publish_resources(self, evaluation: ResourceEvaluation,
                           facts: RouteFacts | None = None) -> None:

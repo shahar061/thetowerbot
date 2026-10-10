@@ -2502,6 +2502,7 @@ def test_a_verified_purchase_records_why_the_strategy_chose_it(session, monkeypa
     _escalating_row(session, monkeypatch, [60, 5_000], coins=300)
     asked: list[str] = []
     session.reroll_purchase_reason = lambda upgrade_id: asked.append(upgrade_id) or "Save for goal"
+    session.reroll_purchase_plan_id = lambda upgrade_id: "saved-decision" if upgrade_id == "damage" else None
     policy = a_policy(armed=True, coin_budget=60, workshop=(
         ShoppingRule(name="Damage", category="ATTACK"),))
     session.begin(policy, run_count=1)
@@ -2509,6 +2510,7 @@ def test_a_verified_purchase_records_why_the_strategy_chose_it(session, monkeypa
     _keep_buying(session, device, policy)
 
     assert [e.reason for e in session._bus.of_type("Purchased")] == ["Save for goal"]
+    assert [e.workshop_plan_id for e in session._bus.of_type("Purchased")] == ["saved-decision"]
     assert asked == ["damage"]
 
 

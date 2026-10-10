@@ -224,6 +224,7 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                 dry_run=event.dry_run,
                 detail={**({"verdict": event.verdict} if event.verdict else {}),
                         **({"transaction_key": event.transaction_key} if event.transaction_key else {}),
+                        **({"workshop_plan_id": event.workshop_plan_id} if event.workshop_plan_id else {}),
                         **({"reason": event.reason} if event.reason else {})},
                 **base,
             ),)

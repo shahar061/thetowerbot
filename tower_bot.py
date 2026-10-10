@@ -292,6 +292,7 @@ class TowerBot:
             self.shopping.reroll_replan = self._replan_reroll_shopping
             self.shopping.reroll_stop_reason = lambda: getattr(self.reroll_progress, 'stop_reason', None)
             self.shopping.reroll_purchase_reason = getattr(reroll_progress, "purchase_reason", None)
+            self.shopping.reroll_purchase_plan_id = getattr(reroll_progress, "purchase_plan_id", None)
             self.shopping.price_quotes = getattr(reroll_progress, 'price_quotes', None)
             self.shopping.inspection_resolved = getattr(reroll_progress, 'inspection_resolved', None)
         self.shopping.observations = self.autopilot.state

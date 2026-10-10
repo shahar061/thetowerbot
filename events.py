@@ -282,6 +282,7 @@ class Purchased(Event):
 
     item: str
     category: str
+    workshop_plan_id: str | None = None
     price: int | None = None
     coins_before: int | None = None
     gems_before: int | None = None

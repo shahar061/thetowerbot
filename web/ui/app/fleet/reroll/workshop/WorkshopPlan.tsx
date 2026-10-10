@@ -6,9 +6,10 @@ import type { WorkshopPlanResponse } from "@/lib/buildRoute";
 import type { RerollMember } from "@/lib/fleet";
 import { cn } from "@/lib/utils";
 import { PlanGraph } from "./PlanGraph";
+import { WorkshopHistory } from "./WorkshopHistory";
 import { ago } from "./workshopFormat";
 
-type Loaded = { worker: string; response: WorkshopPlanResponse | null; error: string | null; waiting?: boolean };
+type Loaded = { identity: string; response: WorkshopPlanResponse | null; error: string | null; waiting?: boolean };
 
 export function WorkshopPlan({ members, focusWorker = null }: { members: RerollMember[]; focusWorker?: string | null }): React.JSX.Element {
   const [picked, setPicked] = useState<string | null>(focusWorker);
@@ -22,17 +23,17 @@ export function WorkshopPlan({ members, focusWorker = null }: { members: RerollM
     let active = true;
     const load = async (): Promise<void> => {
       if (!scoped.account_key || !scoped.account_id) {
-        if (active) setLoaded({ worker: scoped.name, response: null, error: null, waiting: true });
+        if (active) setLoaded({ identity, response: null, error: null, waiting: true });
         return;
       }
       try {
         const response = await fetchAccountWorkshopPlan(scoped.account_key, scoped.account_id);
-        if (active) setLoaded({ worker: scoped.name, response, error: null });
+        if (active) setLoaded({ identity, response, error: null });
       } catch (failure) {
         const error = failure instanceof Error ? failure.message : "Workshop plan unavailable";
         // Keep the last good graph for this emulator; say the refresh failed.
-        if (active) setLoaded(current => ({ worker: scoped.name, error,
-          response: current?.worker === scoped.name ? current.response : null }));
+        if (active) setLoaded(current => ({ identity, error,
+          response: current?.identity === identity ? current.response : null }));
       }
     };
     void load();
@@ -40,7 +41,7 @@ export function WorkshopPlan({ members, focusWorker = null }: { members: RerollM
     return () => { active = false; window.clearInterval(timer); };
   }, [identity]);
 
-  const current = member && loaded?.worker === member.name ? loaded : null;
+  const current = member && loaded?.identity === identity ? loaded : null;
   const plan = current?.response?.plan ?? null;
   return <div className="flex flex-col gap-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -61,5 +62,6 @@ export function WorkshopPlan({ members, focusWorker = null }: { members: RerollM
       : plan ? <PlanGraph plan={plan} stale={current.response?.stale ?? false} />
       : !current.error && !current.waiting && <p className="rounded-xl border border-dashed p-10 text-center text-muted-foreground">
           No Workshop decision recorded for {member.name} yet. It appears after its next Workshop visit.</p>}
+    {current?.response && <WorkshopHistory key={identity} rows={current.response.history ?? []} />}
   </div>;
 }

@@ -80,6 +80,8 @@ export type WorkshopPlanBudget = {
 };
 
 export type WorkshopPlanRecord = {
+  id?: string;
+  selected_at?: number;
   account_id: string;
   revision: number;
   written_at: number;
@@ -90,8 +92,25 @@ export type WorkshopPlanRecord = {
   upgrade_names: Record<string, string>;
 };
 
+export type WorkshopSelection = {
+  id: string;
+  selected_at: number;
+  purchased_at: number | null;
+  upgrade_id: string | null;
+  name: string;
+  score: number | null;
+  weight: number | null;
+  odds: number | null;
+  selection: string | null;
+  outcome: string;
+  price: number | null;
+  reason: string | null;
+  plan: WorkshopPlanRecord | null;
+};
+
 export type WorkshopPlanResponse = {
   plan: WorkshopPlanRecord | null;
+  history?: WorkshopSelection[];
   age_seconds?: number | null;
   current_revision?: number | null;
   stale?: boolean;
