@@ -242,6 +242,25 @@ class BotRunner:
                 status['push_runs'] = push_runs.snapshot()
             return status
 
+    def configure_strategy_studio(self, *, root: Path, state_dir: Path, db_path: Path) -> None:
+        self._strategy_paths = (root, state_dir, db_path)
+
+    def strategy_context(self) -> Any:
+        from strategy_target import StrategyTargetContext
+        with self._lock:
+            paths = getattr(self, '_strategy_paths', None)
+            scope = self.account_state.verified_scope
+            if paths is None or scope is None:
+                return None
+            root, state_dir, db_path = paths
+            target_id = state_dir.name if (state_dir / 'fleet-registration.json').exists() else 'standalone'
+            context = StrategyTargetContext(target_id, scope, state_dir, db_path, root, root,
+                frozenset({'battle', 'workshop', 'gems', 'labs', 'cards'}),
+                lambda: self.account_state.verified_scope,
+                lambda: self.account_state.guard_scope(scope))
+            context.verify_current()
+            return context
+
     def identity(self) -> dict[str, str | None]:
         """Identity already learned during start; this never performs ADB I/O."""
         with self._lock:
@@ -474,7 +493,10 @@ class BotRunner:
             runtime = getattr(self._bot, 'card_runtime', None)
             if not self._running_locked() or runtime is None:
                 raise RunnerError('cards_runtime_unavailable', 503)
-            route_runtime = getattr(getattr(self._bot, 'reroll_progress', None), 'route_runtime', None)
+            route_runtime = getattr(getattr(self._bot, 'plan_coordinator', None), 'route_runtime', None)
+            execution = getattr(self._bot, 'strategy_execution', None)
+            if route_runtime is None and execution is not None and execution.owns_plan:
+                route_runtime = execution.runtime
             route_guard = route_runtime.store._locked() if route_runtime is not None else nullcontext()
             # All mutators participate in these guards. File publication may
             # change the effective program independently of the runner lock.
@@ -928,6 +950,11 @@ class BotRunner:
             recovery = self._build_recovery_locked()
             if recovery is not None:
                 bot_kwargs['recovery'] = recovery
+            if getattr(self, '_strategy_paths', None) is not None:
+                from strategy_execution import StrategyExecution
+                bot_kwargs['strategy_execution'] = StrategyExecution(self.strategy_context,
+                    self.account_state, root=self._strategy_paths[0],
+                    fleet_progress=self._reroll_progress)
             if self._reroll_progress is not None:
                 bot_kwargs["reroll_progress"] = self._reroll_progress
             if (self._reroll_progress is not None or self._standalone_expected_account is not None) and self._supervisor is not None:

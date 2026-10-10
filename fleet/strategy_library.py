@@ -77,6 +77,11 @@ class StrategyLibrary:
                 raise ValueError("invalid library structure")
             seen: dict[str, int] = {}
             for row in state["versions"]:
+                if row.get("kind", "native") == "legacy":
+                    from strategy_compat import validate_snapshot
+                    validate_snapshot(row["legacy_snapshot"])
+                elif row.get("kind", "native") != "native" or row.get("legacy_snapshot") is not None:
+                    raise ValueError("invalid strategy kind")
                 if (not isinstance(row["id"], str) or not row["id"].startswith("strategy-")
                         or row["builtin"] is not False
                         or row["source_template"] not in SOURCE_TEMPLATES
@@ -99,6 +104,30 @@ class StrategyLibrary:
         state = self._state()
         latest = {row["id"]: row for row in state["versions"]}
         return {"revision": state["revision"], "templates": templates(), "strategies": list(latest.values())}
+
+    def import_legacy(self, snapshot: dict[str, Any], *, source_key: str) -> dict[str, Any]:
+        from strategy_compat import validate_snapshot
+        captured = validate_snapshot(snapshot)
+        with self._locked():
+            state = self._state()
+            rows = [r for r in state["versions"] if r.get("import_source") == source_key]
+            existing = next((r for r in rows if r.get("legacy_snapshot") == snapshot), None)
+            if existing is not None:
+                return {**self.read(), 'imported_strategy_id': existing['id']}
+            name = f"Imported {captured.name}"
+            taken = {r['name'] for r in state['versions'] if r not in rows}
+            if name in taken:
+                name = f"{name} ({source_key})"[:100]
+            state["versions"].append({
+                "id": rows[-1]["id"] if rows else f"strategy-{uuid4().hex}",
+                "name": name, "version": len(rows) + 1, "source_template": "scratch",
+                "baseline": RouteDocument.compatibility().baseline.to_dict(),
+                "builtin": False, "kind": "legacy", "legacy_snapshot": snapshot,
+                "import_source": source_key, "saved_at": time.time(),
+            })
+            state['revision'] += 1
+            _write_json_atomic(self.path, state)
+        return {**self.read(), 'imported_strategy_id': state['versions'][-1]['id']}
 
     def version(self, strategy_id: str, version: int) -> dict[str, Any]:
         if type(version) is not int or version < 1:
@@ -148,6 +177,8 @@ class StrategyLibrary:
             previous = [row for row in state["versions"] if row["id"] == strategy_id]
             if strategy_id is not None and not previous:
                 raise ValueError("saved strategy not found")
+            if previous and previous[-1].get("kind") == "legacy":
+                raise ValueError("imported policies are immutable; create a native strategy")
             if previous and previous[-1]["source_template"] != source_template:
                 raise ValueError("cannot change strategy source template")
             # saved_at puts edits on the strategy ledger's timeline. Rows from

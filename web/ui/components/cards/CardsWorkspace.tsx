@@ -422,9 +422,9 @@ export function CardsWorkspace({
       {editReason ? (
         <div className="rounded-md border p-3 text-sm">
           <p>{editReason}</p>
-          {data.config_owner === "fleet" ? (
-            <Link href="/fleet/reroll/strategies/" className="underline">
-              Edit in Fleet / Strategy Library
+          {data.config_owner === "fleet" || data.config_owner === "studio" ? (
+            <Link href={data.config_owner === "studio" ? "/strategy/" : "/fleet/reroll/strategies/"} className="underline">
+              {data.config_owner === "studio" ? "Edit in Strategy Studio" : "Edit in Fleet / Strategy Library"}
             </Link>
           ) : null}
         </div>

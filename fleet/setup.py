@@ -356,7 +356,8 @@ class FleetSetupService:
             assignments[name] = StrategyAssignment.from_dict({
                 "account_id": account_id, "strategy_id": saved["id"],
                 "strategy_version": saved["version"], "strategy_name": saved["name"],
-                "baseline": saved["baseline"],
+                "baseline": saved["baseline"], "kind": saved.get("kind", "native"),
+                **({"legacy_snapshot": saved["legacy_snapshot"]} if saved.get("kind") == "legacy" else {}),
             })
             overrides.pop(name, None)
         published = store.publish(replace(current, assignments=assignments, overrides=overrides),

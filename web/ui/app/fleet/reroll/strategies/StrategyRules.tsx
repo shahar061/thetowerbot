@@ -17,8 +17,8 @@ const field = "flex min-w-0 flex-col gap-1 text-xs";
 const input = "min-h-11 min-w-0 w-full max-w-full rounded border border-border bg-background px-2 py-1";
 
 /** `labList`: the labs lane is a ranked lab list - the only lane just-in-time saving plans for. */
-export function StrategyRules({ rules, locked, rows, labList, onChange }: {
-  rules: RouteRules; locked: boolean; rows: LabsRow[]; labList: boolean; onChange: (rules: RouteRules) => void;
+export function StrategyRules({ rules, locked, rows, labList, onChange, rerollMode = true }: {
+  rerollMode?: boolean; rules: RouteRules; locked: boolean; rows: LabsRow[]; labList: boolean; onChange: (rules: RouteRules) => void;
 }): React.JSX.Element {
   const [worker, setWorker] = useState(rows[0]?.worker ?? "");
   const set = (next: RouteRules): void => { if (!locked) onChange(next); };
@@ -105,7 +105,7 @@ export function StrategyRules({ rules, locked, rows, labList, onChange }: {
       </fieldset>
       <fieldset aria-label="Fixed safety rules" disabled className="min-w-0 space-y-1 rounded-xl border border-border p-3 text-xs">
         <legend className="px-1 text-sm font-semibold">Fixed safety rules</legend>
-        {SAFETY.map(rule => <p key={rule} className="flex items-center gap-2"><LockKeyhole size={12} />{rule}</p>)}
+        {(rerollMode ? SAFETY : SAFETY.slice(0, 3)).map(rule => <p key={rule} className="flex items-center gap-2"><LockKeyhole size={12} />{rule}</p>)}
       </fieldset>
     </div>
     <aside aria-label="Wallet split preview" className="min-w-0 space-y-2 rounded-xl border border-border p-3 text-xs">
@@ -120,7 +120,7 @@ export function StrategyRules({ rules, locked, rows, labList, onChange }: {
       </>}
       {row && !split && <p className="text-muted-foreground">Wallet not read yet.</p>}
       <h4 className="pt-2 text-sm font-semibold">Rule order</h4>
-      <ol className="list-decimal space-y-0.5 pl-4">{ORDER.map(item => <li key={item}>{item}</li>)}</ol>
+      <ol className="list-decimal space-y-0.5 pl-4">{(rerollMode ? ORDER : ORDER.map(item => item.replace("gems keep, Lab 2 reserve, lab coin jar", "gems keep, lab coin jar"))).map(item => <li key={item}>{item}</li>)}</ol>
     </aside>
   </section>;
 }

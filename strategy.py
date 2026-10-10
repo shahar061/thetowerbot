@@ -694,6 +694,8 @@ class Strategy:
     # so a build that is retuned there does not need every saved profile
     # rewritten.
     build: str | None = None
+    # In-memory recipe pinned by an imported Studio version; never profile JSON.
+    _build_recipe: builds.Build | None = dataclasses.field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         # Normalise before validating: from_dict will hand in a list, and the
@@ -743,7 +745,10 @@ class Strategy:
                 "target_speed",
                 f"target_speed must be null or one of {list(config.TARGET_SPEEDS)}",
             )
-        if self.build is not None and builds.by_id(self.build) is None:
+        if self._build_recipe is not None and (not isinstance(self._build_recipe, builds.Build)
+                or self._build_recipe.id != self.build):
+            raise ControlError("build", "captured build recipe does not match build")
+        if self.build is not None and self._build_recipe is None and builds.by_id(self.build) is None:
             # Membership against the committed pack, not a free string: a
             # build id nothing resolves is a policy that ranks nothing, and
             # the bot would sit there buying nothing while the profile

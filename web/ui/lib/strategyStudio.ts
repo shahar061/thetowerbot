@@ -25,10 +25,13 @@ export type StrategyBlock =
 export type StrategyDefinition = {
   id: string; name: string; version: number; source_template: "opening" | "turtle" | "labs_gems" | "scratch"; builtin: boolean;
   baseline: BuildRouteDocument["baseline"];
+  kind?: "native" | "legacy";
+  legacy_snapshot?: { schema_version: number; profile: string; source_revision: string; strategy: Record<string, unknown> };
 };
 export type StrategyLibrary = { revision: number; templates: StrategyDefinition[]; strategies: StrategyDefinition[] };
 export type StrategyAssignment = { account_id: string; strategy_id: string; strategy_version: number; strategy_name: string;
-  baseline: BuildRouteDocument["baseline"] };
+  baseline: BuildRouteDocument["baseline"]; kind?: "native" | "legacy";
+  legacy_snapshot?: StrategyDefinition["legacy_snapshot"] };
 // Strategy ledger: derived server-side from route revisions and saved versions.
 export type StrategyLedgerPin = { strategy_id: string; strategy_version: number; strategy_name: string };
 export type StrategyLedgerEntry =

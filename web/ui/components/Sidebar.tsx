@@ -8,7 +8,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { fetchErrors, fetchStrategies } from "@/lib/api";
+import { fetchErrors } from "@/lib/api";
 import { useConnected } from "@/lib/useEventStream";
 import { useAccountSelection } from "@/lib/AccountSelection";
 import { cn } from "@/lib/utils";
@@ -37,7 +37,7 @@ const GROUPS: { label: string; items: Item[] }[] = [
     label: "Configure",
     items: [
       { href: "/cards/", label: "Cards", icon: LayoutGrid },
-      { href: "/strategy/", label: "Strategy", icon: SlidersHorizontal },
+      { href: "/strategy/", label: "Strategy Studio", icon: SlidersHorizontal },
       { href: "/control/", label: "Control", icon: Power },
     ],
   },
@@ -73,7 +73,6 @@ export function Sidebar(): React.JSX.Element {
   // useControlSync.
   const connected = useConnected();
   const [errorCount, setErrorCount] = useState<number | null>(null);
-  const [active, setActive] = useState<string | null>(null);
   // Phone only: the rail collapses to a one-line bar and opens as a list.
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [pathname]);
@@ -82,12 +81,9 @@ export function Sidebar(): React.JSX.Element {
   useEffect(() => {
     let active = true;
     setErrorCount(null);
-    setActive(null);
     if (reroll) return;
     const load = () => {
       if (selectedKey) fetchErrors(100).then((rows) => { if (active) setErrorCount(rows.length); }).catch(() => {});
-      if (selectedRunning) fetchStrategies().then((list) => { if (active) setActive(list.active); }).catch(() => {});
-      else setActive(null);
     };
     load();
     const id = setInterval(load, 30_000);
@@ -162,7 +158,7 @@ export function Sidebar(): React.JSX.Element {
           {/* Which strategy is loaded is the one piece of bot state worth
               carrying on every page - it is what every rule on /strategy edits. */}
           <div className="mt-0.5 truncate font-mono text-[10px] text-faint-foreground">
-            {reroll ? "Fleet workspace" : active ?? "…"}
+            {reroll ? "Fleet workspace" : "Emulator workspace"}
           </div>
         </div>
 

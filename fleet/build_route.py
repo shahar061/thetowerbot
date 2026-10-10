@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 import upgrades
 from card_models import CardProgram
+from strategy import TierPromotion
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:
@@ -478,12 +479,13 @@ class RouteBaseline:
     cards: CardProgram | None = None
     _cards_persisted: bool = field(default=True, repr=False, compare=False)
     tournament: TournamentConfig = TournamentConfig()
+    tier_promotion: TierPromotion = field(default_factory=TierPromotion)
 
     @classmethod
     def from_dict(cls, value: object) -> RouteBaseline:
         from tournament_policy import TournamentConfig
         raw = _mapping(value, "baseline")
-        _keys(raw, {"workshop", "battle", "gems", "labs", "rules", "cards", "tournament"})
+        _keys(raw, {"workshop", "battle", "gems", "labs", "rules", "cards", "tournament", "tier_promotion"})
         workshop_raw = _mapping(raw.get("workshop", {}), "workshop")
         gems_raw = _mapping(raw.get("gems", {}), "gems")
         workshop = WorkshopRoute.from_dict(workshop_raw)
@@ -507,9 +509,11 @@ class RouteBaseline:
         check_pool_limits(labs.blocks, max_seconds=rules.labs.pool.max_seconds,
                           max_price_pct=rules.labs.pool.max_price_pct_of_wallet)
         # Dual-write for one release: older workers still read the old fields.
-        return cls(replace(workshop, coin_spend_limit_pct=rules.coins.workshop_spend_limit_pct),
-                   battle, replace(gems, spend_limit_pct=rules.gems.spend_limit_pct), labs,
-                   rules, cards, persisted, TournamentConfig.from_dict(raw.get("tournament", {})))
+        return cls(workshop=replace(workshop, coin_spend_limit_pct=rules.coins.workshop_spend_limit_pct),
+                   battle=battle, gems=replace(gems, spend_limit_pct=rules.gems.spend_limit_pct), labs=labs,
+                   rules=rules, cards=cards, _cards_persisted=persisted,
+                   tournament=TournamentConfig.from_dict(raw.get("tournament", {})),
+                   tier_promotion=TierPromotion.from_dict(raw.get("tier_promotion", {})))
 
     def to_dict(self) -> dict[str, Any]:
         result = {"workshop": _workshop_dict(self.workshop), "battle": asdict(self.battle),
@@ -519,6 +523,8 @@ class RouteBaseline:
         result["tournament"] = (self.tournament or TournamentConfig()).to_dict()
         if self.cards is not None and self._cards_persisted:
             result["cards"] = self.cards.model_dump(mode="json")
+        if self.tier_promotion.waves:
+            result["tier_promotion"] = self.tier_promotion.to_dict()
         return result
 
 
@@ -564,24 +570,36 @@ class StrategyAssignment:
     strategy_version: int
     strategy_name: str
     baseline: RouteBaseline
+    kind: str = "native"
+    legacy_snapshot: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, value: object) -> StrategyAssignment:
         raw = _mapping(value, "assignment")
-        _keys(raw, {"account_id", "strategy_id", "strategy_version", "strategy_name", "baseline"})
+        _keys(raw, {"account_id", "strategy_id", "strategy_version", "strategy_name", "baseline", "kind", "legacy_snapshot"})
         for key in ("account_id", "strategy_id", "strategy_name"):
             if not isinstance(raw.get(key), str) or not raw[key].strip():
                 raise ValueError(f"assignment requires {key}")
         version = raw.get("strategy_version")
         if type(version) is not int or version < 1:
             raise ValueError("invalid strategy version")
+        kind = raw.get("kind", "native")
+        snapshot = raw.get("legacy_snapshot")
+        if kind not in {"native", "legacy"} or (kind == "legacy") != (snapshot is not None):
+            raise ValueError("invalid strategy kind or snapshot")
+        if snapshot is not None:
+            from strategy_compat import validate_snapshot
+            validate_snapshot(snapshot)
         return cls(raw["account_id"], raw["strategy_id"], version, raw["strategy_name"],
-                   RouteBaseline.from_dict(raw.get("baseline")))
+                   RouteBaseline.from_dict(raw.get("baseline")), kind, snapshot)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"account_id": self.account_id, "strategy_id": self.strategy_id,
+        result = {"account_id": self.account_id, "strategy_id": self.strategy_id,
                 "strategy_version": self.strategy_version, "strategy_name": self.strategy_name,
                 "baseline": self.baseline.to_dict()}
+        if self.kind == "legacy":
+            result.update(kind=self.kind, legacy_snapshot=self.legacy_snapshot)
+        return result
 
 
 @dataclass(frozen=True)
