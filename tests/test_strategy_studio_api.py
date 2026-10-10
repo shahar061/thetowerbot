@@ -41,3 +41,36 @@ def test_labs_proxy_uses_full_scoped_api_path(tmp_path: Path) -> None:
     register_strategy_routes(app, service=service, local_target=lambda: target, remote=remote)
     assert TestClient(app).get('/api/strategy-studio/labs').status_code == 200
     assert seen == ['/api/strategy-studio/labs']
+
+
+def test_studio_status_reenters_real_runner_identity_without_hanging() -> None:
+    import subprocess
+    import sys
+    import pytest
+    script = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from control import Controls
+from events import EventBus
+from runner import BotRunner
+from sinks.state import BotState
+from strategy import Strategy
+from strategy_service import StrategyService
+from web.strategy_api import register_strategy_routes
+runner = BotRunner(bus=EventBus(), controls=Controls(Strategy.from_config()),
+    state=BotState(), templates=None, device_factory=lambda: None, checks={})
+with TemporaryDirectory() as root:
+    service = StrategyService(library_root=Path(root), assignment_root=Path(root),
+        resolve_target=lambda _: runner.strategy_context())
+    app = FastAPI()
+    register_strategy_routes(app, service=service, local_target=runner.strategy_context, runner=runner)
+    assert TestClient(app).get('/api/strategy-studio/status').json()['state'] == 'blocked'
+    assert runner.status()['running'] is False
+"""
+    try:
+        subprocess.run([sys.executable, '-c', script], timeout=8, check=True,
+                       capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        pytest.fail('Strategy Studio deadlocked while reading runner identity')

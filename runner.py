@@ -195,7 +195,9 @@ class BotRunner:
         self.milestones_claim = MilestonesClaim()
         self.milestones = MilestonesReadings()
 
-        self._lock = threading.Lock()
+        # Studio guards hold this lock while calling identity/status methods
+        # that also acquire it. Keep the lifecycle guard reentrant.
+        self._lock = threading.RLock()
         self._bot: Any | None = None
         self._thread: threading.Thread | None = None
         self._since: float | None = None
