@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 from dataclasses import replace
 
@@ -158,3 +159,37 @@ def test_imported_and_blocked_plans_do_not_schedule_native_labs(tmp_path: Path) 
     assert not bot._request_planned_lab_visit(0, True)
     bot.strategy_execution.blocked(local, 'identity_changed')
     assert not bot._request_planned_lab_visit(0, True)
+
+
+def test_native_workshop_can_buy_with_coins_above_lab_reserve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+    from fleet.build_route_eval import RouteFacts
+    from strategy_execution import StrategyExecution
+
+    target = target_at(tmp_path)
+    service = StrategyService(library_root=target.library_root,
+        assignment_root=target.assignment_root, resolve_target=lambda _: target)
+    baseline = service.library()['templates'][0]['baseline']
+    baseline['workshop'] = {'mode': 'priorities', 'priority_ids': ['attack_speed']}
+    baseline['rules']['coins']['lab_share'] = {'mode': 'save_pct', 'pct': 10}
+    library = service.save_version(expected_revision=0, name='Workshop spending',
+        source_template='opening', baseline=baseline)
+    service.assign(expected_revision=0, strategy_id=library['strategies'][0]['id'],
+        strategy_version=1, targets=[target])
+    execution = StrategyExecution(lambda: target, AccountState())
+    local = Strategy.from_config('local')
+    resolved = execution.resolve(local, pending_verification=False)
+    progress = execution.progress
+    assert progress is not None
+    now = time.time()
+    facts = RouteFacts(target.account_id, target.target_id, 'main_menu', now, now,
+        wallet_coins=591510, prices={'attack_speed': 38000}, visit_id='after-run:310')
+    monkeypatch.setattr(progress, 'route_facts', lambda: facts)
+    monkeypatch.setattr(progress, '_settle_jar', lambda *args: 150000)
+
+    policy = progress.shopping_policy(resolved.strategy.shopping)
+
+    assert policy.enabled and policy.armed
+    assert policy.workshop[0].name == 'Attack Speed'
+    assert policy.coin_budget == 38000
+    assert policy.coin_budget_pct is None

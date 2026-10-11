@@ -142,18 +142,18 @@ function AccountDashboard({ selected }: { selected: AccountChoice }): React.JSX.
       {ledger && (ledger.next !== null || allEntries.length > 20) && <Link href="/ledger/" className="sd-text-link">Browse older entries in the full ledger <ArrowUpRight size={14} aria-hidden="true" /></Link>}
     </SectionCard>
 
-    <section id="live-monitor" className="scroll-mt-24 rounded-xl border bg-card">
-      <button type="button" aria-expanded={monitor} aria-controls="monitor-content" onClick={() => setMonitor(open => !open)}
-        className="flex w-full items-center gap-3 p-4 text-left text-sm font-semibold">
+    <details id="live-monitor" open={monitor} onToggle={event => setMonitor(event.currentTarget.open)} className="scroll-mt-24 rounded-xl border bg-card">
+      <summary aria-controls="monitor-content"
+        className="flex w-full cursor-pointer list-none items-center gap-3 p-4 text-left text-sm font-semibold">
         <Monitor size={17} aria-hidden="true" /> Live monitor
         <span className="ml-auto text-xs font-normal text-muted-foreground">{monitor ? "Hide" : "Show"} {selected.running ? "screen & activity" : "emulator options"}</span>
-      </button>
+      </summary>
       {monitor && <div id="monitor-content" className="min-w-0 border-t p-3 sm:p-4">
         {selected.running ? remote ? <div className="flex flex-wrap items-start gap-4">
           <RemoteDeviceView dashboardUrl={selected.dashboard_url!} scope={selected.key} instance={selected.instance} />
           <a href={selected.dashboard_url!} className="sd-button">Open worker controls <ArrowUpRight size={14} aria-hidden="true" /></a>
         </div> : <LiveMonitor /> : <EmulatorRecovery />}
       </div>}
-    </section>
+    </details>
   </div>;
 }

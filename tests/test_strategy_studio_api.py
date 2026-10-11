@@ -74,3 +74,27 @@ with TemporaryDirectory() as root:
                        capture_output=True, text=True)
     except subprocess.TimeoutExpired:
         pytest.fail('Strategy Studio deadlocked while reading runner identity')
+
+
+def test_workshop_preview_returns_current_and_proposed_decisions(tmp_path: Path) -> None:
+    from web.strategy_api import register_strategy_routes
+    target = target_at(tmp_path)
+    service = StrategyService(library_root=target.library_root,
+        assignment_root=target.assignment_root, resolve_target=lambda _: target)
+    assigned = service.assign(expected_revision=0, strategy_id='opening',
+        strategy_version=1, targets=[target])
+    app = FastAPI()
+    register_strategy_routes(app, service=service, local_target=lambda: target)
+
+    response = TestClient(app).post('/api/strategy-studio/preview', json={
+        'expected_revision': assigned['route']['revision'], 'route': assigned['route']})
+
+    assert response.status_code == 200, response.json()
+    preview = response.json()
+    assert preview['saved_revision'] == 1
+    assert preview['proposed_revision'] == 2
+    member = preview['members'][0]
+    assert member['account_id'] == target.account_id
+    assert member['worker'] == target.target_id
+    assert member['current']['account_id'] == target.account_id
+    assert member['proposed']['account_id'] == target.account_id

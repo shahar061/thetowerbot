@@ -64,3 +64,15 @@ test("reusing an emulator for a different account clears the previous snapshot",
   await screen.findByText(/Could not refresh account/);
   expect(screen.queryByText("Lifetime totals")).not.toBeInTheDocument();
 });
+
+
+test("live monitor can expand under the runtime lock while action controls stay disabled", async () => {
+  state.selected = { ...state.selected, running: true };
+  const { container } = render(<fieldset disabled><SingleEmulatorDashboard /></fieldset>);
+  await screen.findByText("Lifetime totals");
+  const summary = screen.getByText("Live monitor", { selector: "summary" });
+  fireEvent.click(summary);
+  expect(await screen.findByText("Device monitor mounted")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Refresh overview" })).toBeDisabled();
+  expect(container.querySelector("#live-monitor")).toHaveAttribute("open");
+});

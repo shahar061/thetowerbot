@@ -116,7 +116,7 @@ class StrategyExecution:
                 self.source = 'studio_native'
                 self.build_recipe = None
                 effective = resolve_route(route, context.target_id, context.account_id)
-                shopping = Shopping(enabled=True, armed=True)
+                shopping = Shopping(enabled=True, armed=True, coin_budget=None)
                 resolved = replace(local,
                     autopilot=AutopilotPolicy(enabled=True, preset='manual'),
                     shopping=replace(shopping, cards=replace(shopping.cards,
@@ -143,8 +143,8 @@ def preview_target(context: StrategyTargetContext, body: dict[str, Any]) -> dict
     progress.route_runtime = BuildRouteRuntime.for_target(context)
     facts = progress.route_facts()
     from dataclasses import asdict
-    evaluation = evaluate_workshop(resolve_route(route, context.target_id, context.account_id), facts)
+    evaluation = evaluate_workshop(resolve_route(route, context.target_id, context.account_id), facts, None)
     return {'saved_revision': saved.revision, 'proposed_revision': saved.revision + 1,
             'members': [{'worker': context.target_id, 'account_id': context.account_id,
-                         'current': asdict(evaluate_workshop(resolve_route(saved, context.target_id, context.account_id), facts)),
+                         'current': asdict(evaluate_workshop(resolve_route(saved, context.target_id, context.account_id), facts, None)),
                          'proposed': asdict(evaluation)}]}
