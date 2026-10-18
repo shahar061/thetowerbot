@@ -211,6 +211,32 @@ def test_native_account_popup_reads_id_and_only_new_account_control() -> None:
     assert reading.controls == {"new_account": (541, 1759)}
 
 
+@pytest.mark.parametrize("height", [2400, 1920])
+def test_linked_account_popup_reads_footer_id_without_settings_id(height: int) -> None:
+    offset = (height - 2400) // 2
+    observed = tuple(TextBox(text, .98, Rect(x, y + offset, w, h))
+                     for text, (x, y, w, h) in (
+        ("ACCOUNT", (396, 578, 286, 48)),
+        ("Manage Account", (374, 729, 332, 40)),
+        ("Log Out", (454, 990, 173, 46)),
+        ("Force Cloud Save", (354, 1500, 372, 43)),
+        ("ID:AAAAAAAAAAAAAAAA", (342, 1780, 394, 32)),
+        ("ID:BBBBBBBBBBBBBBBB", (142, 1911, 393, 31)),
+    ))
+    reading = parse(observed, shape=(height, 1080, 3))
+    assert reading is not None
+    assert reading.account_id == "AAAAAAAAAAAAAAAA"
+    assert reading.controls == {}
+    identity = observed[4]
+    for invalid in (
+        observed + (identity,),
+        tuple(replace(b, confidence=.7) if b == identity else b for b in observed),
+        tuple(b for b in observed if b.text != "Manage Account"),
+        tuple(b for b in observed if b.text != "ACCOUNT"),
+    ):
+        assert parse(invalid, shape=(height, 1080, 3)) is None
+
+
 def test_bluestacks_native_account_popup_uses_centered_dialog_bounds() -> None:
     observed = (
         TextBox("ACCOUNT", .99, Rect(398, 344, 282, 47)),

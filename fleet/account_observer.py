@@ -32,6 +32,8 @@ from ocr import TextBox
 
 _TITLE = Rect(365, 555, 360, 105)
 _IDENTITY = Rect(285, 655, 465, 105)
+_LINKED_IDENTITY = Rect(285, 1745, 465, 105)
+_MANAGE_ACCOUNT = Rect(340, 695, 400, 105)
 _NEW_ACCOUNT = Rect(365, 1705, 370, 115)
 _SETTINGS_TITLE = Rect(350, 460, 370, 110)
 _SETTINGS_ACCOUNT = Rect(235, 775, 275, 120)
@@ -102,8 +104,16 @@ def parse_account_popup(
         return None
     titles = tuple(box for box in boxes if box.text.strip().upper() == "ACCOUNT"
                    and _inside(box, _centered(_TITLE, frame.shape[0])))
+    # Linked accounts move the ID below cloud-save controls. The Settings
+    # footer behind this popup also contains an ID; keep its band excluded.
+    linked = tuple(box for box in boxes if box.text.strip().lower() == "manage account"
+                   and _inside(box, _centered(_MANAGE_ACCOUNT, frame.shape[0])))
+    identity_bounds = [_IDENTITY]
+    if len(linked) == 1 and _trusted(linked[0]):
+        identity_bounds.append(_LINKED_IDENTITY)
     identities = tuple((box, match) for box in boxes
-                       if _inside(box, _centered(_IDENTITY, frame.shape[0]))
+                       if any(_inside(box, _centered(bounds, frame.shape[0]))
+                              for bounds in identity_bounds)
                        for match in [_ID.fullmatch(box.text.strip())] if match is not None)
     if (len(titles) != 1 or not _trusted(titles[0])
             or len(identities) != 1 or not _trusted(identities[0][0])):

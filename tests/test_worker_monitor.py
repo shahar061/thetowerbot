@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,14 +22,17 @@ from tests.test_reroll_supervisor import _harness
 NAME = "Tiramisu64_20"
 
 
-def _worker(root: Path, supervisor: object, *, now: float = 1000.0) -> tuple[InputLease, Attempt]:
+def _worker(root: Path, supervisor: object, *, now: float = 1000.0,
+            started_at: float | None = None) -> tuple[InputLease, Attempt]:
     row = supervisor._read(NAME)
     assert row is not None
     attempt = Attempt(NAME, row["endpoint"], row["lease_id"], row["attempt_id"],
                       row["input_generation"], 100.0)
     path = root / "workers" / NAME
     records = RuntimeRecords(path / "runtime-records.json")
-    records.start(attempt, PROCESS_IDENTITY, boot_id="boot-a", pid=row["pid"])
+    identity = (PROCESS_IDENTITY if started_at is None else
+                replace(PROCESS_IDENTITY, started_at=started_at))
+    records.start(attempt, identity, boot_id="boot-a", pid=row["pid"])
     (path / "worker-heartbeat.json").write_text(json.dumps({
         "worker_id": NAME, "account_id": NAME, "lease_id": row["lease_id"],
         "attempt_id": row["attempt_id"], "generation": attempt.generation,
@@ -468,12 +472,45 @@ def test_hang_that_starts_while_paused_is_a_blocked_scan(tmp_path: Path) -> None
     assert monitor.check_once()[NAME]["state"] == "paused"
 
 
+@pytest.mark.parametrize("since,deadline,state,reason", [
+    (50.0, 1060.0, "starting", "fresh_scan_pending"),
+    (950.0, 1060.0, "expected_wait", "account_reverification"),
+    (50.0, 999.0, "blocked_scan", "phase_deadline"),
+])
+def test_restarted_worker_ignores_previous_process_verification_timer(
+    tmp_path: Path, since: float, deadline: float, state: str, reason: str,
+) -> None:
+    make, spawned, _, killed = _harness(tmp_path)
+    supervisor = make()
+    supervisor.start(NAME)
+    lease, attempt = _worker(tmp_path, supervisor, started_at=950.0)
+    path = tmp_path / "workers" / NAME
+    heartbeat = path / "worker-heartbeat.json"
+    beat = json.loads(heartbeat.read_text())
+    beat.update(phase="recovery", scan_sequence=0, phase_started_utc=950.0,
+                phase_deadline_utc=deadline, last_completed_scan_utc=None)
+    heartbeat.write_text(json.dumps(beat))
+    checkpoint = path / "checkpoints" / "supervisor.json"
+    checkpoint.parent.mkdir(exist_ok=True)
+    checkpoint.write_text(json.dumps({
+        "endpoint": attempt.endpoint, "expected_account": NAME,
+        "state": "blocked", "reason": "fresh_evidence_required",
+        "account_unverified_since": since,
+    }))
+    monitor = WorkerMonitor(tmp_path, supervisor, clock=lambda: 1000.0,
+                            recover=state != "blocked_scan")
+    row = monitor.check_once()[NAME]
+    assert (row["state"], row["reason"]) == (state, reason)
+    assert len(spawned) == 1 and killed == []
+    lease.assert_current(attempt.generation)
+
+
 def test_permanently_unverified_account_is_not_healthy_and_restarts(tmp_path: Path) -> None:
     """A mid-run reconnect leaves account_unverified while scans complete."""
     make, spawned, _, killed = _harness(tmp_path)
     supervisor = make()
     supervisor.start(NAME)
-    _worker(tmp_path, supervisor)
+    _worker(tmp_path, supervisor, started_at=10.0)
     path = tmp_path / "workers" / NAME
     beat = json.loads((path / "worker-heartbeat.json").read_text())
     beat.update(phase="idle", phase_deadline_utc=None, last_completed_scan_utc=995.0)

@@ -281,8 +281,10 @@ class WorkerMonitor:
             elif device.get("state") == "blocked" and device.get("reason") == "device_unavailable":
                 beat["_device_disconnected"] = True
             since = device.get("account_unverified_since")
+            # Startup publishes its heartbeat before replacing the device
+            # checkpoint. A prior process's timer must not stop this child.
             if (device.get("state") == "blocked" and isinstance(since, (int, float))
-                    and math.isfinite(since)):
+                    and math.isfinite(since) and since >= start["started_at"]):
                 beat["_account_unverified_since"] = float(since)
         return beat, start
 
