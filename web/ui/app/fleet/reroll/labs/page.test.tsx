@@ -4,6 +4,7 @@ import FleetLabsPage from "./page";
 import type { RerollSnapshot } from "@/lib/fleet";
 import type { LabsSnapshot } from "@/lib/labs";
 
+vi.mock("@/lib/useGameExport", () => ({ useGameExports: () => ({ accounts: [{ source: "game_export", available: true, account_id: "old", worker: "Air_1", labs: { research: [{ index: 1, id: "wrong", name: "Wrong account lab", level: 99 }], slots: [] } }], error: null }) }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams() }));
 const pool: RerollSnapshot = { candidates: [], members: [{ name: "Air_1", endpoint: "", lease_id: "current", state: "running", account_id: "current" }] };
 const row: LabsSnapshot["workers"][number] = { worker: "Air_1", account_id: "old", strategy_name: null, read_at: null,
@@ -15,6 +16,7 @@ vi.mock("../RerollWorkspace", () => ({ useRerollWorkspace: () => ({ pool }) }));
 
 test("labs page excludes an old-account row for the current worker", () => {
   render(<FleetLabsPage />);
-  expect(screen.getByText("No account-matched lab observations available.")).toBeInTheDocument();
+  expect(screen.getByText(/No official game export available/)).toBeInTheDocument();
+  expect(screen.queryByText("Wrong account lab")).not.toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Labs and gems" })).not.toBeInTheDocument();
 });

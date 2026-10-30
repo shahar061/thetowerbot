@@ -154,6 +154,91 @@ class Recorder:
         return [e for e in self.published if e.type == name]
 
 
+def test_max_multiplier_changes_before_any_price_observation(
+        session: shopping_mod.ShoppingSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError('Max prices must not reach the Workshop price reader')
+    monkeypatch.setattr(shopping_mod, 'observe_frame', forbidden)
+    policy = a_policy(armed=True)
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+    session._buy_rows(SimpleNamespace(page='WORKSHOP', top_left=None),
+                      frame('menu_workshop_attack_late'), device, policy)
+    assert len(device.taps) == 1
+    assert 906 <= device.taps[0][0] <= 1040
+    assert 305 <= device.taps[0][1] <= 369
+    assert session._pending is None
+
+
+def test_confirmed_x1_refreshes_prices_and_replans_before_purchase(
+        session: shopping_mod.ShoppingSession, monkeypatch: pytest.MonkeyPatch,
+        fake_header: dict[str, int]) -> None:
+    policy = a_policy(armed=True, coin_budget=5, workshop=(ShoppingRule('Damage', 'ATTACK'),))
+    updated = dataclasses.replace(policy, coin_budget=30)
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+    order = []
+    session.reroll_observe_prices = lambda *args, **kwargs: order.append('prices')
+    session.reroll_replan = lambda: (order.append('replan') or updated)
+    row = ObservedUpgrade('damage', 'Damage', 'ATTACK', 'workshop', 3, 30,
+                          'available', 1, config.Rect(30, 400, 500, 200), (400, 550))
+    def observed(screen: shopping_mod.Image, *args: object, **kwargs: object) -> Observation:
+        return physical_observation(screen, Observation('ATTACK', (row,), {}, None, 0, 319,
+                                                       context='workshop'))
+    monkeypatch.setattr(shopping_mod, 'observe_frame', observed)
+    image = frame('menu_workshop_attack_late')
+    session._buy_rows(SimpleNamespace(page='WORKSHOP', top_left=None), image, device, policy)
+    assert order == []
+    single = image.copy()
+    single[305:369, 906:1040] = cv2.imread(str(config.TEMPLATE_DIR / 'workshop/multiplier_x1.png'))
+    session._buy_rows(SimpleNamespace(page='WORKSHOP', top_left=None), single, device, policy)
+    assert order[:2] == ['prices', 'replan']
+    assert len(device.taps) == 2
+    assert device.taps[-1] == row.tap
+
+
+def test_dry_run_never_changes_max_multiplier(
+        session: shopping_mod.ShoppingSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    policy = a_policy(armed=False)
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+    session._buy_rows(SimpleNamespace(page='WORKSHOP', top_left=None),
+                      frame('menu_workshop_attack_late'), device, policy)
+    assert device.taps == []
+    assert session._pending is None
+
+
+def test_open_quantity_picker_selects_x1_before_reading_prices(
+        session: shopping_mod.ShoppingSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_workshop_multiplier import capture
+    import ocr
+    image, boxes = capture('expanded')
+    monkeypatch.setattr(ocr, 'read', lambda *args, **kwargs: boxes)
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError('An open quantity picker must not reach the price reader')
+    monkeypatch.setattr(shopping_mod, 'observe_frame', forbidden)
+    policy = a_policy(armed=True)
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+    session._buy_rows(SimpleNamespace(page='WORKSHOP', top_left=None), image, device, policy)
+    assert device.taps == [(829, 281)]
+    assert session._pending is None
+
+
+def test_visit_handles_open_picker_before_waiting_for_category_heading(
+        session: shopping_mod.ShoppingSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_workshop_multiplier import capture
+    import ocr
+    image, boxes = capture('expanded')
+    monkeypatch.setattr(ocr, 'read', lambda *args, **kwargs: boxes)
+    policy = a_policy(armed=True, workshop=(ShoppingRule('Health', 'DEFENSE'),))
+    device = FakeDevice()
+    session.begin(policy, run_count=1)
+    session.advance(image, device, policy)
+    assert device.taps == [(829, 281)]
+    assert session._pending is None
+
+
 def frame(name: str):
     img = cv2.imread(str(FIXTURES / f"{name}.png"), cv2.IMREAD_COLOR)
     assert img is not None, f"missing fixture: {name}.png"

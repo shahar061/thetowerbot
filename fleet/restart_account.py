@@ -53,6 +53,7 @@ _INTERRUPTIONS = {"link_account_prompt", "free_ticket_offer"}
 # leaves the screen unchanged; re-tap from a fresh frame after this long.
 _RETAP_AFTER_SECONDS = 2.
 _MAX_RETAPS = 2
+_MAX_STALE_OBSERVATIONS = 3
 # If the battle menu cannot be measured, wait for the run to finish rather
 # than guessing coordinates. Stay inside the monitor's 15 min startup limit.
 _BATTLE_WAIT_SECONDS = 12 * 60
@@ -80,6 +81,7 @@ def verify_restart_account(
     battle_deadline = clock() + _BATTLE_WAIT_SECONDS
     progress = getattr(supervisor, "progress", None)
     navigation_steps = 0
+    stale_observations = 0
     return_to_battle = False
     while navigation_steps < 20:
         frame = observe(device)
@@ -94,6 +96,15 @@ def verify_restart_account(
             sleep(1.)
             continue
         navigation_steps += 1
+        # Cold OCR can consume the frame's entire freshness window. Capture
+        # again rather than tapping old coordinates or failing on that first read.
+        if ((frame.screen in _CONTROLS or frame.screen == "account")
+                and math.isfinite(frame.observed_at) and clock() - frame.observed_at > 5):
+            stale_observations += 1
+            if stale_observations >= _MAX_STALE_OBSERVATIONS:
+                raise RecoveryBlocked("account navigation evidence unavailable")
+            continue
+        stale_observations = 0
         if awaiting is not None:
             previous, destination = awaiting
             stuck = frame.screen == previous and clock() - tapped_at >= _RETAP_AFTER_SECONDS

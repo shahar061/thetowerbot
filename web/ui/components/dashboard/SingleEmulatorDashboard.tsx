@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowUpRight, RefreshCw, Radio, Monitor } from "lucide-react";
-import { AccountColumn } from "@/app/fleet/state/AccountColumn";
+import { SelectedExportReport } from "@/components/game-export/GameExportReports";
 import { EmulatorRecovery } from "@/components/EmulatorRecovery";
 import { LedgerEntries } from "@/components/LedgerEntries";
 import { RemoteDeviceView } from "@/components/RemoteDeviceView";
@@ -33,7 +33,6 @@ function AccountDashboard({ selected }: { selected: AccountChoice }): React.JSX.
   const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [sections, setSections] = useState<Record<string, boolean>>({});
   const [kind, setKind] = useState<string | null>(null);
   const [monitor, setMonitor] = useState(false);
   const visible = usePageVisible();
@@ -110,12 +109,7 @@ function AccountDashboard({ selected }: { selected: AccountChoice }): React.JSX.
     </div>}
 
     <section id="account-state" aria-label="Account state" className="fs-root sd-state scroll-mt-24">
-      {!data && !error && <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">Loading account state…</div>}
-      {data && !account && <div className="rounded-xl border bg-card p-6 text-sm text-muted-foreground">
-        No verified state for this account yet. Saved ledger entries remain available below.
-      </div>}
-      {account && <AccountColumn account={account} accent="var(--primary)" changedAt={Date.parse(data!.generated_at)}
-        shownCount={1} open={sections} onToggleSection={(key, value) => setSections(previous => ({ ...previous, [key]: value }))} />}
+      <SelectedExportReport />
     </section>
 
     <section id="lab-jar" aria-label="Lab jar settings" className="scroll-mt-24">

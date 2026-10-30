@@ -35,7 +35,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request, Resp
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from starlette.requests import HTTPConnection
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, ValidationError, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, StrictBool, StrictInt, field_validator
 
 import config
 import db
@@ -52,7 +52,7 @@ from concepts import REGISTRY
 from runtime_identity import API_VERSION, PROCESS_IDENTITY, read_frontend_identity
 from advisor import AdvisorStore
 from web.advisor import advisor_router
-from web.account_catalog import AccountChoice, account_choices
+from web.account_catalog import AccountChoice, account_choices, registered_worker
 from fleet.reroll_runs import run_numbers_from
 from fleet.build_route import RouteDocument
 from fleet.workshop_plan import load_workshop_plan
@@ -236,21 +236,23 @@ class ControlPatch(BaseModel):
     auto_navigate: bool | None = None
     max_runs: int | None = None
     push_every_farm_runs: StrictInt | None = None
+    milestone_every_farm_runs: StrictInt | None = None
     navigation_cooldown: float | None = None
     screen_confirmations: int | None = None
     tap_jitter_px: float | None = None
     timing_jitter: float | None = None
     tap_delay: float | None = None
     target_speed: float | None = None
+    auto_pick_perks: StrictBool | None = None
     actions: list[dict[str, Any]] | None = None
     autopilot: dict[str, Any] | None = None
     tournament: dict[str, Any] | None = None
 
-    @field_validator("push_every_farm_runs")
+    @field_validator("push_every_farm_runs", "milestone_every_farm_runs")
     @classmethod
     def validate_push_cadence(cls, value: int | None) -> int:
         if value is None:
-            raise ValueError("push cadence cannot be null; use zero to disable")
+            raise ValueError("run cadence cannot be null; use zero to disable")
         return value
 
 
@@ -409,9 +411,15 @@ def create_app(
         stop_monitor = getattr(fleet, "stop_monitor", None)
         if callable(start_monitor):
             await asyncio.to_thread(start_monitor)
+        export_task = asyncio.create_task(export_collector.run())
         try:
             yield
         finally:
+            export_task.cancel()
+            try:
+                await export_task
+            except asyncio.CancelledError:
+                pass
             if callable(stop_monitor):
                 await asyncio.to_thread(stop_monitor)
 
@@ -481,6 +489,16 @@ def create_app(
         if choice is not None and choice.kind == "worker" and db.bound_account(path) != choice.account_id:
             return None
         return path if path is not None and path.is_file() else None
+
+    from web.game_exports import local_source, remote_source, register_game_export_routes
+
+    def _export_source(choice: AccountChoice) -> Any:
+        if db_path is not None and choice.db_path.resolve() == db_path.resolve():
+            return local_source(choice, runner, accounts)
+        return remote_source(choice)
+
+    export_collector = register_game_export_routes(app, choices=_choices,
+        selected=_selected, resolve=_export_source)
 
     def _patch_cards_automation(enabled: bool) -> dict[str, Any]:
         # Shopping is a replacement field in Strategy.merged: carry the full
@@ -977,6 +995,10 @@ def create_app(
             "device": identity,
             "readiness": readiness,
         }
+        local_choice = registered_worker(db_path.parent) if db_path is not None else None
+        source = _export_source(local_choice) if local_choice is not None else None
+        payload["reporting_scope"] = ({**json.loads(source.scope_key),
+            "verified_since": source.verified_since} if source is not None else None)
         return payload
 
     @app.get("/api/runs")

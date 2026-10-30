@@ -61,6 +61,12 @@ class Tapped(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class PerkPicked(Event):
+    perk: str
+    run_id: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
 class BattlePurchased(Event):
     item: str
     upgrade_id: str

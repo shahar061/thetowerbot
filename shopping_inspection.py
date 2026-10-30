@@ -8,6 +8,7 @@ import events
 import config
 import pages
 import vision
+import workshop_multiplier
 from device import Image, tap
 from supervisor import RecoveryPreflightBlocked
 
@@ -31,6 +32,7 @@ class WorkshopInspection:
         self._held_until: float | None = None
         self._held_key: str | None = None
         self._held_reason: str | None = None
+        self._multiplier_attempts = 0
 
     @staticmethod
     def _request_key(session: Any, progress: Any | None) -> str | None:
@@ -49,6 +51,7 @@ class WorkshopInspection:
         self.status = 'observing' if key is not None else 'idle'
         self._backoff_key = self.retry_at = None
         self._held_until = self.hold_reason = self._held_key = self._held_reason = None
+        self._multiplier_attempts = 0
 
     def _backoff(self, session: Any, now: float, *, completed: bool = False) -> None:
         self._backoff_key, self.key = self.key, None
@@ -61,6 +64,8 @@ class WorkshopInspection:
             'Workshop observation incomplete; bounded read-only inspection will retry after 30 seconds'))
 
     def requested(self, session: Any, progress: Any | None) -> bool:
+        if session._pending is not None or session._pending_card is not None:
+            return False  # The live visit owns receipt evidence and its next frame.
         if session.reconciliation_pending:
             return True  # Pending spends never release the device through ordinary backoff.
         key = self._request_key(session, progress)
@@ -201,6 +206,25 @@ class WorkshopInspection:
                 return True
             from shopping import (_heading_names, _row_named, _unlock_granted, header_numbers,
                                   observe_frame)
+            if txn is None:
+                quantity = workshop_multiplier.read(screen, session._templates)
+                if quantity.mode == 'unreadable':
+                    return True
+                if quantity.mode in ('multiple', 'select_single'):
+                    if self._multiplier_attempts >= 5:
+                        self._backoff(session, now)
+                        return False
+                    tap(device, *quantity.point)
+                    self.steps += 1
+                    self._multiplier_attempts += 1
+                    self._sample = self._previous_view = None
+                    session.price_reads.invalidate('buy_multiplier_changed')
+                    action = ('workshop:quantity_x1' if quantity.mode == 'select_single'
+                              else 'workshop:quantity_open')
+                    session._bus.publish(events.Tapped(action=action,
+                        x=quantity.point[0], y=quantity.point[1], score=1.0))
+                    return True
+                self._multiplier_attempts = 0
             if not _heading_names(screen, category):
                 lane = tuple(config.WORKSHOP_TABS).index(category)
                 width = screen.shape[1] // 4

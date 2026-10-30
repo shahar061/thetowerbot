@@ -40,6 +40,7 @@ from milestones_claim import MilestonesClaim
 from milestones_screen import MilestonesReadings, parse_frame as parse_milestones_frame
 from missions_claim import MissionsClaim
 from missions_screen import MissionsReadings
+import missions_screen
 from missions_visit import MissionsVisit
 from lab_plan import LabDecision, LabVisitOptions
 from lab_visit import LabVisit
@@ -85,6 +86,7 @@ import events
 import free_ticket
 import game_over
 import gem_claim
+import perks
 import in_game_ad
 import stall_watchdog
 import jitter
@@ -402,7 +404,9 @@ class TowerBot:
                      if isinstance(safety_journal, transactions.TransactionJournal) else None)
         push_account = (getattr(reroll_progress, "account_id", None)
                         or f"device:{getattr(device, 'serial', 'standalone')}")
-        self.push_runs = PushRuns(push_path, push_account, every=self.controls.snapshot().strategy.push_every_farm_runs)
+        self.push_runs = PushRuns(push_path, push_account,
+                                  every=self.controls.snapshot().strategy.push_every_farm_runs,
+                                  milestone_every=self.controls.snapshot().strategy.milestone_every_farm_runs)
         self._push_expected_tier: int | None = None
         self._push_taps = 0
         # When each claim last landed, and the wave each tier's ladder was
@@ -476,6 +480,7 @@ class TowerBot:
         )
         self.in_game_ad = in_game_ad.InGameAdClaim(
             bus, self.templates, self.reader, sleep=self._stopping.wait)
+        self.perks = perks.PerkPicker(bus)
 
         self.card_runtime = None
         if account_state is not None and account_state.safety_path is not None and isinstance(safety_journal, transactions.TransactionJournal):
@@ -534,7 +539,8 @@ class TowerBot:
         scope = getattr(self.account_state, "verified_scope", None)
         if scope is not None and scope.account_id != self.push_runs.state.account:
             self.push_runs = PushRuns(self.push_runs.path, scope.account_id,
-                                      every=self.controls.snapshot().strategy.push_every_farm_runs)
+                                      every=self.controls.snapshot().strategy.push_every_farm_runs,
+                                      milestone_every=self.controls.snapshot().strategy.milestone_every_farm_runs)
             self._push_expected_tier = None
             self._push_taps = 0
         if self.frames is not None:
@@ -1399,7 +1405,7 @@ class TowerBot:
         between the two bands; its popup does not classify as IN_RUN, so it
         takes the whole-frame path.
         """
-        if reading.state is not screens.ScreenState.IN_RUN:
+        if self.perks.active or reading.state is not screens.ScreenState.IN_RUN:
             return reads.full()
         now = time.monotonic()
         if now - self._battle_full_read_at >= config.BATTLE_FULL_READ_EVERY:
@@ -1433,7 +1439,7 @@ class TowerBot:
                 or (self.tournament_visit is not None and self.tournament_visit.owns_navigation)
                 or (getattr(self, "card_runtime", None) is not None and self.card_runtime.active)
                 or (self.lab_visit is not None and self.lab_visit.active)
-                or self.battle_menu.active or self.in_game_ad.active)
+                or self.battle_menu.active or self.in_game_ad.active or self.perks.active)
 
     # -- O4 recovery (scan thread only) -------------------------------------
     def _recovery_active(self) -> bool:
@@ -1608,7 +1614,7 @@ class TowerBot:
         """End whichever walk is armed. Each cancel is idempotent."""
         for walk in (self.collection, self.visit, self.claim,
                      self.milestones_claim, self.cards_intro, self.battle_menu,
-                     self.in_game_ad):
+                     self.in_game_ad, self.perks):
             walk.cancel(reason, detail)
         if self.lab_visit is not None:
             self.lab_visit.cancel(reason)
@@ -2205,12 +2211,16 @@ class TowerBot:
             if self.plan_coordinator is not None and self.card_runtime is not None:
                 self.plan_coordinator.card_context = self.card_runtime.context
         chosen = self.checks.get(settings.strategy.affordability)
+        if settings.paused or not settings.strategy.auto_pick_perks:
+            self.perks.cancel('paused' if settings.paused else 'disabled',
+                              'Automatic perk picking suspended')
         if chosen is not None:
             self.affordability = chosen
         self.refresh_screen()
         # Refresh may rebind account state. Keep its scheduler and progress,
         # but apply this scan's local cadence before processing run endings.
         self.push_runs.every = raw_settings.strategy.push_every_farm_runs
+        self.push_runs.milestone_every = raw_settings.strategy.milestone_every_farm_runs
 
         reading = screens.classify(self.screen, self.templates)
         self._update_maintenance(settings, reading.state)
@@ -2227,6 +2237,16 @@ class TowerBot:
                                battle_reader=(lambda frame_reads: self.autopilot.read_battle(
                                    frame_reads, self.run_identity(settings)))
                                if reading.state is screens.ScreenState.IN_RUN and not acting else None)
+        perk_boxes: tuple[ocr.TextBox, ...] = ()
+        perk_panel = False
+        perk_unreadable = False
+        if ((settings.strategy.auto_pick_perks or self.perks.active)
+                and (self.perks.active or perks.panel_candidate(self.screen))):
+            try:
+                perk_boxes = reads.full()
+                perk_panel = perks.panel_visible(self.screen, perk_boxes)
+            except Exception:  # noqa: BLE001 - unreadable panel grants no input
+                perk_unreadable = True
         late_ad_reward = (
             reading.state is screens.ScreenState.UNKNOWN
             and self.in_game_ad.may_claim_late_reward(time.time(), self.runs.current_id)
@@ -2278,6 +2298,8 @@ class TowerBot:
                 boxes = (reads.full() if self._battle_info_dismiss_count
                          else self._preflight_boxes(reading, reads))
                 preflight_boxes = boxes
+                if perk_panel:
+                    observed_screen = perks.SCREEN_ID
                 if reading.state is screens.ScreenState.UNKNOWN:
                     battle_context = (battle_context or
                                       battle_upgrade_info.death_controls_visible(boxes, self.screen.shape))
@@ -2469,7 +2491,7 @@ class TowerBot:
                         self._recovery_blocked_scans = 0
                 return False
             self._recovery_blocked_scans = 0
-            if (not (self.in_game_ad.active or late_ad_reward)
+            if (not (self.in_game_ad.active or late_ad_reward or self.perks.active or perk_panel)
                     and self.card_runtime is not None and self._advance_cards(reads.full())):
                 self.bus.publish(events.ScanCompleted(screen=reading.state.value,
                     duration_ms=(time.monotonic()-started)*1000, wallet=None))
@@ -2514,6 +2536,26 @@ class TowerBot:
                     action="reroll:workshop_tutorial_claim", x=tutorial_claim[0],
                     y=tutorial_claim[1], score=1.0))
                 return True
+        if perk_unreadable:
+            self.bus.publish(events.ScanCompleted(
+                screen=reading.state.value,
+                duration_ms=(time.monotonic() - started) * 1000, wallet=None))
+            return False
+        if self.perks.active or perk_panel:
+            # The panel can leave the battle HUD visible. Own it before
+            # speed controls, generic dismissals or purchases can act.
+            if not settings.paused:
+                if perk_panel and not self.perks.active:
+                    self._cancel_walks('perk_panel_visible',
+                                       'Perk panel replaced the previous navigation screen')
+                self.perks.observe(
+                    self.screen, perk_boxes, self.device, settings.strategy,
+                    now=time.time(), in_run=reading.state is screens.ScreenState.IN_RUN,
+                    run_id=self.runs.current_id)
+            self.bus.publish(events.ScanCompleted(
+                screen=perks.SCREEN_ID if perk_panel else reading.state.value,
+                duration_ms=(time.monotonic() - started) * 1000, wallet=None))
+            return not settings.paused
         if (self.in_game_ad.active or late_ad_reward) and not settings.paused:
             if self.in_game_ad.observe(
                     self.screen, reading.cash_top_left,
@@ -2799,6 +2841,7 @@ class TowerBot:
             panel = missions_page = milestones_page = False
             inbox = mail_screen.MailReading()
             events_page = events_screen.EventsReading()
+            missions_exit = None
         else:
             panel = screen_readings.scan(self.screen)
             # The same passive ownership for the Daily Missions page. The bot
@@ -2845,8 +2888,14 @@ class TowerBot:
             events_page = (events_screen.parse(self.screen, shared_boxes)
                            if shared_boxes is not None
                            else events_screen.EventsReading(error='events_unreadable'))
+            missions_exit = (missions_screen.return_control(self.screen, shared_boxes)
+                             if shared_boxes is not None else None)
+        missions_evidence = self.missions.current_evidence()
+        stranded_missions = (missions_evidence['screen_id'] == 'missions.daily'
+                            and missions_evidence['error'] is None) or missions_exit is not None
         if (not inbox.visible and inbox.error is None
-                and not events_page.visible and events_page.error is None):
+                and not events_page.visible and events_page.error is None
+                and not stranded_missions):
             self._mail_recovery_taps = 0
         if (self.reroll_progress is not None and not settings.paused
                 and not panel and not missions_page and not milestones_page and not inbox.visible
@@ -2913,13 +2962,16 @@ class TowerBot:
         # A held purchase reconciliation alone is not a visit: it waits for
         # the main menu, which only this footer tap can restore. Gating on
         # `shopping.active` here deadlocked a worker in its inbox.
+        # An uncertain mission claim also releases ownership on its page.
+        # Leave by its footer without retrying the reward or settling its receipt.
         stranded = inbox if inbox.visible else events_page if events_page.visible else None
-        if stranded is not None and not walking_now and not self.shopping.visit_in_progress:
-            page_name = 'mail' if stranded is inbox else 'events'
+        if ((stranded is not None or stranded_missions) and not walking_now
+                and not self.shopping.visit_in_progress):
+            page_name = 'mail' if stranded is inbox else 'events' if stranded is not None else 'missions'
             self.controls.drain()
             self.wallet = None
             self.autopilot.suspend(f'{page_name} page recovery; actions held')
-            footer = stranded.back
+            footer = stranded.back if stranded is not None else missions_exit
             recovered = False
             moment = time.monotonic()
             if (not settings.paused and settings.strategy.auto_navigate
@@ -3202,6 +3254,18 @@ class TowerBot:
                 events.Skipped(action="*", reason="paused", detail="paused from the dashboard")
             )
         elif state is screens.ScreenState.IN_RUN:
+            if (settings.strategy.auto_pick_perks and not self.gem.active
+                    and not self.shopping.active and not self.shopping.reconciliation_pending
+                    and self.autopilot.pending is None and not self._any_walk_active()
+                    and self.perks.observe(
+                        self.screen, reads.battle(), self.device, settings.strategy,
+                        now=time.time(), in_run=True, run_id=self.runs.current_id)):
+                if self.frames is not None:
+                    self.frames.set_boxes([])
+                self.bus.publish(events.ScanCompleted(
+                    screen=state.value, duration_ms=(time.monotonic() - started) * 1000,
+                    wallet=self.wallet, wave=self._reported_wave(state)))
+                return True
             # The free gem orbiting the tower, before any buying. It costs
             # nothing, it pays account gems rather than the per-run cash
             # everything below spends, and it is gone in seconds - so it

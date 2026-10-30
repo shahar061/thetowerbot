@@ -92,31 +92,42 @@ def validate_program(value: object, lane: str) -> tuple[dict[str, Any], ...]:
                             'max_purchases', 'count_scope', 'decay_pct', 'weight_floor',
                             'targets', 'level_caps', 'price_cap', 'wallet_share_pct',
                             'wallet_share_basis', 'cheaper_than_upgrade_ids', 'hold_until_capped', 'price_source',
-                            'batch_size', 'max_price_premium_pct'}
+                            'batch_size', 'max_price_premium_pct', 'observed_upgrade_ids',
+                            'discovery_every_purchases'}
                 ids = block.get('upgrade_ids')
-                if not isinstance(ids, (tuple, list)) or not ids or len(ids) > 30:
-                    raise ValueError('pool requires 1 to 30 upgrades')
+                if not isinstance(ids, (tuple, list)) or not ids or len(ids) > len(upgrades.CATALOG):
+                    raise ValueError(f'pool requires 1 to {len(upgrades.CATALOG)} upgrades')
                 ids = [uid(item) for item in ids]
                 if len(set(ids)) != len(ids):
                     raise ValueError('duplicate pool upgrade')
                 block['upgrade_ids'] = ids
                 if block.get('selection', 'priority') not in {'priority', 'weighted', 'cheapest', 'value'}:
                     raise ValueError('unknown pool selection')
+                if 'discovery_every_purchases' in block:
+                    if lane != 'battle' or block.get('selection') != 'cheapest' or block.get('price_source', 'observed') != 'observed':
+                        raise ValueError('discovery requires an observed cheapest Battle pool')
+                    number(block['discovery_every_purchases'], 'discovery interval', 1, 1000)
                 if block.get('selection') == 'value' and lane != 'workshop':
                     raise ValueError('value selection is only available in the Workshop')
                 if lane == 'workshop' and block.get('selection') == 'cheapest':
                     raise ValueError('cheapest selection requires Battle price evidence')
                 if block.get('price_source', 'observed') not in {'observed', 'model'}:
                     raise ValueError('unknown pool price source')
+                observed = block.get('observed_upgrade_ids', [])
+                if (not isinstance(observed, (list, tuple)) or any(item not in ids for item in observed)
+                        or len(set(observed)) != len(observed)):
+                    raise ValueError('observed upgrades must be a unique subset of pool upgrades')
+                if 'observed_upgrade_ids' in block and block.get('price_source') != 'model':
+                    raise ValueError('observed upgrade overrides require a modeled pool')
                 if block.get('price_source') == 'model':
                     from fleet.battle_prices import supported_ids
                     if lane != 'battle' or block.get('selection') != 'cheapest':
                         raise ValueError('modeled prices require a cheapest Battle pool')
-                    if set(ids) - supported_ids():
+                    if set(ids) - set(observed) - supported_ids():
                         raise ValueError('modeled pool requires a cash curve for every upgrade')
                 if 'batch_size' in block or 'max_price_premium_pct' in block:
-                    if lane != 'battle' or block.get('selection') != 'cheapest' or block.get('price_source') != 'model':
-                        raise ValueError('batches require a modeled cheapest Battle pool')
+                    if lane != 'battle' or block.get('selection') != 'cheapest':
+                        raise ValueError('batches require a cheapest Battle pool')
                     number(block.get('batch_size', 1), 'batch size', 1, 5)
                     number(block.get('max_price_premium_pct', 0), 'price premium', 0, 25)
                 expected_scope = 'account' if lane == 'workshop' else 'run'
@@ -480,7 +491,8 @@ def rename_block_ids(program: list[dict[str, Any]], old: str, new: str) -> None:
 
 
 def uses_modeled_prices(program: tuple[dict[str, Any], ...]) -> bool:
-    return any(block.get('price_source') == 'model' or any(
+    """Whether price selection or batch execution can use calibrated quotes."""
+    return any(block.get('price_source') == 'model' or 'batch_size' in block or any(
         uses_modeled_prices(tuple(children)) for children in child_lists(block)) for block in program)
 
 
@@ -714,6 +726,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     native_intents: dict[str, Any] = {}
     budget_room: int | None = None
     saving: _Choice | None = None
+    saving_for_nonheld_unlock = False
     def native_facts(policy: str) -> RerollFacts:
         return RerollFacts(
             facts.account_id, facts.best_tier_1_wave, facts.purchases, facts.values,
@@ -861,8 +874,9 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
     def pool_candidates(block: Mapping[str, Any], identity: str, reference_price: int | None,
                         *, ignore_funds: bool = False) -> dict[str, float]:
         candidates: dict[str, float] = {}
-        source = block.get('price_source', 'observed')
         for uid in block['upgrade_ids']:
+            source = ('observed' if uid in block.get('observed_upgrade_ids', ())
+                      else block.get('price_source', 'observed'))
             count = (counts or {}).get(uid, 0)
             if 'max_purchases' in block and count >= block['max_purchases']:
                 rejected.append(f'{identity}: {uid} max purchases reached')
@@ -940,7 +954,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
         return (uid, price_for(uid, reference=True)) if uid else None
 
     def evaluate_items(items: Any, ancestors: tuple[Any, ...] = ()) -> _Choice | None:
-        nonlocal waiting_native, budget_room, saving
+        nonlocal waiting_native, budget_room, saving, saving_for_nonheld_unlock
         for index, block in enumerate(items):
             kind, identity = block['type'], block['id']
             log.enter(block)
@@ -984,7 +998,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     choice = evaluate(block['goal'], (items, *ancestors))
                     if choice is not None:
                         return choice
-                if saving is not None:
+                if saving is not None and not saving_for_nonheld_unlock:
                     rejected.append(f'{identity}: another goal is already saving')
                     continue
                 weighted = goal['type'] == 'pool' and goal.get('selection', 'priority') == 'weighted'
@@ -1015,6 +1029,11 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                         and (share is None or price * 100 <= wallet * share)):
                     return _Choice(goal['id'], uid, f'Save for goal: buy {upgrades.by_id(uid).name}',
                                    target=goal.get('targets', {}).get(uid))
+                # Nonheld unlocks permit affordable later goals, but retain
+                # the first saving target when this goal also needs more coins.
+                if saving is not None:
+                    rejected.append(f'{identity}: another goal is already saving')
+                    continue
                 name = upgrades.by_id(uid).name
                 saving = _Choice(identity, uid, f'Saving for {name} ({wallet}/{price} coins)',
                                  wait=True, save_price=price)
@@ -1081,6 +1100,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     return saving or goal
                 if saving is None:
                     saving = goal
+                    saving_for_nonheld_unlock = True
             elif kind == 'while_saving':
                 if lane == 'workshop' and _legacy_saving_filler(block):
                     # Pinned built-in strategies carry the old 20%-wallet
@@ -1168,6 +1188,10 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     return observation
             elif kind == 'pool':
                 source = block.get('price_source', 'observed')
+                observed_ids = block.get('observed_upgrade_ids', ())
+
+                def pool_price(uid: str) -> int | None:
+                    return price_for(uid, source='observed' if uid in observed_ids else source)
                 needs_counts = 'max_purchases' in block or 'level_caps' in block or block.get('decay_pct', 0) > 0
                 if needs_counts and counts is None:
                     rejected.append(f'{identity}: confirmed purchase counts unavailable')
@@ -1210,6 +1234,15 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                                        if uid in block['upgrade_ids'] and price_for(uid) is None]):
                         return observation
                 if lane == 'battle':
+                    # Refresh one rotating row between purchases so an always
+                    # affordable Health/Damage row cannot hide other tabs. A
+                    # fresh, locked or failed read yields to buying again.
+                    interval = block.get('discovery_every_purchases')
+                    purchased = sum((counts or {}).values())
+                    if candidates and interval and purchased >= interval:
+                        discover = block['upgrade_ids'][(purchased // interval - 1) % len(block['upgrade_ids'])]
+                        if observation := observe_prices(identity, [discover]):
+                            return observation
                     # A priority pick only needs the stale rows ranked above it;
                     # A cheapest pick can act on verified affordable rows now;
                     # it discovers unread rows when none can be bought.
@@ -1217,7 +1250,7 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                     if block.get('hold_until_capped'):
                         ids = [uid for uid in ids if (counts or {}).get(uid, 0) < block['level_caps'][uid]['base']]
                     if source == 'model':
-                        ids = [uid for uid in ids if not model_quote(uid)]
+                        ids = [uid for uid in ids if uid in observed_ids or not model_quote(uid)]
                     elif candidates and block.get('selection') == 'cheapest':
                         ids = []
                     if candidates and block.get('selection', 'priority') == 'priority':
@@ -1244,31 +1277,33 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                 burst_ceiling: int | None = None
                 if block.get('selection', 'priority') == 'cheapest':
                     def cheapest(ids: Any) -> str:
-                        return min(ids, key=lambda uid: (price_for(uid, source=source), block['upgrade_ids'].index(uid)))
+                        return min(ids, key=lambda uid: (pool_price(uid), block['upgrade_ids'].index(uid)))
                     chosen = cheapest(candidates)
-                    if (not config.BATTLE_BURST_ENABLED and source == 'model'
+                    if (not config.BATTLE_BURST_ENABLED and source == 'model' and chosen not in observed_ids
                             and (quote := model_quote(chosen)) and not quote.get('verified')):
                         return _Choice(identity, chosen, 'Reconcile the cheapest candidate after a wave change',
                                        observation_ids=(chosen,), price_source='model')
-                    bursting = config.BATTLE_BURST_ENABLED and source == 'model' and lane == 'battle'
+                    modeled_choice = source == 'model' and chosen not in observed_ids and bool(model_quote(chosen))
+                    bursting = config.BATTLE_BURST_ENABLED and modeled_choice and lane == 'battle'
                     if bursting and wallet >= config.BATTLE_RICH_MULTIPLE * price_for(chosen, source=source):
                         # Rich: work through the open tab, visible rows first.
                         # This only narrows the block's own candidates; it
                         # never adds an upgrade from outside the pool.
-                        on_tab = [uid for uid in candidates if facts.battle_tab is not None
+                        modeled_candidates = [uid for uid in candidates if uid not in observed_ids and model_quote(uid)]
+                        on_tab = [uid for uid in modeled_candidates if facts.battle_tab is not None
                                   and upgrades.by_id(uid).category == facts.battle_tab]
                         in_view = [uid for uid in on_tab if uid in facts.visible_upgrade_ids]
-                        chosen = cheapest(in_view or on_tab or list(candidates))
+                        chosen = cheapest(in_view or on_tab or modeled_candidates)
                         # Limited by cash alone: the autopilot's budget caps the
                         # burst at cash - reserve. The top of the curve, not the
                         # live cash, keeps the policy stable across frames.
                         from fleet.battle_prices import catalog
                         burst_ceiling = max(catalog()['curves'][chosen])
                     else:
-                        if (source == 'model' and facts.battle_batch_rule_id == identity
+                        if (modeled_choice and facts.battle_batch_rule_id == identity
                                 and 0 < facts.battle_batch_purchases < block.get('batch_size', 1)):
                             local_ceiling = price_for(chosen, source=source) * (100 + block.get('max_price_premium_pct', 0))
-                            local = [uid for uid in candidates if uid in facts.visible_upgrade_ids
+                            local = [uid for uid in candidates if uid not in observed_ids and uid in facts.visible_upgrade_ids
                                      and (local_quote := model_quote(uid)) and local_quote.get('verified')
                                      and price_for(uid, source=source) * 100 <= local_ceiling]
                             if local:
@@ -1309,12 +1344,33 @@ def evaluate_program(route: Any, facts: Any, pending: Any, lane: str) -> Any:
                             facts.decision_sequence, hashlib.sha256(repr(candidates).encode()).hexdigest(),
                             chosen, None, candidates, identity)
                 selection = block.get('selection', 'priority')
+                choice_source = ('model' if source == 'model' and chosen not in observed_ids
+                                 and model_quote(chosen) else 'observed')
+                if (lane == 'battle' and selection == 'cheapest' and choice_source == 'observed'
+                        and 'batch_size' in block and config.BATTLE_BURST_ENABLED
+                        and not any(key in block for key in _PER_LEVEL_POOL_LIMITS)):
+                    # Selection still compares observed prices across every
+                    # upgrade. Only execution of this exact chosen row may
+                    # use a calibrated curve for safe multi-level taps.
+                    from fleet.battle_prices import catalog, price_matches
+                    quote = model_quote(chosen)
+                    row = facts.upgrade_rows.get(chosen, {})
+                    curve = catalog()['curves'].get(chosen, ())
+                    index, price = quote.get('index'), quote.get('price')
+                    if (quote.get('verified') and quote.get('status') == 'available'
+                            and type(index) is int and 0 <= index < len(curve)
+                            and type(price) is int and 0 < price <= wallet and curve[index] == price
+                            and quote.get('value') == row.get('value')
+                            and price_matches(price, row.get('price'), row.get('raw_price'))):
+                        choice_source = 'model'
+                        burst_ceiling = (max(curve) if wallet >= config.BATTLE_RICH_MULTIPLE * price
+                                         else price * (100 + block.get('max_price_premium_pct', 0)) // 100)
                 candidate_rows[identity] = (selection, candidate_table(
-                    candidates, selection, chosen, lambda uid: price_for(uid, source=source)))
+                    candidates, selection, chosen, pool_price))
                 return _Choice(identity, chosen, 'Eligible pool after price, cap and affordability filters',
                                weights=candidates if selected else None, pending=selected,
                                target=block.get('targets', {}).get(chosen),
-                               price_source='model' if source == 'model' and model_quote(chosen) else 'observed',
+                               price_source=choice_source,
                                burst_price_ceiling=burst_ceiling)
         return None
 

@@ -26,6 +26,7 @@ from typing import Any, Iterable
 import ocr
 import screen_discovery
 import tiles
+from account_screens import ControlTarget
 from geometry import supported_frame
 from config import Rect
 from device import Image
@@ -311,6 +312,23 @@ def _title_offset(boxes: tuple[ocr.TextBox, ...]) -> int | None:
     if len(titles) != 1:
         return None
     return titles[0].rect.y - _RECORDED_TITLE_Y
+
+
+def return_control(screen: Image, boxes: tuple[ocr.TextBox, ...]) -> ControlTarget | None:
+    """Locate only this Daily Missions frame's semantic return footer."""
+    height, width = screen.shape[:2]
+    if not supported_frame(width, height) or _title_offset(boxes) is None:
+        return None
+    footers = [b for b in boxes if _trusted(b) and b.confidence >= .95
+               and tiles.normalise(b.text) == 'taptoreturntogame'
+               and b.rect.y > height * .85 and b.rect.y + b.rect.h <= height
+               and 0 <= b.rect.x < b.rect.x + b.rect.w <= width]
+    if len(footers) != 1:
+        return None
+    box = footers[0]
+    r = box.rect
+    return ControlTarget('missions_return', (r.x + r.w // 2, r.y + r.h // 2),
+                         'located', box.confidence, (r.x, r.y, r.w, r.h))
 
 
 def identity_of(text: str, target: int | None, *, complete: bool = False) -> str | None:

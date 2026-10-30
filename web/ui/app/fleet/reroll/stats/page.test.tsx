@@ -6,6 +6,7 @@ const { fetchAccountStats, workspace } = vi.hoisted(() => ({
   fetchAccountStats: vi.fn(),
   workspace: { pool: { members: [] as { name: string; account_key: string; account_id: string; lease_id: string; state: string; recent_cps?: number; lifetime_coins?: number }[] }, loading: false, error: null },
 }));
+vi.mock("@/components/game-export/GameExportReports", () => ({ FleetExportReports: () => <p>Official imported battle statistics</p> }));
 vi.mock("@/lib/api", () => ({ fetchAccountStats }));
 vi.mock("./WorkshopComparison", () => ({ WorkshopComparison: () => null }));
 vi.mock("../RerollWorkspace", () => ({ useRerollWorkspace: () => workspace }));

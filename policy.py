@@ -148,6 +148,7 @@ class AutopilotPolicy:
     # Runtime-only authorization, never loaded from saved policy JSON.
     modeled_pool: bool = False
     battle_price_quote: Mapping[str, Any] | None = None
+    hold_reason: str | None = None
     # Highest single-level price a battle burst may include. Runtime-only;
     # None buys one level per decision.
     burst_price_ceiling: int | None = None
@@ -206,6 +207,8 @@ class AutopilotPolicy:
         if self.burst_price_ceiling is not None and (
                 type(self.burst_price_ceiling) is not int or self.burst_price_ceiling <= 0):
             raise PolicyError("burst_price_ceiling", "burst price ceiling must be a positive integer")
+        if self.hold_reason is not None and (not isinstance(self.hold_reason, str) or not self.hold_reason.strip()):
+            raise PolicyError("hold_reason", "hold reason must be a nonempty string")
 
     def effective_rules(self) -> tuple[UpgradeRule, ...]:
         """Use explicit draft rules, falling back to the selected guide."""
@@ -234,7 +237,7 @@ class AutopilotPolicy:
         if not isinstance(raw, Mapping):
             raise PolicyError("autopilot", "autopilot must be a mapping")
         known = {field.name for field in dataclasses.fields(cls)} - {
-            "modeled_pool", "battle_price_quote", "burst_price_ceiling"}
+            "modeled_pool", "battle_price_quote", "burst_price_ceiling", "hold_reason"}
         for key in raw:
             if key not in known:
                 raise PolicyError(key, f"unknown autopilot field {key!r}")

@@ -1,4 +1,5 @@
 "use client";
+import { SelectedExportReport } from "@/components/game-export/GameExportReports";
 
 import { ArrowLeft } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
@@ -122,10 +123,15 @@ function Runs() {
   );
 }
 
-export default function RunsPage() {
+function BotRunsPage() {
   return (
     <Suspense fallback={<Skeleton rows={6} />}>
       <Runs />
     </Suspense>
   );
+}
+
+export default function RunsPage(): React.JSX.Element {
+  return <main className="space-y-5"><PageHeader title="Battle history" meta="Official completed game reports" /><SelectedExportReport section="runs" />
+    <details className="rounded-xl border p-4"><summary className="cursor-pointer font-medium">Bot run audit and action receipts</summary><p className="my-3 text-sm text-muted-foreground">Historical worker sessions and confirmed actions are separate from imported game battle reports.</p><BotRunsPage /></details></main>;
 }

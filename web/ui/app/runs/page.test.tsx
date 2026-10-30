@@ -7,6 +7,8 @@ const { push, searchParams } = vi.hoisted(() => ({
   searchParams: new URLSearchParams(),
 }));
 
+vi.mock("@/components/game-export/GameExportReports", () => ({ SelectedExportReport: () => <p>Official completed game reports</p> }));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push }),
   useSearchParams: () => searchParams,

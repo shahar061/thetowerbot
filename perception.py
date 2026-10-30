@@ -166,10 +166,12 @@ def parse_frame(
     rows = []
     for rect in found:
         inside = sorted((b for b in boxes if contains(rect, b.rect)), key=lambda b: (b.rect.y, b.rect.x))
-        markers = {b.text.strip().upper() for b in inside}
+        status_boxes = tuple(b for b in inside if b.rect.x > rect.x + rect.w * .5
+                             and b.text.strip().upper() in ("MAX", "MAXED", "LOCKED", "UNAVAILABLE"))
+        markers = {b.text.strip().upper() for b in status_boxes}
         # The price button's coin glyph can read as a lone "C"; names never sit there.
         labels = [b.text for b in inside if stat_number(b.text) is None
-                  and b.text.strip().upper() not in ("MAX", "MAXED", "LOCKED", "UNAVAILABLE")
+                  and b not in status_boxes
                   and not any(c.isdigit() for c in b.text)
                   and not (b.rect.x > rect.x + rect.w * .5
                            and b.rect.y >= rect.y + rect.h * config.TILE_PRICE_TOP_FRACTION)]

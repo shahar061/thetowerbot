@@ -1,0 +1,92 @@
+[
+  {
+    "text": "Perks",
+    "confidence": 0.999163806438446,
+    "rect": [
+      444,
+      362,
+      192,
+      63
+    ]
+  },
+  {
+    "text": "Choose a NewPerk",
+    "confidence": 0.9626110196113586,
+    "rect": [
+      326,
+      459,
+      423,
+      44
+    ]
+  },
+  {
+    "text": "x1.75 Health Regen",
+    "confidence": 0.9981620444191827,
+    "rect": [
+      441,
+      591,
+      360,
+      46
+    ]
+  },
+  {
+    "text": "x1.15 Cash Bonus",
+    "confidence": 0.9985165148973465,
+    "rect": [
+      461,
+      788,
+      323,
+      43
+    ]
+  },
+  {
+    "text": "Selected Perks",
+    "confidence": 0.9766430599348885,
+    "rect": [
+      377,
+      929,
+      328,
+      46
+    ]
+  },
+  {
+    "text": "Orbs +1",
+    "confidence": 0.957315913268498,
+    "rect": [
+      285,
+      1076,
+      145,
+      41
+    ]
+  },
+  {
+    "text": "tower health regen x8.00, but",
+    "confidence": 0.9704165972512344,
+    "rect": [
+      286,
+      1233,
+      568,
+      37
+    ]
+  },
+  {
+    "text": "tower max health -60%",
+    "confidence": 0.9954930260067895,
+    "rect": [
+      283,
+      1282,
+      457,
+      38
+    ]
+  },
+  {
+    "text": "Factor",
+    "confidence": 0.9903096854686737,
+    "rect": [
+      571,
+      2017,
+      120,
+      35
+    ]
+  }
+]

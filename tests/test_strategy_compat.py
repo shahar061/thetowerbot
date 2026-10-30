@@ -72,3 +72,11 @@ def test_applying_plan_preserves_local_push_cadence() -> None:
     source = replace(Strategy.from_config('source'), push_every_farm_runs=30)
     assert restore_legacy(local, capture_legacy(source, 'revision')).push_every_farm_runs == 4
     assert_settings_only(local, replace(local, push_every_farm_runs=0))
+
+
+def test_applying_plan_preserves_local_milestone_cadence() -> None:
+    from strategy_compat import capture_legacy, restore_legacy, assert_settings_only
+    local = replace(Strategy.from_config('local'), milestone_every_farm_runs=4)
+    source = Strategy.from_config('source')
+    assert restore_legacy(local, capture_legacy(source, 'revision')).milestone_every_farm_runs == 4
+    assert_settings_only(local, replace(local, milestone_every_farm_runs=0))

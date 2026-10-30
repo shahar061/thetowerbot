@@ -1,4 +1,5 @@
 "use client";
+import { FleetExportReports } from "@/components/game-export/GameExportReports";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchAccountRunHistory } from "@/lib/api";
@@ -11,7 +12,7 @@ import { mergeRuns } from "./runsView";
 
 type Source = { runs: RunRow[]; error: string | null };
 
-export default function FleetRunsPage(): React.JSX.Element {
+function BotFleetRunsPage(): React.JSX.Element {
   const { pool, loading, error } = useRerollWorkspace();
   const members = useMemo(() => [...(pool?.members ?? [])].filter(m => !m.hidden)
     .sort((a, b) => a.name.localeCompare(b.name)), [pool]);
@@ -72,4 +73,11 @@ export default function FleetRunsPage(): React.JSX.Element {
         </div>
       </>}
   </main>;
+}
+
+export default function FleetRunsPage(): React.JSX.Element {
+  const { pool } = useRerollWorkspace();
+  return <main className="space-y-5"><header><h1 className="text-2xl font-semibold">Battle history</h1><p className="text-sm text-muted-foreground">Official completed battle reports, retained across exports.</p></header>
+    <FleetExportReports section="runs" members={pool?.members.filter(member => !member.hidden) ?? []} />
+    <details className="rounded-xl border p-4"><summary className="cursor-pointer font-medium">Bot run audit and action receipts</summary><p className="my-3 text-sm text-muted-foreground">Worker sessions and purchase evidence are distinct from imported game reports.</p><BotFleetRunsPage /></details></main>;
 }

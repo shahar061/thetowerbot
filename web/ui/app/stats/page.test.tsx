@@ -4,6 +4,7 @@ import StatsPage from "./page";
 
 const { fetchStats } = vi.hoisted(() => ({ fetchStats: vi.fn() }));
 
+vi.mock("@/components/game-export/GameExportReports", () => ({ SelectedExportReport: () => <p>Official imported battle statistics</p> }));
 vi.mock("@/lib/api", () => ({ fetchStats }));
 
 group("StatsPage", () => {

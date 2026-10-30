@@ -72,6 +72,39 @@ def test_verified_restart_walk_returns_to_home() -> None:
     assert device.taps == [(1, 2), (3, 4), (940, 585), (910, 490)]
 
 
+@pytest.mark.parametrize('screen', ['settings', 'account'])
+def test_slow_observation_is_replaced_before_any_identity_navigation_tap(screen: str) -> None:
+    device = Device()
+    supervisor = Supervisor('ACCOUNT-A')
+    stale = replace(frame(screen, account_id='STALE-ACCOUNT',
+                          controls={'account': (999, 999)} if screen == 'settings'
+                          else {'close': (999, 999)}), observed_at=95.)
+    verify_restart_account(device=device, supervisor=supervisor,
+        expected_account='ACCOUNT-A', clock=lambda: 101., sleep=lambda _: None,
+        observe=observer([
+            *([stale] if screen == 'settings' else []),
+            frame('settings', controls={'account': (3, 4)}),
+            *([stale] if screen == 'account' else []),
+            frame('account', account_id='ACCOUNT-A', controls={'close': (940, 585)}),
+            frame('settings', controls={'close': (910, 490)}), frame('home'),
+        ]))
+    assert supervisor.verified == 'ACCOUNT-A'
+    assert device.taps == [(3, 4), (940, 585), (910, 490)]
+
+
+def test_persistently_stale_navigation_is_bounded_and_never_tapped() -> None:
+    device = Device()
+    calls = []
+    def observe(_device: Device) -> AccountFrame:
+        calls.append(True)
+        return replace(frame('settings', controls={'account': (999, 999)}), observed_at=95.)
+    with pytest.raises(RecoveryBlocked, match='account navigation evidence unavailable'):
+        verify_restart_account(device=device, supervisor=Supervisor('ACCOUNT-A'),
+            expected_account='ACCOUNT-A', clock=lambda: 101., sleep=lambda _: None, observe=observe)
+    assert len(calls) == 3
+    assert device.taps == []
+
+
 def test_restart_from_inbox_returns_then_verifies_account() -> None:
     device = Device()
     supervisor = Supervisor("ACCOUNT-A")
@@ -306,7 +339,7 @@ def test_settings_tap_that_never_takes_effect_stops_after_bounded_retaps() -> No
     with pytest.raises(RecoveryBlocked, match="tap had no effect"):
         verify_restart_account(device=device, supervisor=Supervisor("ACCOUNT-A"),
             expected_account="ACCOUNT-A", clock=clock, sleep=clock.sleep,
-            observe=observer([home] * 20))
+            observe=lambda _device: replace(home, observed_at=clock()))
     assert device.taps == [(1, 2)] * 3
 
 

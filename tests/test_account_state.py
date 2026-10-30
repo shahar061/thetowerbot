@@ -181,6 +181,8 @@ def test_shopping_feeds_account_and_reset_breaks_confirmation(tmp_path: Path, mo
     session._categories = ['DEFENSE']
     monkeypatch.setattr(shopping, 'observe_frame', lambda *args: reading())
     monkeypatch.setattr(shopping, 'header_numbers', lambda *args: (None, None))
+    monkeypatch.setattr(shopping.workshop_multiplier, 'read',
+                        lambda *args: shopping.workshop_multiplier.Reading('single'))
     session._buy_rows(SimpleNamespace(page='workshop', top_left=None), None, None, Shopping())
     session.reset()
     state.observe_account(reading(now=2.))
@@ -323,8 +325,8 @@ def test_worker_lab_plan_uses_current_adapter_not_persisted_cadence(
     state.observe_balance(BalanceInterval('coins',100,100,scope,10.,'wallet'))
     state.observe_balance(BalanceInterval('gems',90,100,scope,10.,'wallet'))
     state.currencies.reserve('other','gems',10,wallet=90)
-    progress = module.RerollProgress.__new__(module.RerollProgress)
-    progress.root,progress.account_id,progress.account_state = tmp_path,'acct',state
+    progress = module.RerollProgress(tmp_path, 'acct', state,
+                                     read_only=True, reroll_mode=False)
     progress.route_runtime = SimpleNamespace(current=lambda: object())
     progress.coin_jar = SimpleNamespace(amount=lambda **kwargs: 20)
     progress.lab_cadence = SimpleNamespace(
@@ -481,3 +483,22 @@ def test_a_picker_reading_newer_than_a_finished_job_outranks_its_history() -> No
     # A job that finished after that reading still counts.
     assert completed_lab_levels([read_at_200], 'acct', finished_jobs=[('labs.game-speed', 5, 250.)],
                                 now=300.) == {'labs.game-speed': 5}
+
+
+@pytest.mark.parametrize('status, value, expected', [
+    ('verified', 3, 3), ('available', 4, 3), ('unavailable', 4, 3),
+])
+def test_lab_with_unknown_max_level_keeps_observed_completion(
+    status: str, value: int, expected: int,
+) -> None:
+    from account_state import completed_lab_levels
+    fact = {'concept_id': 'labs.ban-perks', 'status': status, 'value': value,
+            'scope': {'account_id': 'acct'}, 'evidence': {'observed_at': 100.}}
+    assert completed_lab_levels([fact], 'acct') == {'labs.ban-perks': expected}
+
+
+def test_lab_with_unknown_max_level_counts_finished_jobs_without_stalling_planner() -> None:
+    from account_state import completed_lab_levels
+    jobs = [('labs.ban-perks', 5, 100.), ('labs.game-speed', 999, 100.)]
+    assert completed_lab_levels([], 'acct', finished_jobs=jobs, now=200.) == {
+        'labs.ban-perks': 5}

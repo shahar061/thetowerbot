@@ -57,6 +57,18 @@ def test_duration_stat_is_not_a_purchase_price() -> None:
     assert price_number("10.0s") is None
 
 
+def test_max_recovery_label_is_not_a_maxed_status() -> None:
+    from perception import parse_frame
+    frame = cv2.imread(str(FIXTURES / "workshop_recovery_packages.png"))
+    result = parse_frame(frame, recorded("workshop_recovery_packages"), "workshop", now=100)
+    rows = {row.upgrade_id: row for row in result.rows}
+    row = rows["max_recovery"]
+    assert row.status == "available"
+    assert row.price == 1000
+    assert row.tap is not None
+    assert rows["recovery_amount"].price == rows["package_chance"].price == 1000
+
+
 def test_max_and_lock_markers_do_not_become_part_of_upgrade_name() -> None:
     from perception import parse_frame
     frame = cv2.imread(str(FIXTURES / "in_run_lit.png"))

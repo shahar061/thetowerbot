@@ -1,4 +1,5 @@
 "use client";
+import { SelectedExportReport } from "@/components/game-export/GameExportReports";
 
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
@@ -7,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { fetchStats } from "@/lib/api";
 import type { StatsPayload } from "@/lib/types";
 
-export default function StatsPage() {
+function BotStatsPage() {
   const [stats, setStats] = useState<StatsPayload | null>(null);
   // A failed fetch used to land in the same `null` as "still loading", so an
   // unreachable bot said "Loading…" forever.
@@ -34,4 +35,9 @@ export default function StatsPage() {
   }
 
   return <div className="space-y-4"><PageHeader title="Stats" meta={`${stats.runs.length} runs`} /><StatsPanels stats={stats} /></div>;
+}
+
+export default function StatsPage(): React.JSX.Element {
+  return <main className="space-y-5"><PageHeader title="Battle statistics" meta="Official imported game reports" /><SelectedExportReport section="stats" />
+    <details className="rounded-xl border p-4"><summary className="cursor-pointer font-medium">Bot session statistics audit</summary><p className="my-3 text-sm text-muted-foreground">These historical worker sessions have separate provenance from the official game reports.</p><BotStatsPage /></details></main>;
 }

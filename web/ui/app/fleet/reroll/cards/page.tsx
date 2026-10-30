@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { FleetExportReports } from "@/components/game-export/GameExportReports";
 import { AssignmentStatus } from "./AssignmentStatus";
 import { ApiError, fetchFleetStrategies } from "@/lib/api";
 import type { StrategyDefinition } from "@/lib/strategyStudio";
@@ -119,6 +120,7 @@ export default function FleetCardsPage(): React.JSX.Element {
   return <div className="mx-auto flex max-w-7xl flex-col gap-4 p-4">
     <PageHeader title="Fleet Cards" meta="Account-owned plans, collection evidence and independent budgets" />
     <div className="flex flex-wrap gap-3"><Button variant="outline" onClick={() => void load()}>Reload fleet</Button><Link href="/fleet/reroll/strategies/">Author Cards in Strategy Library</Link></div>
+    <FleetExportReports section="cards" members={rows.map(row => ({ name: row.worker ?? "Offline account", account_id: row.account_id }))} />
     {error && <p role="alert">{error}</p>}
     <div className="flex flex-wrap gap-3"><label>Filter accounts<input value={filter} onChange={e => setFilter(e.target.value)} className="block rounded border p-2" /></label>
       <label>Connection<select value={connection} onChange={e => setConnection(e.target.value)} className="block rounded border p-2"><option value="all">All accounts</option><option value="online">Online</option><option value="offline">Offline / unverified</option></select></label></div>
@@ -127,8 +129,8 @@ export default function FleetCardsPage(): React.JSX.Element {
       <tbody>{visible.map(row => { const c = row.cards; return <tr key={row.account_id} className="border-t align-top">
         <td className="p-2"><input aria-label={`Select ${row.account_id}`} type="checkbox" checked={selected.includes(row.account_id)} onChange={e => setSelected(previous => e.target.checked ? [...previous, row.account_id] : previous.filter(id => id !== row.account_id))} /></td>
         <td className="p-2"><button className="underline" aria-label={`Inspect ${row.account_id}`} onClick={() => setDetail(row.account_id)}>{row.account_id}</button><p>{row.worker ?? "No worker"}</p></td>
-        <td className="p-2">{c.preconditions ? "Online" : "Offline / unverified"}<p>{c.fresh ? "Fresh observations" : "Historical / unknown"}</p></td>
-        <td className="p-2">{c.snapshot?.equipped?.length ?? "?"} / {c.snapshot?.capacity ?? "?"}<p>{c.program?.loadouts.find(item => item.id === c.program?.selected_loadout_id)?.name ?? "No active loadout"}</p></td>
+        <td className="p-2">{c.preconditions ? "Online" : "Offline / unverified"}<p>{c.fresh ? "Fresh action evidence" : "Action evidence historical / unknown"}</p></td>
+        <td className="p-2">Program controls<p>{c.program?.loadouts.find(item => item.id === c.program?.selected_loadout_id)?.name ?? "No active loadout"}</p></td>
         <td className="p-2">{c.preview ? `${c.preview.goals.filter(goal => goal.met === true).length} / ${c.preview.goals.length} met` : "Unknown"}</td>
         <td className="p-2">{c.active_budget ? `${c.active_budget.spent} spent + ${c.active_budget.pending} pending / ${c.active_budget.cap} cycle cap` : "No budget cycle"}<p>Plan cap: {c.program?.gem_cap ?? row.assignment?.program.gem_cap ?? "?"}</p></td>
         <td className="p-2">{c.decision.kind}<p>{c.read_only_reason ?? c.decision.reason}</p></td>

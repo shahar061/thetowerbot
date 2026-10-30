@@ -33,7 +33,7 @@ it("retries the exact account command and invalidates retries on lease change", 
   const changed = snapshot(); changed.accounts[0].cards.scope = { ...changed.accounts[0].cards.scope!, lease_id: "replacement" };
   mocks.fetchFleetCards.mockResolvedValue(changed); fireEvent.click(screen.getByRole("button", { name: "Reload fleet" }));
   await screen.findAllByText(/Saved authority changed/);
-  expect(screen.queryByRole("button", { name: "Retry original request" })).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Retry original request" })).not.toBeInTheDocument());
 });
 it("does not show an old account's late command response in the next detail", async () => {
   let finish!: (value: unknown) => void;

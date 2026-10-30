@@ -5,8 +5,8 @@ import type { Strategy, PushRunStatus } from '@/lib/types';
 import type { createSingleStudioClient } from '@/lib/strategyClient';
 
 const BOT_FIELDS = ['interval', 'menu_interval', 'click_cooldown', 'auto_navigate',
-  'max_runs', 'push_every_farm_runs', 'navigation_cooldown', 'screen_confirmations', 'tap_jitter_px',
-  'timing_jitter', 'tap_delay', 'target_speed', 'auto_fastest', 'claims'] as const;
+  'max_runs', 'push_every_farm_runs', 'milestone_every_farm_runs', 'navigation_cooldown', 'screen_confirmations', 'tap_jitter_px',
+  'timing_jitter', 'tap_delay', 'target_speed', 'auto_fastest', 'auto_pick_perks', 'claims'] as const;
 
 export function BotSettings({ client, onDirty, push }: {
   client: ReturnType<typeof createSingleStudioClient>; onDirty: (dirty: boolean) => void;
@@ -46,10 +46,12 @@ export function BotSettings({ client, onDirty, push }: {
       {push.blocker ? push.blocker : push.phase === 'returning'
         ? `Returning to farming tier ${push.farm_tier ?? '—'}.`
         : push.phase && push.phase !== 'farming'
-          ? `Push scheduled${push.target_tier ? ` at tier ${push.target_tier}` : ''}.`
+          ? `${push.kind === 'milestone' ? 'Milestone run' : 'Push'} scheduled${push.target_tier ? ` at tier ${push.target_tier}` : ''}.`
           : push.every && push.farms_remaining !== undefined
             ? `${Math.max(0, push.every - push.farms_remaining)} of ${push.every} farming runs completed · next push in ${push.farms_remaining} runs.`
             : 'Scheduled push runs are off.'}
+      {!!push.milestone_every && push.milestone_farms_remaining !== undefined && push.phase === 'farming'
+        && ` Next milestone in ${push.milestone_farms_remaining} runs.`}
     </p>}
     {error && <p role="alert" className="text-danger">{error}</p>}
     {draft ? <StrategyEditor value={draft} onChange={setDraft} disabled={busy} hidePurchases botSettingsOnly /> : !error && <p role="status">Loading bot settings…</p>}

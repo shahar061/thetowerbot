@@ -703,7 +703,7 @@ class TransactionJournal:
                 outcome = judge(key, price=txn.price, wallet_before=txn.wallet_before,
                                 wallet_after=evidence.wallet_after,
                                 effect_changed=evidence.effect_changed if relevant else None,
-                                workshop=workshop)
+                                workshop=workshop, effect_without_wallet=evidence.effect_without_wallet)
                 undispatched = (relevant and txn.scope is not None and txn.stage == Stage.INTENDED
                                 and evidence.effect_changed is False and evidence.wallet_after == txn.wallet_before)
                 if undispatched:
@@ -924,6 +924,7 @@ def judge(
     effect_changed: bool | None,
     price_in_catalog: bool = False,
     workshop: bool = False,
+    effect_without_wallet: bool = False,
 ) -> Outcome:
     """The whole confirmation rule, kept pure so it needs no database.
 
@@ -985,6 +986,11 @@ def judge(
         )
 
     if workshop and effect_changed and price is not None and price > 0:
+        if drop == 0 and effect_without_wallet and price <= slack:
+            # A trusted level change proves one buy; unchanged abbreviated
+            # balances can hide the entire price. Exact counters cannot.
+            return Outcome(key=key, verdict=Verdict.BOUGHT, spent=price,
+                           reason="the level changed; wallet rounding hides its price")
         if wallet_after is None and wallet_before is not None:
             # The coin counter could not be read, but the row moving on is
             # one level bought, and one level costs the price read off it.

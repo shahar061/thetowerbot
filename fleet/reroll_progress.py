@@ -810,13 +810,25 @@ class RerollProgress:
                       after_receipt_sequence: int | None = None,
                       battle_tab: str | None = None,
                       push_tier: int | None = None) -> AutopilotPolicy:
+        base = replace(base, hold_reason=None)
+
+        def hold(reason: str) -> AutopilotPolicy:
+            return replace(base, enabled=False, rules=(), hold_reason=reason)
+
+        def missing_facts_reason() -> str:
+            if run_id is None:
+                return "Waiting for a verified run"
+            if wave is None:
+                return "Waiting for a readable wave"
+            return "Waiting for readable battle cash"
+
         route = None
         if self.route_runtime is not None:
             try:
                 route = self.route_runtime.current()
             except RouteUnavailable as exc:
                 self.route_error = exc.reason
-                return replace(base, enabled=False, rules=())
+                return hold(f"Battle plan unavailable: {exc.reason}")
             self.route_error = None
         effective = resolve_route(route, self.worker, self.account_id) if route is not None else None
         if push_tier is not None:
@@ -828,9 +840,9 @@ class RerollProgress:
             if (registration is None or registration.account_id != self.account_id
                     or db.bound_account(registration.db_path) != self.account_id):
                 self.route_error = "worker account binding changed"
-                return replace(base, enabled=False, rules=())
+                return hold("Waiting for verified worker account binding")
             if run_id is None or wave is None or cash is None:
-                return replace(base, enabled=False, rules=())
+                return hold(missing_facts_reason())
             _, purchases = self._history()
             locked = workshop_locked(purchases, observations or {})
             rows = {**(observations or {}), **{
@@ -843,7 +855,7 @@ class RerollProgress:
             if (registration is None or registration.account_id != self.account_id
                     or db.bound_account(registration.db_path) != self.account_id):
                 self.route_error = "worker account binding changed"
-                return replace(base, enabled=False, rules=())
+                return hold("Waiting for verified worker account binding")
             moment = time.time()
             best, purchases = self._history()
             # A row still locked in the Workshop is never drawn in battle, so
@@ -868,7 +880,7 @@ class RerollProgress:
                     if fence[0] == run_id and (counts is None or sum(counts.values()) < fence[1]):
                         # The event sink commits asynchronously. Do not calibrate
                         # a post-purchase frame against the old receipt count.
-                        return replace(base, enabled=False, rules=())
+                        return hold("Waiting for the confirmed purchase counter to refresh")
                     self._battle_receipt_fence = None
             if batch_route_token != f'{self.account_id}:{route.revision}:{run_id}':
                 battle_batch_purchases = 0
@@ -896,7 +908,7 @@ class RerollProgress:
                 self.route_runtime.remember_battle_pending(evaluation.pending)
             self.route_runtime.publish_battle_evaluation(evaluation, facts)
             if wave is None or cash is None or run_id is None:
-                return replace(base, enabled=False, rules=())
+                return hold(missing_facts_reason())
             if effective.battle.mode == "blocks":
                 from fleet.strategy_blocks import batch_size_for, program_upgrade_ids, uses_modeled_prices
                 self.route_runtime.acknowledge(route.revision, self.account_id)
@@ -920,7 +932,7 @@ class RerollProgress:
                         and evaluation.decision.price_source == "model" else None))
             _, phase = select_battle_phase(effective, facts)
             if phase is None:
-                return replace(base, enabled=False, rules=())
+                return hold("Waiting for a matching battle phase")
             self.route_runtime.acknowledge(route.revision, self.account_id)
             observe_only = evaluation.status != "observed" or evaluation.decision is None
             ids = ([uid for uid in phase.priority_ids if uid not in locked] if observe_only else

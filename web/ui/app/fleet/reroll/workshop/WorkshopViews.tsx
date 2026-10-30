@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import type { RerollMember } from "@/lib/fleet";
 import { cn } from "@/lib/utils";
-import { WorkshopMatrix } from "./WorkshopMatrix";
+import { FleetExportReports } from "@/components/game-export/GameExportReports";
 import { WorkshopPlan } from "./WorkshopPlan";
 
 type WorkshopTab = "upgrades" | "plan";
@@ -15,7 +15,7 @@ function rememberTab(tab: WorkshopTab): void {
   window.history.replaceState(window.history.state, "", url);
 }
 
-export function WorkshopViews({ members, focusWorker = null, initialView, initialTab = "upgrades" }: {
+export function WorkshopViews({ members, focusWorker = null, initialTab = "upgrades" }: {
   members: RerollMember[]; focusWorker?: string | null; initialView?: "table" | "cubes"; initialTab?: WorkshopTab;
 }): React.JSX.Element {
   const [tab, setTab] = useState<WorkshopTab>(initialTab);
@@ -40,7 +40,7 @@ export function WorkshopViews({ members, focusWorker = null, initialView, initia
     </div>
     <div role="tabpanel" id={`workshop-panel-${tab}`} aria-labelledby={`workshop-tab-${tab}`}>
       {tab === "plan" ? <WorkshopPlan members={members} focusWorker={focusWorker} />
-        : <WorkshopMatrix members={members} focusWorker={focusWorker} initialView={initialView} />}
+        : <FleetExportReports members={members} focusWorker={focusWorker} section="workshop" />}
     </div>
   </div>;
 }

@@ -60,10 +60,13 @@ export function StatBar({
                 ? `farming · push in ${status.bot.push_runs.farms_remaining} runs`
                 : status.bot.push_runs.phase === "returning"
                   ? `returning to tier ${status.bot.push_runs.farm_tier}`
-                  : `push · ${status.bot.push_runs.target_tier ? `tier ${status.bot.push_runs.target_tier}` : "selecting tier"}`}
+                  : `${status.bot.push_runs.kind === "milestone" ? "milestone" : "push"} · ${status.bot.push_runs.target_tier ? `tier ${status.bot.push_runs.target_tier}` : "selecting tier"}`}
           </StatusBadge>
         )}
-        {status?.bot.push_runs && <a href="/strategy/?tab=settings" className="text-xs text-muted-foreground underline">Edit push cadence</a>}
+        {!!status?.bot.push_runs?.milestone_every && status.bot.push_runs.phase === "farming" && (
+          <StatusBadge state="idle">milestone in {status.bot.push_runs.milestone_farms_remaining} runs</StatusBadge>
+        )}
+        {status?.bot.push_runs && <a href="/strategy/?tab=settings" className="text-xs text-muted-foreground underline">Edit run policy</a>}
         {status?.last_error ? (
           <span className="font-mono text-xs text-danger">{status.last_error}</span>
         ) : null}

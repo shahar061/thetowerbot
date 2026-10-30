@@ -1,135 +1,202 @@
-"""The saved Blender Battle migration preserves other lanes and its phase order."""
-
-import json
+"""Battle spending buys affordable upgrades without saving barriers."""
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from fleet.blender_battle_update import configure_battle
 from fleet.build_route import RouteBaseline, RouteDocument
-from fleet.blender_battle_update import (
-    COMBAT_IDS, DEF_ABS_LEVELS, ECONOMY_IDS, ORB_LEVELS, configure_battle)
 from fleet.build_route_eval import RouteFacts
-from fleet.strategy_blocks import evaluate_program
+from fleet.strategy_blocks import evaluate_program, program_upgrade_ids
+from upgrades import CATALOG
 
 
-def test_configure_battle_uses_unlimited_pools_split_at_wave_twenty() -> None:
-    original = RouteDocument.compatibility().baseline.to_dict()
-    updated = configure_battle(original)
-    assert updated["workshop"] == original["workshop"]
-    assert updated["labs"] == original["labs"]
-    assert updated["battle"]["mode"] == "blocks"
-    orbs, condition = updated["battle"]["blocks"]
-    assert (orbs["upgrade_ids"], orbs["hold_until_capped"]) == (["orbs"], True)
-    assert orbs["level_caps"] == {"orbs": {"base": ORB_LEVELS}}
-    assert (condition["type"], condition["field"], condition["op"], condition["value"]) == (
-        "condition", "wave", "lt", 20)
-    def_abs, _ = condition["else"]
-    assert (def_abs["upgrade_ids"], def_abs["hold_until_capped"]) == (["defense_absolute"], True)
-    assert def_abs["level_caps"] == {"defense_absolute": {"base": DEF_ABS_LEVELS}}
-    # Combat upgrades remain uncapped, including Multishot and Bounce Shot.
-    assert {"thorns", "lifesteal", "health", "defense_percent", "knockback_chance", "knockback_force",
-            "orb_speed", "attack_speed", "coins_per_kill_bonus", "cash_bonus",
-            "multishot_chance", "multishot_targets", "bounce_shot_chance",
-            "bounce_shot_targets", "bounce_shot_range"} == set(COMBAT_IDS)
-    for branch, ids in (("then", ECONOMY_IDS), ("else", COMBAT_IDS)):
-        pool = condition[branch][-1]
-        assert pool["selection"] == "cheapest"
-        assert pool["price_source"] == "model"
-        assert (pool['batch_size'], pool['max_price_premium_pct']) == (5, 25)
-        assert pool["upgrade_ids"] == list(ids)
-        assert "level_caps" not in pool and "max_purchases" not in pool
-    assert configure_battle(updated) == updated
-    saved = json.loads(json.dumps(updated))
-    assert configure_battle(saved) == saved
-
-
-@pytest.mark.parametrize("wave,economy_price,combat_price,expected", [
-    (1, 10, 1, "cash_per_wave"),
-    (19, 10, 1, "cash_per_wave"),
-    (20, 1, 10, "attack_speed"),
-    (100, 1, 10, "attack_speed"),
-    (19, None, 1, None),
-])
-def test_wave_selects_pool_even_after_twenty_purchases(
-    wave: int, economy_price: int | None, combat_price: int, expected: str | None,
-) -> None:
+def evaluate(wave: int = 25, cash: int = 100, purchases: dict[str, int] | None = None,
+             quotes: dict[str, Any] | None = None,
+             **rows: dict[str, Any]) -> Any:
     baseline = RouteBaseline.from_dict(configure_battle(RouteDocument.compatibility().baseline.to_dict()))
-    route = SimpleNamespace(revision=1, battle=baseline.battle, workshop=baseline.workshop)
-    quote = dict(account_id="account", run_id=7, source="model", verified=True, value=1)
-    quotes = {uid: dict(quote, status="available", price=100 + i)
-              for i, uid in enumerate(ECONOMY_IDS + COMBAT_IDS)}
-    if economy_price is None:
-        quotes.update({uid: dict(quote, status="maxed", price=None) for uid in ECONOMY_IDS})
-    else:
-        quotes["cash_per_wave"]["price"] = economy_price
-    quotes["attack_speed"]["price"] = combat_price
+    route = SimpleNamespace(revision=1, battle=baseline.battle, workshop=baseline.workshop,
+                            rules=baseline.rules)
+    observations = {uid: dict(value=1, observed_at=100, **row) for uid, row in rows.items()}
     facts = RouteFacts("account", "worker", "battle", 100, 101, run_id=7, wave=wave,
-                       battle_cash=1000, run_purchases={uid: 50 for uid in ECONOMY_IDS}
-                       | {"defense_absolute": DEF_ABS_LEVELS, "thorns": 60, "orbs": ORB_LEVELS},
-                       battle_price_quotes=quotes)
-    result = evaluate_program(route, facts, None, "battle")
-    assert (result.decision.upgrade_id if result.decision else None) == expected
+                       battle_cash=cash, run_purchases=purchases or {}, upgrade_rows=observations,
+                       best_tier_1_wave=100, battle_price_quotes=quotes or {})
+    return evaluate_program(route, facts, None, "battle")
 
 
-@pytest.mark.parametrize("def_abs,thorns,def_abs_price,expected", [
-    (0, 0, 50, "defense_absolute"),
-    (DEF_ABS_LEVELS - 1, 0, 50, "defense_absolute"),
-    (3, 0, 5000, None),  # holds the cash for Defense Absolute rather than spending it
-    (DEF_ABS_LEVELS, 0, 50, "thorns"),
-    (DEF_ABS_LEVELS, 60, 50, "thorns"),  # no Thorns level cap
-])
-def test_after_the_economy_buys_def_abs_then_the_cheapest_guide_upgrade(
-    def_abs: int, thorns: int, def_abs_price: int, expected: str | None,
-) -> None:
+def test_all_battle_upgrades_except_explicit_exclusions_are_eligible() -> None:
+    original = RouteDocument.compatibility().baseline.to_dict()
+    before = deepcopy(original)
+    updated = configure_battle(original)
+    expected = {upgrade.id for upgrade in CATALOG if not upgrade.unlock} - {
+        "defense_absolute", "health_regen"}
+    assert set(program_upgrade_ids(tuple(updated["battle"]["blocks"]))) == expected
+    assert original == before
+    assert {key: value for key, value in updated.items() if key != "battle"} == {
+        key: value for key, value in original.items() if key != "battle"}
+    assert configure_battle(updated) == updated
+
+
+@pytest.mark.parametrize("wave", [1, 19, 20, 100])
+def test_expensive_orbs_and_defense_do_not_block_affordable_combat(wave: int) -> None:
+    result = evaluate(wave, orbs=dict(status="unaffordable", price=9000),
+                      defense_absolute=dict(status="available", price=1),
+                      health_regen=dict(status="available", price=1),
+                      attack_speed=dict(status="available", price=10))
+    assert result.decision.upgrade_id == "attack_speed"
+    assert result.decision.state == "buy"
+
+
+@pytest.mark.parametrize("uid", [upgrade.id for upgrade in CATALOG
+                                if not upgrade.unlock and upgrade.id not in {
+                                    "defense_absolute", "health_regen"}])
+def test_every_allowed_upgrade_can_be_bought_without_other_prices(uid: str) -> None:
+    result = evaluate(**{uid: dict(status="available", price=10)})
+    assert result.decision.upgrade_id == uid
+    assert result.decision.state == "buy"
+
+
+@pytest.mark.parametrize("uid", ["defense_absolute", "health_regen"])
+def test_excluded_upgrades_are_never_bought_or_requested(uid: str) -> None:
+    result = evaluate(**{uid: dict(status="available", price=1)})
+    assert result.decision is None or result.decision.upgrade_id != uid
+    assert uid not in result.trace.observation_ids
+
+
+@pytest.mark.parametrize("wave,expected", [(1, "cash_bonus"), (19, "cash_bonus"),
+                                         (20, "attack_speed"), (100, "attack_speed")])
+def test_early_economy_preference_then_cheapest_affordable(wave: int, expected: str) -> None:
+    result = evaluate(wave, cash_bonus=dict(status="available", price=10),
+                      attack_speed=dict(status="available", price=10))
+    assert result.decision.upgrade_id == expected
+
+
+def test_expensive_early_economy_falls_through_to_combat() -> None:
+    result = evaluate(1, cash_bonus=dict(status="available", price=90),
+                      health=dict(status="available", price=10))
+    assert result.decision.upgrade_id == "health"
+
+
+def test_buys_economy_after_wave_twenty_when_it_is_cheapest() -> None:
+    result = evaluate(100, coins_per_kill_bonus=dict(status="available", price=5),
+                      health=dict(status="available", price=10))
+    assert result.decision.upgrade_id == "coins_per_kill_bonus"
+
+
+@pytest.mark.parametrize("status", ["locked", "maxed", "unaffordable"])
+def test_unavailable_upgrades_do_not_block_an_affordable_purchase(status: str) -> None:
+    result = evaluate(orbs=dict(status=status, price=1),
+                      package_chance=dict(status=status, price=1),
+                      health=dict(status="available", price=10))
+    assert result.decision.upgrade_id == "health"
+
+
+def test_exact_wallet_balance_is_enough_to_buy() -> None:
+    result = evaluate(cash=10, health=dict(status="available", price=10))
+    assert result.decision.upgrade_id == "health"
+    assert result.decision.price == 10
+
+
+def test_stale_price_must_be_observed_again_before_purchase() -> None:
     baseline = RouteBaseline.from_dict(configure_battle(RouteDocument.compatibility().baseline.to_dict()))
     route = SimpleNamespace(revision=1, battle=baseline.battle, workshop=baseline.workshop)
-    quote = dict(account_id="account", run_id=7, source="model", verified=True, value=1, status="available")
-    quotes = {uid: dict(quote, price=100) for uid in COMBAT_IDS} | {
-        "attack_speed": dict(quote, price=50), "thorns": dict(quote, price=5)}
-    rows = {"defense_absolute": {"status": "available", "value": 10, "price": def_abs_price, "observed_at": 100}}
-    facts = RouteFacts("account", "worker", "battle", 100, 101, run_id=7, wave=25, battle_cash=1000,
-                       run_purchases={"defense_absolute": def_abs, "thorns": thorns, "orbs": ORB_LEVELS},
-                       upgrade_rows=rows, battle_price_quotes=quotes)
-    result = evaluate_program(route, facts, None, "battle")
-    assert (result.decision.upgrade_id if result.decision else None) == expected
-
-
-@pytest.mark.parametrize("wave,orbs,orb_row,expected", [
-    (1, 0, {"status": "available", "price": 300}, "orbs"),
-    (25, ORB_LEVELS - 1, {"status": "available", "price": 900}, "orbs"),
-    (1, 2, {"status": "unaffordable", "price": 4000}, None),  # holds the cash for Orbs
-    (1, ORB_LEVELS, {"status": "available", "price": 1}, "cash_bonus"),
-    (1, 0, {"status": "locked", "price": None}, "cash_bonus"),  # Orbs not unlocked in the Workshop
-    (1, 1, {"status": "maxed", "price": None}, "cash_bonus"),
-])
-def test_orbs_come_first_and_hold_cash_until_capped(
-    wave: int, orbs: int, orb_row: dict, expected: str | None,
-) -> None:
-    baseline = RouteBaseline.from_dict(configure_battle(RouteDocument.compatibility().baseline.to_dict()))
-    route = SimpleNamespace(revision=1, battle=baseline.battle, workshop=baseline.workshop)
-    quote = dict(account_id="account", run_id=7, source="model", verified=True, value=1, status="available")
-    quotes = {uid: dict(quote, price=10) for uid in ECONOMY_IDS + COMBAT_IDS}
-    rows = {"orbs": dict(orb_row, value=orbs, observed_at=100),
-            "defense_absolute": {"status": "available", "value": 10, "price": 50, "observed_at": 100}}
-    facts = RouteFacts("account", "worker", "battle", 100, 101, run_id=7, wave=wave, battle_cash=1000,
-                       run_purchases={"orbs": orbs, "defense_absolute": DEF_ABS_LEVELS},
-                       upgrade_rows=rows, battle_price_quotes=quotes)
-    result = evaluate_program(route, facts, None, "battle")
-    assert (result.decision.upgrade_id if result.decision else None) == expected
-
-
-@pytest.mark.parametrize("uid", ["multishot_chance", "multishot_targets", "bounce_shot_chance",
-                                 "bounce_shot_targets", "bounce_shot_range"])
-@pytest.mark.parametrize("status", ["available", "locked", "maxed"])
-def test_multishot_and_bounce_compete_when_available(uid: str, status: str) -> None:
-    baseline = RouteBaseline.from_dict(configure_battle(RouteDocument.compatibility().baseline.to_dict()))
-    route = SimpleNamespace(revision=1, battle=baseline.battle, workshop=baseline.workshop)
-    quote = dict(account_id="account", run_id=7, source="model", verified=True, value=1)
-    quotes = {item: dict(quote, status="available", price=100) for item in COMBAT_IDS}
-    quotes[uid] = dict(quote, status=status, price=1 if status == "available" else None)
     facts = RouteFacts("account", "worker", "battle", 100, 101, run_id=7, wave=25,
-                       battle_cash=1000, battle_price_quotes=quotes,
-                       run_purchases={"orbs": ORB_LEVELS, "defense_absolute": DEF_ABS_LEVELS})
+                      battle_cash=100, run_purchases={}, upgrade_rows={
+                          "health": dict(status="available", price=10, value=1, observed_at=1)})
     result = evaluate_program(route, facts, None, "battle")
-    assert result.decision is not None
-    assert result.decision.upgrade_id == (uid if status == "available" else "defense_percent")
+    assert result.decision is None or result.decision.state == "observe_price"
+
+
+def test_no_affordable_upgrade_requests_prices_instead_of_holding_for_orbs() -> None:
+    result = evaluate(cash=1, orbs=dict(status="unaffordable", price=9000),
+                      health=dict(status="unaffordable", price=10))
+    assert result.trace.observation_ids
+    assert result.decision is not None and result.decision.state == "observe_price"
+
+
+def test_discovery_reaches_other_upgrades_while_health_remains_affordable() -> None:
+    result = evaluate(purchases={"health": 20}, health=dict(status="available", price=10))
+    assert result.trace.observation_ids == ("defense_percent",)
+    # Reading an unavailable row ends discovery and resumes spending.
+    resumed = evaluate(purchases={"health": 20}, health=dict(status="available", price=10),
+                       defense_percent=dict(status="locked", price=None))
+    assert resumed.decision.upgrade_id == "health"
+    assert resumed.decision.state == "buy"
+    # A confirmed purchase advances the cursor to the next row.
+    next_row = evaluate(purchases={"health": 30}, health=dict(status="available", price=10))
+    assert next_row.trace.observation_ids == ("attack_speed",)
+
+
+def test_failed_discovery_yields_to_affordable_purchases() -> None:
+    result = evaluate(purchases={"health": 20}, health=dict(status="available", price=10),
+                      defense_percent=dict(status="unknown", price=None))
+    assert result.decision.upgrade_id == "health" and result.decision.state == "buy"
+
+
+def quote(**changes: Any) -> dict[str, Any]:
+    return dict(dict(account_id="account", run_id=7, source="model", status="available",
+                     verified=True, price=5, index=0, value=1), **changes)
+
+
+def test_verified_observed_choice_uses_existing_burst_engine() -> None:
+    from autopilot import burst_size
+    from fleet.battle_prices import catalog
+    result = evaluate(cash=100, quotes={"attack_speed": quote()},
+                      attack_speed=dict(status="available", price=5))
+    assert result.decision.price_source == "model"
+    curve = catalog()["curves"]["attack_speed"]
+    assert burst_size(curve, 0, 100, result.decision.burst_price_ceiling) > 1
+
+
+@pytest.mark.parametrize("changes", [dict(verified=False), dict(run_id=8), dict(account_id="other"),
+                                    dict(price=7, index=1), dict(value=2), dict(index=100000),
+                                    dict(status="locked")])
+def test_unverified_or_mismatched_quote_keeps_observed_single_purchase(changes: dict[str, Any]) -> None:
+    result = evaluate(quotes={"attack_speed": quote(**changes)},
+                      attack_speed=dict(status="available", price=5))
+    assert result.decision.upgrade_id == "attack_speed"
+    assert result.decision.price_source == "observed"
+    assert result.decision.burst_price_ceiling is None
+
+
+def test_burst_discovery_does_not_require_landing_on_exact_multiple() -> None:
+    result = evaluate(purchases={"health": 23}, health=dict(status="available", price=10))
+    assert result.trace.observation_ids == ("defense_percent",)
+
+
+def test_discovery_does_not_interrupt_each_purchase() -> None:
+    result = evaluate(purchases={"health": 2}, health=dict(status="available", price=10))
+    assert result.decision.state == "buy" and result.decision.upgrade_id == "health"
+
+
+def test_observed_pool_policy_sends_a_real_multi_tap_command(tmp_path: Path) -> None:
+    import time
+    from fleet.build_route_store import BuildRouteStore
+    from tests.test_strategy_blocks import _assigned_model_progress
+    from tests.test_autopilot import parts, shown
+    progress, _, rows, base = _assigned_model_progress(tmp_path)
+    raw = progress.route_runtime.current().to_dict()
+    raw["baseline"]["battle"]["blocks"][0].pop("price_source")
+    BuildRouteStore(tmp_path).publish(RouteDocument.from_dict(raw), raw["revision"], "operator")
+    bot, device, frame, observation, _ = parts()
+    row = next(row for row in observation.rows if row.upgrade_id == "attack_speed")
+    now = time.time()
+    for reading in rows.values():
+        reading["observed_at"] = now
+    rows["attack_speed"]["value"] = row.value
+    policy = progress.battle_policy(base, rows, run_id=7, wave=1, cash=100)
+    assert policy.battle_price_quote is not None
+    assert policy.modeled_pool
+    bot.step(frame, device, policy, cash=100, run_id=7,
+             observation=shown(observation, row, 0, at=now))
+    assert device.actions == [("burst", *row.tap, 6)]
+
+
+def test_burst_kill_switch_keeps_observed_purchase(monkeypatch: pytest.MonkeyPatch) -> None:
+    import config
+    monkeypatch.setattr(config, "BATTLE_BURST_ENABLED", False)
+    result = evaluate(quotes={"attack_speed": quote()}, attack_speed=dict(status="available", price=5))
+    assert result.decision.price_source == "observed"
+    assert result.decision.burst_price_ceiling is None

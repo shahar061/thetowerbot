@@ -26,7 +26,7 @@ then returns to the remembered farming tier and resumes its normal strategy.
 Push spending excludes cash and coin upgrades. It balances available health,
 defense, attack speed, thorns, lifesteal, knockback, orbs and damage by observed
 price, prioritizing affordable health when the tower is hurt. Defense Absolute
-is included only on Tier 1. Locked upgrades and configured combat exclusions
+and Health Regen are excluded. Locked upgrades and configured combat exclusions
 remain excluded. Workshop and lab plans continue to use the normal strategy.
 
 In single-emulator mode, use **Strategy Studio → Bot settings → Run policy**
@@ -41,6 +41,25 @@ Abandoned runs and push attempts do not count toward it. Standalone profiles
 explicitly set to milestone purpose also do not count; fleet build-route runs
 use their scheduled farming intent independently of the legacy guide label.
 The dashboard shows the run mode, target tier and farming runs remaining.
+
+Enable **Milestone collection runs** in the same Run policy settings to visit
+intermediate tiers. By default, after every four completed farming runs the
+bot attempts one milestone run, starting at the highest unlocked tier minus
+one. Each later attempt steps down one tier; when the next tier would reach
+the farming tier, the rotation starts again at highest minus one. For example,
+with highest tier 11 and farming tier 1: four farms → tier 10 → four farms →
+tier 9 → … → tier 2 → four farms → tier 10. Each attempt runs until death with
+the push combat policy, then returns to farming. If there are no intermediate
+tiers, the bot stays on its farming tier.
+
+The milestone interval is configurable and independent of highest-tier push
+runs. If both are due together, the highest-tier push runs first, followed by
+the milestone attempt before farming resumes. Automatic navigation is required.
+The profile field `milestone_every_farm_runs` defaults to `0` (off); enabling
+the UI toggle sets it to `4`. Disabling lets an already scheduled attempt
+finish and return. Milestone progress and the descending tier cursor survive
+restarts in the same account-bound state file as push runs. Applying a plan
+preserves both cadence settings.
 
 When the normal transaction journal is present, push state is saved beside
 the bot database in `<database-stem>-push-runs.json` and bound to the account.
@@ -1031,6 +1050,11 @@ existing profiles remain active until a plan is applied. Account-specific Cards
 assignments retain precedence over the plan's Cards lane. Unverified accounts and
 unavailable assignments block purchases rather than reverting to a different plan.
 
+**Bot settings → Perks → Auto-pick first perk** opens **New Perk** during a
+battle and always selects the first offered option, including trade-off perks.
+It is off by default. The picker waits for confirmation before another selection,
+honors Pause, and resumes an already-open perk panel after a restart.
+
 ### OCR autopilot
 
 **Strategy → Effective Paths advisor** accepts a local JSON or normalized CSV
@@ -1296,6 +1320,37 @@ The dashboard source is the Next.js app in `web/ui/`. `./run.sh` builds its
 ignored `web/static/` output when it is missing or stale, then starts the bot.
 Node and npm are therefore required on a machine that runs the dashboard, but
 the launcher installs the locked UI dependencies when they are absent.
+
+## Official game export reporting
+
+Account reporting uses the game's `tool_export.json` for labs, permanent Workshop
+levels, Cards, completed battle reports, tracker telemetry and account changes.
+Enable **Auto Export for External Tools** in the game. The collector reads the
+official file through the explicitly registered ADB endpoint every ten seconds;
+the game itself currently refreshes it about every five minutes.
+
+Reload both the dashboard and its workers after updating to this version. A worker
+must provide its current verified reporting scope before collection starts. The
+first accepted export must have been generated after account verification, which
+can mean waiting for the next automatic export. Missing, offline and stale sources
+are displayed explicitly; re-reading a file never refreshes its evidence time.
+
+Reporting data is stored in an account-partitioned `game-export.sqlite3` sidecar
+beside each worker database. Completed reports remain there when the game's rolling
+history drops old entries. Account journal changes identify the observation interval;
+only game-provided completion records carry exact event times. Existing bot actions
+and purchase receipts remain separate audit evidence.
+
+The export does not expose selected game speed or current spendable battle cash.
+The tracker can show a clearly marked wave estimate from compatible consecutive
+exports, for up to five minutes; it stops estimating when the source is offline,
+stale or changes run. Effective game-time rate is an average, not selected speed.
+Export observations never authorize spending or replace live action checks.
+
+Indexed reporting names use the pinned community SDK mapping attributed in
+`third_party/game-export-sdk/`. Unknown positions remain unknown, rather than
+being matched by UI order. Archived accounts without an attributed export stay
+unavailable instead of inheriting another account's data.
 
 ## Tests
 
