@@ -328,6 +328,25 @@ export function StrategyEditor({
           </p>
           {!value.auto_navigate && <p className="text-xs text-muted-foreground">Enable Auto-navigate to start scheduled pushes automatically.</p>}
         </div>
+        <div className="rounded-xl border border-border p-3 space-y-3">
+          <div className="flex items-center justify-between text-sm">
+            Milestone collection runs
+            <Switch label="Milestone collection runs" checked={(value.milestone_every_farm_runs ?? 0) > 0}
+              disabled={disabled} onCheckedChange={(checked) => set("milestone_every_farm_runs", checked ? 4 : 0)} />
+          </div>
+          <NumberField label="Collect milestones after every" ariaLabel="Completed farming runs between milestone runs"
+            value={value.milestone_every_farm_runs || 4} min={1} step={1}
+            disabled={disabled || !(value.milestone_every_farm_runs ?? 0)}
+            note="completed farming runs"
+            onCommit={(n) => set("milestone_every_farm_runs", n)} />
+          <p className="text-xs text-muted-foreground">
+            Starts one tier below your highest unlocked tier. Each milestone run steps down one tier,
+            then returns to farming. When the next tier would reach your farming tier, the rotation
+            restarts at highest minus one. Highest-tier pushes keep their own schedule.
+            Turning this off lets an already scheduled milestone run finish and return.
+          </p>
+          {!value.auto_navigate && <p className="text-xs text-muted-foreground">Enable Auto-navigate to start milestone runs automatically.</p>}
+        </div>
         <div className="flex items-center justify-between text-sm">
           Auto-navigate
           <Switch
@@ -402,6 +421,22 @@ export function StrategyEditor({
         <p className="text-xs text-muted-foreground">
           Checks for faster speed when research is due. A selected target speed takes priority;
           select off above to use automatic fastest speed.
+        </p>
+      </SectionCard>
+
+      <SectionCard id="perks" title="Perks" contentClassName="flex flex-col gap-3">
+        <label className="flex items-center justify-between text-sm">
+          <span>Auto-pick first perk</span>
+          <Switch
+            label="Auto-pick first perk"
+            checked={value.auto_pick_perks ?? false}
+            disabled={disabled}
+            onCheckedChange={(checked) => set("auto_pick_perks", checked)}
+          />
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Opens New Perk during battle and always selects the first offered option,
+          including trade-off perks. No perk ranking is applied.
         </p>
       </SectionCard>
 

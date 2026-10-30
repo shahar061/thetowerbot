@@ -31,6 +31,7 @@ export const LEDGER_EVENTS = new Set([
   "MilestoneClaimed",
   "ClaimUncertain",
   "FloatingGemClaimed",
+  "PerkPicked",
   "DailyAdGemClaimed",
   "InGameAdGemClaimed",
 ]);
@@ -52,6 +53,7 @@ export const FILTER_KINDS = [
   "MAIL_CLAIM",
   "MILESTONE_CLAIM",
   "GEM_CLAIM",
+  "PERK_PICK",
   "WORKSHOP_BUY",
   "LAB",
   "CARD_BUY",

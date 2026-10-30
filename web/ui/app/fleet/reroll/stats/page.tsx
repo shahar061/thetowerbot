@@ -1,4 +1,5 @@
 "use client";
+import { FleetExportReports } from "@/components/game-export/GameExportReports";
 
 import { useEffect, useState } from "react";
 import { ChartLine, Timer, Trophy } from "lucide-react";
@@ -56,7 +57,7 @@ function EmulatorStats({ member, result, advanced }: { member: RerollMember; res
   </article>;
 }
 
-export default function FleetStatsPage(): React.JSX.Element {
+function BotFleetStatsPage(): React.JSX.Element {
   const { pool, loading, error } = useRerollWorkspace();
   const members = [...(pool?.members ?? [])].filter(member => !member.hidden).sort((a, b) => a.name.localeCompare(b.name));
   const identity = JSON.stringify(members.map(({ name, account_key, account_id, lease_id }) => ({ name, account_key, account_id, lease_id })));
@@ -119,4 +120,11 @@ export default function FleetStatsPage(): React.JSX.Element {
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">{members.map(member => <EmulatorStats key={memberIdentity(member)} member={member} result={results[memberIdentity(member)]} advanced={advanced} />)}</div>
     </>}
   </main>;
+}
+
+export default function FleetStatsPage(): React.JSX.Element {
+  const { pool } = useRerollWorkspace();
+  return <main className="space-y-5"><header><h1 className="text-2xl font-semibold">Battle statistics</h1><p className="text-sm text-muted-foreground">Statistics from retained official game reports.</p></header>
+    <FleetExportReports section="stats" members={pool?.members.filter(member => !member.hidden) ?? []} />
+    <details className="rounded-xl border p-4"><summary className="cursor-pointer font-medium">Bot session statistics audit</summary><p className="my-3 text-sm text-muted-foreground">Worker milestones, screen observations and purchase counts have separate provenance from imported game reports.</p><BotFleetStatsPage /></details></main>;
 }

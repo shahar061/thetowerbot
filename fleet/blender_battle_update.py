@@ -11,47 +11,39 @@ from typing import Any, Mapping
 import httpx2
 
 from fleet.build_route import RouteBaseline
+from upgrades import CATALOG
 
 
 ECONOMY_IDS = ("cash_bonus", "cash_per_wave", "coins_per_kill_bonus", "coins_per_wave")
-# Blender combat upgrades compete by price, including Multishot and Bounce Shot.
-COMBAT_IDS = (
-    "defense_percent", "health", "knockback_chance", "knockback_force", "orb_speed",
-    "attack_speed", "lifesteal", "thorns", "coins_per_kill_bonus", "cash_bonus",
-    "multishot_chance", "multishot_targets", "bounce_shot_chance",
-    "bounce_shot_targets", "bounce_shot_range",
-)
-DEF_ABS_LEVELS = 25
-# Every in-run Orbs level (300 to 9,000 cash).
-ORB_LEVELS = 4
+# Battle-only exclusions: permanent Workshop spending is configured separately.
+EXCLUDED_IDS = frozenset({"defense_absolute", "health_regen"})
+# Resolve ties in favor of the Blender core; every other battle stat remains
+# eligible. Unlock tiles spend permanent coins and never belong in this pool.
+_CORE_IDS = ("health", "defense_percent", "attack_speed", "knockback_chance",
+             "knockback_force", "orbs", "orb_speed", "thorns", "lifesteal")
+BATTLE_IDS = tuple(dict.fromkeys((*_CORE_IDS, *(upgrade.id for upgrade in CATALOG
+                    if not upgrade.unlock and upgrade.id not in EXCLUDED_IDS))))
 
 
 def configure_battle(baseline: Mapping[str, Any]) -> dict[str, Any]:
-    """Buy every Orbs level first, then economy before wave 20, then a Defense
-    Absolute floor and the cheapest guide upgrade.
+    """Buy the cheapest affordable battle stat, favoring early economy on ties.
 
-    Orbs and Defense Absolute buy from read prices, and the run holds its cash
-    for each until all its levels are bought. A locked or maxed row never holds.
+    Compare observed prices so stats without calibrated price curves can
+    compete too. Verified curves enable budgeted tap bursts; other stats use
+    single taps. Refresh one row per ten purchased levels to discover upgrades
+    without interrupting every purchase. No saving goal blocks spending.
     """
     updated = deepcopy(dict(baseline))
+    early_ids = list(dict.fromkeys((*ECONOMY_IDS, *BATTLE_IDS)))
+    def pool(identity: str, ids: list[str]) -> dict[str, Any]:
+        return {"id": identity, "type": "pool", "label": "Cheapest affordable battle upgrade",
+                "selection": "cheapest", "upgrade_ids": ids, "discovery_every_purchases": 10,
+                "batch_size": 5, "max_price_premium_pct": 25}
+
     updated["battle"].update(mode="blocks", branches=[], blocks=[
-        {"id": "blender.battle.orbs", "type": "pool", "label": "Orbs before everything",
-         "upgrade_ids": ["orbs"], "hold_until_capped": True,
-         "level_caps": {"orbs": {"base": ORB_LEVELS}}},
         {"id": "blender.battle.wave20", "type": "condition", "field": "wave", "op": "lt", "value": 20,
-         "then": [
-             {"id": "blender.battle.economy", "type": "pool", "label": "Economy before wave 20",
-              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(ECONOMY_IDS),
-              "batch_size": 5, "max_price_premium_pct": 25},
-         ],
-         "else": [
-             {"id": "blender.battle.def_abs", "type": "pool", "label": "Defense Absolute after the economy",
-              "upgrade_ids": ["defense_absolute"], "hold_until_capped": True,
-              "level_caps": {"defense_absolute": {"base": DEF_ABS_LEVELS}}},
-             {"id": "blender.battle.combat", "type": "pool", "label": "Blender combat from wave 20",
-              "selection": "cheapest", "price_source": "model", "upgrade_ids": list(COMBAT_IDS),
-              "batch_size": 5, "max_price_premium_pct": 25},
-         ]},
+         "then": [pool("blender.battle.early", early_ids)],
+         "else": [pool("blender.battle.affordable", list(BATTLE_IDS))]},
     ])
     RouteBaseline.from_dict(updated)
     return updated

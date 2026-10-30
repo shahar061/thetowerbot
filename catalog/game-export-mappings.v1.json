@@ -1,0 +1,1768 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/TmRxJD/TheTowerSDK",
+    "commit": "f2afe6dddc41115b243889f9872ba87e478609e5",
+    "license": "MIT",
+    "copyright": "2026 TmRxJD",
+    "note": "Public static source only. Labs are game research records; category fallback from labs-categories.generated.ts. Not full SDK display override resolution."
+  },
+  "verified_versions": {
+    "export": [
+      1
+    ],
+    "game": [
+      1253
+    ],
+    "data": [
+      31
+    ]
+  },
+  "labs": [
+    {
+      "index": 0,
+      "name": "Damage",
+      "id": "labs.damage"
+    },
+    {
+      "index": 1,
+      "name": "Attack Speed",
+      "id": "labs.attack-speed"
+    },
+    {
+      "index": 2,
+      "name": "Critical Factor",
+      "id": "labs.critical-factor"
+    },
+    {
+      "index": 3,
+      "name": "Range",
+      "id": "labs.range"
+    },
+    {
+      "index": 4,
+      "name": "Damage / Meter",
+      "id": "labs.damage-meter"
+    },
+    {
+      "index": 5,
+      "name": "Super Crit Chance",
+      "id": "labs.super-crit-chance"
+    },
+    {
+      "index": 6,
+      "name": "Super Crit Mult",
+      "id": "labs.super-crit-mult"
+    },
+    {
+      "index": 7,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 8,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 9,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 10,
+      "name": "Health",
+      "id": "labs.health"
+    },
+    {
+      "index": 11,
+      "name": "Health Regen",
+      "id": "labs.health-regen"
+    },
+    {
+      "index": 12,
+      "name": "Defense Absolute",
+      "id": "labs.defense-absolute"
+    },
+    {
+      "index": 13,
+      "name": "Defense %",
+      "id": "labs.defense"
+    },
+    {
+      "index": 14,
+      "name": "Orbs Speed",
+      "id": "labs.orb-speed"
+    },
+    {
+      "index": 15,
+      "name": "Land Mine Damage",
+      "id": "labs.land-mine-damage"
+    },
+    {
+      "index": 16,
+      "name": "Land Mine Decay",
+      "id": "labs.land-mine-decay"
+    },
+    {
+      "index": 17,
+      "name": "Shockwave Size",
+      "id": "labs.shockwave-size"
+    },
+    {
+      "index": 18,
+      "name": "Orbs Boss Hit",
+      "id": "labs.orb-boss-hit"
+    },
+    {
+      "index": 19,
+      "name": "Recovery Package Amount",
+      "id": "labs.recovery-package-amount"
+    },
+    {
+      "index": 20,
+      "name": "Cash Bonus",
+      "id": "labs.cash-bonus"
+    },
+    {
+      "index": 21,
+      "name": "Cash / Wave",
+      "id": "labs.cash-wave"
+    },
+    {
+      "index": 22,
+      "name": "Coins / Kill Bonus",
+      "id": "labs.coins-kill-bonus"
+    },
+    {
+      "index": 23,
+      "name": "Coins / Wave",
+      "id": "labs.coins-wave"
+    },
+    {
+      "index": 24,
+      "name": "Interest",
+      "id": "labs.interest"
+    },
+    {
+      "index": 25,
+      "name": "Max Interest",
+      "id": "labs.max-interest"
+    },
+    {
+      "index": 26,
+      "name": "Package After Boss",
+      "id": "labs.package-after-boss"
+    },
+    {
+      "index": 27,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 28,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 29,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 30,
+      "name": "Game Speed",
+      "id": "labs.game-speed"
+    },
+    {
+      "index": 31,
+      "name": "Starting Cash",
+      "id": "labs.starting-cash"
+    },
+    {
+      "index": 32,
+      "name": "Workshop Attack Discount",
+      "id": "labs.workshop-attack-discount"
+    },
+    {
+      "index": 33,
+      "name": "Workshop Defense Discount",
+      "id": "labs.workshop-defense-discount"
+    },
+    {
+      "index": 34,
+      "name": "Workshop Utility Discount",
+      "id": "labs.workshop-utility-discount"
+    },
+    {
+      "index": 35,
+      "name": "Labs Coin Discount",
+      "id": "labs.labs-coin-discount"
+    },
+    {
+      "index": 36,
+      "name": "Labs Speed",
+      "id": "labs.labs-speed"
+    },
+    {
+      "index": 37,
+      "name": "Buy Multiplier",
+      "id": "labs.buy-multiplier"
+    },
+    {
+      "index": 38,
+      "name": "More Round Stats",
+      "id": "labs.more-round-stats"
+    },
+    {
+      "index": 39,
+      "name": "Target Priority",
+      "id": "labs.target-priority"
+    },
+    {
+      "index": 40,
+      "name": "Card Presets",
+      "id": "labs.card-presets"
+    },
+    {
+      "index": 41,
+      "name": "Workshop Respec",
+      "id": "labs.workshop-respec"
+    },
+    {
+      "index": 42,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 43,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 44,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 45,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 46,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 47,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 48,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 49,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 50,
+      "name": "Missiles Despawn Time",
+      "id": "labs.missiles-despawn-time"
+    },
+    {
+      "index": 51,
+      "name": "Missiles Explosion",
+      "id": "labs.missiles-explosion"
+    },
+    {
+      "index": 52,
+      "name": "Missiles Radius",
+      "id": "labs.missiles-radius"
+    },
+    {
+      "index": 53,
+      "name": "Chrono Field Duration",
+      "id": "labs.chrono-field-duration"
+    },
+    {
+      "index": 54,
+      "name": "Chrono Field Damage Reduction",
+      "id": "labs.chrono-field-damage-reduction"
+    },
+    {
+      "index": 55,
+      "name": "Chrono Field Reduction %",
+      "id": "labs.chrono-field-reduction"
+    },
+    {
+      "index": 56,
+      "name": "Swamp Radius",
+      "id": "labs.swamp-radius"
+    },
+    {
+      "index": 57,
+      "name": "Swamp Stun",
+      "id": "labs.swamp-stun"
+    },
+    {
+      "index": 58,
+      "name": "Swamp Stun Chance",
+      "id": "labs.swamp-stun-chance"
+    },
+    {
+      "index": 59,
+      "name": "Swamp Stun Time",
+      "id": "labs.swamp-stun-time"
+    },
+    {
+      "index": 60,
+      "name": "Golden Tower Bonus",
+      "id": "labs.golden-tower-bonus"
+    },
+    {
+      "index": 61,
+      "name": "Golden Tower Duration",
+      "id": "labs.golden-tower-duration"
+    },
+    {
+      "index": 62,
+      "name": "Chain Lightning Shock",
+      "id": "labs.chain-lightning-shock"
+    },
+    {
+      "index": 63,
+      "name": "Shock Chance",
+      "id": "labs.shock-chance"
+    },
+    {
+      "index": 64,
+      "name": "Shock Multiplier",
+      "id": "labs.shock-multiplier"
+    },
+    {
+      "index": 65,
+      "name": "Death Wave Health",
+      "id": "labs.death-wave-health"
+    },
+    {
+      "index": 66,
+      "name": "Death Wave Coin Bonus",
+      "id": "labs.death-wave-coin-bonus"
+    },
+    {
+      "index": 67,
+      "name": "Inner Mine Blast Radius",
+      "id": "labs.inner-mine-blast-radius"
+    },
+    {
+      "index": 68,
+      "name": "Inner Mine Rotation Speed",
+      "id": "labs.inner-mine-rotation-speed"
+    },
+    {
+      "index": 69,
+      "name": "Chrono Field Range",
+      "id": "labs.chrono-field-range"
+    },
+    {
+      "index": 70,
+      "name": "Second Wind Blast",
+      "id": "labs.second-wind-blast"
+    },
+    {
+      "index": 71,
+      "name": "Double Death Ray",
+      "id": "labs.double-death-ray"
+    },
+    {
+      "index": 72,
+      "name": "Extra Orb Adjuster",
+      "id": "labs.extra-orb-adjuster"
+    },
+    {
+      "index": 73,
+      "name": "Extra Extra Orbs",
+      "id": "labs.extra-extra-orbs"
+    },
+    {
+      "index": 74,
+      "name": "Energy Shield Extra Hit",
+      "id": "labs.energy-shield-extra-hit"
+    },
+    {
+      "index": 75,
+      "name": "Super Tower Bonus",
+      "id": "labs.super-tower-bonus"
+    },
+    {
+      "index": 76,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 77,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 78,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 79,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 80,
+      "name": "Unlock Perks",
+      "id": "labs.unlock-perks"
+    },
+    {
+      "index": 81,
+      "name": "Waves Required",
+      "id": "labs.waves-required"
+    },
+    {
+      "index": 82,
+      "name": "Auto Pick Perks",
+      "id": "labs.auto-pick-perks"
+    },
+    {
+      "index": 83,
+      "name": "Standard Perks Bonus",
+      "id": "labs.standard-perks-bonus"
+    },
+    {
+      "index": 84,
+      "name": "Perk Option Quantity",
+      "id": "labs.perk-option-quantity"
+    },
+    {
+      "index": 85,
+      "name": "First Perk Choice",
+      "id": "labs.first-perk-choice"
+    },
+    {
+      "index": 86,
+      "name": "First Trade-off Choice",
+      "id": null
+    },
+    {
+      "index": 87,
+      "name": "Ban Perks",
+      "id": "labs.ban-perks"
+    },
+    {
+      "index": 88,
+      "name": "Improve Trade-off Perks",
+      "id": "labs.improve-trade-off-perks"
+    },
+    {
+      "index": 89,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 90,
+      "name": "Missile Amplifier",
+      "id": null
+    },
+    {
+      "index": 91,
+      "name": "Missile Barrage",
+      "id": "labs.missile-barrage"
+    },
+    {
+      "index": 92,
+      "name": "Missile Barrage Quantity",
+      "id": "labs.missile-barrage-quantity"
+    },
+    {
+      "index": 93,
+      "name": "Inner Mine Stun",
+      "id": "labs.inner-mine-stun"
+    },
+    {
+      "index": 94,
+      "name": "Black Hole Damage",
+      "id": "labs.black-hole-damage"
+    },
+    {
+      "index": 95,
+      "name": "Extra Black Hole",
+      "id": "labs.extra-black-hole"
+    },
+    {
+      "index": 96,
+      "name": "Black Hole Coin Bonus",
+      "id": "labs.black-hole-coins-bonus"
+    },
+    {
+      "index": 97,
+      "name": "Spotlight Coin Bonus",
+      "id": "labs.spotlight-coin-bonus"
+    },
+    {
+      "index": 98,
+      "name": "Spotlight Missiles",
+      "id": "labs.spotlight-missiles"
+    },
+    {
+      "index": 99,
+      "name": "Black Hole ignore Protector",
+      "id": null
+    },
+    {
+      "index": 100,
+      "name": "Recovery Package Max",
+      "id": "labs.recovery-package-max"
+    },
+    {
+      "index": 101,
+      "name": "Recovery Package Chance",
+      "id": "labs.recovery-package-chance"
+    },
+    {
+      "index": 102,
+      "name": "Flame Bot - Cooldown",
+      "id": "labs.flame-bot-cooldown"
+    },
+    {
+      "index": 103,
+      "name": "Thunder Bot - Cooldown",
+      "id": "labs.thunder-bot-cooldown"
+    },
+    {
+      "index": 104,
+      "name": "Golden Bot - Cooldown",
+      "id": "labs.golden-bot-cooldown"
+    },
+    {
+      "index": 105,
+      "name": "Amplify Bot - Cooldown",
+      "id": "labs.amplify-bot-cooldown"
+    },
+    {
+      "index": 106,
+      "name": "Flame Bot - Burn Stack",
+      "id": "labs.flame-bot-burn-stacks"
+    },
+    {
+      "index": 107,
+      "name": "Thunder Bot - Linger Time",
+      "id": "labs.thunder-bot-linger-time"
+    },
+    {
+      "index": 108,
+      "name": "Golden Bot - Duration",
+      "id": "labs.golden-bot-duration"
+    },
+    {
+      "index": 109,
+      "name": "Amplify Bot - Duration",
+      "id": "labs.amplify-bot-duration"
+    },
+    {
+      "index": 110,
+      "name": "Basic Enemy Health",
+      "id": "labs.common-enemy-health"
+    },
+    {
+      "index": 111,
+      "name": "Basic Enemy Attack",
+      "id": "labs.common-enemy-attack"
+    },
+    {
+      "index": 112,
+      "name": "Fast Enemy Health",
+      "id": "labs.fast-enemy-health"
+    },
+    {
+      "index": 113,
+      "name": "Fast Enemy Attack",
+      "id": "labs.fast-enemy-attack"
+    },
+    {
+      "index": 114,
+      "name": "Fast Enemy Speed",
+      "id": "labs.fast-enemy-speed"
+    },
+    {
+      "index": 115,
+      "name": "Tank Enemy Health",
+      "id": "labs.tank-enemy-health"
+    },
+    {
+      "index": 116,
+      "name": "Tank Enemy Attack",
+      "id": "labs.tank-enemy-attack"
+    },
+    {
+      "index": 117,
+      "name": "Ranged Enemy Health",
+      "id": "labs.ranged-enemy-health"
+    },
+    {
+      "index": 118,
+      "name": "Ranged Enemy Attack",
+      "id": "labs.ranged-enemy-attack"
+    },
+    {
+      "index": 119,
+      "name": "Boss Health",
+      "id": "labs.boss-health"
+    },
+    {
+      "index": 120,
+      "name": "Boss Attack",
+      "id": "labs.boss-attack"
+    },
+    {
+      "index": 121,
+      "name": "Protector Health",
+      "id": "labs.protector-health"
+    },
+    {
+      "index": 122,
+      "name": "Protector Radius",
+      "id": "labs.protector-radius"
+    },
+    {
+      "index": 123,
+      "name": "Protector Damage Reduction",
+      "id": "labs.protector-damage-reduction"
+    },
+    {
+      "index": 124,
+      "name": "Enemy Attack Level Skip",
+      "id": "labs.enemy-attack-level-skip"
+    },
+    {
+      "index": 125,
+      "name": "Enemy Health Level Skip",
+      "id": "labs.enemy-health-level-skip"
+    },
+    {
+      "index": 126,
+      "name": "Wall Health",
+      "id": "labs.wall-health"
+    },
+    {
+      "index": 127,
+      "name": "Wall Rebuild",
+      "id": "labs.wall-rebuild"
+    },
+    {
+      "index": 128,
+      "name": "Wall Regen",
+      "id": "labs.wall-regen"
+    },
+    {
+      "index": 129,
+      "name": "Wall Thorns",
+      "id": "labs.wall-thorn"
+    },
+    {
+      "index": 130,
+      "name": "Wall Invincibility",
+      "id": "labs.wall-invincibility"
+    },
+    {
+      "index": 131,
+      "name": "Max Rend Armor Multiplier",
+      "id": "labs.max-rend-armor-multiplier"
+    },
+    {
+      "index": 132,
+      "name": "Light Speed Shots",
+      "id": "labs.light-speed-shots"
+    },
+    {
+      "index": 133,
+      "name": "Black Hole disable Ranged Enemies",
+      "id": "labs.black-hole-disable-ranged-enemies"
+    },
+    {
+      "index": 134,
+      "name": "Common Drop Chance",
+      "id": "labs.common-drop-chance"
+    },
+    {
+      "index": 135,
+      "name": "Cannon Stats",
+      "id": null
+    },
+    {
+      "index": 136,
+      "name": "Armor Stats",
+      "id": null
+    },
+    {
+      "index": 137,
+      "name": "Generator Stats",
+      "id": null
+    },
+    {
+      "index": 138,
+      "name": "Core Stats",
+      "id": null
+    },
+    {
+      "index": 139,
+      "name": "Reroll Shards",
+      "id": "labs.reroll-shards"
+    },
+    {
+      "index": 140,
+      "name": "Daily Mission Shards",
+      "id": "labs.daily-mission-shards"
+    },
+    {
+      "index": 141,
+      "name": "Module Shard Cost",
+      "id": "labs.module-shard-costs"
+    },
+    {
+      "index": 142,
+      "name": "Module Coin Cost",
+      "id": "labs.module-coin-cost"
+    },
+    {
+      "index": 143,
+      "name": "Rare Drop Chance",
+      "id": "labs.rare-drop-chance"
+    },
+    {
+      "index": 144,
+      "name": "Wall Fortification",
+      "id": "labs.wall-fortification"
+    },
+    {
+      "index": 145,
+      "name": "Recharge Second Wind",
+      "id": "labs.recharge-second-wind"
+    },
+    {
+      "index": 146,
+      "name": "Recharge Demon Mode",
+      "id": "labs.recharge-demon-mode"
+    },
+    {
+      "index": 147,
+      "name": "Recharge Missile Barrage",
+      "id": "labs.recharge-missile-barrage"
+    },
+    {
+      "index": 148,
+      "name": "Reroll Daily Mission",
+      "id": null
+    },
+    {
+      "index": 149,
+      "name": "Recharge Nuke",
+      "id": "labs.recharge-nuke"
+    },
+    {
+      "index": 150,
+      "name": "Workshop Enhancements",
+      "id": "labs.workshop-enhancement"
+    },
+    {
+      "index": 151,
+      "name": "Unmerge Module",
+      "id": "labs.unmerge-module"
+    },
+    {
+      "index": 152,
+      "name": "Shatter Shards",
+      "id": "labs.shatter-shards"
+    },
+    {
+      "index": 153,
+      "name": "Auto Pick Ranking",
+      "id": "labs.auto-pick-ranking"
+    },
+    {
+      "index": 154,
+      "name": "Enhancement Attack - Coin Discount",
+      "id": null
+    },
+    {
+      "index": 155,
+      "name": "Enhancement Defense - Coin Discount",
+      "id": null
+    },
+    {
+      "index": 156,
+      "name": "Swamp Rend - Basic Enemies",
+      "id": "labs.swamp-rend-basic-enemies"
+    },
+    {
+      "index": 157,
+      "name": "Swamp Rend - Additional Enemies",
+      "id": "labs.swamp-rend-additional-enemies"
+    },
+    {
+      "index": 158,
+      "name": "Chain Thunder",
+      "id": "labs.chain-thunder"
+    },
+    {
+      "index": 159,
+      "name": "Lightning Amplifier - Scatter",
+      "id": null
+    },
+    {
+      "index": 160,
+      "name": "Damage Mastery",
+      "id": null
+    },
+    {
+      "index": 161,
+      "name": "Attack Speed Mastery",
+      "id": null
+    },
+    {
+      "index": 162,
+      "name": "Health Mastery",
+      "id": null
+    },
+    {
+      "index": 163,
+      "name": "Health Regen Mastery",
+      "id": null
+    },
+    {
+      "index": 164,
+      "name": "Range Mastery",
+      "id": null
+    },
+    {
+      "index": 165,
+      "name": "Cash Mastery",
+      "id": null
+    },
+    {
+      "index": 166,
+      "name": "Coins Mastery",
+      "id": null
+    },
+    {
+      "index": 167,
+      "name": "Slow Aura Mastery",
+      "id": null
+    },
+    {
+      "index": 168,
+      "name": "Critical Chance Mastery",
+      "id": null
+    },
+    {
+      "index": 169,
+      "name": "Enemy Balance Mastery",
+      "id": null
+    },
+    {
+      "index": 170,
+      "name": "Extra Defense Mastery",
+      "id": null
+    },
+    {
+      "index": 171,
+      "name": "Fortress Mastery",
+      "id": null
+    },
+    {
+      "index": 172,
+      "name": "Free Upgrades Mastery",
+      "id": null
+    },
+    {
+      "index": 173,
+      "name": "Extra Orb Mastery",
+      "id": null
+    },
+    {
+      "index": 174,
+      "name": "Plasma Cannon Mastery",
+      "id": null
+    },
+    {
+      "index": 175,
+      "name": "Critical Coin Mastery",
+      "id": null
+    },
+    {
+      "index": 176,
+      "name": "Wave Skip Mastery",
+      "id": null
+    },
+    {
+      "index": 177,
+      "name": "Intro Sprint Mastery",
+      "id": null
+    },
+    {
+      "index": 178,
+      "name": "Land Mine Stun Mastery",
+      "id": null
+    },
+    {
+      "index": 179,
+      "name": "Recovery Package Mastery",
+      "id": null
+    },
+    {
+      "index": 180,
+      "name": "Death Ray Mastery",
+      "id": null
+    },
+    {
+      "index": 181,
+      "name": "Energy Net Mastery",
+      "id": null
+    },
+    {
+      "index": 182,
+      "name": "Super Tower Mastery",
+      "id": null
+    },
+    {
+      "index": 183,
+      "name": "Second Wind Mastery",
+      "id": null
+    },
+    {
+      "index": 184,
+      "name": "Demon Mode Mastery",
+      "id": null
+    },
+    {
+      "index": 185,
+      "name": "Energy Shield Mastery",
+      "id": null
+    },
+    {
+      "index": 186,
+      "name": "Wave Accelerator Mastery",
+      "id": null
+    },
+    {
+      "index": 187,
+      "name": "Berserker Mastery",
+      "id": null
+    },
+    {
+      "index": 188,
+      "name": "Ultimate Crit Mastery",
+      "id": null
+    },
+    {
+      "index": 189,
+      "name": "Nuke Mastery",
+      "id": null
+    },
+    {
+      "index": 190,
+      "name": "Death Wave Cells Bonus",
+      "id": null
+    },
+    {
+      "index": 191,
+      "name": "Death Wave Damage Amplifier",
+      "id": "labs.death-wave-damage-amplifier"
+    },
+    {
+      "index": 192,
+      "name": "Death Wave Armor Stripping",
+      "id": "labs.death-wave-armor-stripping"
+    },
+    {
+      "index": 193,
+      "name": "Garlic Thorns",
+      "id": "labs.garlic-thorns"
+    },
+    {
+      "index": 194,
+      "name": "Cannon Effect Bans",
+      "id": "labs.cannon-effect-bans"
+    },
+    {
+      "index": 195,
+      "name": "Armor Effect Bans",
+      "id": "labs.armor-effect-bans"
+    },
+    {
+      "index": 196,
+      "name": "Generator Effect Bans",
+      "id": "labs.generator-effect-bans"
+    },
+    {
+      "index": 197,
+      "name": "Core Effect Bans",
+      "id": "labs.core-effect-bans"
+    },
+    {
+      "index": 198,
+      "name": "Inner Land Mine - Chrono Jump",
+      "id": "labs.inner-land-mine-chrono-jump"
+    },
+    {
+      "index": 199,
+      "name": "Battle Condition Reduction",
+      "id": "labs.battle-condition-reduction"
+    },
+    {
+      "index": 200,
+      "name": "Area of Effect Mastery",
+      "id": null
+    },
+    {
+      "index": 201,
+      "name": "Knockback Resistance",
+      "id": null
+    },
+    {
+      "index": 202,
+      "name": "Thorns Resistance",
+      "id": null
+    },
+    {
+      "index": 203,
+      "name": "Orb Resistance",
+      "id": null
+    },
+    {
+      "index": 204,
+      "name": "Plasma Cannon Resistance",
+      "id": null
+    },
+    {
+      "index": 205,
+      "name": "Death Ray Resistance",
+      "id": null
+    },
+    {
+      "index": 206,
+      "name": "Ultimate Weapon Durations",
+      "id": null
+    },
+    {
+      "index": 207,
+      "name": "Death Defy Down",
+      "id": null
+    },
+    {
+      "index": 208,
+      "name": "Energy Shields Down",
+      "id": null
+    },
+    {
+      "index": 209,
+      "name": "Enemy Level Skip Reduction",
+      "id": null
+    },
+    {
+      "index": 210,
+      "name": "Fast's Ultimate",
+      "id": null
+    },
+    {
+      "index": 211,
+      "name": "Ranged Ultimate",
+      "id": null
+    },
+    {
+      "index": 212,
+      "name": "Boss's Ultimate",
+      "id": null
+    },
+    {
+      "index": 213,
+      "name": "Basic's Ultimate",
+      "id": null
+    },
+    {
+      "index": 214,
+      "name": "Tank's Ultimate",
+      "id": null
+    },
+    {
+      "index": 215,
+      "name": "Protector's Ultimate",
+      "id": null
+    },
+    {
+      "index": 216,
+      "name": "Armored Enemies",
+      "id": null
+    },
+    {
+      "index": 217,
+      "name": "Enemy Speed",
+      "id": null
+    },
+    {
+      "index": 218,
+      "name": "More Enemies",
+      "id": null
+    },
+    {
+      "index": 219,
+      "name": "Enemy Attack Speed",
+      "id": null
+    },
+    {
+      "index": 220,
+      "name": "Ray Enemy Attack",
+      "id": "labs.ray-enemy-attack"
+    },
+    {
+      "index": 221,
+      "name": "Ray Enemy Health",
+      "id": "labs.ray-enemy-health"
+    },
+    {
+      "index": 222,
+      "name": "Vampire Enemy Attack",
+      "id": "labs.vampire-enemy-attack"
+    },
+    {
+      "index": 223,
+      "name": "Vampire Enemy Health",
+      "id": "labs.vampire-enemy-health"
+    },
+    {
+      "index": 224,
+      "name": "Scatter Enemy Attack",
+      "id": "labs.scatter-enemy-attack"
+    },
+    {
+      "index": 225,
+      "name": "Scatter Enemy Health",
+      "id": "labs.scatter-enemy-health"
+    },
+    {
+      "index": 226,
+      "name": "Ranged Enemy Range",
+      "id": "labs.ranged-enemy-range"
+    },
+    {
+      "index": 227,
+      "name": "Enhancement Utility - Coin Discount",
+      "id": null
+    },
+    {
+      "index": 228,
+      "name": "Bot Bot - Cooldown",
+      "id": null
+    },
+    {
+      "index": 229,
+      "name": "Bot Bot - Duration",
+      "id": null
+    },
+    {
+      "index": 230,
+      "name": "Assist Module Substats - Cannon",
+      "id": null
+    },
+    {
+      "index": 231,
+      "name": "Assist Module Substats - Armor",
+      "id": null
+    },
+    {
+      "index": 232,
+      "name": "Assist Module Substats - Generator",
+      "id": null
+    },
+    {
+      "index": 233,
+      "name": "Assist Module Substats - Core",
+      "id": null
+    },
+    {
+      "index": 234,
+      "name": "Assist Module Bonus - Cannon",
+      "id": null
+    },
+    {
+      "index": 235,
+      "name": "Assist Module Bonus - Armor",
+      "id": null
+    },
+    {
+      "index": 236,
+      "name": "Assist Module Bonus - Generator",
+      "id": null
+    },
+    {
+      "index": 237,
+      "name": "Assist Module Bonus - Core",
+      "id": null
+    },
+    {
+      "index": 238,
+      "name": "Dissonant Echo - Utility",
+      "id": null
+    },
+    {
+      "index": 239,
+      "name": "Dissonant Echo - Attack",
+      "id": null
+    },
+    {
+      "index": 240,
+      "name": "Dissonant Echo - Defense",
+      "id": null
+    },
+    {
+      "index": 241,
+      "name": "Dissonant Echo - Ultimate Weapons",
+      "id": null
+    },
+    {
+      "index": 242,
+      "name": "Overcharge Enemy Health",
+      "id": null
+    },
+    {
+      "index": 243,
+      "name": "Overcharge Enemy Damage",
+      "id": null
+    },
+    {
+      "index": 244,
+      "name": "Commander Enemy Health",
+      "id": null
+    },
+    {
+      "index": 245,
+      "name": "Saboteur Enemy Health",
+      "id": null
+    },
+    {
+      "index": 246,
+      "name": "Overcharge Exponent Reducer",
+      "id": null
+    },
+    {
+      "index": 247,
+      "name": "Commander Radius",
+      "id": null
+    },
+    {
+      "index": 248,
+      "name": "Saboteur Attack Speed",
+      "id": null
+    },
+    {
+      "index": 249,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 250,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 251,
+      "name": "Cells Mastery",
+      "id": null
+    },
+    {
+      "index": 252,
+      "name": "Global Presets",
+      "id": null
+    },
+    {
+      "index": 253,
+      "name": "Primary Module Bonus - Cannon",
+      "id": null
+    },
+    {
+      "index": 254,
+      "name": "Primary Module Bonus - Armor",
+      "id": null
+    },
+    {
+      "index": 255,
+      "name": "Primary Module Bonus - Generator",
+      "id": null
+    },
+    {
+      "index": 256,
+      "name": "Primary Module Bonus - Core",
+      "id": null
+    },
+    {
+      "index": 257,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 258,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 259,
+      "name": null,
+      "id": null
+    }
+  ],
+  "cards": [
+    {
+      "index": 0,
+      "name": "Damage",
+      "id": "cards.damage"
+    },
+    {
+      "index": 1,
+      "name": "Attack Speed",
+      "id": "cards.attack-speed"
+    },
+    {
+      "index": 2,
+      "name": "Health",
+      "id": "cards.health"
+    },
+    {
+      "index": 3,
+      "name": "Health Regen",
+      "id": "cards.health-regen"
+    },
+    {
+      "index": 4,
+      "name": "Range",
+      "id": "cards.range"
+    },
+    {
+      "index": 5,
+      "name": "Cash",
+      "id": "cards.cash"
+    },
+    {
+      "index": 6,
+      "name": "Coins",
+      "id": "cards.coins"
+    },
+    {
+      "index": 7,
+      "name": "Slow Aura",
+      "id": "cards.slow-aura"
+    },
+    {
+      "index": 8,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 9,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 10,
+      "name": "Critical Chance",
+      "id": "cards.critical-chance"
+    },
+    {
+      "index": 11,
+      "name": "Enemy Balance",
+      "id": "cards.enemy-balance"
+    },
+    {
+      "index": 12,
+      "name": "Extra Defense",
+      "id": "cards.extra-defense"
+    },
+    {
+      "index": 13,
+      "name": "Fortress",
+      "id": "cards.fortress"
+    },
+    {
+      "index": 14,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 15,
+      "name": "Free Upgrades",
+      "id": "cards.free-upgrades"
+    },
+    {
+      "index": 16,
+      "name": "Extra Orb",
+      "id": "cards.extra-orb"
+    },
+    {
+      "index": 17,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 18,
+      "name": "Plasma Cannon",
+      "id": "cards.plasma-canon"
+    },
+    {
+      "index": 19,
+      "name": "Critical Coin",
+      "id": "cards.critical-coin"
+    },
+    {
+      "index": 20,
+      "name": "Wave Skip",
+      "id": "cards.wave-skip"
+    },
+    {
+      "index": 21,
+      "name": "Intro Sprint",
+      "id": "cards.intro-sprint"
+    },
+    {
+      "index": 22,
+      "name": "Land Mine Stun",
+      "id": "cards.land-mine-stun"
+    },
+    {
+      "index": 23,
+      "name": "Recovery Package Chance",
+      "id": "cards.recovery-package-chance"
+    },
+    {
+      "index": 24,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 25,
+      "name": "Death Ray",
+      "id": "cards.death-ray"
+    },
+    {
+      "index": 26,
+      "name": "Energy Net",
+      "id": "cards.energy-net"
+    },
+    {
+      "index": 27,
+      "name": "Super Tower",
+      "id": "cards.super-tower"
+    },
+    {
+      "index": 28,
+      "name": "Second Wind",
+      "id": "cards.second-wind"
+    },
+    {
+      "index": 29,
+      "name": "Demon Mode",
+      "id": "cards.demon-mode"
+    },
+    {
+      "index": 30,
+      "name": "Energy Shield",
+      "id": "cards.energy-shield"
+    },
+    {
+      "index": 31,
+      "name": "Wave Accelerator",
+      "id": "cards.wave-accelerator"
+    },
+    {
+      "index": 32,
+      "name": "Berserker",
+      "id": "cards.berserker"
+    },
+    {
+      "index": 33,
+      "name": "Ultimate Crit",
+      "id": "cards.ultimate-crit"
+    },
+    {
+      "index": 34,
+      "name": "Nuke",
+      "id": "cards.nuke"
+    },
+    {
+      "index": 35,
+      "name": "Area of Effect",
+      "id": "cards.area-of-effect"
+    },
+    {
+      "index": 36,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 37,
+      "name": "Cells",
+      "id": null
+    },
+    {
+      "index": 38,
+      "name": null,
+      "id": null
+    },
+    {
+      "index": 39,
+      "name": null,
+      "id": null
+    }
+  ],
+  "workshop": {
+    "attack": [
+      {
+        "index": 0,
+        "name": "Damage",
+        "id": "stats.damage"
+      },
+      {
+        "index": 1,
+        "name": "Attack Speed",
+        "id": "stats.attack_speed"
+      },
+      {
+        "index": 2,
+        "name": "Critical Chance",
+        "id": "stats.critical_chance"
+      },
+      {
+        "index": 3,
+        "name": "Critical Factor",
+        "id": "stats.critical_factor"
+      },
+      {
+        "index": 4,
+        "name": "Range",
+        "id": "stats.range"
+      },
+      {
+        "index": 5,
+        "name": "Damage / Meter",
+        "id": "stats.damage_per_meter"
+      },
+      {
+        "index": 6,
+        "name": "Multishot Chance",
+        "id": "stats.multishot_chance"
+      },
+      {
+        "index": 7,
+        "name": "Multishot Targets",
+        "id": "stats.multishot_targets"
+      },
+      {
+        "index": 8,
+        "name": "Rapid Fire Chance",
+        "id": "stats.rapid_fire_chance"
+      },
+      {
+        "index": 9,
+        "name": "Rapid Fire Duration",
+        "id": "stats.rapid_fire_duration"
+      },
+      {
+        "index": 10,
+        "name": "Bounce Shot Chance",
+        "id": "stats.bounce_shot_chance"
+      },
+      {
+        "index": 11,
+        "name": "Bounce Shot Targets",
+        "id": "stats.bounce_shot_targets"
+      },
+      {
+        "index": 12,
+        "name": "Bounce Shot Range",
+        "id": "stats.bounce_shot_range"
+      },
+      {
+        "index": 13,
+        "name": "Super Crit Chance",
+        "id": "stats.super_crit_chance"
+      },
+      {
+        "index": 14,
+        "name": "Super Crit Mult",
+        "id": "stats.super_crit_mult"
+      },
+      {
+        "index": 15,
+        "name": "Rend Armor Chance",
+        "id": "stats.rend_armor_chance"
+      },
+      {
+        "index": 16,
+        "name": "Rend Armor Mult",
+        "id": "stats.rend_armor_mult"
+      }
+    ],
+    "defense": [
+      {
+        "index": 0,
+        "name": "Health",
+        "id": "stats.health"
+      },
+      {
+        "index": 1,
+        "name": "Health Regen",
+        "id": "stats.health_regen"
+      },
+      {
+        "index": 2,
+        "name": "Defense %",
+        "id": "stats.defense_percent"
+      },
+      {
+        "index": 3,
+        "name": "Defense Absolute",
+        "id": "stats.defense_absolute"
+      },
+      {
+        "index": 4,
+        "name": "Thorn Damage",
+        "id": "stats.thorns"
+      },
+      {
+        "index": 5,
+        "name": "Lifesteal",
+        "id": "stats.lifesteal"
+      },
+      {
+        "index": 6,
+        "name": "Knockback Chance",
+        "id": "stats.knockback_chance"
+      },
+      {
+        "index": 7,
+        "name": "Knockback Force",
+        "id": "stats.knockback_force"
+      },
+      {
+        "index": 8,
+        "name": "Orb Speed",
+        "id": "stats.orb_speed"
+      },
+      {
+        "index": 9,
+        "name": "Orbs",
+        "id": "stats.orbs"
+      },
+      {
+        "index": 10,
+        "name": "Shockwave Size",
+        "id": "stats.shockwave_size"
+      },
+      {
+        "index": 11,
+        "name": "Shockwave Frequency",
+        "id": "stats.shockwave_frequency"
+      },
+      {
+        "index": 12,
+        "name": "Land Mine Chance",
+        "id": "stats.land_mine_chance"
+      },
+      {
+        "index": 13,
+        "name": "Land Mine Damage",
+        "id": "stats.land_mine_damage"
+      },
+      {
+        "index": 14,
+        "name": "Land Mine Radius",
+        "id": "stats.land_mine_radius"
+      },
+      {
+        "index": 15,
+        "name": "Wall Health",
+        "id": "stats.wall_health"
+      },
+      {
+        "index": 16,
+        "name": "Wall Rebuild",
+        "id": "stats.wall_rebuild"
+      }
+    ],
+    "utility": [
+      {
+        "index": 0,
+        "name": "Cash Bonus",
+        "id": "stats.cash_bonus"
+      },
+      {
+        "index": 1,
+        "name": "Cash / Wave",
+        "id": "stats.cash_per_wave"
+      },
+      {
+        "index": 2,
+        "name": "Coins / Kill Bonus",
+        "id": "stats.coins_per_kill_bonus"
+      },
+      {
+        "index": 3,
+        "name": "Coins / Wave",
+        "id": "stats.coins_per_wave"
+      },
+      {
+        "index": 4,
+        "name": "Free Attack Upgrade",
+        "id": "stats.free_attack_upgrade"
+      },
+      {
+        "index": 5,
+        "name": "Free Defense Upgrade",
+        "id": "stats.free_defense_upgrade"
+      },
+      {
+        "index": 6,
+        "name": "Free Utility Upgrade",
+        "id": "stats.free_utility_upgrade"
+      },
+      {
+        "index": 7,
+        "name": "Interest / Wave",
+        "id": "stats.interest_per_wave"
+      },
+      {
+        "index": 8,
+        "name": "Recovery Amount",
+        "id": "stats.recovery_amount"
+      },
+      {
+        "index": 9,
+        "name": "Max Recovery",
+        "id": "stats.max_recovery"
+      },
+      {
+        "index": 10,
+        "name": "Package Chance",
+        "id": "stats.package_chance"
+      },
+      {
+        "index": 11,
+        "name": "Enemy Attack Level Skip",
+        "id": "stats.enemy_attack_level_skip"
+      },
+      {
+        "index": 12,
+        "name": "Enemy Health Level Skip",
+        "id": "stats.enemy_health_level_skip"
+      }
+    ]
+  }
+}

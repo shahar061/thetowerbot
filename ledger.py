@@ -60,6 +60,7 @@ KINDS: tuple[str, ...] = (
     "MAIL_CLAIM",
     "MILESTONE_CLAIM",
     "GEM_CLAIM",
+    "PERK_PICK",
     "CLAIM_SKIPPED",
     "CLAIM_UNCERTAIN",
     "BUY_SKIPPED",
@@ -350,6 +351,10 @@ def classify(event: events.Event) -> tuple[LedgerLine, ...]:
                 detail={"tier": event.tier, "reward_text": event.reward_text},
                 **base),)
 
+        case events.PerkPicked():
+            return (LedgerLine(kind="PERK_PICK", item=event.perk,
+                               category="BATTLE", run_id=event.run_id, **base),)
+
         case events.FloatingGemClaimed():
             # The one thing a battle contributes besides its payout. It is
             # in-run by position and account history by nature: the gems it
@@ -629,6 +634,7 @@ _REPLAYABLE: dict[str, type[events.Event]] = {
     "MilestoneClaimed": events.MilestoneClaimed,
     "ClaimUncertain": events.ClaimUncertain,
     "FloatingGemClaimed": events.FloatingGemClaimed,
+    "PerkPicked": events.PerkPicked,
     "DailyAdGemClaimed": events.DailyAdGemClaimed,
     "InGameAdGemClaimed": events.InGameAdGemClaimed,
 }

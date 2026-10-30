@@ -1,0 +1,121 @@
+TheTowerSDK
+Copyright (c) 2026 TmRxJD
+
+This product includes work derived from other open source projects.
+
+
+-------------------------------------------------------------------------------
+zod
+-------------------------------------------------------------------------------
+
+https://github.com/colinhacks/zod
+https://www.npmjs.com/package/zod
+
+Author: Colin McDonnell <zod@colinhacks.com>
+License: MIT
+
+The package's only runtime dependency. It is used to declare the shapes in
+`src/data/schemas.ts` and the internal state schemas, so a data table can be
+validated against its documented shape at runtime rather than only at compile
+time.
+
+How it reaches you differs by artifact, and the distinction matters:
+
+  - The npm package REQUIRES zod. `dist` imports it and npm installs it
+    alongside; no zod source is inside the tarball.
+  - The WebAssembly build BUNDLES it. `wasm/build.mjs` runs esbuild over
+    `dist`, so zod's code is compiled into `thetowersdk.wasm`. Anywhere that
+    file is distributed, this notice goes with it.
+
+MIT License:
+
+  Copyright (c) 2025 Colin McDonnell
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+-------------------------------------------------------------------------------
+tower-idle-toolkit
+-------------------------------------------------------------------------------
+
+https://github.com/tower-idle-toolkit/tower-idle-toolkit
+https://www.npmjs.com/package/tower-idle-toolkit
+
+Author: skye
+License: ISC (declared in the published package manifest; the repository does
+         not contain a separate LICENSE file)
+
+Derived from tower-idle-toolkit:
+
+  - `src/mechanics/wave-base-empirical-scaling.ts` and
+    `src/mechanics/wave-scaling-regression-profile.ts` — from `statFormula.ts`.
+    The polynomial body, milestone-offset and compound-growth structure, the
+    milestone divisors, and the HP/damage exponent bases originate there.
+    Coefficients have since been refitted and the code restructured, but the
+    approach and several constants are that project's work.
+  - `src/mechanics/damage.ts` — from `damageFormula.ts`.
+  - `src/mechanics/bonuses.ts` — from `plusFormulas.ts`.
+  - `src/formatting/duration.ts` — from `formatTime.ts`.
+
+ISC License:
+
+  Copyright (c) 2023 skye
+
+  Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted, provided that the above
+  copyright notice and this permission notice appear in all copies.
+
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+  WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+  SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+  OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+  CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+-------------------------------------------------------------------------------
+The Tower: Effective Paths (community spreadsheets)
+-------------------------------------------------------------------------------
+
+Author: Matthew (matteweon on Discord)
+Source: https://docs.google.com/spreadsheets/d/1YwZtKP6B4WYhRba5T6APJ1YxKNdfnIGQnprgnxmO7zc
+
+Portions of the game data in `src/data/` -- particularly the reference tables
+and chart data (upgrade costs, mastery bonuses, substat ranges and related
+values) -- were compiled with the help of Matthew's "Effective Paths"
+spreadsheets for The Tower. That work saved an enormous amount of collation and
+is a large part of why these tables are as complete as they are.
+
+Shared with the community as a reference; included here with thanks.
+
+-------------------------------------------------------------------------------
+
+Author: Florent Castelli (Orphis)
+Source: private repositories, shared directly
+
+The lab CATEGORIES in `src/data/generated/labs-categories.generated.ts` are read
+out of the game's own UI hierarchy rather than maintained by hand, and both the
+method and the asset-reassembly step it depends on were adapted from Orphis's
+extraction work with his permission. A lab's category is which container its UI
+tile is parented under; recovering it that way closed a gap in which six labs --
+including all four module-stat labs -- shipped in the data and could not be
+rendered, because a hand-maintained list held 231 of the game's 253.
+
+His independently produced lab names and localization tables were also used to
+cross-check ours; they agreed exactly, which is a large part of why this data is
+trusted. Licence terms to be formalised at his convenience.

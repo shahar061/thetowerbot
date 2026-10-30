@@ -1,38 +1,22 @@
-"use client";
-
-import { useCallback, useEffect, useState } from "react";
-import { AccountColumn } from "./AccountColumn";
-import { FleetStateBar } from "./FleetStateBar";
-import { DEFAULT_SELECTION, loadOpen, loadSelection, saveOpen, saveSelection, visibleAccounts, type Selection } from "./selection";
-import { accentAt } from "./stateFormat";
-import { useFleetState } from "./useFleetState";
-
+'use client';
+import { useEffect, useState } from 'react';
+import { DEFAULT_SELECTION, loadSelection, saveSelection, type Selection } from './selection';
+import { useGameExports } from '@/lib/useGameExport';
+import { GameExportPanel } from '@/components/game-export/GameExportPanel';
 export default function FleetStatePage(): React.JSX.Element {
-  const { payload, accounts, changedAt, connectionLost } = useFleetState();
+  const { accounts, error } = useGameExports();
   const [selection, setSelection] = useState<Selection>(DEFAULT_SELECTION);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-  // Read after mount: storage is per viewer and the export has no server render.
-  useEffect(() => { setSelection(loadSelection()); setOpen(loadOpen()); }, []);
-  const choose = useCallback((next: Selection) => { setSelection(next); saveSelection(next); }, []);
-  const toggleSection = useCallback((key: string, value: boolean) => setOpen(old => {
-    const next = { ...old, [key]: value };
-    saveOpen(next);
-    return next;
-  }), []);
-  const shown = visibleAccounts(accounts, selection);
-  const order = new Map(accounts.map((account, index) => [account.id, index]));
-
-  let body: React.ReactNode;
-  if (payload === null) body = <div className="fs-empty">{connectionLost ? "Fleet state unavailable. Retrying…" : "Loading fleet state…"}</div>;
-  else if (accounts.length === 0) body = <div className="fs-empty">No emulators in the fleet yet.</div>;
-  else if (shown.length === 0) body = <div className="fs-empty">No emulators selected. Pick one above, or press <b>All</b>.</div>;
-  else body = shown.map(account => (
-    <AccountColumn key={account.id} account={account} accent={accentAt(order.get(account.id) ?? 0)}
-      changedAt={changedAt[account.id] ?? 0} shownCount={shown.length} open={open} onToggleSection={toggleSection} />));
-
-  return (
-    <div className="fs-root">
-      <FleetStateBar accounts={accounts} selection={selection} onSelect={choose} connectionLost={connectionLost} />
-      <main className="fs-grid" aria-live="off">{body}</main>
-    </div>);
+  useEffect(() => setSelection(loadSelection()), []);
+  const choose = (next: Selection): void => { setSelection(next); saveSelection(next); };
+  const id = (account: NonNullable<typeof accounts>[number]): string => account.worker ?? account.instance ?? account.account_id ?? 'Unverified';
+  const shown = (accounts ?? []).filter(account => selection.mode === 'all'
+    || (selection.mode === 'live' ? account.source_online !== false && account.current_run?.active : selection.ids.includes(id(account))));
+  return <main className="space-y-5 p-4"><header><h1 className="text-2xl font-semibold">Account tracker</h1><p className="mt-2 text-sm text-muted-foreground">Official JSON observations and labeled estimates across verified accounts.</p></header>
+    <nav aria-label="Tracker accounts" className="flex flex-wrap gap-2"><button className="rounded border px-3 py-2 text-sm" onClick={() => choose(DEFAULT_SELECTION)}>All</button><button className="rounded border px-3 py-2 text-sm" aria-pressed={selection.mode === 'live'} onClick={() => choose({ mode: 'live', ids: [] })}>Only active battles</button>
+      {(accounts ?? []).map(account => { const key = `${account.worker}:${account.account_id}`; return <button key={key} className="rounded border px-3 py-2 text-sm" aria-pressed={shown.includes(account)} onClick={() => { const ids = shown.map(id); choose({ mode: 'custom', ids: ids.includes(id(account)) ? ids.filter(key => key !== id(account)) : [...ids, id(account)] }); }}>{account.worker ?? account.instance ?? account.account_id ?? 'Unverified'}</button>; })}</nav>
+    {error && <p role="alert" className="text-danger">Official fleet exports unavailable: {error}</p>}
+    {!accounts && !error && <p role="status">Loading official fleet exports…</p>}
+    {accounts && shown.length === 0 && <p role="status">No account exports selected or available.</p>}
+    <div className={`grid min-w-0 items-start gap-4 ${shown.length > 1 ? "xl:grid-cols-2" : "grid-cols-1"}`}>{shown.map(account => <article className="min-w-0" key={`${account.worker}:${account.account_id}`} aria-label={account.worker ?? account.instance ?? account.account_id ?? 'Unverified'}><GameExportPanel section="tracker" data={error ? { ...account, source_online: false } : account} /></article>)}</div>
+  </main>;
 }

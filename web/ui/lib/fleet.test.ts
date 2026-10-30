@@ -15,6 +15,16 @@ const overview = {
 };
 
 describe("fleet overview response", () => {
+  it("retains milestone selection and countdown only with valid evidence", () => {
+    const push = { account: "42", mode: "milestone", kind: "milestone", phase: "targeting", every: 10,
+      farms_remaining: 6, milestone_every: 4, milestone_farms_remaining: 0,
+      milestone_next_tier: 9, farm_tier: 1, target_tier: 10, blocker: null };
+    const member = (push_runs: object) => ({ account_id: "42", lease_id: "lease-1", overview: { ...overview, push_runs } });
+    expect(validatedOverview(member(push))?.push_runs).toEqual(push);
+    expect(validatedOverview(member({ ...push, milestone_farms_remaining: -1 }))?.push_runs).toBeNull();
+    expect(validatedOverview(member({ ...push, milestone_next_tier: true }))?.push_runs).toBeNull();
+    expect(validatedOverview(member({ ...push, milestone_every: undefined }))?.push_runs).toBeNull();
+  });
   it("shows push status only for matching well-formed account evidence", () => {
     const push = { account: "42", mode: "push", phase: "pushing", every: 10,
       farms_remaining: 0, farm_tier: 1, target_tier: 2, blocker: null };

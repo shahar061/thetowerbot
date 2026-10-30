@@ -62,6 +62,7 @@ PATCHABLE_FIELDS = (
     "auto_navigate",
     "max_runs",
     "push_every_farm_runs",
+    "milestone_every_farm_runs",
     "navigation_cooldown",
     "screen_confirmations",
     "tap_jitter_px",
@@ -69,6 +70,7 @@ PATCHABLE_FIELDS = (
     "tap_delay",
     "target_speed",
     "auto_fastest",
+    "auto_pick_perks",
     "build",
 )
 
@@ -148,8 +150,10 @@ _STRATEGY_TYPES: dict[str, tuple[type, ...]] = {
     "auto_navigate": (bool,),
     "max_runs": (int,),
     "push_every_farm_runs": (int,),
+    "milestone_every_farm_runs": (int,),
     "target_speed": (int, float),
     "auto_fastest": (bool,),
+    "auto_pick_perks": (bool,),
     "build": (str,),
 }
 
@@ -651,6 +655,7 @@ class Strategy:
     auto_navigate: bool = False
     max_runs: int | None = None
     push_every_farm_runs: int = config.PUSH_EVERY_FARM_RUNS
+    milestone_every_farm_runs: int = 0
     # Read by BotRunner when it builds the bot, not by the scan loop: both of
     # these configure a stateful collaborator (ScreenTracker's debounce depth,
     # Navigator's rate limit) that is constructed once and carries state
@@ -672,6 +677,7 @@ class Strategy:
     target_speed: float | None = None
     # Explicit opt-in; a non-null manual target always takes precedence.
     auto_fastest: bool = False
+    auto_pick_perks: bool = False
     # Between-runs spending. Defaults to a policy that buys nothing, so a
     # strategy file written before this existed loads and behaves the same.
     shopping: Shopping = Shopping()
@@ -734,6 +740,8 @@ class Strategy:
         )
         if self.push_every_farm_runs < 0:
             raise ControlError("push_every_farm_runs", "push cadence must be a nonnegative integer")
+        if self.milestone_every_farm_runs < 0:
+            raise ControlError("milestone_every_farm_runs", "milestone cadence must be a nonnegative integer")
         if self.max_runs is not None and self.max_runs < 1:
             raise ControlError("max_runs", "max_runs must be null or at least 1")
         if self.target_speed is not None and self.target_speed not in config.TARGET_SPEEDS:
@@ -814,6 +822,7 @@ class Strategy:
             "auto_navigate": self.auto_navigate,
             "max_runs": self.max_runs,
             "push_every_farm_runs": self.push_every_farm_runs,
+            "milestone_every_farm_runs": self.milestone_every_farm_runs,
             "navigation_cooldown": self.navigation_cooldown,
             "screen_confirmations": self.screen_confirmations,
             "tap_jitter_px": self.tap_jitter_px,
@@ -821,6 +830,7 @@ class Strategy:
             "tap_delay": self.tap_delay,
             "target_speed": self.target_speed,
             "auto_fastest": self.auto_fastest,
+            "auto_pick_perks": self.auto_pick_perks,
             "build": self.build,
             "shopping": self.shopping.to_dict(),
             "autopilot": self.autopilot.to_dict(),

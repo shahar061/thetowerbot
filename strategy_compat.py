@@ -11,8 +11,8 @@ import builds
 PLAN_FIELDS = frozenset({'actions', 'affordability', 'autopilot', 'shopping',
                         'cards', 'tier_promotion', 'build', '_build_recipe', 'tournament'})
 BOT_FIELDS = frozenset({'name', 'interval', 'menu_interval', 'click_cooldown',
-    'auto_navigate', 'max_runs', 'push_every_farm_runs', 'navigation_cooldown', 'screen_confirmations',
-    'tap_jitter_px', 'timing_jitter', 'tap_delay', 'target_speed', 'auto_fastest', 'claims'})
+    'auto_navigate', 'max_runs', 'push_every_farm_runs', 'milestone_every_farm_runs', 'navigation_cooldown', 'screen_confirmations',
+    'tap_jitter_px', 'timing_jitter', 'tap_delay', 'target_speed', 'auto_fastest', 'auto_pick_perks', 'claims'})
 
 
 def plan_owned_values(strategy: Strategy) -> dict[str, Any]:

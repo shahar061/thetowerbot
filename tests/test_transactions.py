@@ -651,6 +651,22 @@ def test_a_changed_workshop_row_with_an_unreadable_wallet_is_bought_at_its_price
         assert conn.execute("SELECT delta FROM ledger").fetchone()[0] == -108
 
 
+@pytest.mark.parametrize('row_proven', [True, False])
+def test_workshop_level_change_can_prove_debit_hidden_by_rounded_wallet(tmp_path, row_proven: bool) -> None:
+    journal, scope, txn = _scoped_workshop_buy(tmp_path, price=1000, wallet=1_740_000)
+    evidence = _recovery(scope=scope, wallet_after=1_740_000,
+                         effect_without_wallet=row_proven)
+    outcome = journal.reconcile(txn.key, evidence, now=3.)
+    expected = (transactions.Verdict.BOUGHT, 1000) if row_proven else (transactions.Verdict.UNPROVEN, None)
+    assert (outcome.verdict, outcome.spent) == expected
+    if row_proven:
+        assert not journal.open_transactions()
+        repeated = journal.reconcile(txn.key, evidence, now=3.)
+        assert repeated == outcome
+        with db.reader(journal.path) as conn:
+            assert conn.execute('SELECT COUNT(*), SUM(delta) FROM ledger').fetchone()[:] == (1, -1000)
+
+
 @pytest.mark.parametrize("effect_changed", [None, False])
 def test_an_unproven_workshop_effect_with_an_ambiguous_wallet_stays_unproven(
     tmp_path, effect_changed: bool | None,

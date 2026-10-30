@@ -576,3 +576,18 @@ def test_push_cadence_defaults_round_trips_and_patches() -> None:
 def test_push_cadence_rejects_invalid_values(value: object) -> None:
     with pytest.raises(ControlError):
         a_strategy().merged({"push_every_farm_runs": value})
+
+
+def test_milestone_cadence_defaults_off_round_trips_and_patches() -> None:
+    original = a_strategy()
+    assert original.milestone_every_farm_runs == 0
+    changed = original.merged({"milestone_every_farm_runs": 4})
+    assert changed.milestone_every_farm_runs == 4
+    assert Strategy.from_dict(changed.to_dict()) == changed
+    assert changed.merged({"milestone_every_farm_runs": 0}).milestone_every_farm_runs == 0
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "4", None])
+def test_milestone_cadence_rejects_invalid_values(value: object) -> None:
+    with pytest.raises(ControlError):
+        a_strategy().merged({"milestone_every_farm_runs": value})

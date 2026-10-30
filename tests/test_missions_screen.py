@@ -47,6 +47,28 @@ def recorded(name: str = 'menu_missions') -> tuple[ocr.TextBox, ...]:
                  for b in json.loads((FIXTURES / 'ocr' / f'{name}.json').read_text()))
 
 
+def test_daily_missions_return_footer_is_a_current_frame_target() -> None:
+    image = cv2.imread(str(FIXTURES / 'menu_missions_claimable_no_status_bar.png'))
+    boxes = recorded('menu_missions_claimable_no_status_bar')
+    target = missions_screen.return_control(image, boxes)
+    assert target is not None
+    assert target.point == (540, 2301)
+
+
+@pytest.mark.parametrize('case', ['missing_title', 'unreadable_footer', 'duplicate_footer'])
+def test_daily_missions_return_refuses_ambiguous_or_unidentified_page(case: str) -> None:
+    image = cv2.imread(str(FIXTURES / 'menu_missions_claimable_no_status_bar.png'))
+    boxes = recorded('menu_missions_claimable_no_status_bar')
+    footer = next(b for b in boxes if 'Return To Game' in b.text)
+    if case == 'missing_title':
+        boxes = tuple(b for b in boxes if b.text != 'DAILYMISSIONS')
+    elif case == 'unreadable_footer':
+        boxes = tuple(replace(b, confidence=.8) if b == footer else b for b in boxes)
+    else:
+        boxes = (*boxes, footer)
+    assert missions_screen.return_control(image, boxes) is None
+
+
 def without(boxes: tuple[ocr.TextBox, ...], *texts: str) -> tuple[ocr.TextBox, ...]:
     return tuple(b for b in boxes if b.text not in texts)
 

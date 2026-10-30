@@ -265,7 +265,7 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
     A lab level is a durable account fact, so one stored under an earlier
     lease, generation, epoch or catalog revision of the same account still
     counts after a restart, while the lab exists and the level is within its
-    max; only another account's level is dropped. A fact without a scope
+    known max; only another account's level is dropped. A fact without a scope
     belongs to ``unscoped_account``. When one lab has several facts, the
     newest reading wins. A ``finished_jobs`` entry ``(lab, target, finish)``
     with ``finish <= now`` raises its lab to ``target``: the job completed,
@@ -283,7 +283,8 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
         entry = lab_catalog.lab(concept_id) if isinstance(concept_id, str) else None
         if (account_id is None or owner != account_id or entry is None
                 or status not in LAB_LEVEL_STATUSES or type(value) is not int
-                or not (1 if status in _PICKER_TARGET_STATUSES else 0) <= value <= entry.max_level):
+                or value < (1 if status in _PICKER_TARGET_STATUSES else 0)
+                or entry.max_level is not None and value > entry.max_level):
             continue
         observed = evidence.get('observed_at') if isinstance(evidence, Mapping) else None
         stamp = float(observed) if type(observed) in (int, float) else -math.inf
@@ -294,7 +295,8 @@ def completed_lab_levels(facts: Iterable[Mapping[str, Any]], account_id: str | N
     for concept_id, target, finish in finished_jobs if now is not None else ():
         entry = lab_catalog.lab(concept_id)
         read_at = newest[concept_id][0] if concept_id in newest else -math.inf
-        if (entry is not None and type(target) is int and 1 <= target <= entry.max_level
+        if (entry is not None and type(target) is int and target >= 1
+                and (entry.max_level is None or target <= entry.max_level)
                 and read_at < finish <= now and target > levels.get(concept_id, -1)):
             levels[concept_id] = target
     return levels
@@ -345,6 +347,12 @@ class AccountState:
     @property
     def verified_scope(self) -> FactScope | None:
         return self._scope if self._identity is not None else None
+
+    @property
+    def verified_identity_at(self) -> float | None:
+        """Time of the current identity proof, including in-process reverification."""
+        with self._lock:
+            return self._identity.observed_at if self._identity is not None else None
 
     @contextmanager
     def guard_scope(self, expected: FactScope) -> Iterator[None]:

@@ -11,6 +11,24 @@ import events
 import ledger
 
 
+def test_perk_pick_logs_exact_ocr_text_without_affecting_currency() -> None:
+    text = 'Black Hole duration +12.0s'
+    (line,) = ledger.classify(events.PerkPicked(perk=text, run_id=7, seq=18, ts=1000.))
+    assert (line.kind, line.item, line.category, line.run_id) == (
+        'PERK_PICK', text, 'BATTLE', 7)
+    assert line.currency is None and line.delta is None
+    assert 'PerkPicked' in ledger._REPLAYABLE
+
+
+def test_stored_perk_pick_replays_its_ocr_text() -> None:
+    text = 'x1.20 max health'
+    rebuilt = ledger._rebuild({'type': 'PerkPicked', 'seq': 19, 'ts': 1001.,
+                              'run_id': 7, 'detail': {'perk': text}})
+    assert isinstance(rebuilt, events.PerkPicked)
+    (line,) = ledger.classify(rebuilt)
+    assert line.item == text
+
+
 def test_workshop_purchase_keeps_its_exact_decision_reference() -> None:
     (line,) = ledger.classify(events.Purchased(
         item="Health", category="DEFENSE", price=280, verdict="bought", spent=280, dry_run=False,

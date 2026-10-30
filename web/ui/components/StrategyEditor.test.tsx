@@ -405,3 +405,19 @@ it("edits push cadence and disables scheduling explicitly", () => {
   fireEvent.click(screen.getByRole("switch", { name: "Scheduled push runs" }));
   expect(onChange.mock.lastCall?.[0].push_every_farm_runs).toBe(10);
 });
+
+it("opts into milestone collection every four farms and edits or disables it", () => {
+  const onChange = vi.fn();
+  const { rerender } = render(<StrategyEditor value={strategy} onChange={onChange} hidePurchases botSettingsOnly />);
+  expect(screen.getByRole("switch", { name: "Milestone collection runs" })).not.toBeChecked();
+  fireEvent.click(screen.getByRole("switch", { name: "Milestone collection runs" }));
+  expect(onChange.mock.lastCall?.[0].milestone_every_farm_runs).toBe(4);
+  rerender(<StrategyEditor value={{ ...strategy, milestone_every_farm_runs: 4 }} onChange={onChange} hidePurchases botSettingsOnly />);
+  const input = screen.getByRole("spinbutton", { name: "Completed farming runs between milestone runs" });
+  fireEvent.change(input, { target: { value: "6" } }); fireEvent.blur(input);
+  expect(onChange.mock.lastCall?.[0].milestone_every_farm_runs).toBe(6);
+  fireEvent.click(screen.getByRole("switch", { name: "Milestone collection runs" }));
+  expect(onChange.mock.lastCall?.[0].milestone_every_farm_runs).toBe(0);
+  rerender(<StrategyEditor value={{ ...strategy, milestone_every_farm_runs: 0 }} onChange={onChange} hidePurchases botSettingsOnly />);
+  expect(screen.getByRole("spinbutton", { name: "Completed farming runs between milestone runs" })).toBeDisabled();
+});

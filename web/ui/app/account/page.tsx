@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { SelectedExportReport } from "@/components/game-export/GameExportReports";
 import { PageHeader } from "@/components/PageHeader";
 import { AccountMetricsCards } from "@/components/AccountMetricsCards";
 import { SectionCard } from "@/components/ui/section-card";
@@ -73,7 +74,7 @@ function ClaimButton({ label, busyLabel, action }: { label: string; busyLabel: s
   </div>;
 }
 
-export default function AccountPage() {
+function ScreenEvidence() {
   const { selected } = useAccountSelection();
   const [account, setAccount] = useState<AccountSnapshot | null>(null);
   const [catalog, setCatalog] = useState<ConceptCatalog | null>(null);
@@ -153,4 +154,9 @@ export default function AccountPage() {
       </>}
     </SectionCard>
   </div>;
+}
+
+export default function AccountPage(): React.JSX.Element {
+  return <main className="space-y-5"><PageHeader title="Account inspector" meta="Official export observations" /><SelectedExportReport />
+    <details className="rounded-xl border p-4"><summary className="cursor-pointer font-medium">Screen evidence and device controls</summary><p className="my-3 text-sm text-muted-foreground">Screen readings are action evidence and historical diagnostics. Account reporting above uses the official game export.</p><ScreenEvidence /></details></main>;
 }

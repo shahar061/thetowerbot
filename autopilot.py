@@ -295,14 +295,14 @@ class BattleAutopilot:
             self._queued = {**command, "expires": (time.time() if now is None else now) +
                             (180 if action == "scan" else 20)}
 
-    def suspend(self, reason: str, *, clear_battle: bool = False) -> None:
+    def suspend(self, reason: str, *, clear_battle: bool = False, phase: str = "idle") -> None:
         self._buying = False
         self._reset_batch()
         self.search = None
         self._manual = None
         with self._command_lock:
             self._queued = None
-        self._decide("idle", reason)
+        self._decide(phase, reason)
         if clear_battle:
             self._clear_pending()
             self.state.clear_battle()
@@ -592,7 +592,8 @@ class BattleAutopilot:
             policy = replace(policy, enabled=True, preset="manual",
                              rules=(UpgradeRule(self._manual["upgrade_id"]),))
         if not policy.enabled and not self._manual and not self.pending:
-            self.suspend("Autopilot is off")
+            self.suspend(policy.hold_reason or "Autopilot is off",
+                         phase="waiting" if policy.hold_reason else "idle")
             return False
         self.state.observe(observation, identity)
         if self._policy != policy:

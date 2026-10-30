@@ -31,6 +31,16 @@ const strategy: Strategy = {
   },
 };
 afterEach(cleanup);
+test('saves the opt-in to always choose the first offered perk', async () => {
+  const saveSettings = vi.fn(async (patch: Partial<Strategy>) => ({ ...strategy, ...patch }));
+  const client = { readSettings: async () => strategy, saveSettings } as unknown as ReturnType<typeof createSingleStudioClient>;
+  render(<BotSettings client={client} onDirty={vi.fn()} />);
+  const toggle = await screen.findByRole('switch', { name: 'Auto-pick first perk' });
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  fireEvent.click(screen.getByRole('button', { name: 'Save bot settings' }));
+  await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ auto_pick_perks: true })));
+});
 test('saves cadence through bot settings, reverts drafts, and shows progress', async () => {
   const saved = { ...strategy, push_every_farm_runs: 10 };
   const saveSettings = vi.fn(async (patch: Partial<Strategy>) => ({ ...saved, ...patch }));
@@ -47,4 +57,15 @@ test('saves cadence through bot settings, reverts drafts, and shows progress', a
   await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ push_every_farm_runs: 15 })));
   await waitFor(() => expect(screen.getByRole('button', { name: 'Save bot settings' })).toBeDisabled());
   expect(saveSettings.mock.calls[0][0]).not.toHaveProperty('autopilot');
+});
+
+test('saves milestone opt-in and displays the independent countdown', async () => {
+  const saveSettings = vi.fn(async (patch: Partial<Strategy>) => ({ ...strategy, ...patch }));
+  const client = { readSettings: async () => strategy, saveSettings } as unknown as ReturnType<typeof createSingleStudioClient>;
+  render(<BotSettings client={client} onDirty={vi.fn()} push={{ phase: 'farming', every: 10,
+    farms_remaining: 6, milestone_every: 4, milestone_farms_remaining: 2 }} />);
+  fireEvent.click(await screen.findByRole('switch', { name: 'Milestone collection runs' }));
+  expect(screen.getByText(/next milestone in 2 runs/i)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Save bot settings' }));
+  await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ milestone_every_farm_runs: 4 })));
 });

@@ -15,7 +15,7 @@ export default function WorkshopPage(): React.JSX.Element {
     <header>
       <p className="mb-2 font-mono text-xs uppercase tracking-[.22em] text-primary">Single emulator / workshop</p>
       <h1 className="text-3xl font-semibold tracking-tight">Workshop</h1>
-      <p className="mt-2 text-sm text-muted-foreground">Upgrade levels, next-level coin prices, recent purchases and the Workshop plan for {name}.</p>
+      <p className="mt-2 text-sm text-muted-foreground">Exact exported upgrade levels and the automation Workshop plan for {name}.</p>
     </header>
     {member ? <WorkshopViews key={`${selected!.key}:${selected!.account_id}`} members={[member]} focusWorker={name} />
       : <p role="status" className="rounded-xl border border-dashed p-10 text-center text-muted-foreground">Select an emulator to view its Workshop.</p>}

@@ -6,7 +6,6 @@ import { SectionCard } from "@/components/ui/section-card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { NumberField } from "@/components/ui/number-field";
-import { CardCollection } from "./CardCollection";
 import { CardPlanEditor } from "./CardPlanEditor";
 import { CardLoadoutEditor } from "./CardLoadoutEditor";
 import { CardActivity } from "./CardActivity";
@@ -402,23 +401,7 @@ export function CardsWorkspace({
           </div>
         ) : null}
       </SectionCard>
-      <CardCollection
-        targetedIds={
-          draft?.goals.flatMap((goal) =>
-            goal.kind === "acquire"
-              ? goal.targets.map((target) => target.card_id)
-              : [],
-          ) ?? []
-        }
-        observedAt={data.snapshot?.observed_at}
-        items={data.snapshot?.items ?? []}
-        catalog={catalog}
-        collectionComplete={data.snapshot?.collection_complete ?? false}
-        equipmentComplete={data.snapshot?.equipment_complete ?? false}
-        capacity={data.snapshot?.capacity}
-        equipped={data.snapshot?.equipped}
-        fresh={data.fresh}
-      />
+
       {editReason ? (
         <div className="rounded-md border p-3 text-sm">
           <p>{editReason}</p>

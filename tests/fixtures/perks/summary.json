@@ -1,0 +1,62 @@
+[
+  {
+    "text": "Perks",
+    "confidence": 0.9995189428329467,
+    "rect": [
+      447,
+      365,
+      188,
+      58
+    ]
+  },
+  {
+    "text": "Selected Perks",
+    "confidence": 0.9825477259499686,
+    "rect": [
+      378,
+      466,
+      325,
+      44
+    ]
+  },
+  {
+    "text": "x1.15 Damage",
+    "confidence": 0.9703689167896906,
+    "rect": [
+      284,
+      613,
+      259,
+      47
+    ]
+  },
+  {
+    "text": "Black Hole duration +12.0s",
+    "confidence": 0.9652567459986761,
+    "rect": [
+      289,
+      795,
+      496,
+      37
+    ]
+  },
+  {
+    "text": "Perk wave requirement -20.00%",
+    "confidence": 0.9933730466612454,
+    "rect": [
+      284,
+      970,
+      626,
+      44
+    ]
+  },
+  {
+    "text": "Golden tower bonus xl.5",
+    "confidence": 0.9540722344232642,
+    "rect": [
+      290,
+      1154,
+      460,
+      36
+    ]
+  }
+]

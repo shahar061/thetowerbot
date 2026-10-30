@@ -89,10 +89,14 @@ export interface MatchBox {
 
 export interface PushRunStatus {
   account: string;
-  mode: "farm" | "push";
-  phase: "farming" | "selecting" | "ready" | "pushing" | "returning";
+  mode: "farm" | "push" | "milestone";
+  kind?: "push" | "milestone";
+  phase: "farming" | "selecting" | "targeting" | "ready" | "pushing" | "returning";
   every: number;
   farms_remaining: number;
+  milestone_every?: number;
+  milestone_farms_remaining?: number;
+  milestone_next_tier?: number | null;
   farm_tier: number | null;
   target_tier: number | null;
   blocker: string | null;
@@ -369,6 +373,7 @@ export interface Strategy {
   auto_navigate: boolean;
   max_runs: number | null;
   push_every_farm_runs?: number;
+  milestone_every_farm_runs?: number;
   navigation_cooldown: number;
   screen_confirmations: number;
   tap_jitter_px: number;
@@ -378,6 +383,7 @@ export interface Strategy {
   target_speed: number | null;
   /** Opt-in, with an explicit target_speed taking precedence. */
   auto_fastest?: boolean;
+  auto_pick_perks?: boolean;
   shopping: Shopping;
   /** Optional for the same reason `autopilot` is: a profile served by a
    * backend older than the claim scheduler carries no such key. */

@@ -34,6 +34,97 @@ def screen(name: str):
     return cv2.imread(str(Path('tests/fixtures') / (name + '.png')))
 
 
+def test_inspection_normalizes_max_before_recording_any_prices(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ocr
+    from tests.test_perception import recorded
+    sut = make_session(tmp_path)
+    progress = Mock()
+    progress.snapshot.return_value = {'capabilities': {'workshop': {
+        'observation_due': True, 'since_utc': 1.}}}
+    monkeypatch.setattr(ocr, 'read', lambda *args, **kwargs: recorded('menu_workshop_attack_late'))
+    monkeypatch.setattr(shopping, '_heading_names', lambda *args: True)
+    observation = Mock()
+    monkeypatch.setattr(shopping, 'observe_frame', observation)
+    sut.account_state.observe_account = Mock()
+    sut.reroll_observe_prices = Mock()
+    device = Mock()
+    sut.inspect(screen('menu_workshop_attack_late'), device, progress=progress)
+    device.click.assert_called_once_with(973, 337)
+    observation.assert_not_called()
+    sut.account_state.observe_account.assert_not_called()
+    sut.reroll_observe_prices.assert_not_called()
+
+
+def test_pending_inspection_never_changes_multiplier_or_records_max_prices(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shopping_inspection
+    from perception import parse_frame
+    from tests.test_perception import recorded
+    sut = make_session(tmp_path)
+    txn = sut._open_intent(item='Damage', category='ATTACK', currency='coins', price=30,
+                           wallet_before=100, armed=True,
+                           before={'observed_at': time.time(), 'frame_digest': 'before'})
+    sut._mark_acted(txn)
+    image = screen('menu_workshop_attack_late')
+    observation = parse_frame(image, recorded('menu_workshop_attack_late'), 'workshop')
+    monkeypatch.setattr(shopping, '_heading_names', lambda *args: True)
+    monkeypatch.setattr(shopping, 'observe_frame', lambda *args: observation)
+    reader = Mock()
+    monkeypatch.setattr(shopping_inspection.workshop_multiplier, 'read', reader)
+    sut._recover_transaction = Mock(return_value=False)
+    sut.reroll_observe_prices = Mock()
+    device = Mock()
+    sut.inspect(image, device)
+    reader.assert_not_called()
+    device.click.assert_not_called()
+    sut._recover_transaction.assert_called_once()
+    sut.reroll_observe_prices.assert_not_called()
+    assert sut.journal.open_transactions()[0].key == txn.key
+
+
+def test_inspection_selects_x1_when_picker_hides_category_heading(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ocr
+    from types import SimpleNamespace
+    from tests.test_workshop_multiplier import capture
+    image, boxes = capture('expanded')
+    sut = make_session(tmp_path)
+    progress = Mock()
+    progress.snapshot.return_value = {'capabilities': {'workshop': {
+        'observation_due': True, 'since_utc': 1.}}}
+    monkeypatch.setattr(ocr, 'read', lambda *args, **kwargs: boxes)
+    monkeypatch.setattr(pages, 'classify_page', lambda *args: SimpleNamespace(page='WORKSHOP'))
+    monkeypatch.setattr(shopping, '_heading_names', lambda *args: False)
+    observation = Mock()
+    monkeypatch.setattr(shopping, 'observe_frame', observation)
+    device = Mock()
+    assert sut.inspect(image, device, progress=progress)
+    device.click.assert_called_once_with(829, 281)
+    observation.assert_not_called()
+
+
+def test_observation_request_cannot_interrupt_live_purchase_receipt(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from shopping import PendingPurchase
+    sut = make_session(tmp_path)
+    txn = sut._open_intent(item='Damage', category='ATTACK', currency='coins', price=30,
+                           wallet_before=100, armed=True,
+                           before={'observed_at': time.time(), 'frame_digest': 'before'})
+    sut._mark_acted(txn)
+    row = ObservedUpgrade('damage', 'Damage', 'ATTACK', 'workshop', 3, 30,
+                          'available', 1, config.Rect(30, 400, 500, 200), (400, 550))
+    sut._pending = PendingPurchase(row, 100, frozenset({'damage'}), key=txn.key)
+    assert sut._unanswered_transaction() is None
+    progress = Mock()
+    progress.snapshot.return_value = {'capabilities': {'workshop': {
+        'observation_due': True, 'since_utc': 1.}}}
+    device = Mock()
+    assert not sut.inspect(screen('menu_workshop_attack_late'), device, progress=progress)
+    device.click.assert_not_called()
+    assert sut.journal.open_transactions()[0].key == txn.key
+
+
 def test_pending_home_inspection_only_navigates_and_pause_holds(tmp_path: Path) -> None:
     sut = make_session(tmp_path)
     txn = sut._open_intent(item='Damage', category='ATTACK', currency='coins', price=30,

@@ -41,6 +41,7 @@ import tiles
 import transactions
 import upgrades
 import vision
+import workshop_multiplier
 from device import Image, tap
 from digits import NumberReader
 from perception import Observation, ObservedUpgrade, WorkshopReader, observe_frame, price_number
@@ -420,6 +421,9 @@ class ShoppingSession:
         self.inspection_resolved: Any | None = None
         self.price_quotes: Any | None = None
         self.price_reads = WorkshopReader()
+        self._multiplier_attempts = 0
+        self._multiplier_misses = 0
+        self._multiplier_seen = False
 
     @property
     def active(self) -> bool:
@@ -528,6 +532,7 @@ class ShoppingSession:
         self._spent = 0
         self._coin_spent = 0
         self._visit_coins = None
+        self._multiplier_attempts = self._multiplier_misses = 0
         self._pending = None
         self._pending_card = None
         self._recovery_sample = None
@@ -833,6 +838,10 @@ class ShoppingSession:
             # not a transient "still loading" state, it is a wedge.
             return self._miss(device, shopping, screen, "workshop page")
 
+        # An expanded quantity picker hides the category heading. Normalize
+        # before waiting for that heading, including on a resumed visit.
+        if self._pending is None and not self._ensure_workshop_single(screen, device, shopping):
+            return False
         category = self._categories[0]
         rows = [r for r in shopping.rows_for(category) if r.name not in self._exhausted]
         if not rows:
@@ -928,6 +937,10 @@ class ShoppingSession:
             return
         if not self._categories:
             self._step = self._next_after_categories(shopping)
+            return
+        # Never change the quantity while a purchase is awaiting its receipt:
+        # the changed row price could otherwise look like purchase evidence.
+        if self._pending is None and not self._ensure_workshop_single(screen, device, shopping):
             return
         category = self._categories[0]
         rules = [r for r in shopping.rows_for(category) if r.name not in self._exhausted]
@@ -1090,6 +1103,33 @@ class ShoppingSession:
                 self.observations.decision("verifying", f"Confirming Workshop purchase: {seen.name}", seen.upgrade_id)
         else:
             self._record_purchase(seen, coins, dry_run=True)
+
+    def _ensure_workshop_single(self, screen: Image, device: Any, shopping: Shopping) -> bool:
+        quantity = workshop_multiplier.read(screen, self._templates)
+        if quantity.point is not None:
+            self._multiplier_seen = True
+        if quantity.mode == 'single' or quantity.mode == 'absent' and not self._multiplier_seen:
+            self._multiplier_misses = self._multiplier_attempts = 0
+            return True
+        if quantity.mode not in ('multiple', 'select_single') or quantity.point is None:
+            self._multiplier_misses += 1
+            self._bus.publish(events.PurchaseSkipped(
+                item='Workshop', reason='unreadable', detail='buy multiplier'))
+            if self._multiplier_misses >= 2:
+                self._abort(device, shopping, screen, 'Workshop buy multiplier unreadable')
+            return False
+        if not shopping.armed or self._multiplier_attempts >= 5:
+            self._abort(device, shopping, screen,
+                        'Workshop x1 multiplier not confirmed; purchases held')
+            return False
+        if self._try_tap(*quantity.point, device, shopping, screen):
+            self._multiplier_attempts += 1
+            self.price_reads.invalidate('buy_multiplier_changed')
+            self._replan_due = self.reroll_replan is not None
+            action = 'workshop:quantity_x1' if quantity.mode == 'select_single' else 'workshop:quantity_open'
+            self._bus.publish(events.Tapped(action=action,
+                x=quantity.point[0], y=quantity.point[1], score=1.0))
+        return False  # A fresh frame must show x1 before any price is read.
 
     def _replan(self, shopping: Shopping, coins: int | None) -> Shopping:
         """Continue the visit on the strategy's next choice, if it has one.

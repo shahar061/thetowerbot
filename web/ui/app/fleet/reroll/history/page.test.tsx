@@ -4,6 +4,7 @@ import HistoryPage from "./page";
 import { fetchRerollJournal, listRerolls } from "@/lib/api";
 
 vi.mock("../RerollWorkspace", () => ({ useRerollWorkspace: () => ({ pool: { members: [], run: { number: 1 } }, loading: false, error: null }) }));
+vi.mock("@/components/game-export/GameExportReports", () => ({ FleetExportReports: () => <p>JSON account changes</p> }));
 vi.mock("../Purchases", () => ({ SharedWorkshopLedger: () => <p>Workshop ledger content</p> }));
 vi.mock("@/lib/api", () => ({ fetchRerollJournal: vi.fn(), listRerolls: vi.fn() }));
 beforeEach(() => {
@@ -19,6 +20,7 @@ test("activity preserves worker filtering and marks unknown account provenance",
     { sequence: 2, at: 2, instance: "Air_2", level: "warning", kind: "action", message: "Waiting second", color: "red" },
   ] });
   render(<HistoryPage />);
+  fireEvent.click(screen.getByRole("tab", { name: "Bot activity" }));
   expect(await screen.findByText("Started first")).toBeInTheDocument();
   expect(screen.getAllByText("Account not recorded")).toHaveLength(2);
   fireEvent.change(screen.getByLabelText("Journal emulator"), { target: { value: "Air_2" } });
@@ -30,6 +32,7 @@ test("activity polling neither overlaps pending requests nor continues on anothe
   vi.useFakeTimers();
   vi.mocked(fetchRerollJournal).mockReturnValue(new Promise(() => {}));
   const view = render(<HistoryPage />);
+  fireEvent.click(screen.getByRole("tab", { name: "Bot activity" }));
   await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
   expect(fetchRerollJournal).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole("tab", { name: "Purchases" }));
@@ -42,6 +45,7 @@ test("activity polling neither overlaps pending requests nor continues on anothe
 test("shows journal failures and an explicit empty reroll archive", async () => {
   vi.mocked(fetchRerollJournal).mockRejectedValue(new Error("coordinator offline"));
   render(<HistoryPage />);
+  fireEvent.click(screen.getByRole("tab", { name: "Bot activity" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("coordinator offline");
   fireEvent.click(screen.getByRole("tab", { name: "Rerolls" }));
   expect(await screen.findByText("No past rerolls recorded yet.")).toBeInTheDocument();
@@ -60,4 +64,11 @@ test("past rerolls retain archive links and worker provenance", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "Rerolls" }));
   expect(await screen.findByRole("link", { name: "Reroll #2" })).toHaveAttribute("href", "/archives/?run=2");
   expect(screen.getByText("Air_1")).toBeInTheDocument();
+});
+
+test("opens on official account changes without fetching bot activity", () => {
+  render(<HistoryPage />);
+  expect(screen.getByRole("tab", { name: "Account changes" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByText("JSON account changes")).toBeInTheDocument();
+  expect(fetchRerollJournal).not.toHaveBeenCalled();
 });

@@ -1,0 +1,72 @@
+[
+  {
+    "text": "Perks",
+    "confidence": 0.9991965532302857,
+    "rect": [
+      443,
+      362,
+      193,
+      63
+    ]
+  },
+  {
+    "text": "Choose a New Perk",
+    "confidence": 0.9498875807313358,
+    "rect": [
+      326,
+      459,
+      423,
+      44
+    ]
+  },
+  {
+    "text": "Black Hole duration +12.0s",
+    "confidence": 0.9675429876034076,
+    "rect": [
+      374,
+      593,
+      499,
+      39
+    ]
+  },
+  {
+    "text": "x1.20 max health",
+    "confidence": 0.9971158020198345,
+    "rect": [
+      461,
+      789,
+      323,
+      40
+    ]
+  },
+  {
+    "text": "Selected Perks",
+    "confidence": 0.9828006625175476,
+    "rect": [
+      378,
+      930,
+      327,
+      43
+    ]
+  },
+  {
+    "text": "Perk wave requirement -20.00%",
+    "confidence": 0.9966447394469689,
+    "rect": [
+      286,
+      1076,
+      624,
+      44
+    ]
+  },
+  {
+    "text": "Golden tower bonus xl.5",
+    "confidence": 0.9819006738455399,
+    "rect": [
+      288,
+      1255,
+      464,
+      42
+    ]
+  }
+]

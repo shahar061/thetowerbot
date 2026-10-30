@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { FleetExportReports } from "@/components/game-export/GameExportReports";
 import { PageHeader } from "@/components/PageHeader";
 import { fetchRerollJournal } from "@/lib/api";
 import type { RerollJournalEntry } from "@/lib/fleet";
@@ -10,7 +11,7 @@ import { SharedWorkshopLedger } from "../Purchases";
 import { PastRerolls } from "../PastRerolls";
 import { Journal } from "./Journal";
 
-const tabs = ["Activity", "Purchases", "Rerolls"] as const;
+const tabs = ["Account changes", "Bot activity", "Purchases", "Rerolls"] as const;
 type Tab = typeof tabs[number];
 
 function Activity() {
@@ -47,11 +48,11 @@ function Activity() {
 
 export default function HistoryPage() {
   const { pool, loading, error } = useRerollWorkspace();
-  const [tab, setTab] = useState<Tab>("Activity");
+  const [tab, setTab] = useState<Tab>("Account changes");
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
   const members = [...(pool?.members ?? [])].sort((a, b) => a.name.localeCompare(b.name));
   return <div className="flex flex-col gap-5">
-    <PageHeader title="History" meta="Activity, confirmed purchases and past attempts" />
+    <PageHeader title="History" meta="Official account changes, bot activity, confirmed purchases and past attempts" />
     <div role="tablist" aria-label="Reroll history" className="flex gap-1 border-b border-border">
       {tabs.map((name, index) => <button key={name} type="button" role="tab" id={`history-tab-${name}`} aria-controls={`history-panel-${name}`} aria-selected={tab === name} tabIndex={tab === name ? 0 : -1}
         ref={element => { buttons.current[index] = element; }}
@@ -67,7 +68,8 @@ export default function HistoryPage() {
         }}>{name}</button>)}
     </div>
     <div role="tabpanel" id={`history-panel-${tab}`} aria-labelledby={`history-tab-${tab}`}>
-      {tab === "Activity" && <Activity />}
+      {tab === "Account changes" && <FleetExportReports section="journal" members={members.filter(member => !member.hidden)} />}
+      {tab === "Bot activity" && <Activity />}
       {tab === "Purchases" && <div className="space-y-3">
         {error && <p role="alert" className="text-danger">Fleet unavailable: {error}</p>}
         {loading && !pool ? <p role="status">Loading fleet accounts…</p> : <>

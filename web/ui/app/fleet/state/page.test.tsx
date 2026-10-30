@@ -1,83 +1,62 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { makeAccount, makePayload } from "./fixtures";
-import FleetStatePage from "./page";
-import { SELECTION_KEY } from "./selection";
+import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import FleetStatePage from './page';
+import type { GameExportProjection } from '@/lib/gameExport';
+const state = vi.hoisted(() => ({ accounts: null as GameExportProjection[] | null, error: null as string | null }));
+vi.mock('@/lib/useGameExport', () => ({ useGameExports: () => state }));
+beforeEach(() => {
+  state.accounts = null; state.error = null;
+  const storage = new Map<string, string>();
+  vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
+});
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+const account = (worker: string, active = true): GameExportProjection => ({ worker, available: true, source: 'game_export', account_id: worker,
+  exported_at: 1000, age_seconds: 20, stale: false, current_run: { active, wave: 52, observed_wave: 52, tier: 2 }, wallet: { coins: 12.5 } });
+it('filters exported account columns by selection and active battle', () => {
+  state.accounts = [account('Air_1'), account('Air_2', false)];
+  render(<FleetStatePage />);
+  expect(screen.getAllByRole('article')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Air_1' }));
+  expect(screen.getAllByRole('article')).toHaveLength(1);
+  expect(screen.getByRole('article')).toHaveAttribute('aria-label', 'Air_2');
+  fireEvent.click(screen.getByRole('button', { name: 'All' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Only active battles' }));
+  expect(screen.getByRole('article')).toHaveAttribute('aria-label', 'Air_1');
+});
+it('explains an absent export instead of displaying OCR state', () => {
+  state.accounts = [{ worker: 'Air_1', available: false, source: 'game_export', account_id: 'A' }];
+  render(<FleetStatePage />);
+  expect(screen.getByText(/No official game export available/)).toBeInTheDocument();
+  expect(screen.queryByText('Observed wave')).not.toBeInTheDocument();
+});
+it('reports source failure and suppresses any cached wave estimate', () => {
+  state.error = 'collector unavailable';
+  state.accounts = [{ ...account('Air_1'), current_run: { active: true, wave: 52, estimated_wave: 99 } }];
+  render(<FleetStatePage />);
+  expect(screen.getByRole('alert')).toHaveTextContent('collector unavailable');
+  expect(screen.getByText(/Source offline/)).toBeInTheDocument();
+  expect(screen.queryByText('99')).not.toBeInTheDocument();
+});
 
-const fetchState = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/api", () => ({ fetchFleetState: fetchState }));
-
-const live = makeAccount({ id: "Air_1", online: true, scan: 7, bot: { screen: "IN_RUN", now: null, live: true },
-  battle: { tier: 3, wave: 120, cash: 10, elapsed_s: 60, best_wave: 200 }, balances: { coins: 1000, gems: 5, stones: null } });
-const menu = makeAccount({ id: "Air_2", online: true, scan: 9, bot: { screen: "MAIN_MENU", now: null, live: false },
-  balances: { coins: 500, gems: 1, stones: null } });
-const columns = () => screen.queryAllByRole("article").map(article => article.getAttribute("aria-label"));
-
-beforeEach(() => { fetchState.mockReset(); window.localStorage.clear(); });
-afterEach(() => { vi.restoreAllMocks(); });
-
-test("chips and Only live filter the columns, and the pick is remembered", async () => {
-  fetchState.mockResolvedValue(makePayload([live, menu]));
+it('remembers per-viewer tracker account selection after remount', () => {
+  state.accounts = [account('Air_1'), account('Air_2')];
   const view = render(<FleetStatePage />);
-  await waitFor(() => expect(columns()).toEqual(["Air_1", "Air_2"]));
-  expect(screen.getByText("1.50K")).toBeInTheDocument();  // fleet coins
-  expect(screen.getByText("#9")).toBeInTheDocument();      // heartbeat: newest scan
-
-  fireEvent.click(screen.getByRole("button", { name: /Air_1/ }));
-  expect(columns()).toEqual(["Air_2"]);
-  expect(JSON.parse(window.localStorage.getItem(SELECTION_KEY)!)).toEqual({ mode: "custom", ids: ["Air_2"] });
-
-  fireEvent.click(screen.getByRole("button", { name: "Only live" }));
-  expect(columns()).toEqual(["Air_1"]);
-  fireEvent.click(screen.getByRole("button", { name: "All" }));
-  expect(columns()).toEqual(["Air_1", "Air_2"]);
-
-  fireEvent.click(screen.getByRole("button", { name: /Air_1/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Air_1' }));
   view.unmount();
   render(<FleetStatePage />);
-  await waitFor(() => expect(columns()).toEqual(["Air_2"]));
+  expect(screen.getByRole('article')).toHaveAttribute('aria-label', 'Air_2');
 });
-
-test("deselecting everything explains how to get the columns back", async () => {
-  fetchState.mockResolvedValue(makePayload([live]));
+it('keeps the tracker compact while inventory and account history live on dedicated pages', () => {
+  state.accounts = [{ ...account('Air_1'), wallet: { coins: 22967842.88683355, gems: 1190 },
+    labs: { slots: [], research: [{ index: 1, id: 'damage', name: 'Large inventory lab', level: 12 }] },
+    cards: { slots: 5, items: [{ index: 1, id: 'damage', name: 'Damage card' }] },
+    journal: [{ id: 'one', account_id: 'Air_1', kind: 'snapshot_change', summary: 'Large journal sample' }] }];
   render(<FleetStatePage />);
-  await waitFor(() => expect(columns()).toEqual(["Air_1"]));
-  fireEvent.click(screen.getByRole("button", { name: /Air_1/ }));
-  expect(screen.getByText(/No emulators selected/)).toBeInTheDocument();
-});
-
-test("blocked storage still renders every emulator", async () => {
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
-  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
-  fetchState.mockResolvedValue(makePayload([live, menu]));
-  render(<FleetStatePage />);
-  await waitFor(() => expect(columns()).toEqual(["Air_1", "Air_2"]));
-  fireEvent.click(screen.getByRole("button", { name: /Air_2/ }));
-  expect(columns()).toEqual(["Air_1"]);
-});
-
-test("a failed first request says the state is unavailable and shows the pill", async () => {
-  fetchState.mockRejectedValue(new Error("down"));
-  render(<FleetStatePage />);
-  await waitFor(() => expect(screen.getByText("connection lost")).toBeInTheDocument());
-  expect(screen.getByText(/Fleet state unavailable/)).toBeInTheDocument();
-});
-
-test("Workshop switches between bars and table and remembers the view after remount", async () => {
-  const category = { unlocked: 0, total: 0, skills: [], next_unlock: null };
-  fetchState.mockResolvedValue(makePayload([makeAccount({ ...live, workshop: {
-    totals: { attack: 0, defense: 0, utility: 0 }, recent: [],
-    categories: { attack: category, defense: category, utility: category },
-  } })]));
-  const view = render(<FleetStatePage />);
-  expect(await screen.findByRole("button", { name: "Bars" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("region", { name: "Attack workshop levels" })).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Table" }));
-  expect(screen.queryByRole("region", { name: "Attack workshop levels" })).toBeNull();
-  expect(screen.getByRole("region", { name: "Attack workshop" })).toBeInTheDocument();
-  view.unmount();
-  render(<FleetStatePage />);
-  expect(await screen.findByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true");
-  fireEvent.click(screen.getByRole("button", { name: "Bars" }));
-  expect(screen.getByRole("region", { name: "Attack workshop levels" })).toBeInTheDocument();
+  expect(screen.getByText('Observed wave')).toBeInTheDocument();
+  expect(screen.getByText('22.97M')).toBeInTheDocument();
+  expect(screen.getByTitle('22967842.88683355')).toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: 'Search exported inventory' })).not.toBeInTheDocument();
+  expect(screen.queryByText('Large inventory lab')).not.toBeInTheDocument();
+  expect(screen.queryByText('Damage card')).not.toBeInTheDocument();
+  expect(screen.queryByText('Large journal sample')).not.toBeInTheDocument();
 });

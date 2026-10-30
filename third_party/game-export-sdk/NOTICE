@@ -1,0 +1,12 @@
+Game export index mappings derived from TheTowerSDK
+Copyright (c) 2026 TmRxJD
+https://github.com/TmRxJD/TheTowerSDK
+Commit: f2afe6dddc41115b243889f9872ba87e478609e5
+License: MIT (see LICENSE; upstream attribution retained in UPSTREAM-NOTICE).
+
+Only public static research, card and workshop index/name mappings are vendored
+in catalog/game-export-mappings.v1.json. SDK code and account exports are not
+included. Local canonical IDs and aliases were added against concepts.v1.json;
+unrecognized names retain a null ID, and padding/index holes remain intact.
+Runtime uses no SDK dependency. Names and indexes are community data and are
+not an official promise of stability; unsupported versions produce warnings.

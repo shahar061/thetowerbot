@@ -361,3 +361,26 @@ def test_studio_push_cadence_settings_save_and_reload(wired) -> None:
     assert controls.snapshot().strategy.push_every_farm_runs == 15
     assert client.post("/api/strategy-studio/settings", json={"push_every_farm_runs": -1}).status_code == 422
     assert store.load("default").push_every_farm_runs == 15
+
+
+def test_milestone_cadence_patch_persists_and_rejects_invalid_input(wired) -> None:
+    client, store, controls, _ = wired
+    assert client.patch("/api/control", json={"milestone_every_farm_runs": 4}).status_code == 200
+    assert controls.snapshot().strategy.milestone_every_farm_runs == 4
+    assert store.load("default").milestone_every_farm_runs == 4
+    for value in (-1, True, 1.5, "4", None):
+        assert client.patch("/api/control", json={"milestone_every_farm_runs": value}).status_code == 422
+    assert store.load("default").milestone_every_farm_runs == 4
+
+
+def test_studio_milestone_cadence_settings_save_and_reload(wired) -> None:
+    client, store, controls, _ = wired
+    response = client.post("/api/strategy-studio/settings", json={"milestone_every_farm_runs": 4})
+    assert response.status_code == 200
+    assert response.json()["milestone_every_farm_runs"] == 4
+    assert client.get("/api/strategy-studio/settings").json()["milestone_every_farm_runs"] == 4
+    assert store.load("default").milestone_every_farm_runs == 4
+    assert controls.snapshot().strategy.milestone_every_farm_runs == 4
+    for value in (-1, True, 1.5, "4", None):
+        assert client.post("/api/strategy-studio/settings", json={"milestone_every_farm_runs": value}).status_code == 422
+    assert store.load("default").milestone_every_farm_runs == 4

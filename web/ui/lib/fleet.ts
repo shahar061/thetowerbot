@@ -144,9 +144,17 @@ export function validatedOverview(member: unknown): FleetOverview | null {
       !row.blockers.every(reason => typeof reason === "string")) return null;
   if (!("push_runs" in row)) return row as FleetOverview;
   const push = row.push_runs;
+  const validMilestone = object(push) && (
+    !["kind", "milestone_every", "milestone_farms_remaining", "milestone_next_tier"].some(key => key in push) ||
+    ["push", "milestone"].includes(push.kind as string) &&
+    number(push.milestone_every) && Number.isInteger(push.milestone_every) && push.milestone_every >= 0 &&
+    number(push.milestone_farms_remaining) && Number.isInteger(push.milestone_farms_remaining) &&
+    push.milestone_farms_remaining >= 0 && push.milestone_farms_remaining <= push.milestone_every &&
+    (push.milestone_next_tier === null || number(push.milestone_next_tier) &&
+      Number.isInteger(push.milestone_next_tier) && push.milestone_next_tier > 0));
   const validPush = object(push) && push.account === row.account_id &&
-    ["farm", "push"].includes(push.mode as string) &&
-    ["farming", "selecting", "ready", "pushing", "returning"].includes(push.phase as string) &&
+    validMilestone && ["farm", "push", "milestone"].includes(push.mode as string) &&
+    ["farming", "selecting", "targeting", "ready", "pushing", "returning"].includes(push.phase as string) &&
     number(push.every) && Number.isInteger(push.every) && push.every >= 0 &&
     number(push.farms_remaining) && Number.isInteger(push.farms_remaining) &&
     push.farms_remaining >= 0 && push.farms_remaining <= push.every &&

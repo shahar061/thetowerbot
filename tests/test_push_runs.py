@@ -92,7 +92,9 @@ def test_push_policy_uses_combat_upgrades_and_preserves_safety_gates() -> None:
     assert {"health", "defense_percent", "thorns", "attack_speed", "lifesteal", "orbs"} <= ids
     assert not any("cash" in uid or "coin" in uid for uid in ids)
     assert "defense_absolute" not in ids
-    assert "defense_absolute" in {rule.upgrade_id for rule in module.push_policy(farm, tier=1).rules}
+    for tier in (1, 4):
+        assert {"defense_absolute", "health_regen"}.isdisjoint(
+            rule.upgrade_id for rule in module.push_policy(farm, tier=tier).rules)
     rows = {uid: {"value": 1, "price": 1, "status": "available"} for uid in ids | {"cash_bonus"}}
     assert choose(policy, rows, {"cash": 100, "wave": 1}).upgrade_id in ids
     assert not module.push_policy(AutopilotPolicy(enabled=False), tier=4).enabled
@@ -310,3 +312,164 @@ def test_live_cadence_edit_preserves_progress_and_scheduled_push() -> None:
     assert bot.push_runs.every == 0
     assert bot.push_runs.needs_home
     assert bot.push_runs.state.farms == 3
+
+
+def milestone_scheduler(path: Path | None = None, *, every: int = 0) -> Any:
+    return importlib.import_module("push_runs").PushRuns(
+        path, "account-a", every=every, milestone_every=4)
+
+
+def select_excursion(push: Any, *, farm: int = 1, highest: int = 11) -> int:
+    tier = farm
+    for _ in range(64):
+        intent = push.menu(tier, tier < highest)
+        if intent == "start":
+            return tier
+        assert intent in {"previous", "next"}
+        tier += 1 if intent == "next" else -1
+    raise AssertionError("tier selection never completed")
+
+
+def return_to_farm(push: Any, *, tier: int, farm: int = 1) -> None:
+    for selected in range(tier, farm, -1):
+        assert push.menu(selected, True) == "previous"
+    assert push.menu(farm, True) == "start"
+
+
+def test_milestone_every_four_farms_descends_and_wraps_above_farm() -> None:
+    push = milestone_scheduler()
+    for target in (10, 9, 8, 7, 6, 5, 4, 3, 2, 10):
+        complete_farms(push, 3)
+        assert not push.needs_home
+        push.started(90, "farm")
+        push.ended(abandoned=True)
+        push.started(91, "milestone")
+        push.ended(abandoned=False)
+        assert not push.needs_home
+        complete_farms(push, 1)
+        assert push.needs_home
+        assert select_excursion(push) == target
+        assert push.started(100, "farm") == "milestone"
+        assert push.active
+        assert push.snapshot()["mode"] == "milestone"
+        push.ended(abandoned=False)
+        return_to_farm(push, tier=target)
+        assert push.snapshot()["milestone_farms_remaining"] == 4
+
+
+def test_milestone_restart_keeps_target_cursor_and_independent_push_counter(tmp_path: Path) -> None:
+    path = tmp_path / "push.json"
+    push = milestone_scheduler(path, every=10)
+    complete_farms(push, 4)
+    assert push.menu(1, True) == "next"
+    push = milestone_scheduler(path, every=10)
+    assert select_excursion(push, farm=2) == 10
+    push = milestone_scheduler(path, every=10)
+    assert push.menu(10, True) == "start"  # Do not discover highest again from ready.
+    push.started(20, "farm")
+    push = milestone_scheduler(path, every=10)
+    push.started(21, "farm")
+    push.ended(abandoned=False)
+    return_to_farm(push, tier=10)
+    push = milestone_scheduler(path, every=10)
+    assert push.snapshot()["farms_remaining"] == 6
+    complete_farms(push, 4)
+    assert select_excursion(push) == 9
+
+
+def test_coincident_push_and_milestone_both_run_without_extra_farming() -> None:
+    push = milestone_scheduler(every=4)
+    complete_farms(push, 4)
+    assert select_excursion(push) == 11
+    push.started(20, "farm")
+    assert push.snapshot()["mode"] == "push"
+    push.ended(abandoned=False)
+    for tier in range(11, 1, -1):
+        assert push.menu(tier, tier < 11) == "previous"
+    assert select_excursion(push) == 10
+    push.started(21, "farm")
+    assert push.snapshot()["mode"] == "milestone"
+    push.ended(abandoned=False)
+    return_to_farm(push, tier=10)
+    assert push.snapshot()["farms_remaining"] == 4
+    assert push.snapshot()["milestone_farms_remaining"] == 4
+
+
+def test_milestone_skips_empty_range_and_wraps_at_non_one_farming_tier() -> None:
+    push = milestone_scheduler()
+    complete_farms(push, 4)
+    assert select_excursion(push, farm=10) == 10
+    assert not push.needs_home
+    for expected in (10, 9, 10):
+        complete_farms(push, 4)
+        assert select_excursion(push, farm=8) == expected
+        push.started(20, "farm")
+        push.ended(abandoned=False)
+        return_to_farm(push, tier=expected, farm=8)
+
+
+def test_disabling_milestones_keeps_scheduled_run_but_stops_future_ones() -> None:
+    push = milestone_scheduler()
+    complete_farms(push, 4)
+    push.milestone_every = 0
+    assert select_excursion(push) == 10
+    push.started(20, "farm")
+    push.ended(abandoned=False)
+    return_to_farm(push, tier=10)
+    complete_farms(push, 12)
+    assert not push.needs_home
+
+
+def test_milestone_status_is_validated_and_account_bound(tmp_path: Path) -> None:
+    module = importlib.import_module("push_runs")
+    path = tmp_path / "push.json"
+    push = milestone_scheduler(path)
+    complete_farms(push, 4)
+    assert select_excursion(push) == 10
+    push.started(20, "farm")
+    payload = push.snapshot()
+    assert module.validated_snapshot(payload, "account-a") == payload
+    assert module.validated_snapshot({**payload, "milestone_farms_remaining": -1}, "account-a") is None
+    other = module.PushRuns(path, "account-b", every=0, milestone_every=4)
+    assert not other.needs_home
+    assert other.snapshot()["milestone_farms_remaining"] == 4
+
+
+def test_bot_applies_live_milestone_cadence_and_keeps_progress() -> None:
+    import screens
+    from strategy import Shopping
+    from tests.conftest import _shopping_bot
+    bot = _shopping_bot("menu_main_events_badge_tier_next", state=screens.ScreenState.MAIN_MENU,
+                        policy=Shopping(), auto_navigate=False)
+    bot.controls.apply({"milestone_every_farm_runs": 4})
+    bot.run_once()
+    assert bot.push_runs.milestone_every == 4
+    complete_farms(bot.push_runs, 3)
+    bot.controls.apply({"milestone_every_farm_runs": 2})
+    bot.run_once()
+    assert bot.push_runs.state.milestone_farms == 3
+    assert not bot.push_runs.needs_home
+    complete_farms(bot.push_runs, 1)
+    assert bot.push_runs.needs_home
+
+
+def test_milestone_restart_during_descent_and_return_cannot_skip_a_tier(tmp_path: Path) -> None:
+    path = tmp_path / "push.json"
+    push = milestone_scheduler(path)
+    complete_farms(push, 4)
+    assert push.menu(1, True) == "next"
+    assert push.menu(11, False) == "previous"
+    push = milestone_scheduler(path)
+    assert push.menu(10, True) == "start"
+    # Death is observed after a crash before RunStarted was recorded.
+    push.ended(abandoned=False)
+    push.ended(abandoned=False)
+    push = milestone_scheduler(path)
+    return_to_farm(push, tier=10)
+    complete_farms(push, 4)
+    assert select_excursion(push) == 9
+    push.started(30, "farm")
+    push.ended(abandoned=True)
+    return_to_farm(push, tier=9)
+    complete_farms(push, 4)
+    assert select_excursion(push) == 9  # An abandoned attempt retries the same tier.

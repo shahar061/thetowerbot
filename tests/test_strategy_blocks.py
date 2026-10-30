@@ -1296,7 +1296,7 @@ def test_modeled_visible_batch_is_bounded_and_keeps_price_tolerance(
 
 
 @pytest.mark.parametrize('extra', [dict(batch_size=0), dict(batch_size=6), dict(batch_size=True),
-    dict(max_price_premium_pct=26), dict(max_price_premium_pct=-1), dict(price_source='observed')])
+    dict(max_price_premium_pct=26), dict(max_price_premium_pct=-1), dict(price_source='invalid')])
 def test_batch_options_reject_unsafe_or_incompatible_values(extra: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         blocks.validate_program([pool(upgrade_ids=['health'], selection='cheapest',
@@ -1477,6 +1477,24 @@ def test_unlock_block_without_hold_feeds_while_saving() -> None:
     result = blocks.evaluate_program(route(program), sample, None, 'workshop')
     assert result.decision is None
     assert result.trace.matched_rule_id == 'hold'
+
+
+@pytest.mark.parametrize('hold,expected', [(False, ('buy', 'attack_speed')),
+                                         (True, ('save_coins', 'unlock_lifesteal'))])
+def test_unlock_savings_allow_affordable_value_goal_only_without_hold(
+        hold: bool, expected: tuple[str, str]) -> None:
+    sample = replace(facts(), prices={**facts().prices, 'unlock_lifesteal': 2000})
+    program = [unlock(hold=hold), value_goal()]
+    result = blocks.evaluate_program(route(program), sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == expected
+
+
+def test_unaffordable_value_goal_preserves_earlier_nonheld_unlock_savings() -> None:
+    sample = replace(facts(), wallet_coins=80,
+                     prices={**facts().prices, 'unlock_lifesteal': 2000})
+    result = blocks.evaluate_program(route([unlock(hold=False), value_goal()]),
+                                     sample, None, 'workshop')
+    assert (result.decision.state, result.decision.upgrade_id) == ('save_coins', 'unlock_lifesteal')
 
 
 def test_unlock_block_respects_max_price_and_reports_manual_unlocks() -> None:
