@@ -71,3 +71,14 @@ def test_unreadable_counter_never_becomes_zero_or_one() -> None:
     frame, boxes = recorded("tournament_join_ticket_1")
     boxes = tuple(b for b in boxes if not (b.rect.x > 970 and b.rect.y < 190))
     assert scan(frame, boxes).page.tickets is None
+
+
+def test_heat_popup_blocks_battle_and_offers_close() -> None:
+    from tournament_screen import scan
+    frame, boxes = recorded("tournament_heat_popup")
+    reading = scan(frame, boxes)
+    assert reading.blocked
+    assert reading.page is None
+    assert reading.heat_close is not None
+    x, y = reading.heat_close.point
+    assert 940 < x < 1020 and 380 < y < 460

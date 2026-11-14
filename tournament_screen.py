@@ -61,6 +61,7 @@ class TournamentReading:
     stats: TournamentStats | None = None
     hud_marker: bool = False
     blocked: bool = False
+    heat_close: ControlTarget | None = None
 
 
 def _normal(text: str) -> str:
@@ -136,6 +137,13 @@ def scan(frame: Image, boxes: tuple[TextBox, ...]) -> TournamentReading:
     if frame.shape[:2] != (2400,1080):
         return TournamentReading(blocked=True)
     boxes = _trusted(boxes)
+    # The Tournament Heat modal leaves BATTLE undimmed below it, so it must
+    # dominate the page: a tap meant for BATTLE is swallowed while it shows.
+    heat = _one(boxes, 'TOURNAMENT HEAT')
+    if heat is not None:
+        r = heat.rect
+        return TournamentReading(heat_close=ControlTarget('tournament_heat_close',
+            (979, r.y+r.h//2), 'located', heat.confidence, (930, r.y-30, 100, r.h+60)), blocked=True)
     stats = _one(boxes, 'TOURNAMENT STATS')
     if stats is not None:
         wave = _value(boxes, r'Wave\s*(\d+)')

@@ -112,3 +112,47 @@ def test_name_setup_returns_to_farming_during_backoff(tmp_path: Path) -> None:
     assert not visit.advance(frame, boxes, device, now=1791590401, main_menu=True)
     assert not visit.owns_navigation
     assert not visit.due(1791590401)
+
+
+def test_heat_popup_is_closed_before_anything_else(tmp_path: Path) -> None:
+    from tournament_visit import TournamentVisit
+    store = TournamentStore(tmp_path/'journal.sqlite', 'account')
+    store.begin('2026-11-14', 'Gold', 1, now=1794617022)
+    visit = TournamentVisit(store, TournamentConfig())
+    device = Device()
+    frame, boxes = recorded('tournament_heat_popup')
+    assert visit.advance(frame, boxes, device, now=1794617100)
+    assert len(device.taps) == 1
+    x, y = device.taps[0]
+    assert 940 < x < 1020 and 380 < y < 460
+    assert store.pending().stage == 'entry_pending'
+
+
+def test_lost_entry_tap_is_retried_after_a_durable_delay(tmp_path: Path) -> None:
+    from tournament_visit import TournamentVisit
+    store = TournamentStore(tmp_path/'journal.sqlite', 'account')
+    store.begin('2026-11-14', 'Gold', 1, now=1000)
+    visit = TournamentVisit(store, TournamentConfig())
+    device = Device()
+    frame, boxes = recorded('tournament_join_ticket_unread')
+    assert not visit.advance(frame, boxes, device, now=1010)
+    assert device.taps == []
+    assert visit.advance(frame, boxes, device, now=1040)
+    assert len(device.taps) == 1 and device.taps[0][1] > 1950
+    assert not visit.advance(frame, boxes, device, now=1050)
+    assert visit.advance(frame, boxes, device, now=1080)
+    assert visit.advance(frame, boxes, device, now=1120)
+    assert not visit.advance(frame, boxes, device, now=1200)
+    assert len(device.taps) == 3
+    assert visit.snapshot()['reason'] == 'entry_retry_exhausted'
+
+
+def test_lost_entry_tap_is_not_retried_when_tickets_read_zero(tmp_path: Path) -> None:
+    from tournament_visit import TournamentVisit
+    store = TournamentStore(tmp_path/'journal.sqlite', 'account')
+    store.begin('event', 'Gold', 1, now=1000)
+    visit = TournamentVisit(store, TournamentConfig())
+    device = Device()
+    frame, boxes = recorded('tournament_leaderboard_ticket_0')
+    visit.advance(frame, boxes, device, now=1100)
+    assert not any(1950 < y < 2100 for _, y in device.taps)
