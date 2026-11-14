@@ -25,6 +25,8 @@ class TournamentVisit:
         self._result: TournamentStats | None = None
         self._ok_tapped = False
         self._return_tapped = False
+        self._entry_retries = 0
+        self._entry_tap_at: float | None = None
         if self.in_run:
             # Purchase proof is observed on a later frame. A restart cannot
             # know whether an unreceipted tap spent cash; end the opening.
@@ -69,9 +71,38 @@ class TournamentVisit:
         cursor = PurchaseCursor(attempt.opening_spent, attempt.growth_index, attempt.receipt_index)
         self.store.save_cursor(advance_purchase(cursor, upgrade_id, debit, self.config.rules))
 
+    _ENTRY_RETRY_AFTER_S = 30.0
+    _ENTRY_RETRY_LIMIT = 3
+
+    def _retry_entry(self, attempt: Any, page: Any, device: Any, now: float) -> bool:
+        """Re-tap BATTLE when an entry tap was swallowed (e.g. by a modal).
+
+        Still on the join page with a ticket entry means no run started, so
+        the ticket was not spent; a missing ticket would raise Buy Ticket,
+        which is cancelled. The delay is measured from the durable start
+        time, so a restart never re-taps the frame right after its own tap.
+        """
+        if attempt.stage != 'entry_pending' or page.battle is None or not page.entry_is_ticket \
+                or page.tickets == 0:
+            return False
+        last = max(attempt.started_at, self._entry_tap_at or 0.0)
+        if now - last < self._ENTRY_RETRY_AFTER_S:
+            return False
+        if self._entry_retries >= self._ENTRY_RETRY_LIMIT:
+            self.reason = 'entry_retry_exhausted'
+            return False
+        self._entry_retries += 1
+        self._entry_tap_at = now
+        self.reason = 'retrying_entry'
+        device.click(*page.battle.point)
+        return True
+
     def advance(self, frame: Image, boxes: tuple[TextBox, ...], device: Any, *, now: float, main_menu: bool = False) -> bool:
         reading = scan(frame, boxes)
         attempt = self.store.pending()
+        if reading.heat_close is not None:
+            device.click(*reading.heat_close.point)
+            return True
         if (main_menu or reading.menu is not None) and not reading.blocked and reading.page is None:
             if attempt is not None and attempt.stage == 'result':
                 self.store.complete(now=now)
@@ -132,6 +163,8 @@ class TournamentVisit:
                     self._return_tapped = True
                     device.click(*page.return_to_game.point)
                     return True
+                if self._retry_entry(attempt, page, device, now):
+                    return True
                 self.reason = self.reason or 'reconciling_entry'
                 return False
             window = event_window(now)
@@ -145,6 +178,7 @@ class TournamentVisit:
                 self.reason = 'entry_unverified'
             else:
                 self._ok_tapped = self._return_tapped = False
+                self._entry_retries, self._entry_tap_at = 0, now
                 self.store.begin(window, page.league, page.tickets, now=now)
                 device.click(*page.battle.point)
                 self.reason = 'awaiting_entry'

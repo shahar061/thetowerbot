@@ -1,0 +1,192 @@
+[
+ {
+  "text": "4.95M",
+  "confidence": 0.998659324645996,
+  "rect": [
+   90,
+   27,
+   159,
+   46
+  ]
+ },
+ {
+  "text": "1194",
+  "confidence": 0.9995599389076233,
+  "rect": [
+   380,
+   26,
+   175,
+   50
+  ]
+ },
+ {
+  "text": "564",
+  "confidence": 0.9992658694585165,
+  "rect": [
+   662,
+   24,
+   168,
+   53
+  ]
+ },
+ {
+  "text": "TOURNAMENT",
+  "confidence": 0.992682009935379,
+  "rect": [
+   32,
+   112,
+   357,
+   40
+  ]
+ },
+ {
+  "text": "THE TOURNAMENT",
+  "confidence": 0.9610741351331983,
+  "rect": [
+   212,
+   251,
+   655,
+   56
+  ]
+ },
+ {
+  "text": "TOURNAMENTHEAT",
+  "confidence": 0.993224710226059,
+  "rect": [
+   335,
+   410,
+   511,
+   43
+  ]
+ },
+ {
+  "text": "- Increasing Heat -",
+  "confidence": 0.9846787829148141,
+  "rect": [
+   331,
+   528,
+   425,
+   53
+  ]
+ },
+ {
+  "text": "Heat",
+  "confidence": 0.9999573528766632,
+  "rect": [
+   253,
+   678,
+   121,
+   56
+  ]
+ },
+ {
+  "text": "Overheat",
+  "confidence": 0.9997779354453087,
+  "rect": [
+   660,
+   681,
+   223,
+   52
+  ]
+ },
+ {
+  "text": "More Enemies",
+  "confidence": 0.9990367939074835,
+  "rect": [
+   97,
+   929,
+   269,
+   39
+  ]
+ },
+ {
+  "text": "Level 1",
+  "confidence": 0.9509210671697345,
+  "rect": [
+   859,
+   927,
+   129,
+   43
+  ]
+ },
+ {
+  "text": "1.0% more enemies spawn",
+  "confidence": 0.9996217333752176,
+  "rect": [
+   95,
+   1007,
+   487,
+   44
+  ]
+ },
+ {
+  "text": "Ranged Ultimate",
+  "confidence": 0.9932185530662536,
+  "rect": [
+   100,
+   1140,
+   317,
+   40
+  ]
+ },
+ {
+  "text": "Level 5",
+  "confidence": 0.9876936333520072,
+  "rect": [
+   853,
+   1137,
+   136,
+   44
+  ]
+ },
+ {
+  "text": "Ranged enemies' projectiles disable the tower",
+  "confidence": 0.9969077706336975,
+  "rect": [
+   97,
+   1197,
+   822,
+   40
+  ]
+ },
+ {
+  "text": "from firing for 0.1s",
+  "confidence": 0.9941453754901886,
+  "rect": [
+   94,
+   1242,
+   339,
+   43
+  ]
+ },
+ {
+  "text": "BATTLE",
+  "confidence": 0.9984830717245737,
+  "rect": [
+   474,
+   1999,
+   186,
+   48
+  ]
+ },
+ {
+  "text": "Time left to join: 16h 20m",
+  "confidence": 0.9257621444188632,
+  "rect": [
+   345,
+   2135,
+   387,
+   27
+  ]
+ },
+ {
+  "text": "Tap To Return To Game",
+  "confidence": 0.9760921739396595,
+  "rect": [
+   235,
+   2274,
+   615,
+   55
+  ]
+ }
+]
