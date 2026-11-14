@@ -19,6 +19,7 @@ import events
 import jitter
 import ocr
 from device import Image, tap
+from supervisor import RecoveryPreflightBlocked
 from vision import TemplateCache
 
 logger = logging.getLogger("tower_bot.in_game_ad")
@@ -135,7 +136,14 @@ class InGameAdClaim:
             self._phase = "confirming" if instant is not None else "watching"
             if instant is not None:
                 self._claimed_at = now
-            self._tap(device, policy, tile)
+            try:
+                self._tap(device, policy, tile)
+            except RecoveryPreflightBlocked:
+                # Refused before any input (e.g. a stale frame): nothing was
+                # tapped, so nothing is uncertain. Latching here would leave
+                # the tile unclaimed for as long as it stays on screen.
+                self._phase, self._tile_latched, self._before = "idle", False, None
+                raise
             return True
 
         if self._phase == "watching":
