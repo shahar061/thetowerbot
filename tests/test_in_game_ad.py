@@ -397,3 +397,26 @@ def test_ad_free_claim_does_not_repeat_unverified_reward() -> None:
     assert not claim.observe(available, (30, 35), device, POLICY, 21, 7, True)
     assert len(device.taps) == 1
     assert any(isinstance(event, events.ClaimUncertain) for event in bus.events)
+
+
+def test_ad_free_claim_refused_before_input_is_not_latched() -> None:
+    from supervisor import RecoveryPreflightBlocked
+
+    class RefusingOnce(Device):
+        def click(self, x: int, y: int) -> None:
+            if not getattr(self, "refused", False):
+                self.refused = True
+                raise RecoveryPreflightBlocked("fresh_evidence")
+            super().click(x, y)
+
+    bus, device = Bus(), RefusingOnce()
+    claim = in_game_ad.InGameAdClaim(bus, TEMPLATES, Reader([843, 843, 849]), sleep=lambda _: None)
+    available = frame("battle_ad_free_available")
+    with pytest.raises(RecoveryPreflightBlocked):
+        claim.observe(available, (30, 35), device, POLICY, 0, 7, True)
+    assert not claim.active
+    assert device.taps == []
+    assert claim.observe(available, (30, 35), device, POLICY, 1, 7, True)
+    assert len(device.taps) == 1
+    assert claim.observe(frame("battle_claimed"), (30, 35), device, POLICY, 2, 7, True)
+    assert bus.events == [events.InGameAdGemClaimed(gems_before=843, gems_after=849, delta=6, run_id=7)]
