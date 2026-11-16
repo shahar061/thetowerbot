@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 # still unknown. The first detour reads it; if that read fails, going home
 # again after every short early run costs more time than it plays.
 UNKNOWN_PLAN_DETOUR_RUNS = 5
+# How far above its last-seen quote a strategy buy may land.
+QUOTE_TOLERANCE_PCT = 5
 
 
 def workshop_locked(purchases: Mapping[str, int],
@@ -749,7 +751,14 @@ class RerollProgress:
             ceiling = coin_share.workshop_ceiling(effective, route_wallet, jar)
             budget = ceiling if budget is None else min(budget, ceiling)
         if plan.stage == "strategy" and plan.price is not None:
-            budget = plan.price if budget is None else min(budget, plan.price)
+            # The quote is the last price this worker saw, which goes stale
+            # when a level is bought elsewhere (by hand, or on a visit cut
+            # short). Capping the visit at it exactly refused the next level
+            # one step up and ended the visit with nothing bought. Allow a
+            # small markup, still under the spend ceiling; the buyer checks
+            # the live price and wallet before every tap.
+            quoted = plan.price + plan.price * QUOTE_TOLERANCE_PCT // 100
+            budget = quoted if budget is None else min(budget, quoted)
         if plan.starter:
             budget = STARTER_MAX_PRICE if budget is None else min(budget, STARTER_MAX_PRICE)
         elif plan.filler:

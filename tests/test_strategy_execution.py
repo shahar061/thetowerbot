@@ -161,7 +161,11 @@ def test_imported_and_blocked_plans_do_not_schedule_native_labs(tmp_path: Path) 
     assert not bot._request_planned_lab_visit(0, True)
 
 
-def test_native_workshop_can_buy_with_coins_above_lab_reserve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+# A stale quote may be one level behind the live price, so the visit allows
+# 5% above it; coins above the lab reserve still bound it when tighter.
+@pytest.mark.parametrize('wallet, budget', [(591510, 39900), (188000, 38000)])
+def test_native_workshop_can_buy_with_coins_above_lab_reserve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                              wallet: int, budget: int) -> None:
     import time
     from fleet.build_route_eval import RouteFacts
     from strategy_execution import StrategyExecution
@@ -183,7 +187,7 @@ def test_native_workshop_can_buy_with_coins_above_lab_reserve(tmp_path: Path, mo
     assert progress is not None
     now = time.time()
     facts = RouteFacts(target.account_id, target.target_id, 'main_menu', now, now,
-        wallet_coins=591510, prices={'attack_speed': 38000}, visit_id='after-run:310')
+        wallet_coins=wallet, prices={'attack_speed': 38000}, visit_id='after-run:310')
     monkeypatch.setattr(progress, 'route_facts', lambda: facts)
     monkeypatch.setattr(progress, '_settle_jar', lambda *args: 150000)
 
@@ -191,5 +195,5 @@ def test_native_workshop_can_buy_with_coins_above_lab_reserve(tmp_path: Path, mo
 
     assert policy.enabled and policy.armed
     assert policy.workshop[0].name == 'Attack Speed'
-    assert policy.coin_budget == 38000
+    assert policy.coin_budget == budget
     assert policy.coin_budget_pct is None
